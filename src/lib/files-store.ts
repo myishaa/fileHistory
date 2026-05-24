@@ -8,6 +8,7 @@ export type FileRecord = {
   officer?: string;
   imms?: string;
   date?: string; // ISO yyyy-mm-dd
+  year?: string;
   uniqueCode?: string;
   receivedDate?: string;
   scrutinyDate?: string;
@@ -59,12 +60,14 @@ export type FileRecord = {
   dpDate?: string;
   firm?: string;
   bgValidityDate?: string;
+  dpExtension?: string;
+  revisedDp?: string;
+  materialReceiptDate?: string;
   paymentDate?: string;
   paymentMode?: string;
   bgReturnDate?: string;
   demandCancelled?: string;
   soCancelled?: string;
-  dpExtension?: string;
   remark1?: string;
   remark2?: string;
   remark3?: string;
