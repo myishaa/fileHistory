@@ -200,6 +200,66 @@ const statusDateFields: { key: FileKey; label: string }[] = [
   { key: "soDate", label: "S.O. date" },
 ];
 
+type SortMode = "none" | "indentorAsc" | "valueType" | "dpRecent";
+
+type PrintColumn = {
+  key: string;
+  label: string;
+  getValue: (file: FileRecord) => string;
+};
+
+const printColumns: PrintColumn[] = [
+  { key: "value", label: "Value", getValue: (file) => formatValueText(file) },
+  {
+    key: "currentStatus",
+    label: "Current status",
+    getValue: (file) => {
+      const status = getCurrentStatus(file);
+      return status ? `${status.label}: ${status.date}` : "";
+    },
+  },
+  ...editableFields.map((field) => ({
+    key: field.key,
+    label: field.label,
+    getValue: (file: FileRecord) => String(file[field.key] ?? ""),
+  })),
+];
+
+const printColumnGroups = [
+  {
+    title: "Summary",
+    columns: printColumns.filter((column) => ["value", "currentStatus"].includes(column.key)),
+  },
+  ...fieldSections.map((section) => ({
+    title: section.title,
+    columns: section.fields
+      .map((field) => printColumns.find((column) => column.key === field.key))
+      .filter((column): column is PrintColumn => Boolean(column)),
+  })),
+].filter((group) => group.columns.length > 0);
+
+const defaultPrintColumnKeys = [
+  "imms",
+  "division",
+  "indentor",
+  "demandDescription",
+  "value",
+  "currentStatus",
+  "soDate",
+  "dpDate",
+];
+
+const defaultTableColumnKeys = [
+  "imms",
+  "division",
+  "indentor",
+  "demandDescription",
+  "value",
+  "currentStatus",
+  "soDate",
+  "dpDate",
+];
+
 function SearchPage() {
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
@@ -234,6 +294,13 @@ function SearchPage() {
   const [dpExtension, setDpExtension] = useState(false);
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
+  const [sortMode, setSortMode] = useState<SortMode>("none");
+  const [showTableOptions, setShowTableOptions] = useState(false);
+  const [selectedTableColumnKeys, setSelectedTableColumnKeys] =
+    useState<string[]>(defaultTableColumnKeys);
+  const [showPrintOptions, setShowPrintOptions] = useState(false);
+  const [selectedPrintColumnKeys, setSelectedPrintColumnKeys] =
+    useState<string[]>(defaultPrintColumnKeys);
   const openTimeline = (file: FileRecord) => {
     navigate({ to: "/add", search: { fileId: file.id, section: "Timeline" } });
   };
@@ -268,7 +335,7 @@ function SearchPage() {
     const minValue = parseAmount(valueFrom);
     const maxValue = parseAmount(valueTo);
 
-    return files.filter((file) => {
+    const filtered = files.filter((file) => {
       if (yearFilter && !includesText(file.year, yearFilter)) return false;
       if (imms && !includesText(file.imms, imms)) return false;
       if (indentor && !includesText(file.indentor, indentor)) return false;
@@ -306,6 +373,8 @@ function SearchPage() {
         return false;
       return true;
     });
+
+    return sortFiles(filtered, sortMode);
   }, [
     files,
     yearFilter,
@@ -332,10 +401,27 @@ function SearchPage() {
     dpExtension,
     freeText,
     freeDate,
+    sortMode,
   ]);
 
   const valueTotals = useMemo(() => getValueTotals(results), [results]);
   const allValueTotals = useMemo(() => getValueTotals(files), [files]);
+  const selectedPrintColumns = printColumns.filter((column) =>
+    selectedPrintColumnKeys.includes(column.key),
+  );
+  const selectedTableColumns = printColumns.filter((column) =>
+    selectedTableColumnKeys.includes(column.key),
+  );
+  const toggleTableColumn = (key: string) => {
+    setSelectedTableColumnKeys((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+    );
+  };
+  const togglePrintColumn = (key: string) => {
+    setSelectedPrintColumnKeys((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+    );
+  };
 
   const clearAll = () => {
     setYearFilter("");
@@ -536,77 +622,226 @@ function SearchPage() {
                 </span>
               </span>
             </div>
-            <span>Click any row to view timeline. Use Edit to change details.</span>
+            <label className="ml-auto inline-flex items-center gap-2">
+              <span>Sort by</span>
+              <select
+                value={sortMode}
+                onChange={(event) => setSortMode(event.target.value as SortMode)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              >
+                <option value="none">Default</option>
+                <option value="indentorAsc">Indentor A-Z</option>
+                <option value="valueType">Capital then revenue</option>
+                <option value="dpRecent">D.P. date recent first</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => setShowPrintOptions((current) => !current)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            >
+              <Printer className="size-3.5" /> Print list
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTableOptions((current) => !current)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            >
+              <SlidersHorizontal className="size-3.5" /> Table fields
+            </button>
           </div>
+
+          {showTableOptions && (
+            <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">Search table fields</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Choose which columns are visible in the search results table.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedTableColumnKeys(printColumns.map((field) => field.key))
+                    }
+                    className="h-8 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTableColumnKeys(defaultTableColumnKeys)}
+                    className="h-8 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                  >
+                    Default
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTableColumnKeys([])}
+                    className="h-8 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {printColumnGroups.map((group) => (
+                  <section
+                    key={group.title}
+                    className="rounded-md border border-border bg-secondary/20 p-3"
+                  >
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.title}
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {group.columns.map((column) => (
+                        <label
+                          key={column.key}
+                          className="flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedTableColumnKeys.includes(column.key)}
+                            onChange={() => toggleTableColumn(column.key)}
+                            className="size-4 rounded border-input"
+                          />
+                          <span>{column.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {showPrintOptions && (
+            <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">Print fields</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Choose columns for the current {results.length} searched result
+                    {results.length !== 1 && "s"}.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedPrintColumnKeys(printColumns.map((field) => field.key))
+                    }
+                    className="h-8 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPrintColumnKeys([])}
+                    className="h-8 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => printSearchList(results, selectedPrintColumns)}
+                    className="h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    Print selected
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {printColumnGroups.map((group) => (
+                  <section
+                    key={group.title}
+                    className="rounded-md border border-border bg-secondary/20 p-3"
+                  >
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.title}
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {group.columns.map((column) => (
+                        <label
+                          key={column.key}
+                          className="flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedPrintColumnKeys.includes(column.key)}
+                            onChange={() => togglePrintColumn(column.key)}
+                            className="size-4 rounded border-input"
+                          />
+                          <span>{column.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-card)]">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] text-sm">
+              <table
+                className="w-full text-sm"
+                style={{ minWidth: Math.max(720, selectedTableColumns.length * 150 + 120) }}
+              >
                 <thead className="bg-secondary text-xs text-muted-foreground">
                   <tr>
-                    <th className="text-left font-medium px-4 py-2.5">IMMS</th>
-                    <th className="text-left font-medium px-4 py-2.5">Division</th>
-                    <th className="text-left font-medium px-4 py-2.5">Indentor</th>
-                    <th className="text-left font-medium px-4 py-2.5">Description</th>
-                    <th className="text-left font-medium px-4 py-2.5">Value (Rs.)</th>
-                    <th className="text-left font-medium px-4 py-2.5">Current status</th>
-                    <th className="text-left font-medium px-4 py-2.5">S.O. Date</th>
-                    <th className="text-left font-medium px-4 py-2.5">D.P Date</th>
+                    {selectedTableColumns.map((column) => (
+                      <th key={column.key} className="text-left font-medium px-4 py-2.5">
+                        {column.label}
+                      </th>
+                    ))}
                     <th className="text-right font-medium px-4 py-2.5">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {results.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="text-center text-sm text-muted-foreground py-10">
+                      <td
+                        colSpan={selectedTableColumns.length + 1}
+                        className="text-center text-sm text-muted-foreground py-10"
+                      >
                         No files match your filters.
                       </td>
                     </tr>
                   )}
-                  {results.map((file) => {
-                    const status = getCurrentStatus(file);
-                    return (
-                      <tr
-                        key={file.id}
-                        onClick={() => openTimeline(file)}
-                        className="border-t border-border hover:bg-secondary/50 cursor-pointer"
-                      >
-                        <td className="px-4 py-3 font-medium">{file.imms || missing}</td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {file.division || missing}
+                  {results.map((file) => (
+                    <tr
+                      key={file.id}
+                      onClick={() => openTimeline(file)}
+                      className="border-t border-border hover:bg-secondary/50 cursor-pointer"
+                    >
+                      {selectedTableColumns.map((column) => (
+                        <td
+                          key={column.key}
+                          className="px-4 py-3 text-muted-foreground max-w-[240px] truncate"
+                        >
+                          {column.getValue(file) || missing}
                         </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {file.indentor || missing}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground max-w-[220px] truncate">
-                          {file.demandDescription || missing}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">{formatValue(file)}</td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {status ? `${status.label}: ${status.date}` : missing}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {file.soDate || missing}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {file.dpDate || missing}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                printFile(file);
-                              }}
-                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
-                            >
-                              <Printer className="size-3.5" /> Print
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      ))}
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              printFile(file);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
+                          >
+                            <Printer className="size-3.5" /> Print
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1045,6 +1280,40 @@ function matchesDateRange(date: string | undefined, from: string, to: string) {
   return true;
 }
 
+function sortFiles(files: FileRecord[], sortMode: SortMode) {
+  const indexed = files.map((file, index) => ({ file, index }));
+  const sorted = [...indexed].sort((a, b) => {
+    if (sortMode === "indentorAsc") {
+      const indentorCompare = (a.file.indentor ?? "").localeCompare(b.file.indentor ?? "");
+      return indentorCompare || a.index - b.index;
+    }
+
+    if (sortMode === "valueType") {
+      const typeCompare = valueTypeRank(a.file) - valueTypeRank(b.file);
+      return typeCompare || a.index - b.index;
+    }
+
+    if (sortMode === "dpRecent") {
+      const aDate = a.file.dpDate ?? "";
+      const bDate = b.file.dpDate ?? "";
+      if (!aDate && !bDate) return a.index - b.index;
+      if (!aDate) return 1;
+      if (!bDate) return -1;
+      return bDate.localeCompare(aDate) || a.index - b.index;
+    }
+
+    return a.index - b.index;
+  });
+
+  return sorted.map(({ file }) => file);
+}
+
+function valueTypeRank(file: FileRecord) {
+  if (file.valueCapital) return 0;
+  if (file.valueRevenue) return 1;
+  return 2;
+}
+
 function allSearchText(file: FileRecord) {
   return editableFields
     .map((field) => file[field.key])
@@ -1180,6 +1449,115 @@ function printFile(file: FileRecord) {
   printWindow.document.close();
 }
 
+function printSearchList(files: FileRecord[], columns: PrintColumn[]) {
+  if (files.length === 0) {
+    alert("No searched files to print.");
+    return;
+  }
+
+  if (columns.length === 0) {
+    alert("Select at least one field to print.");
+    return;
+  }
+
+  const printWindow = window.open("", "_blank", "width=1100,height=760");
+  if (!printWindow) {
+    alert("Allow pop-ups to print this list.");
+    return;
+  }
+
+  const headerCells = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("");
+  const rows = files
+    .map(
+      (file, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          ${columns
+            .map((column) => `<td>${escapeHtml(column.getValue(file) || "Not set")}</td>`)
+            .join("")}
+        </tr>
+      `,
+    )
+    .join("");
+  const totals = getValueTotals(files);
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>Search files list</title>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            font-family: Arial, sans-serif;
+            color: #111;
+            margin: 20px;
+          }
+          header {
+            border-bottom: 2px solid #111;
+            margin-bottom: 14px;
+            padding-bottom: 10px;
+          }
+          h1 {
+            font-size: 18px;
+            margin: 0 0 5px;
+          }
+          .subtle {
+            color: #555;
+            font-size: 12px;
+            line-height: 1.5;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+          }
+          th, td {
+            border: 1px solid #bbb;
+            padding: 6px 7px;
+            text-align: left;
+            vertical-align: top;
+          }
+          th {
+            background: #f3f3f3;
+            font-weight: 600;
+          }
+          @media print {
+            body { margin: 10mm; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid; }
+          }
+        </style>
+      </head>
+      <body>
+        <header>
+          <h1>FileHistory Search Results</h1>
+          <div class="subtle">Files: ${files.length}</div>
+          <div class="subtle">Total value: ${escapeHtml(formatCurrency(totals.total))}</div>
+          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
+        </header>
+        <table>
+          <thead>
+            <tr>
+              <th>S.No.</th>
+              ${headerCells}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+        <script>
+          window.onload = () => {
+            window.print();
+          };
+        </script>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -1190,11 +1568,15 @@ function escapeHtml(value: string) {
 }
 
 function formatValue(file: FileRecord) {
+  return formatValueText(file) || missing;
+}
+
+function formatValueText(file: FileRecord) {
   const parts = [
     file.valueCapital ? `${file.valueCapital} (C)` : "",
     file.valueRevenue ? `${file.valueRevenue} (R)` : "",
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" / ") : missing;
+  return parts.length > 0 ? parts.join(" / ") : "";
 }
 
 function getValueTotals(files: FileRecord[]) {
