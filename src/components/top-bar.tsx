@@ -3,16 +3,16 @@ import {
   BarChart3,
   Bell,
   FilePlus2,
-  FolderOpen,
   LayoutDashboard,
   Moon,
   Plus,
   Search,
   Settings,
   Sun,
+  UserRound,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { store, useSettings } from "@/lib/files-store";
+import { store, useSettings, useUsers } from "@/lib/files-store";
 
 const titles: Record<string, string> = {
   "/": "Search Files",
@@ -34,21 +34,33 @@ const nav = [
 export function TopBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const settings = useSettings();
+  const users = useUsers();
   const title = titles[pathname] ?? "Dashboard";
   const isDark = settings.theme === "dark";
 
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-card/95 backdrop-blur">
       <div className="min-h-14 px-4 lg:px-6 py-2.5 flex flex-wrap items-center gap-3">
-        <Link to="/" className="flex items-center gap-2.5 mr-2">
+        <div className="flex items-center gap-2.5 mr-2">
           <div className="size-8 rounded-md border border-border bg-secondary grid place-items-center">
-            <FolderOpen className="size-4 text-primary" />
+            <UserRound className="size-4 text-primary" />
           </div>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold">FileHistory</div>
-            <div className="text-[11px] text-muted-foreground">Records management</div>
-          </div>
-        </Link>
+          <label className="leading-tight">
+            <div className="text-[11px] font-medium text-muted-foreground">User</div>
+            <select
+              value={settings.activeUserId ?? ""}
+              onChange={(event) => store.updateSettings({ activeUserId: event.target.value })}
+              className="h-7 min-w-36 max-w-48 rounded-md border border-input bg-background px-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-ring/40"
+            >
+              <option value="">No active user</option>
+              {users.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
         <nav className="flex flex-wrap items-center gap-1">
           {nav.map((item) => {

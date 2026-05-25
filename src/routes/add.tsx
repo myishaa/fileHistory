@@ -772,6 +772,12 @@ function applyConditionalRules(form: FormState) {
       ifaFinalDate: "",
     };
   }
+  if (next.mode === "PBM" && next.ifa !== "Yes") {
+    next = {
+      ...next,
+      ifa: "Yes",
+    };
+  }
   return next;
 }
 

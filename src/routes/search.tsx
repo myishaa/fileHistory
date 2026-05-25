@@ -7,7 +7,7 @@ import {
   useAccessibleFiles,
   useSettings,
 } from "@/lib/files-store";
-import { Filter, Pencil, Printer, Search, SlidersHorizontal, X } from "lucide-react";
+import { Filter, Printer, Search, SlidersHorizontal, X } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 
 export const Route = createFileRoute("/search")({
@@ -234,9 +234,6 @@ function SearchPage() {
   const [dpExtension, setDpExtension] = useState(false);
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
-  const openFile = (file: FileRecord) => {
-    navigate({ to: "/add", search: { fileId: file.id, section: undefined } });
-  };
   const openTimeline = (file: FileRecord) => {
     navigate({ to: "/add", search: { fileId: file.id, section: "Timeline" } });
   };
@@ -604,15 +601,6 @@ function SearchPage() {
                               className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
                             >
                               <Printer className="size-3.5" /> Print
-                            </button>
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openFile(file);
-                              }}
-                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-primary/25 bg-primary/10 text-primary hover:bg-primary/15"
-                            >
-                              <Pencil className="size-3.5" /> Edit
                             </button>
                           </div>
                         </td>
@@ -1203,8 +1191,8 @@ function escapeHtml(value: string) {
 
 function formatValue(file: FileRecord) {
   const parts = [
-    file.valueCapital ? `Capital: ${file.valueCapital}` : "",
-    file.valueRevenue ? `Revenue: ${file.valueRevenue}` : "",
+    file.valueCapital ? `${file.valueCapital} (C)` : "",
+    file.valueRevenue ? `${file.valueRevenue} (R)` : "",
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" / ") : missing;
 }
