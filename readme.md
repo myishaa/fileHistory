@@ -1,129 +1,258 @@
-Create a modern professional office file management system UI for a full-stack web application. The design should look clean, minimal, and similar to modern admin dashboards like Notion, Airtable, ERP systems, or inventory management software.
+# FileHistory Record Keeper
 
-The application is for managing physical office files and records across different divisions.
+A local browser-based office file record management app built with React, TanStack Router/Start, Vite, and Tailwind CSS.
 
-Main requirements:
+The app is designed for tracking physical office files across divisions, with add/edit workflows, detailed search filters, division settings, financial year settings, and locally saved records.
 
-Dashboard Page
-Show total files
-Show pending/incomplete files
-Show recently added files
-Show division-wise statistics
-Include cards, tables, and charts
-Dark sidebar with light content area
-Sidebar items:
-Dashboard
-Add File
-Search Files
-Divisions
-Reports
-Settings
-Add File Window
-Create a form where office staff can add file details.
+## Run The App
 
-Fields:
+Install dependencies:
 
-Title
-Division
-Demand Officer
-IMMS Number
-Date
+```bash
+npm install
+```
 
-Important:
+Start development server:
 
-Every field should be optional
-User should be able to save incomplete entries
-Missing fields can be updated later
-Use modern form inputs and dropdowns
-Include Save and Clear buttons
-Search Files Window
-This is the main feature.
+```bash
+npm run dev
+```
 
-The search experience should feel like shopping websites such as Amazon or Flipkart.
+Build:
 
-Requirements:
+```bash
+npm run build
+```
 
-Global search bar at top
-Multi-filter sidebar
-Dynamic filtering/intersection search
-Results update instantly
+Note: the build may show a Wrangler permission warning about writing logs to `~/Library/Preferences/.wrangler`. The app build still succeeds when the command exits with code `0`.
 
-Filters:
+## Data Storage
 
-Division
-Demand Officer
-Date
-IMMS Number
+Data is currently saved in browser `localStorage`, not a SQL database.
 
-Behavior:
+Main storage keys are defined in [src/lib/files-store.ts](src/lib/files-store.ts):
 
-Multiple filters combine together
+- `ofms.files.v1`: saved file records
+- `ofms.divisions.v1`: division records
+- `ofms.settings.v1`: app settings
+
+Because this is browser storage, data is local to that browser profile. For real multi-user use, this should later move to a backend database.
+
+## Main Screens
+
+### Dashboard
+
+File: [src/routes/index.tsx](src/routes/index.tsx)
+
+Shows overall record statistics, recent files, incomplete files, and division-wise summaries.
+
+### Add File / Edit File
+
+File: [src/routes/add.tsx](src/routes/add.tsx)
+
+Used for both:
+
+- adding a new file
+- editing an existing file from Search using `/add?fileId=...`
+
+Important behavior:
+
+- All file fields are optional.
+- Existing filled values are locked when editing.
+- Each block has an unlock button so filled values can be edited block-by-block.
+- Empty fields remain editable.
+- Delete file is available only while editing and requires the deletion password.
+- Year is locked from Settings.
+- Unique code is auto-generated for new files.
+
+### Search Files
+
+File: [src/routes/search.tsx](src/routes/search.tsx)
+
+Search supports:
+
+- free text search
+- year with typeable suggestions
+- division with typeable suggestions
+- IMMS
+- indentor
+- value range
+- description
+- firm
+- high value, AD, R&QA, refloat, CNC, TCEC, tender live, DP extension
+- S.O. number
+- GeM S.O. number
+- D.P. date period
+- free date search
+
+Clicking a search result opens that file in the Add/Edit page.
+
+Search results show:
+
+- IMMS
+- Division
+- Indentor
+- Description
+- Value
+- Current status
+- S.O. date
+- D.P. date
+- Remark-1
+- Remark-2
+
+The Search results table is horizontally scrollable inside its card when needed.
+
+### Settings
+
+File: [src/routes/settings.tsx](src/routes/settings.tsx)
+
+Settings contains:
+
+- Divisions management
+- Financial year
+- Theme mode
+- Theme color tint
+- Deletion password
+- Date format and locale display fields
+
+Divisions can be added/edited/deleted with:
+
+- division name
+- division code
+- allocated capital
+- allocated revenue
+
+Deleting a division requires the deletion password.
+
+## Important App Logic
+
+### Unique Code Generation
+
+Implemented in [src/routes/add.tsx](src/routes/add.tsx).
+
+New files auto-generate unique code in this format:
+
+```text
+YY + DivisionCode + 3-digit serial
+```
+
 Example:
-Division = Mechanical
-Officer = Rajesh
-Search = “gear”
-Only matching files appear.
 
-Search should work across:
+```text
+2617001
+```
 
-Title
-Division
-Officer
-IMMS Number
-Date
-Results Section
-Display results in modern table/cards format.
+Meaning:
 
-Each result should show:
+- `26`: financial year `2026`
+- `17`: division code
+- `001`: first saved file for that division and year prefix
 
-File title
-Division
-Officer
-IMMS Number
-Date
-Status badge if incomplete
+The serial number is calculated from existing saved files with the same prefix.
 
-Add:
+### Value Handling
 
-Edit button
-View details button
-Division Management Page
-Allow admin to:
-Add divisions
-Edit divisions
-Delete divisions
+In Add/Edit File:
 
-Display divisions in cards or table format.
+- Value has Capital/Revenue checkboxes.
+- Only one can be selected at a time.
+- The value input accepts numbers and decimal points only.
+- S.O. value mirrors the main Capital/Revenue selection.
+- S.O. value also accepts numbers and decimal points only.
 
-Design Style
-UI should be:
-Minimal
-Professional
-Enterprise software style
-Responsive
-Modern spacing and typography
-Rounded cards
-Subtle shadows
-Light background with dark sidebar
-Clean search/filter experience
+Saved fields remain:
 
-Color palette:
+- `valueCapital`
+- `valueRevenue`
+- `soValueCapital`
+- `soValueRevenue`
 
-White/light gray backgrounds
-Dark navy sidebar
-Blue accent buttons
-Soft hover animations
-Future-ready features to visually include placeholders for:
-Barcode scanning
-QR code integration
-File uploads
-Analytics dashboard
-Authentication/login system
+### TCEC Rules
 
-Tech vibe:
+When `TCEC = No`:
 
-React + Next.js admin dashboard
-Tailwind CSS style
-Modern enterprise SaaS product UI
+- TCEC-related fields are disabled and cleared.
+- High value related fields are disabled.
+- AD is forced to `No`.
+- AD-related fields are disabled.
+- CNC-related fields are disabled.
+- Pre-TCEC, Post-TCEC, and Refloat Post-TCEC fields are disabled.
 
-The final UI should feel like a real office document management system used in government offices, DRDO-style technical departments, or enterprise administration systems.
+When `TCEC = No` and Mode is not `PBM`:
+
+- IFA fields are disabled and cleared.
+
+### Delete Password
+
+Implemented in [src/lib/delete-password.ts](src/lib/delete-password.ts).
+
+The deletion password is saved in Settings and is required before deleting:
+
+- a file
+- a division
+
+Important: this is not strong security because it is stored in browser localStorage. It protects against accidental deletion in this local app, but a real backend should handle authentication and permissions later.
+
+### Theme System
+
+Theme settings are stored in `ofms.settings.v1`.
+
+Supported modes:
+
+- White theme
+- Dark theme
+
+Supported color tints:
+
+- Plain white / black
+- Yellow tinted
+- Green tinted
+- Blue tinted
+- Pink tinted
+- Lavender tinted
+
+Theme classes are applied in [src/routes/__root.tsx](src/routes/__root.tsx), and CSS variables are defined in [src/styles.css](src/styles.css).
+
+## Key Files
+
+- [src/lib/files-store.ts](src/lib/files-store.ts): localStorage store, data types, settings, divisions, files
+- [src/lib/delete-password.ts](src/lib/delete-password.ts): delete password prompt helper
+- [src/routes/add.tsx](src/routes/add.tsx): add/edit file form and business rules
+- [src/routes/search.tsx](src/routes/search.tsx): filters, result table, search logic
+- [src/routes/settings.tsx](src/routes/settings.tsx): divisions and app settings
+- [src/components/top-bar.tsx](src/components/top-bar.tsx): top navigation and theme toggle
+- [src/styles.css](src/styles.css): theme tokens and global styles
+
+## Future Database Plan
+
+The current app can later be connected to a backend database.
+
+Likely migration path:
+
+1. Keep the same `FileRecord`, `Division`, and `AppSettings` shapes.
+2. Replace localStorage functions in `files-store.ts` with API calls.
+3. Store files/divisions/settings in SQL tables.
+4. Move deletion password/authentication to the backend.
+5. Add barcode scanning by searching `uniqueCode`.
+
+## Barcode Plan
+
+The unique code should be used as the barcode value.
+
+Example barcode value:
+
+```text
+2617001
+```
+
+When scanned, a scanner usually types that code into an input. The app can then find the file where:
+
+```text
+file.uniqueCode === scannedCode
+```
+
+and open:
+
+```text
+/add?fileId=<matching-file-id>
+```

@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { store, type FileRecord, useDivisions, useFiles, useSettings } from "@/lib/files-store";
-import { Filter, Pencil, Search, SlidersHorizontal, X } from "lucide-react";
+import { Filter, Pencil, Printer, Search, SlidersHorizontal, X } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 
 export const Route = createFileRoute("/search")({
@@ -542,15 +542,26 @@ function SearchPage() {
                           {file.remark2 || missing}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openFile(file);
-                            }}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/15"
-                          >
-                            <Pencil className="size-3.5" /> Edit
-                          </button>
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                printFile(file);
+                              }}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-secondary text-foreground hover:bg-accent"
+                            >
+                              <Printer className="size-3.5" /> Print
+                            </button>
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openFile(file);
+                              }}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/15"
+                            >
+                              <Pencil className="size-3.5" /> Edit
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1008,6 +1019,122 @@ function getCurrentStatus(file: FileRecord) {
     if (!latest || date > latest.date) return { label: field.label, date };
     return latest;
   }, null);
+}
+
+function printFile(file: FileRecord) {
+  const printWindow = window.open("", "_blank", "width=960,height=720");
+  if (!printWindow) {
+    alert("Allow pop-ups to print this file.");
+    return;
+  }
+
+  const title = file.uniqueCode || file.imms || "File record";
+  const sections = fieldSections
+    .map(
+      (section) => `
+        <section>
+          <h2>${escapeHtml(section.title)}</h2>
+          <table>
+            <tbody>
+              ${section.fields
+                .map((field) => {
+                  const value = file[field.key];
+                  return `
+                    <tr>
+                      <th>${escapeHtml(field.label)}</th>
+                      <td>${escapeHtml(value || "Not set")}</td>
+                    </tr>
+                  `;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </section>
+      `,
+    )
+    .join("");
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(title)}</title>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            font-family: Arial, sans-serif;
+            color: #111;
+            margin: 24px;
+          }
+          header {
+            border-bottom: 2px solid #111;
+            margin-bottom: 18px;
+            padding-bottom: 10px;
+          }
+          h1 {
+            font-size: 20px;
+            margin: 0 0 4px;
+          }
+          .subtle {
+            color: #555;
+            font-size: 12px;
+          }
+          section {
+            break-inside: avoid;
+            margin: 18px 0;
+          }
+          h2 {
+            font-size: 14px;
+            margin: 0 0 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #bbb;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+          }
+          th, td {
+            border: 1px solid #ccc;
+            padding: 7px 8px;
+            text-align: left;
+            vertical-align: top;
+          }
+          th {
+            width: 34%;
+            background: #f3f3f3;
+            font-weight: 600;
+          }
+          @media print {
+            body { margin: 12mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <header>
+          <h1>FileHistory File Record</h1>
+          <div class="subtle">Unique code: ${escapeHtml(file.uniqueCode || "Not set")}</div>
+          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
+        </header>
+        ${sections}
+        <script>
+          window.onload = () => {
+            window.print();
+          };
+        </script>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function formatValue(file: FileRecord) {

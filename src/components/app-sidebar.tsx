@@ -37,7 +37,7 @@ export function AppSidebar() {
           <FolderOpen className="size-5 text-sidebar-primary-foreground" />
         </div>
         <div className="leading-tight">
-          <div className="text-sm font-semibold text-white">OfficeFiles</div>
+          <div className="text-sm font-semibold text-white">FileHistory</div>
           <div className="text-[11px] text-sidebar-foreground/60">Records Management</div>
         </div>
       </div>

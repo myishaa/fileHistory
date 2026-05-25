@@ -44,7 +44,7 @@ export function TopBar() {
             <FolderOpen className="size-5 text-primary-foreground" />
           </div>
           <div className="leading-tight">
-            <div className="text-sm font-semibold">OfficeFiles</div>
+            <div className="text-sm font-semibold">FileHistory</div>
             <div className="text-[11px] text-muted-foreground">Records Management</div>
           </div>
         </Link>
@@ -74,7 +74,7 @@ export function TopBar() {
         <div className="ml-auto flex items-center gap-3">
           <div className="hidden xl:block text-right">
             <h1 className="text-sm font-semibold">{title}</h1>
-            <p className="text-[11px] text-muted-foreground">Office records management system</p>
+            <p className="text-[11px] text-muted-foreground">File history management system</p>
           </div>
           <Link
             to="/search"

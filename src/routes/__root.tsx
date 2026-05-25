@@ -74,11 +74,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "OfficeFiles — Records Management" },
-      { name: "description", content: "Modern office file Lovable Generated Project records management system" },
+      { title: "FileHistory — Records Management" },
+      { name: "description", content: "Modern file history records management system" },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "OfficeFiles — Records Management" },
-      { property: "og:description", content: "Modern office file Lovable Generated Project records management system" },
+      { property: "og:title", content: "FileHistory — Records Management" },
+      { property: "og:description", content: "Modern file history records management system" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
@@ -118,7 +118,9 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <div className={`${themeClass} ${tintClass} min-h-screen w-full bg-background text-foreground`}>
+      <div
+        className={`${themeClass} ${tintClass} min-h-screen w-full bg-background text-foreground`}
+      >
         <TopBar />
         <main className="p-6 lg:p-8">
           <Outlet />
