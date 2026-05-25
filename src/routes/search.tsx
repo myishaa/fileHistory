@@ -331,8 +331,8 @@ function SearchPage() {
   };
 
   return (
-    <div className="w-full min-w-0 space-y-5">
-      <div className="bg-card border border-border rounded-xl p-3 shadow-[var(--shadow-card)] flex min-w-0 items-center gap-2">
+    <div className="w-full min-w-0 space-y-4">
+      <div className="bg-card border border-border rounded-md p-2.5 shadow-[var(--shadow-card)] flex min-w-0 items-center gap-2">
         <Search className="size-4 text-muted-foreground ml-2" />
         <input
           value={freeText}
@@ -340,20 +340,22 @@ function SearchPage() {
           placeholder="Free search"
           className="flex-1 h-10 bg-transparent outline-none text-sm"
         />
-        {hasFilters && (
-          <button
-            onClick={clearAll}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-accent"
-          >
-            <X className="size-3.5" /> Clear all
-          </button>
-        )}
       </div>
 
-      <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
-        <aside className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)] h-fit min-w-0 space-y-5">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <SlidersHorizontal className="size-4" /> Filters
+      <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
+        <aside className="bg-card border border-border rounded-md p-4 shadow-[var(--shadow-card)] h-fit min-w-0 space-y-4">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <SlidersHorizontal className="size-4 text-muted-foreground" /> Filters
+            </div>
+            {hasFilters && (
+              <button
+                onClick={clearAll}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-accent"
+              >
+                <X className="size-3.5" /> Clear
+              </button>
+            )}
           </div>
 
           <FilterGroup label="Year">
@@ -420,7 +422,7 @@ function SearchPage() {
             <FilterInput value={firm} onChange={setFirm} placeholder="Firm" />
           </FilterGroup>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
             <CheckFilter label="High Value" checked={highValue} onChange={setHighValue} />
             <CheckFilter label="AD" checked={ad} onChange={setAd} />
             <CheckFilter label="R&QA" checked={rqa} onChange={setRqa} />
@@ -481,10 +483,10 @@ function SearchPage() {
             <span>Click any row to open the file in Add File</span>
           </div>
 
-          <div className="min-w-0 overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-card)]">
+          <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-card)]">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1320px] text-sm">
-                <thead className="bg-secondary/60 text-xs text-muted-foreground">
+                <thead className="bg-secondary text-xs text-muted-foreground">
                   <tr>
                     <th className="text-left font-medium px-4 py-2.5">IMMS</th>
                     <th className="text-left font-medium px-4 py-2.5">Division</th>
@@ -513,7 +515,7 @@ function SearchPage() {
                       <tr
                         key={file.id}
                         onClick={() => openFile(file)}
-                        className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+                        className="border-t border-border hover:bg-secondary/50 cursor-pointer"
                       >
                         <td className="px-4 py-3 font-medium">{file.imms || missing}</td>
                         <td className="px-4 py-3 text-muted-foreground">
@@ -548,7 +550,7 @@ function SearchPage() {
                                 event.stopPropagation();
                                 printFile(file);
                               }}
-                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-secondary text-foreground hover:bg-accent"
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
                             >
                               <Printer className="size-3.5" /> Print
                             </button>
@@ -557,7 +559,7 @@ function SearchPage() {
                                 event.stopPropagation();
                                 openFile(file);
                               }}
-                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/15"
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-primary/25 bg-primary/10 text-primary hover:bg-primary/15"
                             >
                               <Pencil className="size-3.5" /> Edit
                             </button>

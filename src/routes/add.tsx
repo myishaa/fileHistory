@@ -254,6 +254,11 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
   },
 ];
 
+const timelineFields = extraSections
+  .flatMap((section) => section.fields)
+  .filter((field) => field.type === "date")
+  .map((field) => ({ key: field.key, label: field.label }));
+
 function AddFilePage() {
   const divisions = useDivisions();
   const files = useFiles();
@@ -331,8 +336,8 @@ function AddFilePage() {
 
   return (
     <div className="w-full">
-      <div className="bg-card border border-border rounded-xl shadow-[var(--shadow-card)] overflow-hidden">
-        <div className="p-6 border-b border-border">
+      <div className="bg-card border border-border rounded-md shadow-[var(--shadow-card)] overflow-hidden">
+        <div className="p-5 border-b border-border bg-secondary/30">
           <h2 className="text-base font-semibold">
             {isEditing ? "Edit file details" : "Add a new file"}
           </h2>
@@ -343,17 +348,19 @@ function AddFilePage() {
           </p>
         </div>
 
-        <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <TimelineBlock form={formWithLockedYear} />
+
           {extraSections.map((section, index) => (
             <section key={section.title} className={sectionBlockCls(index)}>
-              <h3 className="text-sm font-semibold border-b border-current/15 pb-2 mb-4 flex items-center gap-2">
+              <h3 className="text-sm font-semibold border-b border-border pb-2 mb-4 flex items-center gap-2">
                 <span className={sectionStripeCls(index)} />
                 <span className="min-w-0 flex-1">{section.title}</span>
                 {isEditing && (
                   <button
                     type="button"
                     onClick={() => toggleSectionLock(section.title)}
-                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-background/80 text-xs font-medium text-foreground border border-current/20 hover:bg-background"
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-background text-xs font-medium text-foreground border border-border hover:bg-accent"
                   >
                     {unlockedSections.has(section.title) ? (
                       <>
@@ -367,7 +374,7 @@ function AddFilePage() {
                   </button>
                 )}
               </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {section.fields.map((field) => {
                   const renderedField =
                     field.key === "division"
@@ -439,7 +446,7 @@ function AddFilePage() {
             </section>
           ))}
 
-          <div className="md:col-span-2 flex items-start gap-2 text-xs text-muted-foreground bg-accent/40 border border-border rounded-md p-3">
+          <div className="md:col-span-2 flex items-start gap-2 text-xs text-muted-foreground bg-secondary/50 border border-border rounded-md p-3">
             <Info className="size-4 mt-0.5 text-primary" />
             <p>
               Tip: incomplete entries are flagged with a status badge so you can find and update
@@ -448,7 +455,7 @@ function AddFilePage() {
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-border bg-secondary/40 flex flex-wrap items-center justify-between gap-2">
+        <div className="px-5 py-4 border-t border-border bg-secondary/40 flex flex-wrap items-center justify-between gap-2">
           <div>
             {isEditing && (
               <button
@@ -488,6 +495,60 @@ function AddFilePage() {
   );
 }
 
+function TimelineBlock({ form }: { form: FormState }) {
+  const items = timelineFields
+    .map((field) => ({
+      label: field.label,
+      date: form[field.key],
+    }))
+    .filter((item) => item.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return (
+    <section className="md:col-span-2 rounded-md border border-border bg-secondary/25 p-4">
+      <div className="mb-4 flex items-center justify-between border-b border-border pb-2">
+        <h3 className="text-sm font-semibold">Timeline</h3>
+        <span className="text-xs text-muted-foreground">{items.length} date fields filled</span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Timeline will appear here as date fields are filled.
+        </p>
+      ) : (
+        <ol className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {items.map((item) => (
+            <li
+              key={`${item.label}-${item.date}`}
+              className="relative rounded-md border border-border bg-card px-3 py-2.5"
+            >
+              <div className="flex items-start gap-2">
+                <span className="mt-1.5 size-2 rounded-full bg-primary" />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{item.label}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {formatTimelineDate(item.date)}
+                  </div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function formatTimelineDate(date: string) {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  return parsed.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 const inputCls =
   "w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition";
 
@@ -495,27 +556,27 @@ const textareaCls =
   "w-full min-h-20 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition resize-y";
 
 function sectionBlockCls(index: number) {
-  const styles = [
-    "bg-sky-100/80 border-sky-300 text-sky-950 shadow-sm dark:bg-sky-950/55 dark:border-sky-700 dark:text-sky-50",
-    "bg-emerald-100/80 border-emerald-300 text-emerald-950 shadow-sm dark:bg-emerald-950/55 dark:border-emerald-700 dark:text-emerald-50",
-    "bg-amber-100/85 border-amber-300 text-amber-950 shadow-sm dark:bg-amber-950/55 dark:border-amber-700 dark:text-amber-50",
-    "bg-violet-100/80 border-violet-300 text-violet-950 shadow-sm dark:bg-violet-950/55 dark:border-violet-700 dark:text-violet-50",
-    "bg-rose-100/75 border-rose-300 text-rose-950 shadow-sm dark:bg-rose-950/55 dark:border-rose-700 dark:text-rose-50",
-    "bg-cyan-100/80 border-cyan-300 text-cyan-950 shadow-sm dark:bg-cyan-950/55 dark:border-cyan-700 dark:text-cyan-50",
+  const accents = [
+    "border-l-primary",
+    "border-l-success",
+    "border-l-warning",
+    "border-l-chart-5",
+    "border-l-destructive",
+    "border-l-chart-2",
   ];
-  return `md:col-span-2 rounded-lg border-l-4 border p-5 ${styles[index % styles.length]}`;
+  return `md:col-span-2 rounded-md border border-l-2 border-border bg-card p-4 shadow-sm ${accents[index % accents.length]}`;
 }
 
 function sectionStripeCls(index: number) {
   const colors = [
-    "bg-sky-600",
-    "bg-emerald-600",
-    "bg-amber-600",
-    "bg-violet-600",
-    "bg-rose-600",
-    "bg-cyan-600",
+    "bg-primary",
+    "bg-success",
+    "bg-warning",
+    "bg-chart-5",
+    "bg-destructive",
+    "bg-chart-2",
   ];
-  return `inline-block h-5 w-2 rounded-full ${colors[index % colors.length]}`;
+  return `inline-block h-4 w-1 rounded-full ${colors[index % colors.length]}`;
 }
 
 function toFilePayload(form: FormState) {

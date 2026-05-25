@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Moon,
   Plus,
-  Search,
   Settings,
   Sun,
 } from "lucide-react";
@@ -37,15 +36,15 @@ export function TopBar() {
   const isDark = settings.theme === "dark";
 
   return (
-    <header className="border-b border-border bg-card sticky top-0 z-10">
-      <div className="min-h-16 px-4 lg:px-6 py-3 flex flex-wrap items-center gap-3">
+    <header className="sticky top-0 z-10 border-b border-border bg-card/95 backdrop-blur">
+      <div className="min-h-14 px-4 lg:px-6 py-2.5 flex flex-wrap items-center gap-3">
         <Link to="/" className="flex items-center gap-2.5 mr-2">
-          <div className="size-9 rounded-lg bg-primary grid place-items-center">
-            <FolderOpen className="size-5 text-primary-foreground" />
+          <div className="size-8 rounded-md border border-border bg-secondary grid place-items-center">
+            <FolderOpen className="size-4 text-primary" />
           </div>
           <div className="leading-tight">
             <div className="text-sm font-semibold">FileHistory</div>
-            <div className="text-[11px] text-muted-foreground">Records Management</div>
+            <div className="text-[11px] text-muted-foreground">Records management</div>
           </div>
         </Link>
 
@@ -58,9 +57,9 @@ export function TopBar() {
                 key={item.to}
                 to={item.to}
                 className={
-                  "inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm transition-colors " +
+                  "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm transition-colors " +
                   (active
-                    ? "bg-primary text-primary-foreground shadow-sm"
+                    ? "bg-secondary text-foreground border border-border"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground")
                 }
               >
@@ -76,14 +75,7 @@ export function TopBar() {
             <h1 className="text-sm font-semibold">{title}</h1>
             <p className="text-[11px] text-muted-foreground">File history management system</p>
           </div>
-          <Link
-            to="/search"
-            className="hidden 2xl:flex items-center gap-2 w-64 h-9 px-3 rounded-md bg-secondary text-muted-foreground text-sm hover:bg-accent transition-colors"
-          >
-            <Search className="size-4" />
-            <span>Quick search files...</span>
-          </Link>
-          <button className="relative size-9 rounded-md border border-border bg-card hover:bg-accent grid place-items-center">
+          <button className="relative size-8 rounded-md border border-border bg-card hover:bg-accent grid place-items-center">
             <Bell className="size-4" />
             <span className="absolute top-2 right-2 size-1.5 rounded-full bg-primary" />
           </button>
@@ -92,13 +84,13 @@ export function TopBar() {
             onClick={() => store.updateSettings({ theme: isDark ? "light" : "dark" })}
             title={isDark ? "Switch to white theme" : "Switch to dark theme"}
             aria-label={isDark ? "Switch to white theme" : "Switch to dark theme"}
-            className="size-9 rounded-md border border-border bg-card hover:bg-accent grid place-items-center"
+            className="size-8 rounded-md border border-border bg-card hover:bg-accent grid place-items-center"
           >
             {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </button>
           <Link
             to="/add"
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition"
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition"
           >
             <Plus className="size-4" />
             New File
