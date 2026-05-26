@@ -7,7 +7,16 @@ import {
   useAccessibleFiles,
   useSettings,
 } from "@/lib/files-store";
-import { FileSpreadsheet, Filter, Printer, Search, SlidersHorizontal, X } from "lucide-react";
+import {
+  ArrowDownAZ,
+  ArrowUpAZ,
+  FileSpreadsheet,
+  Filter,
+  Printer,
+  Search,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 
 export const Route = createFileRoute("/search")({
@@ -56,6 +65,7 @@ const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Online", "Offline"];
 const defaultNoKeys: FileKey[] = ["dpExtension", "tenderLive", "refloat", "rst"];
+type SortDirection = "asc" | "desc";
 
 const fieldSections: { title: string; fields: FieldDef[] }[] = [
   {
@@ -274,6 +284,7 @@ function SearchPage() {
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
   const [sortColumnKey, setSortColumnKey] = useState("none");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [divisionWiseSort, setDivisionWiseSort] = useState(false);
   const [showTableOptions, setShowTableOptions] = useState(false);
   const [defaultTableColumnKeys, setDefaultTableColumnKeys] = useState<string[] | null>(() =>
@@ -381,9 +392,10 @@ function SearchPage() {
       return true;
     });
 
-    return sortFiles(filtered, activeSortColumnKey, divisionWiseSort);
+    return sortFiles(filtered, activeSortColumnKey, divisionWiseSort, sortDirection);
   }, [
     activeSortColumnKey,
+    sortDirection,
     divisionWiseSort,
     files,
     yearFilter,
@@ -476,6 +488,7 @@ function SearchPage() {
     setFreeText("");
     setFreeDate("");
     setSortColumnKey("none");
+    setSortDirection("asc");
     setDivisionWiseSort(false);
     if (search.dashboardFilter || search.division) {
       navigate({ to: "/search", search: {} });
@@ -695,6 +708,26 @@ function SearchPage() {
                   ))}
                 </select>
               </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
+                }
+                disabled={activeSortColumnKey === "none"}
+                title={
+                  sortDirection === "asc"
+                    ? "Switch to descending sort"
+                    : "Switch to ascending sort"
+                }
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
+              >
+                {sortDirection === "asc" ? (
+                  <ArrowUpAZ className="size-3.5" />
+                ) : (
+                  <ArrowDownAZ className="size-3.5" />
+                )}
+                {sortDirection === "asc" ? "Ascending" : "Descending"}
+              </button>
               <button
                 type="button"
                 onClick={() => printSearchList(results, selectedTableColumns)}
@@ -1370,7 +1403,12 @@ function matchesDateRange(date: string | undefined, from: string, to: string) {
   return true;
 }
 
-function sortFiles(files: FileRecord[], sortColumnKey: string, divisionWiseSort: boolean) {
+function sortFiles(
+  files: FileRecord[],
+  sortColumnKey: string,
+  divisionWiseSort: boolean,
+  sortDirection: SortDirection,
+) {
   const indexed = files.map((file, index) => ({ file, index }));
   const sorted = [...indexed].sort((a, b) => {
     if (divisionWiseSort) {
@@ -1383,7 +1421,7 @@ function sortFiles(files: FileRecord[], sortColumnKey: string, divisionWiseSort:
         a.file[sortColumnKey as FileKey],
         b.file[sortColumnKey as FileKey],
       );
-      if (columnCompare !== 0) return columnCompare;
+      if (columnCompare !== 0) return sortDirection === "asc" ? columnCompare : -columnCompare;
     }
 
     return a.index - b.index;

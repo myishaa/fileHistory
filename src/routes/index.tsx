@@ -43,12 +43,20 @@ export function Dashboard() {
     ),
     bookedCapital: dashboardFiles.reduce(
       (sum, file) =>
-        sum + (parseAmount(file.soValueCapital) ?? parseAmount(file.valueCapital) ?? 0),
+        sum + (hasAmount(file.soValueCapital) ? 0 : (parseAmount(file.valueCapital) ?? 0)),
       0,
     ),
     bookedRevenue: dashboardFiles.reduce(
       (sum, file) =>
-        sum + (parseAmount(file.soValueRevenue) ?? parseAmount(file.valueRevenue) ?? 0),
+        sum + (hasAmount(file.soValueRevenue) ? 0 : (parseAmount(file.valueRevenue) ?? 0)),
+      0,
+    ),
+    spentCapital: dashboardFiles.reduce(
+      (sum, file) => sum + (parseAmount(file.soValueCapital) ?? 0),
+      0,
+    ),
+    spentRevenue: dashboardFiles.reduce(
+      (sum, file) => sum + (parseAmount(file.soValueRevenue) ?? 0),
       0,
     ),
   };
@@ -58,6 +66,14 @@ export function Dashboard() {
   );
   const revenueBookedPercent = getPercent(
     financeTotals.bookedRevenue,
+    financeTotals.allocatedRevenue,
+  );
+  const capitalSpentPercent = getPercent(
+    financeTotals.spentCapital,
+    financeTotals.allocatedCapital,
+  );
+  const revenueSpentPercent = getPercent(
+    financeTotals.spentRevenue,
     financeTotals.allocatedRevenue,
   );
 
@@ -126,6 +142,16 @@ export function Dashboard() {
       },
       icon: BadgeIndianRupee,
       hint: "Capital / Revenue booked",
+      tone: "success",
+    },
+    {
+      label: "Spent percentage",
+      value: {
+        capital: formatPercent(capitalSpentPercent),
+        revenue: formatPercent(revenueSpentPercent),
+      },
+      icon: BadgeIndianRupee,
+      hint: "Capital / Revenue spent",
       tone: "success",
     },
   ];
@@ -268,6 +294,23 @@ export function Dashboard() {
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-4 rounded-lg border border-border bg-card p-4">
+            <div className="text-xs font-medium text-muted-foreground">Spent from S.O. value</div>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="rounded-md border border-border bg-secondary/35 px-3 py-2.5">
+                <div className="text-[11px] text-muted-foreground">Capital spent</div>
+                <div className="mt-1 text-lg font-semibold tracking-tight">
+                  {formatCurrency(financeTotals.spentCapital)}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-secondary/35 px-3 py-2.5">
+                <div className="text-[11px] text-muted-foreground">Revenue spent</div>
+                <div className="mt-1 text-lg font-semibold tracking-tight">
+                  {formatCurrency(financeTotals.spentRevenue)}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -504,6 +547,10 @@ function parseAmount(value: string | undefined) {
   if (!cleaned) return undefined;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function hasAmount(value: string | undefined) {
+  return parseAmount(value) !== undefined;
 }
 
 function getPercent(value: number, total: number) {
