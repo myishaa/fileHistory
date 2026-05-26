@@ -47,11 +47,15 @@ const tcecDisabledKeys: FileKey[] = [
 ];
 
 const ifaDisabledKeys: FileKey[] = ["ifa", "ifaSentDate", "ifaFinalDate"];
+const gemDisabledKeys: FileKey[] = ["gemUndertakingDate", "gemSoNo"];
+const rqaDisabledKeys: FileKey[] = ["rqaApprovalDate"];
+const bgDisabledKeys: FileKey[] = ["bgValidityDate", "bgReturnDate"];
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Online", "Offline"];
+const defaultNoKeys: FileKey[] = ["dpExtension", "tenderLive", "refloat", "rst"];
 
 const fieldSections: { title: string; fields: FieldDef[] }[] = [
   {
@@ -92,6 +96,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "ad", label: "AD (Yes/No)", options: yesNo },
       { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
       { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
+      { key: "bg", label: "BG (Yes/No)", options: yesNo },
       { key: "highValueMeetingDate", label: "High value meeting date", type: "date" },
       { key: "highValueMinutesDate", label: "High value minutes date", type: "date" },
       { key: "preTcecDate", label: "Pre-TCEC Date", type: "date" },
@@ -979,7 +984,10 @@ function EditModal({
 }) {
   const settings = useSettings();
   const [form, setForm] = useState<Record<FileKey, string>>(() => {
-    const entries = editableFields.map((field) => [field.key, String(file[field.key] ?? "")]);
+    const entries = editableFields.map((field) => [
+      field.key,
+      String(file[field.key] ?? (defaultNoKeys.includes(field.key) ? "No" : "")),
+    ]);
     return applyConditionalRules({
       ...(Object.fromEntries(entries) as Record<FileKey, string>),
       year: settings.financialYear,
@@ -988,6 +996,9 @@ function EditModal({
 
   const formWithLockedYear = { ...form, year: settings.financialYear };
   const tcecIsNo = isNo(formWithLockedYear.tcec);
+  const gemIsNo = isNo(formWithLockedYear.gem);
+  const rqaIsNo = isNo(formWithLockedYear.rqa);
+  const bgIsNo = isNo(formWithLockedYear.bg);
   const ifaDisabled = shouldDisableIfa(formWithLockedYear);
   const update = (key: FileKey, value: string) => {
     if (key === "year") return;
@@ -1026,6 +1037,9 @@ function EditModal({
                     disabled={
                       field.key === "year" ||
                       (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
+                      (gemIsNo && gemDisabledKeys.includes(field.key)) ||
+                      (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
+                      (bgIsNo && bgDisabledKeys.includes(field.key)) ||
                       (ifaDisabled && ifaDisabledKeys.includes(field.key))
                     }
                     onChange={(value) => update(field.key, value)}
@@ -1210,6 +1224,32 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       refloatPostTcecCommitteeNo: "",
       cncDate: "",
       cncApprovalDate: "",
+    };
+  }
+  if (isNo(next.gem)) {
+    next = {
+      ...next,
+      gemUndertakingDate: "",
+      gemSoNo: "",
+    };
+  }
+  if (isNo(next.rqa)) {
+    next = {
+      ...next,
+      rqaApprovalDate: "",
+    };
+  }
+  if (isNo(next.bg)) {
+    next = {
+      ...next,
+      bgValidityDate: "",
+      bgReturnDate: "",
+    };
+  }
+  if (isYes(next.tenderLive)) {
+    next = {
+      ...next,
+      bidOpened: "No",
     };
   }
   if (shouldDisableIfa(next)) {

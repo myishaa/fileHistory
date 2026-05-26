@@ -27,6 +27,7 @@ export type FileRecord = {
   ad?: string;
   rqa?: string;
   ifa?: string;
+  bg?: string;
   highValueMeetingDate?: string;
   highValueMinutesDate?: string;
   preTcecDate?: string;

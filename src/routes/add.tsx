@@ -47,6 +47,7 @@ const empty = {
   ad: "",
   rqa: "",
   ifa: "",
+  bg: "",
   highValueMeetingDate: "",
   highValueMinutesDate: "",
   preTcecDate: "",
@@ -58,11 +59,11 @@ const empty = {
   ifaFinalDate: "",
   cfaDate: "",
   gemUndertakingDate: "",
-  tenderLive: "",
+  tenderLive: "No",
   bidDate: "",
   bidOpeningDate: "",
   bidOpened: "",
-  refloat: "",
+  refloat: "No",
   postTcecDate: "",
   postTcecMinutesDate: "",
   postTcecCommitteeNumber: "",
@@ -70,7 +71,7 @@ const empty = {
   refloatBidOpeningDate: "",
   refloatPostTcecDate: "",
   refloatPostTcecCommitteeNo: "",
-  rst: "",
+  rst: "No",
   cncDate: "",
   cncApprovalDate: "",
   soNo: "",
@@ -81,7 +82,7 @@ const empty = {
   dpDate: "",
   firm: "",
   bgValidityDate: "",
-  dpExtension: "",
+  dpExtension: "No",
   revisedDp: "",
   materialReceiptDate: "",
   paymentDate: "",
@@ -125,7 +126,10 @@ function createFormFromFile(file: FileRecord, financialYear: string): FormState 
   return {
     ...createEmptyForm(financialYear),
     ...Object.fromEntries(
-      formKeys.map((key) => [key, String((file as Record<string, unknown>)[key] ?? "")]),
+      formKeys.map((key) => [
+        key,
+        String((file as Record<string, unknown>)[key] ?? empty[key]),
+      ]),
     ),
     valueCapitalSelected: file.valueCapital ? "Yes" : "",
     valueRevenueSelected: file.valueRevenue ? "Yes" : "",
@@ -161,6 +165,9 @@ const tcecDisabledKeys: FieldKey[] = [
 ];
 
 const ifaDisabledKeys: FieldKey[] = ["ifa", "ifaSentDate", "ifaFinalDate"];
+const gemDisabledKeys: FieldKey[] = ["gemUndertakingDate", "gemSoNo"];
+const rqaDisabledKeys: FieldKey[] = ["rqaApprovalDate"];
+const bgDisabledKeys: FieldKey[] = ["bgValidityDate", "bgReturnDate"];
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
@@ -183,6 +190,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "highValue", label: "High value (Yes/No)", options: yesNo },
       { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
       { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
+      { key: "bg", label: "BG (Yes/No)", options: yesNo },
       { key: "fileDetailsRemark1", label: "Remark-1", type: "textarea" },
       { key: "fileDetailsRemark2", label: "Remark-2", type: "textarea" },
     ],
@@ -319,6 +327,9 @@ function AddFilePage() {
     uniqueCode: generatedUniqueCode,
   };
   const tcecIsNo = isNo(formWithLockedYear.tcec);
+  const gemIsNo = isNo(formWithLockedYear.gem);
+  const rqaIsNo = isNo(formWithLockedYear.rqa);
+  const bgIsNo = isNo(formWithLockedYear.bg);
   const ifaDisabled = shouldDisableIfa(formWithLockedYear);
   const adVettingDisabled = isDivisionAdNo(formWithLockedYear.division, divisions);
   const activeSection = extraSections.find((section) => section.title === activeBoardSection);
@@ -428,6 +439,9 @@ function AddFilePage() {
               existingValueLocked ||
               (field.key === "adVettingDate" && adVettingDisabled) ||
               (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
+              (gemIsNo && gemDisabledKeys.includes(field.key)) ||
+              (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
+              (bgIsNo && bgDisabledKeys.includes(field.key)) ||
               (ifaDisabled && ifaDisabledKeys.includes(field.key))
             }
             onChange={(value) => update(field.key, value)}
@@ -498,7 +512,9 @@ function AddFilePage() {
         <SectionBoard active={activeBoardSection} onOpen={setActiveBoardSection} />
 
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {activeBoardSection === "Timeline" && <TimelineBlock form={formWithLockedYear} />}
+          {activeBoardSection === "Timeline" && (
+            <TimelineBlock form={formWithLockedYear} divisions={divisions} />
+          )}
 
           {activeSection && (
             <section
@@ -585,20 +601,28 @@ function SectionBoard({
   );
 }
 
-function TimelineBlock({ form }: { form: FormState }) {
+function TimelineBlock({
+  form,
+  divisions,
+}: {
+  form: FormState;
+  divisions: ReturnType<typeof useDivisions>;
+}) {
   const [showAllDates, setShowAllDates] = useState(false);
-  const filledItems = timelineFields
+  const enabledTimelineFields = getEnabledTimelineFields(form, divisions);
+  const filledItems = enabledTimelineFields
     .map((field) => ({
       label: field.label,
       date: form[field.key],
     }))
     .filter((item) => item.date)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const allItems = timelineFields.map((field) => ({
+  const allItems = enabledTimelineFields.map((field) => ({
     label: field.label,
     date: form[field.key],
   }));
   const items = showAllDates ? allItems : filledItems;
+  const timelineMetrics = getTimelineMetrics(filledItems);
 
   return (
     <section
@@ -609,7 +633,7 @@ function TimelineBlock({ form }: { form: FormState }) {
         <div>
           <h3 className="text-sm font-semibold">Timeline</h3>
           <span className="text-xs text-muted-foreground">
-            {filledItems.length} of {timelineFields.length} date fields filled
+            {filledItems.length} of {enabledTimelineFields.length} date fields filled
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -650,30 +674,52 @@ function TimelineBlock({ form }: { form: FormState }) {
           Timeline will appear here as date fields are filled.
         </p>
       ) : (
-        <ol className="relative space-y-0 pl-6">
-          <span className="absolute left-[10px] top-2 bottom-2 w-px bg-success/60" />
-          {items.map((item) => (
-            <li key={`${item.label}-${item.date || "empty"}`} className="relative pb-4 last:pb-0">
-              <span
-                className={
-                  "absolute -left-[21px] top-1.5 size-3 rounded-full border-2 border-card " +
-                  (item.date
-                    ? "bg-success shadow-[0_0_0_3px_var(--color-success)]/10"
-                    : "bg-muted-foreground/35")
-                }
-              />
-              <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                <div
-                  className={item.date ? "text-sm font-medium" : "text-sm text-muted-foreground"}
-                >
-                  {item.label}
+        <ol className="relative space-y-0">
+          <span className="absolute left-[5.75rem] top-2 bottom-2 w-px bg-success/60" />
+          {items.map((item) => {
+            const metrics = timelineMetrics.get(getTimelineItemKey(item));
+            return (
+              <li
+                key={`${item.label}-${item.date || "empty"}`}
+                className="relative pb-4 last:pb-0"
+              >
+                <div className="grid grid-cols-[4.5rem_1.5rem_minmax(0,1fr)] items-start gap-2">
+                  <div className="pt-0.5 text-right text-[11px] font-medium text-muted-foreground">
+                    {item.date ? formatDayCount(metrics?.gapDays) : "-"}
+                  </div>
+                  <div className="relative flex h-5 justify-center">
+                    <span
+                      className={
+                        "mt-1.5 size-3 rounded-full border-2 border-card " +
+                        (item.date
+                          ? "bg-success shadow-[0_0_0_3px_var(--color-success)]/10"
+                          : "bg-muted-foreground/35")
+                      }
+                    />
+                  </div>
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div
+                        className={
+                          item.date
+                            ? "min-w-0 text-sm font-medium"
+                            : "min-w-0 text-sm text-muted-foreground"
+                        }
+                      >
+                        {item.label}
+                      </div>
+                      <div className="shrink-0 text-right text-[11px] font-medium text-muted-foreground">
+                        {item.date ? formatDayCount(metrics?.cumulativeDays) : "-"}
+                      </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {item.date ? formatTimelineDate(item.date) : "Not filled"}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  {item.date ? formatTimelineDate(item.date) : "Not filled"}
-                </div>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>
@@ -688,6 +734,41 @@ function formatTimelineDate(date: string) {
     month: "short",
     year: "numeric",
   });
+}
+
+function getTimelineDayGap(fromDate: string, toDate: string) {
+  const fromTime = parseTimelineDateTime(fromDate);
+  const toTime = parseTimelineDateTime(toDate);
+  if (fromTime === undefined || toTime === undefined) return undefined;
+  return Math.round((toTime - fromTime) / 86_400_000);
+}
+
+function parseTimelineDateTime(date: string) {
+  const parsed = new Date(`${date}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function formatDayCount(days: number | undefined) {
+  if (days === undefined) return "-";
+  return `${days} ${Math.abs(days) === 1 ? "day" : "days"}`;
+}
+
+function getTimelineMetrics(items: Array<{ label: string; date: string }>) {
+  const firstItem = items[0];
+  return new Map(
+    items.map((item, index) => {
+      const previousItem = items[index - 1];
+      const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
+      const cumulativeDays = firstItem ? getTimelineDayGap(firstItem.date, item.date) : undefined;
+
+      return [getTimelineItemKey(item), { gapDays, cumulativeDays }];
+    }),
+  );
+}
+
+function getTimelineItemKey(item: { label: string; date: string }) {
+  return `${item.label}-${item.date}`;
 }
 
 function printTimelineReport(form: FormState, filledItems: Array<{ label: string; date: string }>) {
@@ -714,14 +795,21 @@ function printTimelineReport(form: FormState, filledItems: Array<{ label: string
     )
     .join("");
   const timelineRows = filledItems
-    .map(
-      (item) => `
+    .map((item, index) => {
+      const firstItem = filledItems[0];
+      const previousItem = filledItems[index - 1];
+      const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
+      const cumulativeDays = firstItem ? getTimelineDayGap(firstItem.date, item.date) : undefined;
+
+      return `
         <tr>
           <td>${escapeHtml(item.label)}</td>
           <td>${escapeHtml(formatTimelineDate(item.date))}</td>
+          <td>${escapeHtml(formatDayCount(gapDays))}</td>
+          <td>${escapeHtml(formatDayCount(cumulativeDays))}</td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 
   printWindow.document.write(`
@@ -765,9 +853,21 @@ function printTimelineReport(form: FormState, filledItems: Array<{ label: string
             vertical-align: top;
           }
           th {
-            width: 28%;
             background: #f3f3f3;
             font-weight: 600;
+          }
+          .detail-table th {
+            width: 28%;
+          }
+          .timeline-table th:nth-child(1) {
+            width: 42%;
+          }
+          .timeline-table th:nth-child(2) {
+            width: 18%;
+          }
+          .timeline-table th:nth-child(3),
+          .timeline-table th:nth-child(4) {
+            width: 20%;
           }
           @media print {
             body { margin: 10mm; }
@@ -781,17 +881,19 @@ function printTimelineReport(form: FormState, filledItems: Array<{ label: string
           <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
         </header>
         <h2>File details</h2>
-        <table>
+        <table class="detail-table">
           <tbody>${detailRows}</tbody>
         </table>
         <h2>Timeline</h2>
         ${
           filledItems.length
-            ? `<table>
+            ? `<table class="timeline-table">
                 <thead>
                   <tr>
                     <th>Field</th>
                     <th>Date</th>
+                    <th>Time gap</th>
+                    <th>Cumulative time</th>
                   </tr>
                 </thead>
                 <tbody>${timelineRows}</tbody>
@@ -901,6 +1003,32 @@ function applyConditionalRules(form: FormState) {
       cncApprovalDate: "",
     };
   }
+  if (isNo(next.gem)) {
+    next = {
+      ...next,
+      gemUndertakingDate: "",
+      gemSoNo: "",
+    };
+  }
+  if (isNo(next.rqa)) {
+    next = {
+      ...next,
+      rqaApprovalDate: "",
+    };
+  }
+  if (isNo(next.bg)) {
+    next = {
+      ...next,
+      bgValidityDate: "",
+      bgReturnDate: "",
+    };
+  }
+  if (isYes(next.tenderLive)) {
+    next = {
+      ...next,
+      bidOpened: "No",
+    };
+  }
   if (shouldDisableIfa(next)) {
     next = {
       ...next,
@@ -922,6 +1050,10 @@ function isNo(value: string) {
   return value.trim().toLowerCase() === "no";
 }
 
+function isYes(value: string) {
+  return value.trim().toLowerCase() === "yes";
+}
+
 function shouldDisableIfa(form: FormState) {
   return isNo(form.tcec) && form.mode !== "PBM";
 }
@@ -935,6 +1067,25 @@ function isDivisionAdNo(divisionName: string, divisions: ReturnType<typeof useDi
 
 function clearDivisionDisabledFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
   return isDivisionAdNo(form.division, divisions) ? { ...form, adVettingDate: "" } : form;
+}
+
+function getEnabledTimelineFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
+  return timelineFields.filter((field) => !isTimelineFieldDisabled(field.key, form, divisions));
+}
+
+function isTimelineFieldDisabled(
+  key: FieldKey,
+  form: FormState,
+  divisions: ReturnType<typeof useDivisions>,
+) {
+  return (
+    (key === "adVettingDate" && isDivisionAdNo(form.division, divisions)) ||
+    (isNo(form.tcec) && tcecDisabledKeys.includes(key)) ||
+    (isNo(form.gem) && gemDisabledKeys.includes(key)) ||
+    (isNo(form.rqa) && rqaDisabledKeys.includes(key)) ||
+    (isNo(form.bg) && bgDisabledKeys.includes(key)) ||
+    (shouldDisableIfa(form) && ifaDisabledKeys.includes(key))
+  );
 }
 
 function getSavedFileValue(file: FileRecord | undefined, key: FieldKey) {
