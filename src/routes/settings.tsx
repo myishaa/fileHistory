@@ -22,6 +22,7 @@ import {
   type AppUserRole,
 } from "@/lib/files-store";
 import { requestDeletionPassword } from "@/lib/delete-password";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -56,44 +57,23 @@ const futureFeatures = [
 ];
 
 function SettingsPage() {
-  const settings = useSettings();
-
   return (
     <div className="space-y-4 max-w-5xl">
-      <DivisionSettings />
-      <UserSettings />
+      <Tabs defaultValue="admin" className="space-y-4">
+        <TabsList aria-label="Settings sections">
+          <TabsTrigger value="admin">Admin</TabsTrigger>
+          <TabsTrigger value="user">User</TabsTrigger>
+        </TabsList>
 
-      <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-        <h2 className="text-sm font-semibold mb-1">Workspace</h2>
-        <p className="text-xs text-muted-foreground mb-5">
-          Configure how this records system behaves.
-        </p>
+        <TabsContent value="admin" className="space-y-4">
+          <DivisionSettings />
+          <UserSettings />
+        </TabsContent>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <EditableField
-            label="Financial year"
-            value={settings.financialYear}
-            onChange={(value) => store.updateSettings({ financialYear: value })}
-          />
-          <ThemeField
-            label="Theme"
-            value={settings.theme}
-            onChange={(value) => store.updateSettings({ theme: value })}
-          />
-          <ThemeTintField
-            label="Theme color"
-            value={settings.themeTint}
-            onChange={(value) => store.updateSettings({ themeTint: value })}
-          />
-          <PasswordField
-            label="Deletion password"
-            value={settings.deletionPassword}
-            onChange={(value) => store.updateSettings({ deletionPassword: value })}
-          />
-          <Field label="Date format" value="YYYY-MM-DD" />
-          <Field label="Locale" value="English (India)" />
-        </div>
-      </div>
+        <TabsContent value="user">
+          <WorkspaceSettings />
+        </TabsContent>
+      </Tabs>
 
       <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <div className="flex items-center justify-between mb-5">
@@ -128,6 +108,43 @@ function SettingsPage() {
             );
           })}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceSettings() {
+  const settings = useSettings();
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">Workspace</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Configure how this records system behaves.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <EditableField
+          label="Financial year"
+          value={settings.financialYear}
+          onChange={(value) => store.updateSettings({ financialYear: value })}
+        />
+        <ThemeField
+          label="Theme"
+          value={settings.theme}
+          onChange={(value) => store.updateSettings({ theme: value })}
+        />
+        <ThemeTintField
+          label="Theme color"
+          value={settings.themeTint}
+          onChange={(value) => store.updateSettings({ themeTint: value })}
+        />
+        <PasswordField
+          label="Deletion password"
+          value={settings.deletionPassword}
+          onChange={(value) => store.updateSettings({ deletionPassword: value })}
+        />
+        <Field label="Locale" value="English (India)" />
       </div>
     </div>
   );

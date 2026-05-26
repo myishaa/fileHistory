@@ -257,6 +257,8 @@ function SearchPage() {
   const [dpFrom, setDpFrom] = useState("");
   const [dpTo, setDpTo] = useState("");
   const [dpExtension, setDpExtension] = useState(false);
+  const [demandCancelledFilter, setDemandCancelledFilter] = useState(false);
+  const [soCancelledFilter, setSoCancelledFilter] = useState(false);
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
   const [sortColumnKey, setSortColumnKey] = useState("none");
@@ -308,6 +310,8 @@ function SearchPage() {
     dpFrom ||
     dpTo ||
     dpExtension ||
+    demandCancelledFilter ||
+    soCancelledFilter ||
     freeText ||
     freeDate;
 
@@ -342,6 +346,8 @@ function SearchPage() {
       if (soNo && !includesText(file.soNo, soNo)) return false;
       if (gemSoNo && !includesText(file.gemSoNo, gemSoNo)) return false;
       if (dpExtension && !isYes(file.dpExtension)) return false;
+      if (demandCancelledFilter && !isYes(file.demandCancelled)) return false;
+      if (soCancelledFilter && !isYes(file.soCancelled)) return false;
       if (!matchesValueType(file, capitalOnly, revenueOnly)) return false;
       if (!matchesValueRange(file, minValue, maxValue)) return false;
       if (!matchesDateRange(file.dpDate, dpFrom, dpTo)) return false;
@@ -381,6 +387,8 @@ function SearchPage() {
     dpFrom,
     dpTo,
     dpExtension,
+    demandCancelledFilter,
+    soCancelledFilter,
     freeText,
     freeDate,
   ]);
@@ -439,6 +447,8 @@ function SearchPage() {
     setDpFrom("");
     setDpTo("");
     setDpExtension(false);
+    setDemandCancelledFilter(false);
+    setSoCancelledFilter(false);
     setFreeText("");
     setFreeDate("");
     setSortColumnKey("none");
@@ -588,6 +598,19 @@ function SearchPage() {
           <FilterGroup label="Free search date">
             <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
           </FilterGroup>
+
+          <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
+            <CheckFilter
+              label="Cancelled demand"
+              checked={demandCancelledFilter}
+              onChange={setDemandCancelledFilter}
+            />
+            <CheckFilter
+              label="Cancelled S.O."
+              checked={soCancelledFilter}
+              onChange={setSoCancelledFilter}
+            />
+          </div>
         </aside>
 
         <section className="min-w-0 space-y-3">
