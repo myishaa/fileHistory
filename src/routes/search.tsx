@@ -1399,6 +1399,23 @@ function isBidOverdue(file: FileRecord) {
   return isNo(file.bidOpened) && isDateBeforeToday(activeOpeningDate);
 }
 
+function isLiveSupplyOrder(file: FileRecord) {
+  return hasAny(file, ["soDate"]) && isDateAfterToday(file.dpDate);
+}
+
+function isBgToBeReceived(file: FileRecord) {
+  return isYes(file.bg) && hasAny(file, ["soDate"]) && !hasAny(file, ["bgValidityDate"]);
+}
+
+function isBgToBeReturned(file: FileRecord) {
+  return (
+    isYes(file.bg) &&
+    hasAny(file, ["bgValidityDate"]) &&
+    isDateBeforeToday(file.bgValidityDate) &&
+    !hasAny(file, ["bgReturnDate"])
+  );
+}
+
 function isDateBeforeToday(date: string | undefined) {
   const dateTime = parseLocalDateTime(date ?? "");
   const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
@@ -1408,6 +1425,17 @@ function isDateBeforeToday(date: string | undefined) {
   }
 
   return dateTime < todayTime;
+}
+
+function isDateAfterToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return dateTime > todayTime;
 }
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
@@ -1422,6 +1450,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "ifaConcurrence") return isYes(file.ifa);
   if (filter === "liveBids") return isFileTenderLive(file);
   if (filter === "bidOverdue") return isBidOverdue(file);
+  if (filter === "supplyOrders") return hasAny(file, ["soDate"]);
+  if (filter === "liveSupplyOrders") return isLiveSupplyOrder(file);
+  if (filter === "bgToBeReceived") return isBgToBeReceived(file);
+  if (filter === "bgToBeReturned") return isBgToBeReturned(file);
   if (filter === "scrutinyCompleted") return hasAny(file, ["scrutinyCompletionDate"]);
   if (filter === "scrutinyUnderProgress") return !hasAny(file, ["scrutinyDate"]);
   if (filter === "preTcecCompleted")

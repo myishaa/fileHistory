@@ -160,6 +160,38 @@ export function Dashboard() {
       hint: "Live and overdue bids",
     },
     {
+      label: "Supply Orders",
+      value: [
+        {
+          label: "Total supply orders",
+          value: dashboardFiles.filter((file) => hasFilledField(file, "soDate")).length,
+          searchFilter: "supplyOrders",
+        },
+        {
+          label: "Live supply orders",
+          value: dashboardFiles.filter(isLiveSupplyOrder).length,
+          searchFilter: "liveSupplyOrders",
+        },
+      ],
+      hint: "Total and live supply orders",
+    },
+    {
+      label: "BG",
+      value: [
+        {
+          label: "To be received",
+          value: dashboardFiles.filter(isBgToBeReceived).length,
+          searchFilter: "bgToBeReceived",
+        },
+        {
+          label: "To be returned",
+          value: dashboardFiles.filter(isBgToBeReturned).length,
+          searchFilter: "bgToBeReturned",
+        },
+      ],
+      hint: "BG receipt and return status",
+    },
+    {
       label: "Booked percentage",
       value: {
         capital: formatPercent(capitalBookedPercent),
@@ -561,21 +593,6 @@ const workflowStatusGroups = [
       },
     ],
   },
-  {
-    title: "Supply order",
-    statuses: [
-      {
-        label: "Completed",
-        searchFilter: "soCompleted",
-        matches: (file) => hasFilledField(file, "soNo"),
-      },
-      {
-        label: "Remaining",
-        searchFilter: "soRemaining",
-        matches: (file) => !hasFilledField(file, "soNo"),
-      },
-    ],
-  },
 ] satisfies Array<{
   title: string;
   statuses: Array<{
@@ -622,6 +639,23 @@ function isBidOverdue(file: FileRecord) {
   return isNo(file.bidOpened) && isDateBeforeToday(activeOpeningDate);
 }
 
+function isLiveSupplyOrder(file: FileRecord) {
+  return hasFilledField(file, "soDate") && isDateAfterToday(file.dpDate);
+}
+
+function isBgToBeReceived(file: FileRecord) {
+  return isYes(file.bg) && hasFilledField(file, "soDate") && !hasFilledField(file, "bgValidityDate");
+}
+
+function isBgToBeReturned(file: FileRecord) {
+  return (
+    isYes(file.bg) &&
+    hasFilledField(file, "bgValidityDate") &&
+    isDateBeforeToday(file.bgValidityDate) &&
+    !hasFilledField(file, "bgReturnDate")
+  );
+}
+
 function isDateInRangeToday(startDate: string | undefined, endDate: string | undefined) {
   const startTime = parseLocalDateTime(startDate ?? "");
   const endTime = parseLocalDateTime(endDate ?? "");
@@ -643,6 +677,17 @@ function isDateBeforeToday(date: string | undefined) {
   }
 
   return dateTime < todayTime;
+}
+
+function isDateAfterToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return dateTime > todayTime;
 }
 
 function hasDate(date: string | undefined) {
