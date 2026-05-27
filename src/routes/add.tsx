@@ -83,6 +83,8 @@ const empty = {
   firm: "",
   bgValidityDate: "",
   dpExtension: "No",
+  dpExtensionCount: "",
+  ld: "No",
   revisedDp: "",
   materialReceiptDate: "",
   paymentDate: "",
@@ -140,7 +142,7 @@ function createFormFromFile(file: FileRecord, financialYear: string): FormState 
 type ExtraField = {
   key: FieldKey;
   label: string;
-  type?: "date" | "textarea";
+  type?: "date" | "number" | "textarea";
   options?: string[];
   placeholder?: string;
   typeahead?: boolean;
@@ -266,6 +268,8 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "firm", label: "Firm" },
       { key: "bgValidityDate", label: "BG validity date", type: "date" },
       { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+      { key: "dpExtensionCount", label: "Extension count", type: "number" },
+      { key: "ld", label: "LD", options: yesNo },
       { key: "revisedDp", label: "Revised D.P.", type: "date" },
       { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
       { key: "paymentDate", label: "Payment Date", type: "date" },
@@ -334,6 +338,7 @@ function AddFilePage() {
   const gemIsNo = isNo(formWithLockedYear.gem);
   const rqaIsNo = isNo(formWithLockedYear.rqa);
   const bgIsNo = isNo(formWithLockedYear.bg);
+  const dpExtensionIsNo = isNo(formWithLockedYear.dpExtension);
   const ifaDisabled = shouldDisableIfa(formWithLockedYear);
   const adVettingDisabled = isDivisionAdNo(formWithLockedYear.division, divisions);
   const activeSection = extraSections.find((section) => section.title === activeBoardSection);
@@ -343,7 +348,11 @@ function AddFilePage() {
   const update = (k: keyof typeof form, v: string) => {
     if (k === "year") return;
     setForm((f) => {
-      const next = applyConditionalRules({ ...f, [k]: v });
+      const patch: Partial<FormState> = { [k]: v };
+      if (k === "gem" && isYes(v)) {
+        patch.paymentMode = "Online";
+      }
+      const next = applyConditionalRules({ ...f, ...patch });
       return isDivisionAdNo(next.division, divisions) ? { ...next, adVettingDate: "" } : next;
     });
   };
@@ -448,6 +457,7 @@ function AddFilePage() {
               (gemIsNo && gemDisabledKeys.includes(field.key)) ||
               (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
               (bgIsNo && bgDisabledKeys.includes(field.key)) ||
+              (dpExtensionIsNo && field.key === "ld") ||
               (ifaDisabled && ifaDisabledKeys.includes(field.key))
             }
             onChange={(value) => update(field.key, value)}
@@ -463,6 +473,10 @@ function AddFilePage() {
     );
     if (editingFile) {
       store.updateFile(editingFile.id, payload);
+      setSaved(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setTimeout(() => setSaved(false), 1200);
+      return;
     } else {
       store.addFile(payload);
     }
@@ -1018,6 +1032,12 @@ function applyConditionalRules(form: FormState) {
       gemSoNo: "",
     };
   }
+  if (isYes(next.gem) && !next.paymentMode) {
+    next = {
+      ...next,
+      paymentMode: "Online",
+    };
+  }
   if (isNo(next.rqa)) {
     next = {
       ...next,
@@ -1029,6 +1049,19 @@ function applyConditionalRules(form: FormState) {
       ...next,
       bgValidityDate: "",
       bgReturnDate: "",
+    };
+  }
+  if (isYes(next.dpExtension)) {
+    next = {
+      ...next,
+      dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount),
+    };
+  }
+  if (isNo(next.dpExtension)) {
+    next = {
+      ...next,
+      dpExtensionCount: "",
+      ld: "No",
     };
   }
   next = {
@@ -1055,6 +1088,15 @@ function applyConditionalRules(form: FormState) {
 
 function isNo(value: string) {
   return value.trim().toLowerCase() === "no";
+}
+
+function isYes(value: string) {
+  return value.trim().toLowerCase() === "yes";
+}
+
+function getInitialExtensionCount(value: string) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? value : "1";
 }
 
 function getAutoBidOpened(form: FormState) {
@@ -1420,6 +1462,8 @@ function DynamicField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
+        min={field.type === "number" ? 0 : undefined}
+        step={field.type === "number" ? 1 : undefined}
         placeholder={field.placeholder}
         className={inputCls + disabledCls(disabled)}
       />

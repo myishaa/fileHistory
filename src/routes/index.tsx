@@ -192,6 +192,22 @@ export function Dashboard() {
       hint: "BG receipt and return status",
     },
     {
+      label: "DP",
+      value: [
+        {
+          label: "Extension",
+          value: dashboardFiles.filter((file) => isYes(file.dpExtension)).length,
+          searchFilter: "dpExtension",
+        },
+        {
+          label: "Expired",
+          value: dashboardFiles.filter(isDpExpired).length,
+          searchFilter: "dpExpired",
+        },
+      ],
+      hint: "DP extension and expiry status",
+    },
+    {
       label: "Booked percentage",
       value: {
         capital: formatPercent(capitalBookedPercent),
@@ -230,8 +246,7 @@ export function Dashboard() {
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold">Summary</h2>
-            <p className="text-xs text-muted-foreground">Demand and supply order status</p>
+            <h2 className="text-sm font-bold">Snapshot</h2>
           </div>
           <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
             <span>Division</span>
@@ -284,10 +299,7 @@ export function Dashboard() {
 
       <section className="space-y-4">
         <div>
-          <h2 className="text-sm font-semibold">Workflow Status</h2>
-          <p className="text-xs text-muted-foreground">
-            Stage counts based on their own date fields
-          </p>
+          <h2 className="text-sm font-bold">Current status</h2>
         </div>
         <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -296,7 +308,7 @@ export function Dashboard() {
                 key={group.title}
                 className="rounded-lg border border-border bg-secondary/35 p-4"
               >
-                <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+                <h3 className="text-xs font-bold uppercase text-muted-foreground">
                   {group.title}
                 </h3>
                 <div className="mt-3 space-y-2">
@@ -322,7 +334,7 @@ export function Dashboard() {
         <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
           <div className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="text-sm font-semibold">Bidding mode</h2>
+              <h2 className="text-sm font-bold">Bidding mode</h2>
               <p className="text-xs text-muted-foreground">Files grouped by bidding mode</p>
             </div>
           </div>
@@ -348,7 +360,7 @@ export function Dashboard() {
         <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
           <div className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="text-sm font-semibold">Finance</h2>
+              <h2 className="text-sm font-bold">Finance</h2>
               <p className="text-xs text-muted-foreground">Allocated and booked amounts</p>
             </div>
           </div>
@@ -406,7 +418,7 @@ function SummaryMetric({
   const content = (
     <>
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium text-muted-foreground">{label}</div>
+        <div className="text-sm font-bold text-muted-foreground">{label}</div>
       </div>
       {subMetrics ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -493,7 +505,7 @@ function getModeCounts(files: ReturnType<typeof useAccessibleFiles>) {
 
 const workflowStatusGroups = [
   {
-    title: "Scrutiny & Demand",
+    title: "Scrutiny",
     statuses: [
       {
         label: "Scrutiny completed",
@@ -654,6 +666,10 @@ function isBgToBeReturned(file: FileRecord) {
     isDateBeforeToday(file.bgValidityDate) &&
     !hasFilledField(file, "bgReturnDate")
   );
+}
+
+function isDpExpired(file: FileRecord) {
+  return isDateBeforeToday(file.dpDate) && !hasFilledField(file, "revisedDp");
 }
 
 function isDateInRangeToday(startDate: string | undefined, endDate: string | undefined) {

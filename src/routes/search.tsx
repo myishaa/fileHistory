@@ -33,7 +33,7 @@ type FileKey = Exclude<keyof FileRecord, "id" | "createdAt">;
 type FieldDef = {
   key: FileKey;
   label: string;
-  type?: "date" | "textarea";
+  type?: "date" | "number" | "textarea";
   options?: string[];
 };
 
@@ -64,7 +64,7 @@ const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Online", "Offline"];
-const defaultNoKeys: FileKey[] = ["dpExtension", "tenderLive", "refloat", "rst"];
+const defaultNoKeys: FileKey[] = ["dpExtension", "ld", "tenderLive", "refloat", "rst"];
 type SortDirection = "asc" | "desc";
 
 const fieldSections: { title: string; fields: FieldDef[] }[] = [
@@ -100,7 +100,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     title: "Approvals and tender",
     fields: [
       { key: "tcec", label: "TCEC (YES/NO)", options: yesNoCaps },
-      { key: "mode", label: "Mode (OBM/PBM/SBM/LBM/LPC)", options: modeOptions },
+      { key: "mode", label: "Mode", options: modeOptions },
       { key: "gem", label: "GeM (yes/no)", options: yesNo },
       { key: "highValue", label: "High value (Yes/No)", options: yesNo },
       { key: "ad", label: "AD (Yes/No)", options: yesNo },
@@ -153,6 +153,8 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "firm", label: "Firm" },
       { key: "bgValidityDate", label: "BG validity date", type: "date" },
       { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+      { key: "dpExtensionCount", label: "Extension count", type: "number" },
+      { key: "ld", label: "LD", options: yesNo },
       { key: "revisedDp", label: "Revised D.P.", type: "date" },
       { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
       { key: "paymentDate", label: "Payment Date", type: "date" },
@@ -207,7 +209,10 @@ const printColumns: PrintColumn[] = [
   ...editableFields.map((field) => ({
     key: field.key,
     label: field.label,
-    getValue: (file: FileRecord) => String(file[field.key] ?? ""),
+    getValue: (file: FileRecord) =>
+      field.key === "valueCapital" || field.key === "valueRevenue"
+        ? formatAmountValue(file[field.key])
+        : String(file[field.key] ?? ""),
   })),
 ];
 
@@ -491,7 +496,7 @@ function SearchPage() {
     setSortDirection("asc");
     setDivisionWiseSort(false);
     if (search.dashboardFilter || search.division) {
-      navigate({ to: "/search", search: {} });
+      navigate({ to: "/search", search: { dashboardFilter: undefined, division: undefined } });
     }
   };
 
@@ -532,7 +537,7 @@ function SearchPage() {
       <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
         <aside className="bg-card border border-border rounded-md p-4 shadow-[var(--shadow-card)] h-fit min-w-0 space-y-4">
           <div className="flex items-center justify-between border-b border-border pb-3">
-            <div className="flex items-center gap-2 text-sm font-semibold">
+            <div className="flex items-center gap-2 text-sm font-bold">
               <SlidersHorizontal className="size-4 text-muted-foreground" /> Filters
             </div>
             <button
@@ -839,14 +844,14 @@ function SearchPage() {
                 className="w-full text-sm"
                 style={{ minWidth: Math.max(820, selectedTableColumns.length * 150 + 240) }}
               >
-                <thead className="bg-secondary text-xs text-muted-foreground">
+                <thead className="bg-secondary text-sm text-muted-foreground">
                   <tr>
                     {selectedTableColumns.map((column) => (
-                      <th key={column.key} className="text-left font-medium px-4 py-2.5">
+                      <th key={column.key} className="text-left font-bold px-4 py-2.5">
                         {column.label}
                       </th>
                     ))}
-                    <th className="text-right font-medium px-4 py-2.5">Action</th>
+                    <th className="text-right font-bold px-4 py-2.5">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -915,7 +920,9 @@ const missing = <span className="text-muted-foreground italic">Not set</span>;
 function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">{label}</div>
+      <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
+        {label}
+      </div>
       {children}
     </div>
   );
@@ -1032,10 +1039,17 @@ function EditModal({
   const gemIsNo = isNo(formWithLockedYear.gem);
   const rqaIsNo = isNo(formWithLockedYear.rqa);
   const bgIsNo = isNo(formWithLockedYear.bg);
+  const dpExtensionIsNo = isNo(formWithLockedYear.dpExtension);
   const ifaDisabled = shouldDisableIfa(formWithLockedYear);
   const update = (key: FileKey, value: string) => {
     if (key === "year") return;
-    setForm((current) => applyConditionalRules({ ...current, [key]: value }));
+    setForm((current) => {
+      const patch: Partial<Record<FileKey, string>> = { [key]: value };
+      if (key === "gem" && isYes(value)) {
+        patch.paymentMode = "Online";
+      }
+      return applyConditionalRules({ ...current, ...patch });
+    });
   };
 
   const save = () => {
@@ -1075,6 +1089,7 @@ function EditModal({
                       (gemIsNo && gemDisabledKeys.includes(field.key)) ||
                       (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
                       (bgIsNo && bgDisabledKeys.includes(field.key)) ||
+                      (dpExtensionIsNo && field.key === "ld") ||
                       (ifaDisabled && ifaDisabledKeys.includes(field.key))
                     }
                     onChange={(value) => update(field.key, value)}
@@ -1224,6 +1239,8 @@ function EditField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
+        min={field.type === "number" ? 0 : undefined}
+        step={field.type === "number" ? 1 : undefined}
         className={editInputCls + disabledCls(disabled)}
       />
     </label>
@@ -1268,6 +1285,12 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       gemSoNo: "",
     };
   }
+  if (isYes(next.gem) && !next.paymentMode) {
+    next = {
+      ...next,
+      paymentMode: "Online",
+    };
+  }
   if (isNo(next.rqa)) {
     next = {
       ...next,
@@ -1279,6 +1302,19 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       ...next,
       bgValidityDate: "",
       bgReturnDate: "",
+    };
+  }
+  if (isYes(next.dpExtension)) {
+    next = {
+      ...next,
+      dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount),
+    };
+  }
+  if (isNo(next.dpExtension)) {
+    next = {
+      ...next,
+      dpExtensionCount: "",
+      ld: "No",
     };
   }
   next = {
@@ -1299,6 +1335,11 @@ function applyConditionalRules(form: Record<FileKey, string>) {
 
 function isNo(value: string | undefined) {
   return (value ?? "").trim().toLowerCase() === "no";
+}
+
+function getInitialExtensionCount(value: string | undefined) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? (value ?? "") : "1";
 }
 
 function getAutoBidOpened(form: Record<FileKey, string>) {
@@ -1416,6 +1457,10 @@ function isBgToBeReturned(file: FileRecord) {
   );
 }
 
+function isDpExpired(file: FileRecord) {
+  return isDateBeforeToday(file.dpDate) && !hasAny(file, ["revisedDp"]);
+}
+
 function isDateBeforeToday(date: string | undefined) {
   const dateTime = parseLocalDateTime(date ?? "");
   const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
@@ -1454,6 +1499,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "liveSupplyOrders") return isLiveSupplyOrder(file);
   if (filter === "bgToBeReceived") return isBgToBeReceived(file);
   if (filter === "bgToBeReturned") return isBgToBeReturned(file);
+  if (filter === "dpExtension") return isYes(file.dpExtension);
+  if (filter === "dpExpired") return isDpExpired(file);
   if (filter === "scrutinyCompleted") return hasAny(file, ["scrutinyCompletionDate"]);
   if (filter === "scrutinyUnderProgress") return !hasAny(file, ["scrutinyDate"]);
   if (filter === "preTcecCompleted")
@@ -1487,6 +1534,33 @@ function parseAmount(value: string | undefined) {
   if (!cleaned) return undefined;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatAmountValue(value: string | undefined) {
+  const amount = parseAmount(value);
+  if (amount === undefined) return value ?? "";
+  return formatThousandsAndLakhs(amount);
+}
+
+function formatThousandsAndLakhs(value: number) {
+  const sign = value < 0 ? "-" : "";
+  const absoluteValue = Math.abs(value);
+  const fixedValue = Number.isInteger(absoluteValue) ? String(absoluteValue) : absoluteValue.toFixed(2);
+  const [integerPart, decimalPart] = fixedValue.split(".");
+  const lastThree = integerPart.slice(-3);
+  const beforeThousands = integerPart.slice(0, -3);
+
+  if (!beforeThousands) {
+    return `${sign}${integerPart}${decimalPart ? `.${decimalPart}` : ""}`;
+  }
+
+  const lastTwoBeforeThousands = beforeThousands.slice(-2);
+  const lakhPart = beforeThousands.slice(0, -2);
+  const formattedInteger = [lakhPart, lastTwoBeforeThousands, lastThree]
+    .filter(Boolean)
+    .join(",");
+
+  return `${sign}${formattedInteger}${decimalPart ? `.${decimalPart}` : ""}`;
 }
 
 function matchesValueRange(

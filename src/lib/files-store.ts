@@ -63,6 +63,8 @@ export type FileRecord = {
   firm?: string;
   bgValidityDate?: string;
   dpExtension?: string;
+  dpExtensionCount?: string;
+  ld?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
   paymentDate?: string;
