@@ -1069,6 +1069,8 @@ function EditModal({
                     value={formWithLockedYear[field.key]}
                     disabled={
                       field.key === "year" ||
+                      field.key === "tenderLive" ||
+                      field.key === "bidOpened" ||
                       (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
                       (gemIsNo && gemDisabledKeys.includes(field.key)) ||
                       (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
@@ -1279,12 +1281,11 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       bgReturnDate: "",
     };
   }
-  if (isYes(next.tenderLive)) {
-    next = {
-      ...next,
-      bidOpened: "No",
-    };
-  }
+  next = {
+    ...next,
+    tenderLive: getAutoTenderLive(next),
+    bidOpened: getAutoBidOpened(next),
+  };
   if (shouldDisableIfa(next)) {
     next = {
       ...next,
@@ -1298,6 +1299,65 @@ function applyConditionalRules(form: Record<FileKey, string>) {
 
 function isNo(value: string | undefined) {
   return (value ?? "").trim().toLowerCase() === "no";
+}
+
+function getAutoBidOpened(form: Record<FileKey, string>) {
+  const activeOpeningDate = form.refloatBidOpeningDate || form.bidOpeningDate;
+  return isDateOnOrAfterToday(activeOpeningDate) ? "YES" : "NO";
+}
+
+function getAutoTenderLive(form: Record<FileKey, string>) {
+  if (hasDate(form.refloatBiddingDate) && hasDate(form.refloatBidOpeningDate)) {
+    return isTenderLiveOnCalendarDate(form.refloatBiddingDate, form.refloatBidOpeningDate)
+      ? "Yes"
+      : "No";
+  }
+
+  return isTenderLiveOnCalendarDate(form.bidDate, form.bidOpeningDate) ? "Yes" : "No";
+}
+
+function isTenderLiveOnCalendarDate(
+  bidDate: string | undefined,
+  bidOpeningDate: string | undefined,
+) {
+  const bidTime = parseLocalDateTime(bidDate ?? "");
+  const openingTime = parseLocalDateTime(bidOpeningDate ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (bidTime === undefined || openingTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return bidTime <= todayTime && todayTime <= openingTime;
+}
+
+function hasDate(date: string | undefined) {
+  return parseLocalDateTime(date ?? "") !== undefined;
+}
+
+function isDateOnOrAfterToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return todayTime >= dateTime;
+}
+
+function parseLocalDateTime(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const parsed = new Date(`${date}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function shouldDisableIfa(form: Record<FileKey, string>) {
@@ -1326,6 +1386,30 @@ function hasAny(file: FileRecord, keys: FileKey[]) {
   return keys.some((key) => Boolean(file[key]));
 }
 
+function isFileTenderLive(file: FileRecord) {
+  if (hasDate(file.refloatBiddingDate) && hasDate(file.refloatBidOpeningDate)) {
+    return isTenderLiveOnCalendarDate(file.refloatBiddingDate, file.refloatBidOpeningDate);
+  }
+
+  return isTenderLiveOnCalendarDate(file.bidDate, file.bidOpeningDate);
+}
+
+function isBidOverdue(file: FileRecord) {
+  const activeOpeningDate = file.refloatBidOpeningDate || file.bidOpeningDate;
+  return isNo(file.bidOpened) && isDateBeforeToday(activeOpeningDate);
+}
+
+function isDateBeforeToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return dateTime < todayTime;
+}
+
 function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
   if (filter === "totalFiles") return true;
@@ -1333,8 +1417,11 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "tcecFiles") return isYes(file.tcec);
   if (filter === "nonTcecFiles") return isNo(file.tcec);
   if (filter === "highValueFiles") return isYes(file.highValue);
+  if (filter === "adYes") return isYes(file.ad);
   if (filter === "rqaVetting") return isYes(file.rqa);
   if (filter === "ifaConcurrence") return isYes(file.ifa);
+  if (filter === "liveBids") return isFileTenderLive(file);
+  if (filter === "bidOverdue") return isBidOverdue(file);
   if (filter === "scrutinyCompleted") return hasAny(file, ["scrutinyCompletionDate"]);
   if (filter === "scrutinyUnderProgress") return !hasAny(file, ["scrutinyDate"]);
   if (filter === "preTcecCompleted")

@@ -295,9 +295,11 @@ function AddFilePage() {
   const editingFile = files.find((file) => file.id === fileId);
   const isEditing = Boolean(fileId && editingFile);
   const [form, setForm] = useState(() =>
-    editingFile
-      ? createFormFromFile(editingFile, settings.financialYear)
-      : createEmptyForm(settings.financialYear),
+    applyConditionalRules(
+      editingFile
+        ? createFormFromFile(editingFile, settings.financialYear)
+        : createEmptyForm(settings.financialYear),
+    ),
   );
   const [saved, setSaved] = useState(false);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
@@ -305,9 +307,11 @@ function AddFilePage() {
 
   useEffect(() => {
     setForm(
-      editingFile
-        ? createFormFromFile(editingFile, settings.financialYear)
-        : createEmptyForm(settings.financialYear),
+      applyConditionalRules(
+        editingFile
+          ? createFormFromFile(editingFile, settings.financialYear)
+          : createEmptyForm(settings.financialYear),
+      ),
     );
     setUnlockedSections(new Set());
     // The file object is re-read from localStorage on each render; reset only when the edited id changes.
@@ -436,6 +440,8 @@ function AddFilePage() {
             disabled={
               field.key === "year" ||
               field.key === "uniqueCode" ||
+              field.key === "tenderLive" ||
+              field.key === "bidOpened" ||
               existingValueLocked ||
               (field.key === "adVettingDate" && adVettingDisabled) ||
               (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
@@ -548,7 +554,9 @@ function AddFilePage() {
             {!isEditing && (
               <button
                 type="button"
-                onClick={() => setForm(createEmptyForm(settings.financialYear))}
+                onClick={() =>
+                  setForm(applyConditionalRules(createEmptyForm(settings.financialYear)))
+                }
                 className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md border border-border bg-card text-sm hover:bg-accent"
               >
                 <Eraser className="size-4" /> Clear
@@ -1023,12 +1031,11 @@ function applyConditionalRules(form: FormState) {
       bgReturnDate: "",
     };
   }
-  if (isYes(next.tenderLive)) {
-    next = {
-      ...next,
-      bidOpened: "No",
-    };
-  }
+  next = {
+    ...next,
+    tenderLive: getAutoTenderLive(next),
+    bidOpened: getAutoBidOpened(next),
+  };
   if (shouldDisableIfa(next)) {
     next = {
       ...next,
@@ -1050,8 +1057,60 @@ function isNo(value: string) {
   return value.trim().toLowerCase() === "no";
 }
 
-function isYes(value: string) {
-  return value.trim().toLowerCase() === "yes";
+function getAutoBidOpened(form: FormState) {
+  const activeOpeningDate = form.refloatBidOpeningDate || form.bidOpeningDate;
+  return isDateOnOrAfterToday(activeOpeningDate) ? "YES" : "NO";
+}
+
+function getAutoTenderLive(form: FormState) {
+  if (hasDate(form.refloatBiddingDate) && hasDate(form.refloatBidOpeningDate)) {
+    return isTenderLiveOnCalendarDate(form.refloatBiddingDate, form.refloatBidOpeningDate)
+      ? "Yes"
+      : "No";
+  }
+
+  return isTenderLiveOnCalendarDate(form.bidDate, form.bidOpeningDate) ? "Yes" : "No";
+}
+
+function isTenderLiveOnCalendarDate(bidDate: string, bidOpeningDate: string) {
+  const bidTime = parseLocalDateTime(bidDate);
+  const openingTime = parseLocalDateTime(bidOpeningDate);
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (bidTime === undefined || openingTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return bidTime <= todayTime && todayTime <= openingTime;
+}
+
+function hasDate(date: string) {
+  return parseLocalDateTime(date) !== undefined;
+}
+
+function isDateOnOrAfterToday(date: string) {
+  const dateTime = parseLocalDateTime(date);
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return todayTime >= dateTime;
+}
+
+function parseLocalDateTime(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const parsed = new Date(`${date}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function shouldDisableIfa(form: FormState) {

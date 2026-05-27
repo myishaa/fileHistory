@@ -1,7 +1,6 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { type FileRecord, useAccessibleDivisions, useAccessibleFiles } from "@/lib/files-store";
-import { BadgeIndianRupee, CheckCircle2, ClipboardList, FileText, Layers3 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
@@ -77,62 +76,88 @@ export function Dashboard() {
     financeTotals.allocatedRevenue,
   );
 
-  const summaryStats = [
+  const topSummaryStats = [
     {
-      label: "Total files",
-      value: dashboardFiles.length,
-      icon: FileText,
-      hint: "All files added",
-      tone: "primary",
-      searchFilter: "totalFiles",
+      label: "Demand",
+      value: [
+        {
+          label: "Total demands",
+          value: dashboardFiles.length,
+          searchFilter: "totalFiles",
+        },
+        {
+          label: "Demands controlled",
+          value: dashboardFiles.filter((file) => hasFilledField(file, "imms")).length,
+          searchFilter: "demandsControlled",
+        },
+      ],
+      hint: "Total and controlled demands",
     },
     {
-      label: "Demands controlled",
-      value: dashboardFiles.filter((file) => hasFilledField(file, "imms")).length,
-      icon: ClipboardList,
-      hint: "IMMS number filled",
-      tone: "accent",
-      searchFilter: "demandsControlled",
+      label: "TCEC",
+      value: [
+        {
+          label: "TCEC",
+          value: dashboardFiles.filter((file) => isYes(file.tcec)).length,
+          searchFilter: "tcecFiles",
+        },
+        {
+          label: "Non TCEC",
+          value: dashboardFiles.filter((file) => isNo(file.tcec)).length,
+          searchFilter: "nonTcecFiles",
+        },
+      ],
+      hint: "TCEC and non TCEC files",
     },
     {
-      label: "TCEC files",
-      value: dashboardFiles.filter((file) => isYes(file.tcec)).length,
-      icon: CheckCircle2,
-      hint: "TCEC marked Yes",
-      tone: "success",
-      searchFilter: "tcecFiles",
+      label: "AD",
+      value: [
+        {
+          label: "High value",
+          value: dashboardFiles.filter((file) => isYes(file.highValue)).length,
+          searchFilter: "highValueFiles",
+        },
+        {
+          label: "AD vetting",
+          value: dashboardFiles.filter((file) => isYes(file.ad)).length,
+          searchFilter: "adYes",
+        },
+      ],
+      hint: "High value and AD yes",
     },
+  ];
+
+  const compactSummaryStats = [
     {
-      label: "Non TCEC files",
-      value: dashboardFiles.filter((file) => isNo(file.tcec)).length,
-      icon: ClipboardList,
-      hint: "TCEC marked No",
-      tone: "accent",
-      searchFilter: "nonTcecFiles",
-    },
-    {
-      label: "High value files",
-      value: dashboardFiles.filter((file) => isYes(file.highValue)).length,
-      icon: ClipboardList,
-      hint: "High value marked Yes",
-      tone: "accent",
-      searchFilter: "highValueFiles",
-    },
-    {
-      label: "R&QA vetting",
+      label: "R&QA",
       value: dashboardFiles.filter((file) => isYes(file.rqa)).length,
-      icon: CheckCircle2,
       hint: "R&QA marked Yes",
-      tone: "success",
       searchFilter: "rqaVetting",
     },
     {
-      label: "IFA concurrence",
+      label: "IFA",
       value: dashboardFiles.filter((file) => isYes(file.ifa)).length,
-      icon: ClipboardList,
       hint: "IFA marked Yes",
-      tone: "accent",
       searchFilter: "ifaConcurrence",
+    },
+  ];
+
+  const summaryStats = [
+    {
+      label: "Bids",
+      value: [
+        {
+          label: "Bids live",
+          value: dashboardFiles.filter(isFileTenderLive).length,
+          searchFilter: "liveBids",
+        },
+        {
+          label: "Bids overdue",
+          value: dashboardFiles.filter(isBidOverdue).length,
+          searchFilter: "bidOverdue",
+        },
+      ],
+      hint: "Live and overdue bids",
     },
     {
       label: "Booked percentage",
@@ -140,9 +165,7 @@ export function Dashboard() {
         capital: formatPercent(capitalBookedPercent),
         revenue: formatPercent(revenueBookedPercent),
       },
-      icon: BadgeIndianRupee,
       hint: "Capital / Revenue booked",
-      tone: "success",
     },
     {
       label: "Spent percentage",
@@ -150,9 +173,7 @@ export function Dashboard() {
         capital: formatPercent(capitalSpentPercent),
         revenue: formatPercent(revenueSpentPercent),
       },
-      icon: BadgeIndianRupee,
       hint: "Capital / Revenue spent",
-      tone: "success",
     },
   ];
 
@@ -198,11 +219,31 @@ export function Dashboard() {
         </div>
         <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            {topSummaryStats.map((stat) => (
+              <SummaryMetric
+                key={stat.label}
+                {...stat}
+                onClick={stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined}
+                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+              />
+            ))}
+            <div className="grid grid-cols-2 gap-2">
+              {compactSummaryStats.map((stat) => (
+                <SummaryMetric
+                  key={stat.label}
+                  {...stat}
+                  compact
+                  onClick={() => openSearchFilter(stat.searchFilter)}
+                  onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+                />
+              ))}
+            </div>
             {summaryStats.map((stat) => (
               <SummaryMetric
                 key={stat.label}
                 {...stat}
                 onClick={stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined}
+                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
               />
             ))}
           </div>
@@ -252,9 +293,6 @@ export function Dashboard() {
               <h2 className="text-sm font-semibold">Bidding mode</h2>
               <p className="text-xs text-muted-foreground">Files grouped by bidding mode</p>
             </div>
-            <div className="size-8 grid place-items-center rounded-md bg-accent text-accent-foreground">
-              <Layers3 className="size-4" />
-            </div>
           </div>
           {modeCounts.length ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -280,9 +318,6 @@ export function Dashboard() {
             <div>
               <h2 className="text-sm font-semibold">Finance</h2>
               <p className="text-xs text-muted-foreground">Allocated and booked amounts</p>
-            </div>
-            <div className="size-8 grid place-items-center rounded-md bg-success/15 text-success">
-              <BadgeIndianRupee className="size-4" />
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -321,46 +356,71 @@ export function Dashboard() {
 function SummaryMetric({
   label,
   value,
-  icon: Icon,
-  tone,
   onClick,
+  onSubMetricClick,
+  compact = false,
 }: {
   label: string;
-  value: number | string | { capital: string; revenue: string };
-  icon: typeof FileText;
-  tone: "primary" | "success" | "accent";
+  value:
+    | number
+    | string
+    | { capital: string; revenue: string }
+    | Array<{ label: string; value: number | string; searchFilter?: string }>;
   onClick?: () => void;
+  onSubMetricClick?: (dashboardFilter: string) => void;
+  compact?: boolean;
 }) {
+  const subMetrics = Array.isArray(value) ? value : undefined;
   const content = (
     <>
       <div className="flex items-center justify-between">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div
-          className={
-            "size-8 grid place-items-center rounded-md " +
-            (tone === "success"
-              ? "bg-success/15 text-success"
-              : tone === "primary"
-                ? "bg-primary/10 text-primary"
-                : "bg-accent text-accent-foreground")
-          }
-        >
-          <Icon className="size-4" />
-        </div>
+        <div className="text-sm font-medium text-muted-foreground">{label}</div>
       </div>
-      {typeof value === "object" ? (
+      {subMetrics ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {subMetrics.map((item) => {
+            const subContent = (
+              <>
+                <div className="text-xs font-medium text-muted-foreground">{item.label}</div>
+                <div className="text-lg font-semibold tracking-tight">{item.value}</div>
+              </>
+            );
+
+            if (item.searchFilter && onSubMetricClick) {
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => onSubMetricClick(item.searchFilter!)}
+                  className="rounded-md border border-border bg-card px-2 py-2 text-left hover:bg-accent"
+                >
+                  {subContent}
+                </button>
+              );
+            }
+
+            return (
+              <div key={item.label} className="rounded-md border border-border bg-card px-2 py-2">
+                {subContent}
+              </div>
+            );
+          })}
+        </div>
+      ) : typeof value === "object" ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
           <div className="rounded-md border border-border bg-card px-2 py-2">
-            <div className="text-[11px] text-muted-foreground">Capital</div>
+            <div className="text-xs font-medium text-muted-foreground">Capital</div>
             <div className="text-lg font-semibold tracking-tight">{value.capital}</div>
           </div>
           <div className="rounded-md border border-border bg-card px-2 py-2">
-            <div className="text-[11px] text-muted-foreground">Revenue</div>
+            <div className="text-xs font-medium text-muted-foreground">Revenue</div>
             <div className="text-lg font-semibold tracking-tight">{value.revenue}</div>
           </div>
         </div>
       ) : (
-        <div className="mt-3 text-2xl font-semibold tracking-tight">{value}</div>
+        <div className={compact ? "mt-3 text-xl font-semibold tracking-tight" : "mt-3 text-2xl font-semibold tracking-tight"}>
+          {value}
+        </div>
       )}
     </>
   );
@@ -370,14 +430,21 @@ function SummaryMetric({
       <button
         type="button"
         onClick={onClick}
-        className="rounded-lg border border-border bg-secondary/35 p-4 text-left hover:bg-accent"
+        className={
+          "rounded-lg border border-border bg-secondary/35 text-left hover:bg-accent " +
+          (compact ? "p-3" : "p-4")
+        }
       >
         {content}
       </button>
     );
   }
 
-  return <div className="rounded-lg border border-border bg-secondary/35 p-4">{content}</div>;
+  return (
+    <div className={"rounded-lg border border-border bg-secondary/35 " + (compact ? "p-3" : "p-4")}>
+      {content}
+    </div>
+  );
 }
 
 function getModeCounts(files: ReturnType<typeof useAccessibleFiles>) {
@@ -540,6 +607,60 @@ function isYes(value: string | undefined) {
 
 function isNo(value: string | undefined) {
   return value?.trim().toLowerCase() === "no";
+}
+
+function isFileTenderLive(file: FileRecord) {
+  if (hasDate(file.refloatBiddingDate) && hasDate(file.refloatBidOpeningDate)) {
+    return isDateInRangeToday(file.refloatBiddingDate, file.refloatBidOpeningDate);
+  }
+
+  return isDateInRangeToday(file.bidDate, file.bidOpeningDate);
+}
+
+function isBidOverdue(file: FileRecord) {
+  const activeOpeningDate = file.refloatBidOpeningDate || file.bidOpeningDate;
+  return isNo(file.bidOpened) && isDateBeforeToday(activeOpeningDate);
+}
+
+function isDateInRangeToday(startDate: string | undefined, endDate: string | undefined) {
+  const startTime = parseLocalDateTime(startDate ?? "");
+  const endTime = parseLocalDateTime(endDate ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (startTime === undefined || endTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return startTime <= todayTime && todayTime <= endTime;
+}
+
+function isDateBeforeToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return dateTime < todayTime;
+}
+
+function hasDate(date: string | undefined) {
+  return parseLocalDateTime(date ?? "") !== undefined;
+}
+
+function parseLocalDateTime(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const parsed = new Date(`${date}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function parseAmount(value: string | undefined) {
