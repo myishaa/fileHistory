@@ -57,6 +57,7 @@ export type FileRecord = {
   rst?: string;
   cncDate?: string;
   cncApprovalDate?: string;
+  noOfSo?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -98,7 +99,31 @@ export type FileRecord = {
   remark9?: string;
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
+  supplyOrders?: SupplyOrderDetail[];
   createdAt: string;
+};
+
+export type SupplyOrderDetail = {
+  soNo?: string;
+  gemSoNo?: string;
+  soDate?: string;
+  soValueCapital?: string;
+  soValueRevenue?: string;
+  dpDate?: string;
+  firm?: string;
+  bgValidityDate?: string;
+  dpExtension?: string;
+  dpExtensionCount?: string;
+  ld?: string;
+  revisedDp?: string;
+  materialReceiptDate?: string;
+  paymentDate?: string;
+  paymentMode?: string;
+  bgReturnDate?: string;
+  demandCancelled?: string;
+  soCancelled?: string;
+  supplyOrderRemark1?: string;
+  supplyOrderRemark2?: string;
 };
 
 export type FirmDetail = {

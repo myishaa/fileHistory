@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   store,
   type FileRecord,
+  type SupplyOrderDetail,
   useAccessibleDivisions,
   useAccessibleFiles,
   useSettings,
@@ -29,7 +30,10 @@ export const Route = createFileRoute("/search")({
   component: SearchPage,
 });
 
-type FileKey = Exclude<keyof FileRecord, "id" | "createdAt" | "invitedFirms" | "bidderFirms">;
+type FileKey = Exclude<
+  keyof FileRecord,
+  "id" | "createdAt" | "invitedFirms" | "bidderFirms" | "supplyOrders"
+>;
 
 type FieldDef = {
   key: FileKey;
@@ -67,6 +71,29 @@ const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Online", "Offline"];
 const defaultNoKeys: FileKey[] = ["dpExtension", "gte", "ld", "tenderLive", "refloat", "rst"];
 type SortDirection = "asc" | "desc";
+type SupplyOrderKey = keyof SupplyOrderDetail;
+const supplyOrderKeys: FileKey[] = [
+  "soNo",
+  "gemSoNo",
+  "soDate",
+  "soValueCapital",
+  "soValueRevenue",
+  "dpDate",
+  "firm",
+  "bgValidityDate",
+  "dpExtension",
+  "dpExtensionCount",
+  "ld",
+  "revisedDp",
+  "materialReceiptDate",
+  "paymentDate",
+  "paymentMode",
+  "bgReturnDate",
+  "demandCancelled",
+  "soCancelled",
+  "supplyOrderRemark1",
+  "supplyOrderRemark2",
+];
 
 const fieldSections: { title: string; fields: FieldDef[] }[] = [
   {
@@ -148,6 +175,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
   {
     title: "Supply order and payment",
     fields: [
+      { key: "noOfSo", label: "No. of S.O.", type: "number" },
       { key: "soNo", label: "S.O. No." },
       { key: "gemSoNo", label: "GeM S.O. No." },
       { key: "soDate", label: "S.O. date", type: "date" },
@@ -214,11 +242,15 @@ const printColumns: PrintColumn[] = [
     key: field.key,
     label: field.label,
     getValue: (file: FileRecord) =>
-      field.key === "valueCapital" || field.key === "valueRevenue"
-        ? formatInrAmountValue(file[field.key], file)
-        : field.key === "soValueCapital" || field.key === "soValueRevenue"
-          ? formatAmountValue(file[field.key])
-          : String(file[field.key] ?? ""),
+      field.key === "noOfSo"
+        ? getNoOfSo(file)
+        : supplyOrderKeys.includes(field.key)
+          ? getSupplyOrderFieldValue(file, field.key as SupplyOrderKey)
+          : field.key === "valueCapital" || field.key === "valueRevenue"
+            ? formatInrAmountValue(file[field.key], file)
+            : field.key === "soValueCapital" || field.key === "soValueRevenue"
+              ? formatAmountValue(file[field.key])
+              : String(file[field.key] ?? ""),
   })),
 ];
 
@@ -371,7 +403,8 @@ function SearchPage() {
       if (indentor && !includesText(file.indentor, indentor)) return false;
       if (divisionFilter && !includesText(file.division, divisionFilter)) return false;
       if (description && !includesText(file.demandDescription, description)) return false;
-      if (firm && !includesText(file.firm, firm)) return false;
+      if (firm && !fileSupplyOrders(file).some((order) => includesText(order.firm, firm)))
+        return false;
       if (highValue && !isYes(file.highValue)) return false;
       if (gte && !isYes(file.gte)) return false;
       if (ad && !isYes(file.ad)) return false;
@@ -390,18 +423,35 @@ function SearchPage() {
       if (cnc && !hasAny(file, ["cncDate", "cncApprovalDate"])) return false;
       if (tcec && !isTcecFile(file)) return false;
       if (tenderLive && !isYes(file.tenderLive)) return false;
-      if (soNo && !includesText(file.soNo, soNo)) return false;
-      if (gemSoNo && !includesText(file.gemSoNo, gemSoNo)) return false;
-      if (dpExtension && !isYes(file.dpExtension)) return false;
-      if (demandCancelledFilter && !isYes(file.demandCancelled)) return false;
-      if (soCancelledFilter && !isYes(file.soCancelled)) return false;
+      if (soNo && !fileSupplyOrders(file).some((order) => includesText(order.soNo, soNo)))
+        return false;
+      if (gemSoNo && !fileSupplyOrders(file).some((order) => includesText(order.gemSoNo, gemSoNo)))
+        return false;
+      if (dpExtension && !fileSupplyOrders(file).some((order) => isYes(order.dpExtension)))
+        return false;
+      if (
+        demandCancelledFilter &&
+        !fileSupplyOrders(file).some((order) => isYes(order.demandCancelled))
+      )
+        return false;
+      if (soCancelledFilter && !fileSupplyOrders(file).some((order) => isYes(order.soCancelled)))
+        return false;
       if (!matchesValueType(file, capitalOnly, revenueOnly)) return false;
       if (!matchesValueRange(file, minValue, maxValue)) return false;
-      if (!matchesDateRange(file.dpDate, dpFrom, dpTo)) return false;
+      if (!fileSupplyOrders(file).some((order) => matchesDateRange(order.dpDate, dpFrom, dpTo)))
+        return false;
       if (freeText && !allSearchText(file).includes(freeText.trim().toLowerCase())) return false;
       if (
         freeDate &&
-        !editableFields.some((field) => field.type === "date" && file[field.key] === freeDate)
+        !editableFields.some((field) => {
+          if (field.type !== "date") return false;
+          if (supplyOrderKeys.includes(field.key)) {
+            return fileSupplyOrders(file).some(
+              (order) => order[field.key as SupplyOrderKey] === freeDate,
+            );
+          }
+          return file[field.key] === freeDate;
+        })
       )
         return false;
       return true;
@@ -1498,8 +1548,62 @@ function isYes(value: string | undefined) {
   return ["yes", "y"].includes((value ?? "").trim().toLowerCase());
 }
 
+function fileSupplyOrders(file: FileRecord) {
+  const rows =
+    file.supplyOrders
+      ?.map((row) => ({ ...row }))
+      .filter((row) => Object.values(row).some((value) => Boolean(String(value ?? "").trim()))) ??
+    [];
+  if (rows.length) return rows;
+
+  const legacy: SupplyOrderDetail = {
+    soNo: file.soNo,
+    gemSoNo: file.gemSoNo,
+    soDate: file.soDate,
+    soValueCapital: file.soValueCapital,
+    soValueRevenue: file.soValueRevenue,
+    dpDate: file.dpDate,
+    firm: file.firm,
+    bgValidityDate: file.bgValidityDate,
+    dpExtension: file.dpExtension,
+    dpExtensionCount: file.dpExtensionCount,
+    ld: file.ld,
+    revisedDp: file.revisedDp,
+    materialReceiptDate: file.materialReceiptDate,
+    paymentDate: file.paymentDate,
+    paymentMode: file.paymentMode,
+    bgReturnDate: file.bgReturnDate,
+    demandCancelled: file.demandCancelled,
+    soCancelled: file.soCancelled,
+    supplyOrderRemark1: file.supplyOrderRemark1,
+    supplyOrderRemark2: file.supplyOrderRemark2,
+  };
+  return Object.values(legacy).some((value) => Boolean(String(value ?? "").trim())) ? [legacy] : [];
+}
+
+function getNoOfSo(file: FileRecord) {
+  return file.noOfSo ?? String(fileSupplyOrders(file).length);
+}
+
+function getSupplyOrderFieldValue(file: FileRecord, key: SupplyOrderKey) {
+  return fileSupplyOrders(file)
+    .map((order, index) => {
+      const value = String(order[key] ?? "");
+      if (!value.trim()) return "";
+      const formatted =
+        key === "soValueCapital" || key === "soValueRevenue" ? formatAmountValue(value) : value;
+      return fileSupplyOrders(file).length > 1 ? `${index + 1}. ${formatted}` : formatted;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
 function hasAny(file: FileRecord, keys: FileKey[]) {
-  return keys.some((key) => Boolean(file[key]));
+  return keys.some((key) =>
+    supplyOrderKeys.includes(key)
+      ? fileSupplyOrders(file).some((order) => Boolean(order[key as SupplyOrderKey]))
+      : Boolean(file[key]),
+  );
 }
 
 function isFileTenderLive(file: FileRecord) {
@@ -1516,7 +1620,9 @@ function isBidOverdue(file: FileRecord) {
 }
 
 function isLiveSupplyOrder(file: FileRecord) {
-  return hasAny(file, ["soDate"]) && isDateAfterToday(file.dpDate);
+  return fileSupplyOrders(file).some(
+    (order) => Boolean(order.soDate) && isDateAfterToday(order.dpDate),
+  );
 }
 
 function isBgToBeReceived(file: FileRecord) {
@@ -1524,25 +1630,32 @@ function isBgToBeReceived(file: FileRecord) {
 }
 
 function isBgToBeReturned(file: FileRecord) {
-  return (
-    isYes(file.bg) &&
-    hasAny(file, ["bgValidityDate"]) &&
-    isDateBeforeToday(file.bgValidityDate) &&
-    !hasAny(file, ["bgReturnDate"])
+  return fileSupplyOrders(file).some(
+    (order) =>
+      isYes(file.bg) &&
+      Boolean(order.bgValidityDate) &&
+      isDateBeforeToday(order.bgValidityDate) &&
+      !order.bgReturnDate,
   );
 }
 
 function isDpExpired(file: FileRecord) {
-  return isDateBeforeToday(file.dpDate) && !hasAny(file, ["revisedDp"]);
+  return fileSupplyOrders(file).some(
+    (order) => isDateBeforeToday(order.dpDate) && !order.revisedDp,
+  );
 }
 
 function isDeliveryOverdue(file: FileRecord) {
-  const deliveryDate = hasAny(file, ["revisedDp"]) ? file.revisedDp : file.dpDate;
-  return isDateBeforeToday(deliveryDate);
+  return fileSupplyOrders(file).some((order) => {
+    const deliveryDate = order.revisedDp || order.dpDate;
+    return isDateBeforeToday(deliveryDate);
+  });
 }
 
 function isPaymentDue(file: FileRecord) {
-  return hasAny(file, ["materialReceiptDate"]) && !hasAny(file, ["paymentDate"]);
+  return fileSupplyOrders(file).some(
+    (order) => Boolean(order.materialReceiptDate) && !order.paymentDate,
+  );
 }
 
 function isDateBeforeToday(date: string | undefined) {
@@ -1685,9 +1798,14 @@ function sortFiles(
     }
 
     if (sortColumnKey !== "none") {
+      const key = sortColumnKey as FileKey;
       const columnCompare = compareSortValues(
-        a.file[sortColumnKey as FileKey],
-        b.file[sortColumnKey as FileKey],
+        supplyOrderKeys.includes(key)
+          ? getSupplyOrderFieldValue(a.file, key as SupplyOrderKey)
+          : a.file[key],
+        supplyOrderKeys.includes(key)
+          ? getSupplyOrderFieldValue(b.file, key as SupplyOrderKey)
+          : b.file[key],
       );
       if (columnCompare !== 0) return sortDirection === "asc" ? columnCompare : -columnCompare;
     }
@@ -1708,18 +1826,28 @@ function compareSortValues(a: string | undefined, b: string | undefined) {
 }
 
 function allSearchText(file: FileRecord) {
-  return editableFields
-    .map((field) => file[field.key])
+  const directText = editableFields
+    .map((field) =>
+      supplyOrderKeys.includes(field.key)
+        ? getSupplyOrderFieldValue(file, field.key as SupplyOrderKey)
+        : file[field.key],
+    )
     .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+    .join(" ");
+  const supplyOrderText = fileSupplyOrders(file)
+    .flatMap((order) => Object.values(order))
+    .filter(Boolean)
+    .join(" ");
+  return `${directText} ${supplyOrderText}`.toLowerCase();
 }
 
 function getRecentRemarks(file: FileRecord) {
   return remarkFields
     .map((field) => ({
       label: field.label,
-      value: file[field.key],
+      value: supplyOrderKeys.includes(field.key)
+        ? getSupplyOrderFieldValue(file, field.key as SupplyOrderKey)
+        : file[field.key],
     }))
     .filter((remark): remark is { label: string; value: string } => Boolean(remark.value?.trim()))
     .slice(-2)
@@ -1743,7 +1871,9 @@ function printFile(file: FileRecord) {
             <tbody>
               ${section.fields
                 .map((field) => {
-                  const value = file[field.key];
+                  const value = printColumns
+                    .find((column) => column.key === field.key)
+                    ?.getValue(file);
                   return `
                     <tr>
                       <th>${escapeHtml(field.label)}</th>

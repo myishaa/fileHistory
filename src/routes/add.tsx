@@ -4,6 +4,7 @@ import {
   store,
   type FileRecord,
   type FirmDetail,
+  type SupplyOrderDetail,
   useAccessibleDivisions,
   useAccessibleFiles,
   useDivisions,
@@ -78,6 +79,7 @@ const empty = {
   rst: "No",
   cncDate: "",
   cncApprovalDate: "",
+  noOfSo: "0",
   soNo: "",
   gemSoNo: "",
   soDate: "",
@@ -121,6 +123,7 @@ const empty = {
 
 type FormState = typeof empty;
 type FieldKey = keyof FormState;
+type SupplyOrderKey = keyof SupplyOrderDetail;
 
 function createEmptyForm(financialYear: string): FormState {
   return { ...empty, year: financialYear };
@@ -129,6 +132,7 @@ function createEmptyForm(financialYear: string): FormState {
 const formKeys = Object.keys(empty) as FieldKey[];
 
 function createFormFromFile(file: FileRecord, financialYear: string): FormState {
+  const supplyOrderCount = normalizeSupplyOrderRows(file).length;
   return {
     ...createEmptyForm(financialYear),
     ...Object.fromEntries(
@@ -136,6 +140,7 @@ function createFormFromFile(file: FileRecord, financialYear: string): FormState 
     ),
     valueCapitalSelected: file.valueCapital ? "Yes" : "",
     valueRevenueSelected: file.valueRevenue ? "Yes" : "",
+    noOfSo: file.noOfSo ?? String(supplyOrderCount),
     year: financialYear,
   } as FormState;
 }
@@ -145,6 +150,12 @@ function createFirmDetailsFromFile(file: FileRecord | undefined): FirmDetailsSta
     invitedFirms: normalizeFirmRows(file?.invitedFirms),
     bidderFirms: normalizeFirmRows(file?.bidderFirms),
   };
+}
+
+function createSupplyOrdersFromFile(file: FileRecord | undefined): SupplyOrderDetail[] {
+  const rows = normalizeSupplyOrderRows(file);
+  const count = clampSupplyOrderCount(file?.noOfSo ?? String(rows.length));
+  return resizeSupplyOrders(rows, count);
 }
 
 function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>[] {
@@ -190,6 +201,7 @@ const ifaDisabledKeys: FieldKey[] = ["ifa", "ifaSentDate", "ifaFinalDate"];
 const gemDisabledKeys: FieldKey[] = ["gemUndertakingDate", "gemSoNo"];
 const rqaDisabledKeys: FieldKey[] = ["rqaApprovalDate"];
 const bgDisabledKeys: FieldKey[] = ["bgValidityDate", "bgReturnDate"];
+const supplyOrderBgDisabledKeys: SupplyOrderKey[] = ["bgValidityDate", "bgReturnDate"];
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
@@ -201,6 +213,50 @@ type FirmDetailsState = {
 };
 
 const emptyFirmDetail: Required<FirmDetail> = { firmName: "", city: "", emailId: "" };
+const emptySupplyOrder: Required<SupplyOrderDetail> = {
+  soNo: "",
+  gemSoNo: "",
+  soDate: "",
+  soValueCapital: "",
+  soValueRevenue: "",
+  dpDate: "",
+  firm: "",
+  bgValidityDate: "",
+  dpExtension: "No",
+  dpExtensionCount: "",
+  ld: "No",
+  revisedDp: "",
+  materialReceiptDate: "",
+  paymentDate: "",
+  paymentMode: "",
+  bgReturnDate: "",
+  demandCancelled: "",
+  soCancelled: "",
+  supplyOrderRemark1: "",
+  supplyOrderRemark2: "",
+};
+
+const supplyOrderFields: ExtraField[] = [
+  { key: "soNo", label: "S.0. No." },
+  { key: "gemSoNo", label: "GeM S.O. NO." },
+  { key: "soDate", label: "S.O. date", type: "date" },
+  { key: "soValueCapital", label: "S.O. value" },
+  { key: "dpDate", label: "D.P. date", type: "date" },
+  { key: "firm", label: "Firm" },
+  { key: "bgValidityDate", label: "BG validity date", type: "date" },
+  { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+  { key: "dpExtensionCount", label: "Extension count", type: "number" },
+  { key: "ld", label: "LD", options: yesNo },
+  { key: "revisedDp", label: "Revised D.P.", type: "date" },
+  { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
+  { key: "paymentDate", label: "Payment Date", type: "date" },
+  { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
+  { key: "bgReturnDate", label: "BG return date", type: "date" },
+  { key: "demandCancelled", label: "Demand cancelled (Yes/No)", options: yesNo },
+  { key: "soCancelled", label: "S.O. Cancelled (Yes/No)", options: yesNo },
+  { key: "supplyOrderRemark1", label: "Remark-1", type: "textarea" },
+  { key: "supplyOrderRemark2", label: "Remark-2", type: "textarea" },
+];
 
 const extraSections: { title: string; fields: ExtraField[] }[] = [
   {
@@ -288,27 +344,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
   },
   {
     title: "Supply order and payment",
-    fields: [
-      { key: "soNo", label: "S.0. No." },
-      { key: "gemSoNo", label: "GeM S.O. NO." },
-      { key: "soDate", label: "S.O. date", type: "date" },
-      { key: "soValueCapital", label: "S.O. value" },
-      { key: "dpDate", label: "D.P. date", type: "date" },
-      { key: "firm", label: "Firm" },
-      { key: "bgValidityDate", label: "BG validity date", type: "date" },
-      { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
-      { key: "dpExtensionCount", label: "Extension count", type: "number" },
-      { key: "ld", label: "LD", options: yesNo },
-      { key: "revisedDp", label: "Revised D.P.", type: "date" },
-      { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-      { key: "paymentDate", label: "Payment Date", type: "date" },
-      { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
-      { key: "bgReturnDate", label: "BG return date", type: "date" },
-      { key: "demandCancelled", label: "Demand cancelled (Yes/No)", options: yesNo },
-      { key: "soCancelled", label: "S.O. Cancelled (Yes/No)", options: yesNo },
-      { key: "supplyOrderRemark1", label: "Remark-1", type: "textarea" },
-      { key: "supplyOrderRemark2", label: "Remark-2", type: "textarea" },
-    ],
+    fields: [{ key: "noOfSo", label: "No. of S.O.", type: "number" }],
   },
   {
     title: "Firm details",
@@ -341,6 +377,9 @@ function AddFilePage() {
   const [firmDetails, setFirmDetails] = useState<FirmDetailsState>(() =>
     createFirmDetailsFromFile(editingFile),
   );
+  const [supplyOrders, setSupplyOrders] = useState<SupplyOrderDetail[]>(() =>
+    createSupplyOrdersFromFile(editingFile),
+  );
   const [saved, setSaved] = useState(false);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
@@ -354,6 +393,7 @@ function AddFilePage() {
       ),
     );
     setFirmDetails(createFirmDetailsFromFile(editingFile));
+    setSupplyOrders(createSupplyOrdersFromFile(editingFile));
     setUnlockedSections(new Set());
     // The file object is re-read from localStorage on each render; reset only when the edited id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -384,6 +424,26 @@ function AddFilePage() {
   );
   const update = (k: keyof typeof form, v: string) => {
     if (k === "year") return;
+    if (k === "noOfSo") {
+      const count = clampSupplyOrderCount(v);
+      setForm((f) => ({ ...f, noOfSo: String(count) }));
+      setSupplyOrders((current) => resizeSupplyOrders(current, count));
+      return;
+    }
+    if (k === "gem") {
+      setSupplyOrders((current) =>
+        current.map((order) =>
+          isNo(v)
+            ? { ...order, gemSoNo: "", paymentMode: "" }
+            : { ...order, paymentMode: order.paymentMode || "Online" },
+        ),
+      );
+    }
+    if (k === "bg" && isNo(v)) {
+      setSupplyOrders((current) =>
+        current.map((order) => ({ ...order, bgValidityDate: "", bgReturnDate: "" })),
+      );
+    }
     setForm((f) => {
       const patch: Partial<FormState> = { [k]: v };
       if (k === "gem" && isYes(v)) {
@@ -392,6 +452,24 @@ function AddFilePage() {
       const next = applyConditionalRules({ ...f, ...patch });
       return isDivisionAdNo(next.division, divisions) ? { ...next, adVettingDate: "" } : next;
     });
+  };
+  const updateSupplyOrder = (index: number, key: SupplyOrderKey, value: string) => {
+    setSupplyOrders((current) =>
+      current.map((order, orderIndex) =>
+        orderIndex === index
+          ? applySupplyOrderRules(
+              {
+                ...order,
+                [key]:
+                  key === "soValueCapital" || key === "soValueRevenue"
+                    ? formatDecimalInput(value)
+                    : value,
+              },
+              formWithLockedYear,
+            )
+          : order,
+      ),
+    );
   };
   const toggleSectionLock = (sectionTitle: string) => {
     setUnlockedSections((current) => {
@@ -425,6 +503,10 @@ function AddFilePage() {
   };
   const firmDetailsLocked =
     isEditing && !unlockedSections.has("Firm details") && hasSavedFirmDetails(editingFile);
+  const supplyOrdersLocked =
+    isEditing &&
+    !unlockedSections.has("Supply order and payment") &&
+    hasSavedSupplyOrders(editingFile);
   const renderSectionUnlockButton = (sectionTitle: string) => {
     if (!isEditing) return null;
 
@@ -476,9 +558,18 @@ function AddFilePage() {
               capitalSelected={formWithLockedYear.valueCapitalSelected === "Yes"}
               revenueSelected={formWithLockedYear.valueRevenueSelected === "Yes"}
               disabled={existingValueLocked}
-              onChange={(patch) =>
-                setForm((current) => applyConditionalRules({ ...current, ...patch }))
-              }
+              onChange={(patch) => {
+                setForm((current) => applyConditionalRules({ ...current, ...patch }));
+                setSupplyOrders((current) =>
+                  current.map((order) => ({
+                    ...order,
+                    soValueCapital:
+                      patch.valueCapitalSelected === "Yes" ? order.soValueCapital : "",
+                    soValueRevenue:
+                      patch.valueRevenueSelected === "Yes" ? order.soValueRevenue : "",
+                  })),
+                );
+              }}
             />
           );
         }
@@ -526,10 +617,17 @@ function AddFilePage() {
   );
 
   const save = () => {
+    const supplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
+    const cleanedSupplyOrders = cleanSupplyOrderRows(
+      resizeSupplyOrders(supplyOrders, supplyOrderCount),
+    );
     const payload = {
       ...toFilePayload(
         clearDivisionDisabledFields(applyConditionalRules(formWithLockedYear), divisions),
       ),
+      ...legacySupplyOrderPatch(cleanedSupplyOrders),
+      noOfSo: String(supplyOrderCount),
+      supplyOrders: cleanedSupplyOrders,
       invitedFirms: cleanFirmRows(firmDetails.invitedFirms),
       bidderFirms: cleanFirmRows(firmDetails.bidderFirms),
     };
@@ -615,6 +713,17 @@ function AddFilePage() {
                   disabled={firmDetailsLocked}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
+                />
+              ) : activeSection.title === "Supply order and payment" ? (
+                <SupplyOrdersBlock
+                  form={formWithLockedYear}
+                  orders={supplyOrders}
+                  disabled={supplyOrdersLocked}
+                  gemDisabled={gemIsNo}
+                  bgDisabled={bgIsNo}
+                  dpExtensionDisabled={dpExtensionIsNo}
+                  onCountChange={(value) => update("noOfSo", value)}
+                  onOrderChange={updateSupplyOrder}
                 />
               ) : (
                 renderSectionFields(activeSection)
@@ -786,6 +895,89 @@ function FirmDetailsBlock({
       >
         Add firm
       </button>
+    </div>
+  );
+}
+
+function SupplyOrdersBlock({
+  form,
+  orders,
+  disabled,
+  gemDisabled,
+  bgDisabled,
+  dpExtensionDisabled,
+  onCountChange,
+  onOrderChange,
+}: {
+  form: FormState;
+  orders: SupplyOrderDetail[];
+  disabled: boolean;
+  gemDisabled: boolean;
+  bgDisabled: boolean;
+  dpExtensionDisabled: boolean;
+  onCountChange: (value: string) => void;
+  onOrderChange: (index: number, key: SupplyOrderKey, value: string) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <DynamicField
+        field={{ key: "noOfSo", label: "No. of S.O.", type: "number" }}
+        value={form.noOfSo}
+        disabled={disabled}
+        onChange={onCountChange}
+      />
+
+      {orders.map((order, index) => {
+        const dpExtensionIsNo = isNo(order.dpExtension);
+        return (
+          <div key={index} className="rounded-md border border-border bg-secondary/20 p-4">
+            <div className="mb-4 border-b border-border pb-2 text-sm font-semibold">
+              Supply Order {index + 1}
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {supplyOrderFields.map((field) => {
+                const key = field.key as SupplyOrderKey;
+
+                if (field.key === "soValueCapital") {
+                  return (
+                    <SoValueField
+                      key={field.key}
+                      capitalSelected={form.valueCapitalSelected === "Yes"}
+                      revenueSelected={form.valueRevenueSelected === "Yes"}
+                      capitalValue={order.soValueCapital ?? ""}
+                      revenueValue={order.soValueRevenue ?? ""}
+                      disabled={disabled}
+                      onChange={(patch) => {
+                        if ("soValueCapital" in patch) {
+                          onOrderChange(index, "soValueCapital", patch.soValueCapital);
+                        }
+                        if ("soValueRevenue" in patch) {
+                          onOrderChange(index, "soValueRevenue", patch.soValueRevenue);
+                        }
+                      }}
+                    />
+                  );
+                }
+
+                return (
+                  <DynamicField
+                    key={field.key}
+                    field={field}
+                    value={String(order[key] ?? "")}
+                    disabled={
+                      disabled ||
+                      (gemDisabled && key === "gemSoNo") ||
+                      (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
+                      ((dpExtensionDisabled || dpExtensionIsNo) && key === "ld")
+                    }
+                    onChange={(value) => onOrderChange(index, key, value)}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1162,6 +1354,110 @@ function cleanFirmRows(rows: FirmDetail[]) {
   return cleaned.length ? cleaned : undefined;
 }
 
+function cleanSupplyOrderRows(rows: SupplyOrderDetail[]) {
+  const normalized = rows.map((row) => applySupplyOrderRules(row, undefined));
+  return normalized.map((row) => ({
+    soNo: row.soNo?.trim() || undefined,
+    gemSoNo: row.gemSoNo?.trim() || undefined,
+    soDate: row.soDate || undefined,
+    soValueCapital: row.soValueCapital || undefined,
+    soValueRevenue: row.soValueRevenue || undefined,
+    dpDate: row.dpDate || undefined,
+    firm: row.firm?.trim() || undefined,
+    bgValidityDate: row.bgValidityDate || undefined,
+    dpExtension: row.dpExtension || undefined,
+    dpExtensionCount: row.dpExtensionCount || undefined,
+    ld: row.ld || undefined,
+    revisedDp: row.revisedDp || undefined,
+    materialReceiptDate: row.materialReceiptDate || undefined,
+    paymentDate: row.paymentDate || undefined,
+    paymentMode: row.paymentMode || undefined,
+    bgReturnDate: row.bgReturnDate || undefined,
+    demandCancelled: row.demandCancelled || undefined,
+    soCancelled: row.soCancelled || undefined,
+    supplyOrderRemark1: row.supplyOrderRemark1?.trim() || undefined,
+    supplyOrderRemark2: row.supplyOrderRemark2?.trim() || undefined,
+  }));
+}
+
+function normalizeSupplyOrderRows(file: FileRecord | undefined) {
+  const rows =
+    file?.supplyOrders
+      ?.map((row) => applySupplyOrderRules({ ...emptySupplyOrder, ...row }, undefined))
+      .filter((row) => Object.values(row).some(Boolean)) ?? [];
+  if (rows.length) return rows;
+  if (!file) return [];
+
+  const legacy = applySupplyOrderRules(
+    {
+      soNo: file.soNo ?? "",
+      gemSoNo: file.gemSoNo ?? "",
+      soDate: file.soDate ?? "",
+      soValueCapital: file.soValueCapital ?? "",
+      soValueRevenue: file.soValueRevenue ?? "",
+      dpDate: file.dpDate ?? "",
+      firm: file.firm ?? "",
+      bgValidityDate: file.bgValidityDate ?? "",
+      dpExtension: file.dpExtension ?? "No",
+      dpExtensionCount: file.dpExtensionCount ?? "",
+      ld: file.ld ?? "No",
+      revisedDp: file.revisedDp ?? "",
+      materialReceiptDate: file.materialReceiptDate ?? "",
+      paymentDate: file.paymentDate ?? "",
+      paymentMode: file.paymentMode ?? "",
+      bgReturnDate: file.bgReturnDate ?? "",
+      demandCancelled: file.demandCancelled ?? "",
+      soCancelled: file.soCancelled ?? "",
+      supplyOrderRemark1: file.supplyOrderRemark1 ?? "",
+      supplyOrderRemark2: file.supplyOrderRemark2 ?? "",
+    },
+    undefined,
+  );
+  return Object.values(legacy).some(Boolean) ? [legacy] : [];
+}
+
+function legacySupplyOrderPatch(rows: SupplyOrderDetail[]) {
+  const first = rows[0] ?? emptySupplyOrder;
+  return {
+    soNo: first.soNo || undefined,
+    gemSoNo: first.gemSoNo || undefined,
+    soDate: first.soDate || undefined,
+    soValueCapital: first.soValueCapital || undefined,
+    soValueRevenue: first.soValueRevenue || undefined,
+    dpDate: first.dpDate || undefined,
+    firm: first.firm || undefined,
+    bgValidityDate: first.bgValidityDate || undefined,
+    dpExtension: first.dpExtension || undefined,
+    dpExtensionCount: first.dpExtensionCount || undefined,
+    ld: first.ld || undefined,
+    revisedDp: first.revisedDp || undefined,
+    materialReceiptDate: first.materialReceiptDate || undefined,
+    paymentDate: first.paymentDate || undefined,
+    paymentMode: first.paymentMode || undefined,
+    bgReturnDate: first.bgReturnDate || undefined,
+    demandCancelled: first.demandCancelled || undefined,
+    soCancelled: first.soCancelled || undefined,
+    supplyOrderRemark1: first.supplyOrderRemark1 || undefined,
+    supplyOrderRemark2: first.supplyOrderRemark2 || undefined,
+  };
+}
+
+function resizeSupplyOrders(rows: SupplyOrderDetail[], count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    applySupplyOrderRules({ ...emptySupplyOrder, ...(rows[index] ?? {}) }, undefined),
+  );
+}
+
+function clampSupplyOrderCount(value: string) {
+  const count = Number.parseInt(value, 10);
+  if (!Number.isFinite(count)) return 0;
+  return Math.max(0, Math.min(50, count));
+}
+
+function hasSavedSupplyOrders(file: FileRecord | undefined) {
+  return normalizeSupplyOrderRows(file).length > 0;
+}
+
 function hasSavedFirmDetails(file: FileRecord | undefined) {
   return Boolean(cleanFirmRows(file?.invitedFirms ?? []) || cleanFirmRows(file?.bidderFirms ?? []));
 }
@@ -1261,6 +1557,26 @@ function applyConditionalRules(form: FormState) {
       ...next,
       ifa: "Yes",
     };
+  }
+  return next;
+}
+
+function applySupplyOrderRules(
+  order: SupplyOrderDetail,
+  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected"> | undefined,
+) {
+  let next: SupplyOrderDetail = { ...emptySupplyOrder, ...order };
+  if (form?.valueCapitalSelected === "Yes") {
+    next = { ...next, soValueRevenue: "" };
+  }
+  if (form?.valueRevenueSelected === "Yes") {
+    next = { ...next, soValueCapital: "" };
+  }
+  if (isYes(next.dpExtension)) {
+    next = { ...next, dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount ?? "") };
+  }
+  if (isNo(next.dpExtension)) {
+    next = { ...next, dpExtensionCount: "", ld: "No" };
   }
   return next;
 }
