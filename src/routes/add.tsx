@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   store,
   type FileRecord,
+  type FirmDetail,
   useAccessibleDivisions,
   useAccessibleFiles,
   useDivisions,
@@ -131,15 +132,31 @@ function createFormFromFile(file: FileRecord, financialYear: string): FormState 
   return {
     ...createEmptyForm(financialYear),
     ...Object.fromEntries(
-      formKeys.map((key) => [
-        key,
-        String((file as Record<string, unknown>)[key] ?? empty[key]),
-      ]),
+      formKeys.map((key) => [key, String((file as Record<string, unknown>)[key] ?? empty[key])]),
     ),
     valueCapitalSelected: file.valueCapital ? "Yes" : "",
     valueRevenueSelected: file.valueRevenue ? "Yes" : "",
     year: financialYear,
   } as FormState;
+}
+
+function createFirmDetailsFromFile(file: FileRecord | undefined): FirmDetailsState {
+  return {
+    invitedFirms: normalizeFirmRows(file?.invitedFirms),
+    bidderFirms: normalizeFirmRows(file?.bidderFirms),
+  };
+}
+
+function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>[] {
+  const normalized =
+    rows
+      ?.map((row) => ({
+        firmName: row.firmName ?? "",
+        city: row.city ?? "",
+        emailId: row.emailId ?? "",
+      }))
+      .filter((row) => row.firmName || row.city || row.emailId) ?? [];
+  return normalized.length ? normalized : [{ ...emptyFirmDetail }];
 }
 
 type ExtraField = {
@@ -178,6 +195,12 @@ const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Online", "Offline"];
+type FirmDetailsState = {
+  invitedFirms: FirmDetail[];
+  bidderFirms: FirmDetail[];
+};
+
+const emptyFirmDetail: Required<FirmDetail> = { firmName: "", city: "", emailId: "" };
 
 const extraSections: { title: string; fields: ExtraField[] }[] = [
   {
@@ -287,6 +310,10 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "supplyOrderRemark2", label: "Remark-2", type: "textarea" },
     ],
   },
+  {
+    title: "Firm details",
+    fields: [],
+  },
 ];
 
 const timelineFields = extraSections
@@ -311,6 +338,9 @@ function AddFilePage() {
         : createEmptyForm(settings.financialYear),
     ),
   );
+  const [firmDetails, setFirmDetails] = useState<FirmDetailsState>(() =>
+    createFirmDetailsFromFile(editingFile),
+  );
   const [saved, setSaved] = useState(false);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
@@ -323,6 +353,7 @@ function AddFilePage() {
           : createEmptyForm(settings.financialYear),
       ),
     );
+    setFirmDetails(createFirmDetailsFromFile(editingFile));
     setUnlockedSections(new Set());
     // The file object is re-read from localStorage on each render; reset only when the edited id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -373,6 +404,27 @@ function AddFilePage() {
       return next;
     });
   };
+  const updateFirmDetail = (
+    group: keyof FirmDetailsState,
+    index: number,
+    key: keyof FirmDetail,
+    value: string,
+  ) => {
+    setFirmDetails((current) => ({
+      ...current,
+      [group]: current[group].map((row, rowIndex) =>
+        rowIndex === index ? { ...row, [key]: value } : row,
+      ),
+    }));
+  };
+  const addFirmDetail = (group: keyof FirmDetailsState) => {
+    setFirmDetails((current) => ({
+      ...current,
+      [group]: [...current[group], { ...emptyFirmDetail }],
+    }));
+  };
+  const firmDetailsLocked =
+    isEditing && !unlockedSections.has("Firm details") && hasSavedFirmDetails(editingFile);
   const renderSectionUnlockButton = (sectionTitle: string) => {
     if (!isEditing) return null;
 
@@ -474,9 +526,13 @@ function AddFilePage() {
   );
 
   const save = () => {
-    const payload = toFilePayload(
-      clearDivisionDisabledFields(applyConditionalRules(formWithLockedYear), divisions),
-    );
+    const payload = {
+      ...toFilePayload(
+        clearDivisionDisabledFields(applyConditionalRules(formWithLockedYear), divisions),
+      ),
+      invitedFirms: cleanFirmRows(firmDetails.invitedFirms),
+      bidderFirms: cleanFirmRows(firmDetails.bidderFirms),
+    };
     if (editingFile) {
       store.updateFile(editingFile.id, payload);
       setSaved(true);
@@ -553,7 +609,16 @@ function AddFilePage() {
                 <span className="min-w-0 flex-1">{activeSection.title}</span>
                 {renderSectionUnlockButton(activeSection.title)}
               </h3>
-              {renderSectionFields(activeSection)}
+              {activeSection.title === "Firm details" ? (
+                <FirmDetailsBlock
+                  details={firmDetails}
+                  disabled={firmDetailsLocked}
+                  onAdd={addFirmDetail}
+                  onChange={updateFirmDetail}
+                />
+              ) : (
+                renderSectionFields(activeSection)
+              )}
             </section>
           )}
         </div>
@@ -625,6 +690,102 @@ function SectionBoard({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function FirmDetailsBlock({
+  details,
+  disabled,
+  onAdd,
+  onChange,
+}: {
+  details: FirmDetailsState;
+  disabled: boolean;
+  onAdd: (group: keyof FirmDetailsState) => void;
+  onChange: (
+    group: keyof FirmDetailsState,
+    index: number,
+    key: keyof FirmDetail,
+    value: string,
+  ) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("invitedFirms");
+  const tabs: { key: keyof FirmDetailsState; label: string }[] = [
+    { key: "invitedFirms", label: "Invited" },
+    { key: "bidderFirms", label: "Bidders" },
+  ];
+  const rows = details[activeTab];
+
+  return (
+    <div className="space-y-4">
+      <div className="inline-flex rounded-lg border border-border bg-background p-1">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={
+              "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
+              (activeTab === tab.key
+                ? "bg-secondary text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground")
+            }
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        {rows.map((row, index) => (
+          <div
+            key={index}
+            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-3"
+          >
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">Firm name</div>
+              <input
+                value={row.firmName ?? ""}
+                onChange={(event) => onChange(activeTab, index, "firmName", event.target.value)}
+                disabled={disabled}
+                className={inputCls + disabledCls(disabled)}
+              />
+            </label>
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">City</div>
+              <input
+                value={row.city ?? ""}
+                onChange={(event) => onChange(activeTab, index, "city", event.target.value)}
+                disabled={disabled}
+                className={inputCls + disabledCls(disabled)}
+              />
+            </label>
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">Email id</div>
+              <input
+                type="email"
+                value={row.emailId ?? ""}
+                onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
+                disabled={disabled}
+                className={inputCls + disabledCls(disabled)}
+              />
+            </label>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onAdd(activeTab)}
+        disabled={disabled}
+        className={
+          "h-9 rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent" +
+          disabledCls(disabled)
+        }
+      >
+        Add firm
+      </button>
     </div>
   );
 }
@@ -707,10 +868,7 @@ function TimelineBlock({
           {items.map((item) => {
             const metrics = timelineMetrics.get(getTimelineItemKey(item));
             return (
-              <li
-                key={`${item.label}-${item.date || "empty"}`}
-                className="relative pb-4 last:pb-0"
-              >
+              <li key={`${item.label}-${item.date || "empty"}`} className="relative pb-4 last:pb-0">
                 <div className="grid grid-cols-[4.5rem_1.5rem_minmax(0,1fr)] items-start gap-2">
                   <div className="pt-0.5 text-right text-[11px] font-medium text-muted-foreground">
                     {item.date ? formatDayCount(metrics?.gapDays) : "-"}
@@ -991,6 +1149,21 @@ function toFilePayload(form: FormState) {
       .filter(([key]) => key !== "valueCapitalSelected" && key !== "valueRevenueSelected")
       .map(([key, value]) => [key, value || undefined]),
   ) as Omit<import("@/lib/files-store").FileRecord, "id" | "createdAt">;
+}
+
+function cleanFirmRows(rows: FirmDetail[]) {
+  const cleaned = rows
+    .map((row) => ({
+      firmName: row.firmName?.trim() || undefined,
+      city: row.city?.trim() || undefined,
+      emailId: row.emailId?.trim() || undefined,
+    }))
+    .filter((row) => row.firmName || row.city || row.emailId);
+  return cleaned.length ? cleaned : undefined;
+}
+
+function hasSavedFirmDetails(file: FileRecord | undefined) {
+  return Boolean(cleanFirmRows(file?.invitedFirms ?? []) || cleanFirmRows(file?.bidderFirms ?? []));
 }
 
 function applyConditionalRules(form: FormState) {

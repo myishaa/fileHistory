@@ -14,6 +14,9 @@ export function Dashboard() {
   const divisions = useAccessibleDivisions();
   const navigate = useNavigate();
   const [selectedDivision, setSelectedDivision] = useState("all");
+  const [activeDashboardTab, setActiveDashboardTab] = useState<"snapshot" | "status" | "finance">(
+    "snapshot",
+  );
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -51,6 +54,16 @@ export function Dashboard() {
         sum + (hasAmount(file.soValueRevenue) ? 0 : (getInrAmount(file.valueRevenue, file) ?? 0)),
       0,
     ),
+    projectedCapital: dashboardFiles.reduce(
+      (sum, file) =>
+        sum + (!hasFilledField(file, "imms") ? (getInrAmount(file.valueCapital, file) ?? 0) : 0),
+      0,
+    ),
+    projectedRevenue: dashboardFiles.reduce(
+      (sum, file) =>
+        sum + (!hasFilledField(file, "imms") ? (getInrAmount(file.valueRevenue, file) ?? 0) : 0),
+      0,
+    ),
     spentCapital: dashboardFiles.reduce(
       (sum, file) => sum + (getInrAmount(file.soValueCapital, file) ?? 0),
       0,
@@ -68,6 +81,14 @@ export function Dashboard() {
     financeTotals.bookedRevenue,
     financeTotals.allocatedRevenue,
   );
+  const capitalProjectedPercent = getPercent(
+    financeTotals.projectedCapital,
+    financeTotals.allocatedCapital,
+  );
+  const revenueProjectedPercent = getPercent(
+    financeTotals.projectedRevenue,
+    financeTotals.allocatedRevenue,
+  );
   const capitalSpentPercent = getPercent(
     financeTotals.spentCapital,
     financeTotals.allocatedCapital,
@@ -82,12 +103,12 @@ export function Dashboard() {
       label: "Demand",
       value: [
         {
-          label: "Total demands",
+          label: "Total",
           value: dashboardFiles.length,
           searchFilter: "totalFiles",
         },
         {
-          label: "Demands controlled",
+          label: "Controlled",
           value: dashboardFiles.filter((file) => hasFilledField(file, "imms")).length,
           searchFilter: "demandsControlled",
         },
@@ -148,12 +169,12 @@ export function Dashboard() {
       label: "Bids",
       value: [
         {
-          label: "Bids live",
+          label: "Live",
           value: dashboardFiles.filter(isFileTenderLive).length,
           searchFilter: "liveBids",
         },
         {
-          label: "Bids overdue",
+          label: "Overdue",
           value: dashboardFiles.filter(isBidOverdue).length,
           searchFilter: "bidOverdue",
         },
@@ -164,12 +185,12 @@ export function Dashboard() {
       label: "Supply Orders",
       value: [
         {
-          label: "Total supply orders",
+          label: "Total",
           value: dashboardFiles.filter((file) => hasFilledField(file, "soDate")).length,
           searchFilter: "supplyOrders",
         },
         {
-          label: "Live supply orders",
+          label: "Live",
           value: dashboardFiles.filter(isLiveSupplyOrder).length,
           searchFilter: "liveSupplyOrders",
         },
@@ -209,7 +230,34 @@ export function Dashboard() {
       hint: "DP extension and expiry status",
     },
     {
-      label: "Booked percentage",
+      label: "Delivery and Payment",
+      value: [
+        {
+          label: "Delivery due",
+          value: dashboardFiles.filter(isDeliveryOverdue).length,
+          searchFilter: "deliveryOverdue",
+        },
+        {
+          label: "Payment due",
+          value: dashboardFiles.filter(isPaymentDue).length,
+          searchFilter: "paymentDue",
+        },
+      ],
+      hint: "Overdue delivery and pending payment",
+    },
+  ];
+
+  const financePercentStats = [
+    {
+      label: "Projected",
+      value: {
+        capital: formatPercent(capitalProjectedPercent),
+        revenue: formatPercent(revenueProjectedPercent),
+      },
+      hint: "Capital / Revenue projected against allocation",
+    },
+    {
+      label: "Booked",
       value: {
         capital: formatPercent(capitalBookedPercent),
         revenue: formatPercent(revenueBookedPercent),
@@ -217,21 +265,16 @@ export function Dashboard() {
       hint: "Capital / Revenue booked in INR",
     },
     {
-      label: "Spent percentage",
+      label: "Committed",
       value: {
         capital: formatPercent(capitalSpentPercent),
         revenue: formatPercent(revenueSpentPercent),
       },
-      hint: "Capital / Revenue spent in INR",
+      hint: "Capital / Revenue committed in INR",
     },
   ];
+  const financeBoxTitleClass = "text-sm font-extrabold text-foreground";
 
-  const financeStats = [
-    { label: "Capital allocated", value: financeTotals.allocatedCapital },
-    { label: "Revenue allocated", value: financeTotals.allocatedRevenue },
-    { label: "Capital booked (INR)", value: financeTotals.bookedCapital },
-    { label: "Revenue booked (INR)", value: financeTotals.bookedRevenue },
-  ];
   const openSearchFilter = (dashboardFilter: string) => {
     navigate({
       to: "/search",
@@ -244,156 +287,235 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
+          {[
+            { key: "snapshot", label: "Snapshot" },
+            { key: "status", label: "Status" },
+            { key: "finance", label: "Finance" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveDashboardTab(tab.key as "snapshot" | "status" | "finance")}
+              className={
+                "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
+                (activeDashboardTab === tab.key
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
+          <span>Division</span>
+          <select
+            value={activeDivision}
+            onChange={(event) => setSelectedDivision(event.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          >
+            <option value="all">All accessible divisions</option>
+            {divisions.map((division) => (
+              <option key={division.id} value={division.name}>
+                {division.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {activeDashboardTab === "snapshot" ? (
+        <section className="space-y-4">
           <div>
             <h2 className="text-sm font-bold">Snapshot</h2>
           </div>
-          <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
-            <span>Division</span>
-            <select
-              value={activeDivision}
-              onChange={(event) => setSelectedDivision(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-            >
-              <option value="all">All accessible divisions</option>
-              {divisions.map((division) => (
-                <option key={division.id} value={division.name}>
-                  {division.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            {topSummaryStats.map((stat) => (
-              <SummaryMetric
-                key={stat.label}
-                {...stat}
-                onClick={stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined}
-                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
-              />
-            ))}
-            <div className="grid grid-cols-2 gap-2">
-              {compactSummaryStats.map((stat) => (
+          <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              {topSummaryStats.map((stat) => (
                 <SummaryMetric
                   key={stat.label}
                   {...stat}
-                  compact
-                  onClick={() => openSearchFilter(stat.searchFilter)}
+                  onClick={
+                    stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined
+                  }
+                  onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+                />
+              ))}
+              <div className="grid grid-cols-2 gap-2">
+                {compactSummaryStats.map((stat) => (
+                  <SummaryMetric
+                    key={stat.label}
+                    {...stat}
+                    compact
+                    onClick={() => openSearchFilter(stat.searchFilter)}
+                    onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+                  />
+                ))}
+              </div>
+              {summaryStats.map((stat) => (
+                <SummaryMetric
+                  key={stat.label}
+                  {...stat}
+                  onClick={
+                    stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined
+                  }
                   onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
                 />
               ))}
             </div>
-            {summaryStats.map((stat) => (
-              <SummaryMetric
-                key={stat.label}
-                {...stat}
-                onClick={stat.searchFilter ? () => openSearchFilter(stat.searchFilter) : undefined}
-                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
-              />
-            ))}
           </div>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-sm font-bold">Current status</h2>
-        </div>
-        <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
-          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
-            {workflowStatusGroups.map((group) => (
-              <div
-                key={group.title}
-                className="rounded-lg border border-border bg-secondary/35 p-4"
-              >
-                <h3 className="text-xs font-bold uppercase text-muted-foreground">
-                  {group.title}
-                </h3>
-                <div className="mt-3 space-y-2">
-                  {group.statuses.map((status) => (
-                    <button
-                      type="button"
-                      key={status.label}
-                      onClick={() => openSearchFilter(status.searchFilter)}
-                      className="flex w-full items-center justify-between gap-3 rounded-md bg-card px-3 py-2 text-left hover:bg-accent"
-                    >
-                      <span className="text-sm font-medium">{status.label}</span>
-                      <span className="text-base font-semibold tabular-nums">{status.count}</span>
-                    </button>
-                  ))}
-                </div>
+          <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="text-sm font-bold">Bidding mode</h2>
+                <p className="text-xs text-muted-foreground">Files grouped by bidding mode</p>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="grid grid-cols-1 xl:grid-cols-[1fr_1.2fr] gap-5">
-        <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="text-sm font-bold">Bidding mode</h2>
-              <p className="text-xs text-muted-foreground">Files grouped by bidding mode</p>
             </div>
+            {modeCounts.length ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+                {modeCounts.map((mode) => (
+                  <button
+                    type="button"
+                    key={mode.name}
+                    onClick={() => openSearchFilter(`mode:${mode.name}`)}
+                    className="rounded-lg border border-border bg-secondary/35 p-4 text-left hover:bg-accent"
+                  >
+                    <div className="text-xs text-muted-foreground">{mode.name}</div>
+                    <div className="mt-2 text-2xl font-semibold tracking-tight">{mode.count}</div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">No modes recorded yet.</div>
+            )}
           </div>
-          {modeCounts.length ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {modeCounts.map((mode) => (
-                <button
-                  type="button"
-                  key={mode.name}
-                  onClick={() => openSearchFilter(`mode:${mode.name}`)}
-                  className="rounded-lg border border-border bg-secondary/35 p-4 text-left hover:bg-accent"
+        </section>
+      ) : null}
+
+      {activeDashboardTab === "status" ? (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-sm font-bold">Status</h2>
+          </div>
+          <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
+              {workflowStatusGroups.map((group) => (
+                <div
+                  key={group.title}
+                  className="rounded-lg border border-border bg-secondary/35 p-4"
                 >
-                  <div className="text-xs text-muted-foreground">{mode.name}</div>
-                  <div className="mt-2 text-2xl font-semibold tracking-tight">{mode.count}</div>
-                </button>
+                  <h3 className="text-xs font-extrabold uppercase text-foreground">
+                    {group.title}
+                  </h3>
+                  <div className="mt-3 space-y-2">
+                    {group.statuses.map((status) => (
+                      <button
+                        type="button"
+                        key={status.label}
+                        onClick={() => openSearchFilter(status.searchFilter)}
+                        className="flex w-full items-center justify-between gap-3 rounded-md bg-card px-3 py-2 text-left hover:bg-accent"
+                      >
+                        <span className="text-sm font-medium">{status.label}</span>
+                        <span className="text-base font-semibold tabular-nums">{status.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
-          ) : (
-            <div className="text-sm text-muted-foreground">No modes recorded yet.</div>
-          )}
-        </div>
+          </div>
+        </section>
+      ) : null}
 
-        <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="text-sm font-bold">Finance</h2>
-              <p className="text-xs text-muted-foreground">Allocated and booked amounts</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {financeStats.map((stat) => (
-              <div key={stat.label} className="rounded-lg border border-border bg-secondary/35 p-4">
-                <div className="text-xs text-muted-foreground">{stat.label}</div>
-                <div className="mt-2 text-2xl font-semibold tracking-tight">
-                  {formatCurrency(stat.value)}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 rounded-lg border border-border bg-card p-4">
-            <div className="text-xs font-medium text-muted-foreground">Spent from S.O. value</div>
-            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="rounded-md border border-border bg-secondary/35 px-3 py-2.5">
-                <div className="text-[11px] text-muted-foreground">Capital spent</div>
-                <div className="mt-1 text-lg font-semibold tracking-tight">
-                  {formatCurrency(financeTotals.spentCapital)}
-                </div>
-              </div>
-              <div className="rounded-md border border-border bg-secondary/35 px-3 py-2.5">
-                <div className="text-[11px] text-muted-foreground">Revenue spent</div>
-                <div className="mt-1 text-lg font-semibold tracking-tight">
-                  {formatCurrency(financeTotals.spentRevenue)}
-                </div>
+      {activeDashboardTab === "finance" ? (
+        <section>
+          <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="text-sm font-bold">Finance</h2>
+                <p className="text-xs text-muted-foreground">Allocated and booked amounts</p>
               </div>
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="rounded-lg border border-border bg-secondary/35 p-4">
+                <div className={financeBoxTitleClass}>Allocated</div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Capital</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.allocatedCapital)}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Revenue</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.allocatedRevenue)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-secondary/35 p-4">
+                <div className={financeBoxTitleClass}>Projected</div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Capital</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.projectedCapital)}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Revenue</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.projectedRevenue)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-secondary/35 p-4">
+                <div className={financeBoxTitleClass}>Booked</div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Capital</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.bookedCapital)}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Revenue</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.bookedRevenue)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-secondary/35 p-4">
+                <div className={financeBoxTitleClass}>Committed</div>
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Capital</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.spentCapital)}
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">Revenue</div>
+                    <div className="mt-1 text-lg font-semibold tracking-tight">
+                      {formatCurrency(financeTotals.spentRevenue)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {financePercentStats.map((stat) => (
+                <SummaryMetric key={stat.label} {...stat} titleClassName={financeBoxTitleClass} />
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -403,6 +525,7 @@ function SummaryMetric({
   value,
   onClick,
   onSubMetricClick,
+  titleClassName,
   compact = false,
 }: {
   label: string;
@@ -413,13 +536,14 @@ function SummaryMetric({
     | Array<{ label: string; value: number | string; searchFilter?: string }>;
   onClick?: () => void;
   onSubMetricClick?: (dashboardFilter: string) => void;
+  titleClassName?: string;
   compact?: boolean;
 }) {
   const subMetrics = Array.isArray(value) ? value : undefined;
   const content = (
     <>
       <div className="flex items-center justify-between">
-        <div className="text-sm font-bold text-muted-foreground">{label}</div>
+        <div className={titleClassName ?? "text-sm font-bold text-muted-foreground"}>{label}</div>
       </div>
       {subMetrics ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -463,7 +587,13 @@ function SummaryMetric({
           </div>
         </div>
       ) : (
-        <div className={compact ? "mt-3 text-xl font-semibold tracking-tight" : "mt-3 text-2xl font-semibold tracking-tight"}>
+        <div
+          className={
+            compact
+              ? "mt-3 text-xl font-semibold tracking-tight"
+              : "mt-3 text-2xl font-semibold tracking-tight"
+          }
+        >
           {value}
         </div>
       )}
@@ -521,21 +651,6 @@ const workflowStatusGroups = [
     ],
   },
   {
-    title: "Pre-TCEC",
-    statuses: [
-      {
-        label: "Completed",
-        searchFilter: "preTcecCompleted",
-        matches: (file) => isYes(file.tcec) && hasFilledField(file, "preTcecMinutesDate"),
-      },
-      {
-        label: "Remaining",
-        searchFilter: "preTcecRemaining",
-        matches: (file) => isYes(file.tcec) && !hasFilledField(file, "preTcecMinutesDate"),
-      },
-    ],
-  },
-  {
     title: "High value committee",
     statuses: [
       {
@@ -547,6 +662,21 @@ const workflowStatusGroups = [
         label: "Remaining",
         searchFilter: "highValueRemaining",
         matches: (file) => hasFilledField(file, "highValueMeetingDate"),
+      },
+    ],
+  },
+  {
+    title: "Pre-TCEC",
+    statuses: [
+      {
+        label: "Completed",
+        searchFilter: "preTcecCompleted",
+        matches: (file) => isYes(file.tcec) && hasFilledField(file, "preTcecMinutesDate"),
+      },
+      {
+        label: "Remaining",
+        searchFilter: "preTcecRemaining",
+        matches: (file) => isYes(file.tcec) && !hasFilledField(file, "preTcecMinutesDate"),
       },
     ],
   },
@@ -657,7 +787,9 @@ function isLiveSupplyOrder(file: FileRecord) {
 }
 
 function isBgToBeReceived(file: FileRecord) {
-  return isYes(file.bg) && hasFilledField(file, "soDate") && !hasFilledField(file, "bgValidityDate");
+  return (
+    isYes(file.bg) && hasFilledField(file, "soDate") && !hasFilledField(file, "bgValidityDate")
+  );
 }
 
 function isBgToBeReturned(file: FileRecord) {
@@ -671,6 +803,15 @@ function isBgToBeReturned(file: FileRecord) {
 
 function isDpExpired(file: FileRecord) {
   return isDateBeforeToday(file.dpDate) && !hasFilledField(file, "revisedDp");
+}
+
+function isDeliveryOverdue(file: FileRecord) {
+  const deliveryDate = hasFilledField(file, "revisedDp") ? file.revisedDp : file.dpDate;
+  return isDateBeforeToday(deliveryDate);
+}
+
+function isPaymentDue(file: FileRecord) {
+  return hasFilledField(file, "materialReceiptDate") && !hasFilledField(file, "paymentDate");
 }
 
 function isDateInRangeToday(startDate: string | undefined, endDate: string | undefined) {

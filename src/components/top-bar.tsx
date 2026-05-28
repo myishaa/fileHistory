@@ -26,8 +26,8 @@ const titles: Record<string, string> = {
 const nav = [
   { to: "/add", label: "Add File", icon: FilePlus2 },
   { to: "/search", label: "Search Files", icon: Search },
-  { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 

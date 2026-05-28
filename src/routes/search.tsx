@@ -29,7 +29,7 @@ export const Route = createFileRoute("/search")({
   component: SearchPage,
 });
 
-type FileKey = Exclude<keyof FileRecord, "id" | "createdAt">;
+type FileKey = Exclude<keyof FileRecord, "id" | "createdAt" | "invitedFirms" | "bidderFirms">;
 
 type FieldDef = {
   key: FileKey;
@@ -217,8 +217,8 @@ const printColumns: PrintColumn[] = [
       field.key === "valueCapital" || field.key === "valueRevenue"
         ? formatInrAmountValue(file[field.key], file)
         : field.key === "soValueCapital" || field.key === "soValueRevenue"
-        ? formatAmountValue(file[field.key])
-        : String(file[field.key] ?? ""),
+          ? formatAmountValue(file[field.key])
+          : String(file[field.key] ?? ""),
   })),
 ];
 
@@ -746,14 +746,10 @@ function SearchPage() {
               </label>
               <button
                 type="button"
-                onClick={() =>
-                  setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
-                }
+                onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
                 disabled={activeSortColumnKey === "none"}
                 title={
-                  sortDirection === "asc"
-                    ? "Switch to descending sort"
-                    : "Switch to ascending sort"
+                  sortDirection === "asc" ? "Switch to descending sort" : "Switch to ascending sort"
                 }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
               >
@@ -912,9 +908,9 @@ function SearchPage() {
                     </tr>
                   )}
                   {results.map((file) => (
-	                    <tr
-	                      key={file.id}
-	                      onClick={() => openTimeline(file)}
+                    <tr
+                      key={file.id}
+                      onClick={() => openTimeline(file)}
                       className="border-t border-border hover:bg-secondary/50 cursor-pointer"
                     >
                       <td className="w-12 px-4 py-3">
@@ -1540,6 +1536,15 @@ function isDpExpired(file: FileRecord) {
   return isDateBeforeToday(file.dpDate) && !hasAny(file, ["revisedDp"]);
 }
 
+function isDeliveryOverdue(file: FileRecord) {
+  const deliveryDate = hasAny(file, ["revisedDp"]) ? file.revisedDp : file.dpDate;
+  return isDateBeforeToday(deliveryDate);
+}
+
+function isPaymentDue(file: FileRecord) {
+  return hasAny(file, ["materialReceiptDate"]) && !hasAny(file, ["paymentDate"]);
+}
+
 function isDateBeforeToday(date: string | undefined) {
   const dateTime = parseLocalDateTime(date ?? "");
   const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
@@ -1580,6 +1585,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "bgToBeReturned") return isBgToBeReturned(file);
   if (filter === "dpExtension") return isYes(file.dpExtension);
   if (filter === "dpExpired") return isDpExpired(file);
+  if (filter === "deliveryOverdue") return isDeliveryOverdue(file);
+  if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "scrutinyCompleted") return hasAny(file, ["scrutinyCompletionDate"]);
   if (filter === "scrutinyUnderProgress") return !hasAny(file, ["scrutinyDate"]);
   if (filter === "preTcecCompleted")

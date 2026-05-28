@@ -96,7 +96,15 @@ export type FileRecord = {
   remark7?: string;
   remark8?: string;
   remark9?: string;
+  invitedFirms?: FirmDetail[];
+  bidderFirms?: FirmDetail[];
   createdAt: string;
+};
+
+export type FirmDetail = {
+  firmName?: string;
+  city?: string;
+  emailId?: string;
 };
 
 export type Division = {
