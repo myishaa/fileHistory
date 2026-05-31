@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   store,
   type FileRecord,
+  type FirmDetail,
   type SupplyOrderDetail,
   useAccessibleDivisions,
   useAccessibleFiles,
@@ -260,6 +261,19 @@ type PrintColumn = {
   getValue: (file: FileRecord) => string;
 };
 
+const firmDetailColumns: PrintColumn[] = [
+  {
+    key: "invitedFirms",
+    label: "Invited firms",
+    getValue: (file: FileRecord) => String(getFirmCount(file.invitedFirms)),
+  },
+  {
+    key: "bidderFirms",
+    label: "Bidders",
+    getValue: (file: FileRecord) => String(getFirmCount(file.bidderFirms)),
+  },
+];
+
 const sortCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
@@ -280,6 +294,7 @@ const printColumns: PrintColumn[] = [
               ? getFileAmountFieldValue(file, field.key)
               : String(file[field.key] ?? ""),
   })),
+  ...firmDetailColumns,
 ];
 
 const printColumnGroups = [
@@ -289,6 +304,10 @@ const printColumnGroups = [
       .map((field) => printColumns.find((column) => column.key === field.key))
       .filter((column): column is PrintColumn => Boolean(column)),
   })),
+  {
+    title: "Firm details",
+    columns: firmDetailColumns,
+  },
 ].filter((group) => group.columns.length > 0);
 
 const allTableColumnKeys = printColumns.map((column) => column.key);
@@ -338,6 +357,8 @@ function SearchPage() {
   const [revenueOnly, setRevenueOnly] = useState(false);
   const [description, setDescription] = useState("");
   const [firm, setFirm] = useState("");
+  const [invitedFirmCount, setInvitedFirmCount] = useState("");
+  const [bidderFirmCount, setBidderFirmCount] = useState("");
   const [highValue, setHighValue] = useState(false);
   const [gte, setGte] = useState(false);
   const [ad, setAd] = useState(false);
@@ -399,6 +420,8 @@ function SearchPage() {
     revenueOnly ||
     description ||
     firm ||
+    invitedFirmCount ||
+    bidderFirmCount ||
     highValue ||
     gte ||
     ad ||
@@ -433,6 +456,8 @@ function SearchPage() {
       if (description && !includesText(file.demandDescription, description)) return false;
       if (firm && !fileSupplyOrders(file).some((order) => includesText(order.firm, firm)))
         return false;
+      if (invitedFirmCount && !matchesFirmCount(file.invitedFirms, invitedFirmCount)) return false;
+      if (bidderFirmCount && !matchesFirmCount(file.bidderFirms, bidderFirmCount)) return false;
       if (highValue && !isYes(file.highValue)) return false;
       if (gte && !isYes(file.gte)) return false;
       if (ad && !isYes(file.ad)) return false;
@@ -503,6 +528,8 @@ function SearchPage() {
     revenueOnly,
     description,
     firm,
+    invitedFirmCount,
+    bidderFirmCount,
     highValue,
     gte,
     ad,
@@ -583,6 +610,8 @@ function SearchPage() {
     setRevenueOnly(false);
     setDescription("");
     setFirm("");
+    setInvitedFirmCount("");
+    setBidderFirmCount("");
     setHighValue(false);
     setGte(false);
     setAd(false);
@@ -723,6 +752,24 @@ function SearchPage() {
 
           <FilterGroup label="Firm">
             <FilterInput value={firm} onChange={setFirm} placeholder="Firm" />
+          </FilterGroup>
+
+          <FilterGroup label="Invited firms">
+            <FilterInput
+              type="number"
+              value={invitedFirmCount}
+              onChange={setInvitedFirmCount}
+              placeholder="No. of firms"
+            />
+          </FilterGroup>
+
+          <FilterGroup label="Bidders">
+            <FilterInput
+              type="number"
+              value={bidderFirmCount}
+              onChange={setBidderFirmCount}
+              placeholder="No. of bidders"
+            />
           </FilterGroup>
 
           <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
@@ -1613,6 +1660,28 @@ function includesText(value: string | undefined, query: string) {
   return (value ?? "").toLowerCase().includes(query.trim().toLowerCase());
 }
 
+function normalizeFirmRows(rows: FirmDetail[] | undefined) {
+  return (
+    rows
+      ?.map((row) => ({
+        firmName: row.firmName?.trim() || "",
+        city: row.city?.trim() || "",
+        emailId: row.emailId?.trim() || "",
+      }))
+      .filter((row) => row.firmName || row.city || row.emailId) ?? []
+  );
+}
+
+function getFirmCount(rows: FirmDetail[] | undefined) {
+  return normalizeFirmRows(rows).length;
+}
+
+function matchesFirmCount(rows: FirmDetail[] | undefined, query: string) {
+  const expected = Number.parseInt(query, 10);
+  if (!Number.isFinite(expected)) return true;
+  return getFirmCount(rows) === expected;
+}
+
 function isYes(value: string | undefined) {
   return ["yes", "y"].includes((value ?? "").trim().toLowerCase());
 }
@@ -1965,14 +2034,9 @@ function sortFiles(
     }
 
     if (sortColumnKey !== "none") {
-      const key = sortColumnKey as FileKey;
       const columnCompare = compareSortValues(
-        supplyOrderKeys.includes(key)
-          ? getSupplyOrderFieldValue(a.file, key as SupplyOrderKey)
-          : a.file[key],
-        supplyOrderKeys.includes(key)
-          ? getSupplyOrderFieldValue(b.file, key as SupplyOrderKey)
-          : b.file[key],
+        getSortColumnValue(a.file, sortColumnKey),
+        getSortColumnValue(b.file, sortColumnKey),
       );
       if (columnCompare !== 0) return sortDirection === "asc" ? columnCompare : -columnCompare;
     }
@@ -1981,6 +2045,15 @@ function sortFiles(
   });
 
   return sorted.map(({ file }) => file);
+}
+
+function getSortColumnValue(file: FileRecord, key: string) {
+  const column = printColumns.find((item) => item.key === key);
+  if (column) return column.getValue(file);
+  const fileKey = key as FileKey;
+  return supplyOrderKeys.includes(fileKey)
+    ? getSupplyOrderFieldValue(file, fileKey as SupplyOrderKey)
+    : file[fileKey];
 }
 
 function compareSortValues(a: string | undefined, b: string | undefined) {
@@ -2005,7 +2078,8 @@ function allSearchText(file: FileRecord) {
     .flatMap((order) => Object.values(order))
     .filter(Boolean)
     .join(" ");
-  return `${directText} ${supplyOrderText}`.toLowerCase();
+  const firmText = [getFirmCount(file.invitedFirms), getFirmCount(file.bidderFirms)].join(" ");
+  return `${directText} ${supplyOrderText} ${firmText}`.toLowerCase();
 }
 
 function getRecentRemarks(file: FileRecord) {

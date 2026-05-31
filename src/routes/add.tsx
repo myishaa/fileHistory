@@ -169,7 +169,7 @@ function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>
         emailId: row.emailId ?? "",
       }))
       .filter((row) => row.firmName || row.city || row.emailId) ?? [];
-  return normalized.length ? normalized : [{ ...emptyFirmDetail }];
+  return normalized;
 }
 
 type ExtraField = {
@@ -506,6 +506,19 @@ function AddFilePage() {
       [group]: [...current[group], { ...emptyFirmDetail }],
     }));
   };
+  const deleteFirmDetail = (group: keyof FirmDetailsState, index: number) => {
+    setFirmDetails((current) => ({
+      ...current,
+      [group]: current[group].filter((_, rowIndex) => rowIndex !== index),
+    }));
+  };
+  const deleteSelectedFirmDetails = (group: keyof FirmDetailsState, indexes: number[]) => {
+    const selected = new Set(indexes);
+    setFirmDetails((current) => ({
+      ...current,
+      [group]: current[group].filter((_, rowIndex) => !selected.has(rowIndex)),
+    }));
+  };
   const firmDetailsLocked =
     isEditing && !unlockedSections.has("Firm details") && hasSavedFirmDetails(editingFile);
   const supplyOrdersLocked =
@@ -718,6 +731,8 @@ function AddFilePage() {
                   disabled={firmDetailsLocked}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
+                  onDelete={deleteFirmDetail}
+                  onDeleteSelected={deleteSelectedFirmDetails}
                 />
               ) : activeSection.title === "Supply order and payment" ? (
                 <SupplyOrdersBlock
@@ -812,6 +827,8 @@ function FirmDetailsBlock({
   disabled,
   onAdd,
   onChange,
+  onDelete,
+  onDeleteSelected,
 }: {
   details: FirmDetailsState;
   disabled: boolean;
@@ -822,16 +839,72 @@ function FirmDetailsBlock({
     key: keyof FirmDetail,
     value: string,
   ) => void;
+  onDelete: (group: keyof FirmDetailsState, index: number) => void;
+  onDeleteSelected: (group: keyof FirmDetailsState, indexes: number[]) => void;
 }) {
   const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("invitedFirms");
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
   const tabs: { key: keyof FirmDetailsState; label: string }[] = [
     { key: "invitedFirms", label: "Invited" },
     { key: "bidderFirms", label: "Bidders" },
   ];
   const rows = details[activeTab];
+  const firmCounts = {
+    invitedFirms: details.invitedFirms.length,
+    bidderFirms: details.bidderFirms.length,
+  };
+  const selectedIndexes = [...selectedRows].filter((index) => index < rows.length);
+
+  useEffect(() => {
+    setSelectedRows(new Set());
+  }, [activeTab, rows.length]);
+
+  const toggleSelectedRow = (index: number, checked: boolean) => {
+    setSelectedRows((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(index);
+      } else {
+        next.delete(index);
+      }
+      return next;
+    });
+  };
+
+  const deleteFirm = (index: number) => {
+    onDelete(activeTab, index);
+    setSelectedRows(new Set());
+  };
+
+  const deleteSelectedFirms = () => {
+    if (!selectedIndexes.length) return;
+    onDeleteSelected(activeTab, selectedIndexes);
+    setSelectedRows(new Set());
+  };
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <label className="block">
+          <div className="mb-1.5 text-xs font-medium">Invited firms</div>
+          <input
+            value={firmCounts.invitedFirms}
+            readOnly
+            disabled={disabled}
+            className={inputCls + disabledCls(disabled)}
+          />
+        </label>
+        <label className="block">
+          <div className="mb-1.5 text-xs font-medium">Bidders</div>
+          <input
+            value={firmCounts.bidderFirms}
+            readOnly
+            disabled={disabled}
+            className={inputCls + disabledCls(disabled)}
+          />
+        </label>
+      </div>
+
       <div className="inline-flex rounded-lg border border-border bg-background p-1">
         {tabs.map((tab) => (
           <button
@@ -850,12 +923,37 @@ function FirmDetailsBlock({
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs text-muted-foreground">{selectedIndexes.length} selected</div>
+        <button
+          type="button"
+          onClick={deleteSelectedFirms}
+          disabled={disabled || selectedIndexes.length === 0}
+          className={
+            "inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10" +
+            disabledCls(disabled || selectedIndexes.length === 0)
+          }
+        >
+          <Trash2 className="size-3.5" /> Delete selected
+        </button>
+      </div>
+
       <div className="space-y-3">
         {rows.map((row, index) => (
           <div
             key={index}
-            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-3"
+            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
           >
+            <label className="flex items-center gap-2 md:pt-7">
+              <input
+                type="checkbox"
+                checked={selectedRows.has(index)}
+                onChange={(event) => toggleSelectedRow(index, event.target.checked)}
+                disabled={disabled}
+                className="size-4 rounded border-border accent-primary"
+              />
+              <span className="text-xs text-muted-foreground md:sr-only">Select firm</span>
+            </label>
             <label className="block">
               <div className="mb-1.5 text-xs font-medium">Firm name</div>
               <input
@@ -884,6 +982,19 @@ function FirmDetailsBlock({
                 className={inputCls + disabledCls(disabled)}
               />
             </label>
+            <button
+              type="button"
+              onClick={() => deleteFirm(index)}
+              disabled={disabled}
+              aria-label="Delete firm"
+              title="Delete firm"
+              className={
+                "inline-flex size-9 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10 md:self-end" +
+                disabledCls(disabled)
+              }
+            >
+              <Trash2 className="size-4" />
+            </button>
           </div>
         ))}
       </div>
@@ -930,52 +1041,52 @@ function SupplyOrdersBlock({
       />
 
       {orders.map((order, index) => (
-          <div key={index} className="rounded-md border border-border bg-secondary/20 p-4">
-            <div className="mb-4 border-b border-border pb-2 text-sm font-semibold">
-              Supply Order {index + 1}
-            </div>
-            <div className="grid grid-cols-1 gap-4">
-              {supplyOrderFields.map((field) => {
-                const key = field.key as SupplyOrderKey;
+        <div key={index} className="rounded-md border border-border bg-secondary/20 p-4">
+          <div className="mb-4 border-b border-border pb-2 text-sm font-semibold">
+            Supply Order {index + 1}
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            {supplyOrderFields.map((field) => {
+              const key = field.key as SupplyOrderKey;
 
-                if (field.key === "soValueCapital") {
-                  return (
-                    <SoValueField
-                      key={field.key}
-                      capitalSelected={form.valueCapitalSelected === "Yes"}
-                      revenueSelected={form.valueRevenueSelected === "Yes"}
-                      capitalValue={order.soValueCapital ?? ""}
-                      revenueValue={order.soValueRevenue ?? ""}
-                      disabled={disabled}
-                      onChange={(patch) => {
-                        if ("soValueCapital" in patch) {
-                          onOrderChange(index, "soValueCapital", patch.soValueCapital);
-                        }
-                        if ("soValueRevenue" in patch) {
-                          onOrderChange(index, "soValueRevenue", patch.soValueRevenue);
-                        }
-                      }}
-                    />
-                  );
-                }
-
+              if (field.key === "soValueCapital") {
                 return (
-                  <DynamicField
+                  <SoValueField
                     key={field.key}
-                    field={field}
-                    value={String(order[key] ?? "")}
-                    disabled={
-                      disabled ||
-                      (gemDisabled && key === "gemSoNo") ||
-                      (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
-                    }
-                    onChange={(value) => onOrderChange(index, key, value)}
+                    capitalSelected={form.valueCapitalSelected === "Yes"}
+                    revenueSelected={form.valueRevenueSelected === "Yes"}
+                    capitalValue={order.soValueCapital ?? ""}
+                    revenueValue={order.soValueRevenue ?? ""}
+                    disabled={disabled}
+                    onChange={(patch) => {
+                      if ("soValueCapital" in patch) {
+                        onOrderChange(index, "soValueCapital", patch.soValueCapital);
+                      }
+                      if ("soValueRevenue" in patch) {
+                        onOrderChange(index, "soValueRevenue", patch.soValueRevenue);
+                      }
+                    }}
                   />
                 );
-              })}
-            </div>
+              }
+
+              return (
+                <DynamicField
+                  key={field.key}
+                  field={field}
+                  value={String(order[key] ?? "")}
+                  disabled={
+                    disabled ||
+                    (gemDisabled && key === "gemSoNo") ||
+                    (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
+                  }
+                  onChange={(value) => onOrderChange(index, key, value)}
+                />
+              );
+            })}
           </div>
-        ))}
+        </div>
+      ))}
     </div>
   );
 }
