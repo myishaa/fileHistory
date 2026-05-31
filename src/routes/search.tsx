@@ -2003,6 +2003,12 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(15));
     return milestone ? isMilestoneApplicable(file, milestone) : true;
   }
+  if (filter.startsWith("milestoneUnderProcess:")) {
+    const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(22));
+    return milestone
+      ? isMilestoneApplicable(file, milestone) && !isEligibleMilestone(file, milestone)
+      : true;
+  }
   if (filter.startsWith("milestone:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(10));
     return milestone ? isPendingMilestone(file, milestone) : true;

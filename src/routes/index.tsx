@@ -426,6 +426,9 @@ export function Dashboard() {
                   index={index}
                   isLast={index === milestoneFlow.length - 1}
                   onTotalClick={() => openSearchFilter(`milestoneTotal:${milestone.key}`)}
+                  onUnderProcessClick={() =>
+                    openSearchFilter(`milestoneUnderProcess:${milestone.key}`)
+                  }
                   onActiveClick={() => openSearchFilter(`milestone:${milestone.key}`)}
                   onReviewedClick={() => openSearchFilter(`milestoneReviewed:${milestone.key}`)}
                   onPendingClick={() => openSearchFilter(`milestonePending:${milestone.key}`)}
@@ -635,6 +638,7 @@ function MilestoneFlowNode({
   index,
   isLast,
   onTotalClick,
+  onUnderProcessClick,
   onActiveClick,
   onReviewedClick,
   onPendingClick,
@@ -643,15 +647,20 @@ function MilestoneFlowNode({
   milestone: {
     key: string;
     label: string;
+    completedLabel: string;
+    pendingLabel: string;
     total: number;
+    underProcess: number;
     active: number;
     pending: number;
     reviewed: number;
+    hasReviewed: boolean;
     cleared: number;
   };
   index: number;
   isLast: boolean;
   onTotalClick: () => void;
+  onUnderProcessClick: () => void;
   onActiveClick: () => void;
   onReviewedClick: () => void;
   onPendingClick: () => void;
@@ -665,15 +674,16 @@ function MilestoneFlowNode({
     <div className="relative min-w-0">
       <div
         className={
-          "group flex h-full min-h-32 w-full flex-col justify-between rounded-lg border p-3 text-left transition hover:shadow-[var(--shadow-card)] " +
+          "group flex h-full w-full flex-col justify-between rounded-lg border p-2.5 text-left transition hover:shadow-[var(--shadow-card)] " +
           tone.card
         }
       >
-        <span className="flex items-start justify-between gap-3">
-          <span className="flex min-w-0 items-center gap-2">
+        <span className="flex flex-col gap-2">
+          <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-8 shrink-0 place-items-center rounded-md text-xs font-bold " + tone.step
+                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                tone.step
               }
             >
               {String(index + 1).padStart(2, "0")}
@@ -682,63 +692,102 @@ function MilestoneFlowNode({
               <span className="block truncate text-sm font-semibold">{milestone.label}</span>
             </span>
           </span>
-          <span className="grid grid-cols-2 gap-1.5">
+          <span className="grid grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={onTotalClick}
-              className="rounded-md border border-border bg-card px-2.5 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
             >
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
+              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
                 Total
               </span>
-              <span className="block text-lg font-semibold tabular-nums">{milestone.total}</span>
+              <span className="block text-base font-semibold tabular-nums">{milestone.total}</span>
             </button>
             <button
               type="button"
               onClick={onClearedClick}
-              className="rounded-md border border-border bg-card px-2.5 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
             >
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
-                Cleared
+              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                {milestone.completedLabel}
               </span>
-              <span className="block text-lg font-semibold tabular-nums">{milestone.cleared}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onActiveClick}
-              className={
-                "col-span-2 rounded-md px-2.5 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
-                tone.count
-              }
-            >
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
-                Active
+              <span className="block text-base font-semibold tabular-nums">
+                {milestone.cleared}
               </span>
-              <span className="block text-lg font-semibold tabular-nums">{milestone.active}</span>
             </button>
-            <button
-              type="button"
-              onClick={onReviewedClick}
-              className="rounded-md border border-border bg-card px-2.5 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
-            >
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
-                Reviewed
-              </span>
-              <span className="block text-lg font-semibold tabular-nums">{milestone.reviewed}</span>
-            </button>
+            {milestone.hasReviewed ? (
+              <button
+                type="button"
+                onClick={onUnderProcessClick}
+                className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              >
+                <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                  Under process
+                </span>
+                <span className="block text-base font-semibold tabular-nums">
+                  {milestone.underProcess}
+                </span>
+              </button>
+            ) : null}
+            {milestone.hasReviewed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onActiveClick}
+                  className={
+                    "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " + tone.count
+                  }
+                >
+                  <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                    Active
+                  </span>
+                  <span className="block text-base font-semibold tabular-nums">
+                    {milestone.active}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onReviewedClick}
+                  className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+                >
+                  <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                    Reviewed
+                  </span>
+                  <span className="block text-base font-semibold tabular-nums">
+                    {milestone.reviewed}
+                  </span>
+                </button>
+              </>
+            ) : null}
             <button
               type="button"
               onClick={onPendingClick}
-              className="rounded-md border border-border bg-card px-2.5 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
             >
-              <span className="block text-[10px] font-medium uppercase text-muted-foreground">
-                Pending
+              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                {milestone.pendingLabel}
               </span>
-              <span className="block text-lg font-semibold tabular-nums">{milestone.pending}</span>
+              <span className="block text-base font-semibold tabular-nums">
+                {milestone.pending}
+              </span>
             </button>
+            {!milestone.hasReviewed ? (
+              <button
+                type="button"
+                onClick={onUnderProcessClick}
+                className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              >
+                <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                  Under process
+                </span>
+                <span className="block text-base font-semibold tabular-nums">
+                  {milestone.underProcess}
+                </span>
+              </button>
+            ) : null}
           </span>
         </span>
-        <span className="mt-4 block h-2 overflow-hidden rounded-full bg-background">
+        <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-background">
           <span
             className={"block h-full rounded-full " + tone.bar}
             style={{ width: `${widthPercent}%` }}
@@ -832,17 +881,20 @@ const milestoneDefinitions = [
     current: "postTcecMinutesDate",
     applies: (file) => isYes(file.tcec),
   },
-  { key: "supplyOrder", label: "Supply Order", current: "soDate" },
+  { key: "supplyOrder", label: "Supply Order", completedLabel: "Placed", current: "soDate" },
   { key: "payment", label: "Payment", current: "paymentDate" },
   {
     key: "bankGuarantee",
     label: "Bank Guarantee",
+    completedLabel: "Received",
     current: "bgValidityDate",
     applies: (file) => isYes(file.bg),
   },
 ] satisfies Array<{
   key: string;
   label: string;
+  completedLabel?: string;
+  pendingLabel?: string;
   reviewed?: keyof FileRecord | keyof SupplyOrderDetail;
   current: keyof FileRecord | keyof SupplyOrderDetail;
   applies?: (file: FileRecord) => boolean;
@@ -858,10 +910,14 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     return {
       key: milestone.key,
       label: milestone.label,
+      completedLabel: milestone.completedLabel ?? "Completed",
+      pendingLabel: milestone.pendingLabel ?? "Pending",
       total: applicableFiles.length,
+      underProcess: Math.max(0, applicableFiles.length - reached),
       active: Math.max(0, reached - cleared),
       pending: Math.max(0, reached - reviewed - cleared),
       reviewed,
+      hasReviewed: Boolean(milestone.reviewed),
       cleared,
     };
   });
