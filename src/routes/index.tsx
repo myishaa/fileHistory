@@ -1,5 +1,19 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   type FileRecord,
   type SupplyOrderDetail,
@@ -27,6 +41,17 @@ type SummaryStat = {
   hint?: string;
   searchFilter?: string;
 };
+
+const chartColors = [
+  "hsl(var(--primary))",
+  "hsl(var(--chart-2))",
+  "hsl(var(--chart-3))",
+  "hsl(var(--chart-4))",
+  "hsl(var(--chart-5))",
+  "hsl(var(--success))",
+  "hsl(var(--warning))",
+  "hsl(var(--destructive))",
+];
 
 const statusActionModes = [
   { key: "pdf", label: "PDF", icon: FileText },
@@ -65,7 +90,7 @@ export function Dashboard() {
   );
   const statusFlow = getMilestoneFlow(dashboardFiles);
   const miscellaneousCounts = getMiscellaneousCounts(dashboardFiles);
-  const analytics = getAnalyticsSummary(dashboardFiles, manualMilestoneFlow);
+  const analytics = getAnalyticsSummary(dashboardFiles);
   const financeTotals = {
     allocatedCapital: dashboardDivisions.reduce(
       (sum, division) => sum + (parseAmount(division.allocatedCapital) ?? 0),
@@ -450,93 +475,122 @@ export function Dashboard() {
           <div>
             <h2 className="text-sm font-bold">Analytics</h2>
           </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <AnalyticsMetric
-              label="Assigned to stage"
-              value={analytics.assignedFiles}
-              helper={`${formatPercent(getPercent(analytics.assignedFiles, analytics.totalFiles))} of files`}
-            />
-            <AnalyticsMetric
-              label="S.O. placed"
-              value={analytics.supplyOrderFiles}
-              helper={`${formatPercent(getPercent(analytics.supplyOrderFiles, analytics.totalFiles))} conversion`}
-              onClick={() => openSearchFilter("supplyOrders")}
-            />
-            <AnalyticsMetric
-              label="Open risks"
-              value={analytics.openRiskFiles}
-              helper="Delivery due, expired DP, LD, or cancelled"
-            />
-            <AnalyticsMetric
-              label="Payment pending"
-              value={analytics.paymentPendingFiles}
-              helper="Material received but payment not done"
-              onClick={() => openSearchFilter("paymentDue")}
-            />
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <AnalyticsChartCard
+              title="Division ranking by files"
+              subtitle="Number of files, descending"
+            >
+              <AnalyticsBarChart data={analytics.divisionFileRanking} valueKey="count" />
+            </AnalyticsChartCard>
+            <AnalyticsChartCard title="Division ranking by value" subtitle="Total demand value">
+              <AnalyticsBarChart
+                data={analytics.divisionValueRanking}
+                valueKey="value"
+                valueFormatter={formatCompactCurrency}
+              />
+            </AnalyticsChartCard>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-              <div className="mb-4">
-                <h3 className="text-sm font-bold">Current stage concentration</h3>
-                <p className="text-xs text-muted-foreground">Where active files are sitting now</p>
-              </div>
-              <AnalyticsBarList
-                items={analytics.stageConcentration}
-                total={Math.max(1, analytics.assignedFiles)}
-                emptyLabel="No current stages selected yet."
-                onClick={(item) => openSearchFilter(`manualMilestoneCurrent:${item.name}`)}
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+            <AnalyticsChartCard
+              title="Division turnaround ranking"
+              subtitle="Average days from received date to first S.O."
+            >
+              <AnalyticsBarChart
+                data={analytics.divisionTurnaroundRanking}
+                valueKey="averageDays"
+                valueFormatter={(value) => `${value}d`}
               />
-            </div>
-
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-              <div className="mb-4">
-                <h3 className="text-sm font-bold">Work mix</h3>
-                <p className="text-xs text-muted-foreground">Important file attributes</p>
-              </div>
-              <AnalyticsBarList
-                items={analytics.workMix}
-                total={Math.max(1, analytics.totalFiles)}
-                emptyLabel="No files available."
-              />
-            </div>
+            </AnalyticsChartCard>
+            <AnalyticsChartCard title="File distribution" subtitle="Share by division">
+              <AnalyticsPieChart data={analytics.divisionFileRanking.slice(0, 8)} />
+            </AnalyticsChartCard>
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-              <div className="mb-4">
-                <h3 className="text-sm font-bold">Delivery and S.O. health</h3>
-                <p className="text-xs text-muted-foreground">Demand movement after supply order</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {analytics.supplyHealth.map((item) => (
-                  <AnalyticsMiniMetric
-                    key={item.label}
-                    label={item.label}
-                    value={item.value}
-                    helper={item.helper}
-                    onClick={item.filter ? () => openSearchFilter(item.filter!) : undefined}
-                  />
-                ))}
-              </div>
-            </div>
+            <AnalyticsChartCard
+              title="Top 20 firms by S.O. value"
+              subtitle="Supply order value, capital plus revenue"
+            >
+              <AnalyticsBarChart
+                data={analytics.topFirmSupplyOrders}
+                valueKey="value"
+                valueFormatter={formatCompactCurrency}
+                height={420}
+              />
+            </AnalyticsChartCard>
+            <AnalyticsChartCard title="Top 10 indentors by files" subtitle="Number of files raised">
+              <AnalyticsBarChart data={analytics.topIndentorsByFiles} valueKey="count" />
+            </AnalyticsChartCard>
+          </div>
 
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-              <div className="mb-4">
-                <h3 className="text-sm font-bold">Cycle time</h3>
-                <p className="text-xs text-muted-foreground">Average days from available dates</p>
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {analytics.cycleTimes.map((item) => (
-                  <AnalyticsMiniMetric
-                    key={item.label}
-                    label={item.label}
-                    value={item.value}
-                    helper={`${item.sampleSize} files`}
-                  />
-                ))}
-              </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <AnalyticsChartCard title="Top 10 indentors by value" subtitle="Total demand value">
+              <AnalyticsBarChart
+                data={analytics.topIndentorsByValue}
+                valueKey="value"
+                valueFormatter={formatCompactCurrency}
+              />
+            </AnalyticsChartCard>
+            <AnalyticsChartCard
+              title="Milestones by clearing time"
+              subtitle="Average clearing time in days"
+            >
+              <AnalyticsLineChart
+                data={analytics.milestoneClearingRanking}
+                valueKey="averageDays"
+              />
+            </AnalyticsChartCard>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <AnalyticsChartCard title="Monthly file inflow" subtitle="Files received by month">
+              <AnalyticsLineChart data={analytics.monthlyFileInflow} valueKey="count" />
+            </AnalyticsChartCard>
+            <AnalyticsChartCard title="Bidding mode mix" subtitle="Distribution by mode">
+              <AnalyticsPieChart data={analytics.biddingModeMix} />
+            </AnalyticsChartCard>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <AnalyticsChartCard
+              title="File value thresholds"
+              subtitle="Number of files by total demand value"
+            >
+              <AnalyticsBarChart data={analytics.fileValueThresholds} valueKey="count" />
+            </AnalyticsChartCard>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <AnalyticsChartCard
+              title="Risk load by division"
+              subtitle="Delivery pending, expired DP, LD, or cancelled S.O."
+            >
+              <AnalyticsBarChart data={analytics.divisionRiskRanking} valueKey="count" />
+            </AnalyticsChartCard>
+            <AnalyticsChartCard
+              title="Payment pending by division"
+              subtitle="Material received but payment not completed"
+            >
+              <AnalyticsBarChart data={analytics.divisionPaymentPendingRanking} valueKey="count" />
+            </AnalyticsChartCard>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+            <div className="mb-4">
+              <h3 className="text-sm font-bold">Milestone clearing ranking</h3>
+              <p className="text-xs text-muted-foreground">
+                Slowest milestones by average clearing time
+              </p>
             </div>
+            <AnalyticsRankingTable
+              columns={[
+                { key: "name", label: "Milestone", align: "left" },
+                { key: "averageDays", label: "Avg days", format: (value) => `${value}d` },
+                { key: "sampleSize", label: "Files" },
+              ]}
+              rows={analytics.milestoneClearingRanking}
+            />
           </div>
         </section>
       ) : null}
@@ -948,6 +1002,228 @@ function StatusMetricBox({
   );
 }
 
+function AnalyticsChartCard({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-4">
+        <h3 className="text-sm font-bold">{title}</h3>
+        <p className="text-xs text-muted-foreground">{subtitle}</p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function AnalyticsBarChart({
+  data,
+  valueKey,
+  valueFormatter = formatNumber,
+  height = 320,
+}: {
+  data: Array<{ name: string } & Record<string, number | string>>;
+  valueKey: string;
+  valueFormatter?: (value: number) => string;
+  height?: number;
+}) {
+  if (!data.length) {
+    return <div className="text-sm text-muted-foreground">No data available.</div>;
+  }
+
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 18, left: 8, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
+          <XAxis
+            type="number"
+            tickFormatter={(value) => valueFormatter(Number(value))}
+            tick={{ fontSize: 11 }}
+            stroke="hsl(var(--muted-foreground))"
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={118}
+            tick={{ fontSize: 11 }}
+            stroke="hsl(var(--muted-foreground))"
+          />
+          <Tooltip
+            formatter={(value) => valueFormatter(Number(value))}
+            contentStyle={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          />
+          <Bar dataKey={valueKey} radius={[0, 4, 4, 0]} fill="hsl(var(--primary))" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function AnalyticsPieChart({ data }: { data: Array<{ name: string; count: number }> }) {
+  if (!data.length) {
+    return <div className="text-sm text-muted-foreground">No data available.</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_0.9fr]">
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey="count" nameKey="name" innerRadius={52} outerRadius={88}>
+              {data.map((item, index) => (
+                <Cell key={item.name} fill={chartColors[index % chartColors.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              formatter={(value) => formatNumber(Number(value))}
+              contentStyle={{
+                background: "hsl(var(--card))",
+                border: "1px solid hsl(var(--border))",
+                borderRadius: 6,
+                fontSize: 12,
+              }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="space-y-2 self-center">
+        {data.map((item, index) => (
+          <div key={item.name} className="flex items-center justify-between gap-3 text-xs">
+            <span className="flex min-w-0 items-center gap-2">
+              <span
+                className="size-2.5 shrink-0 rounded-sm"
+                style={{ backgroundColor: chartColors[index % chartColors.length] }}
+              />
+              <span className="truncate">{item.name}</span>
+            </span>
+            <span className="font-semibold tabular-nums">{item.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsLineChart({
+  data,
+  valueKey,
+}: {
+  data: Array<{ name: string } & Record<string, number | string>>;
+  valueKey: string;
+}) {
+  if (!data.length) {
+    return <div className="text-sm text-muted-foreground">No data available.</div>;
+  }
+
+  return (
+    <div className="h-80">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 8, right: 18, left: 4, bottom: 64 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+          <XAxis
+            dataKey="name"
+            interval={0}
+            angle={-35}
+            textAnchor="end"
+            tick={{ fontSize: 10 }}
+            stroke="hsl(var(--muted-foreground))"
+          />
+          <YAxis
+            tickFormatter={(value) => `${value}d`}
+            tick={{ fontSize: 11 }}
+            stroke="hsl(var(--muted-foreground))"
+          />
+          <Tooltip
+            formatter={(value) => `${formatNumber(Number(value))}d`}
+            contentStyle={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          />
+          <Line
+            type="monotone"
+            dataKey={valueKey}
+            stroke="hsl(var(--primary))"
+            strokeWidth={2}
+            dot={{ r: 3 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function AnalyticsRankingTable({
+  columns,
+  rows,
+}: {
+  columns: Array<{
+    key: string;
+    label: string;
+    align?: "left" | "right";
+    format?: (value: number | string) => string;
+  }>;
+  rows: Array<Record<string, number | string>>;
+}) {
+  if (!rows.length) {
+    return <div className="text-sm text-muted-foreground">No data available.</div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[520px] border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-border text-xs uppercase text-muted-foreground">
+            {columns.map((column) => (
+              <th
+                key={column.key}
+                className={
+                  "py-2 font-medium " + (column.align === "left" ? "text-left" : "text-right")
+                }
+              >
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={String(row.name)} className="border-b border-border/60 last:border-0">
+              {columns.map((column) => (
+                <td
+                  key={column.key}
+                  className={
+                    "py-2 tabular-nums " +
+                    (column.align === "left" ? "text-left font-medium" : "text-right")
+                  }
+                >
+                  {column.format
+                    ? column.format(row[column.key] ?? "")
+                    : String(row[column.key] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function AnalyticsMetric({
   label,
   value,
@@ -1192,7 +1468,7 @@ function ScrutinyMetricGrid({
   metrics: StatusMetric[];
   tone: ReturnType<typeof getMilestoneTone>;
 }) {
-  const active = metrics.find((metric) => metric.label === "Active");
+  const active = metrics.find((metric) => metric.label === "In process");
   const reviewed = metrics.find((metric) => metric.label === "Reviewed");
   const pending = metrics.find((metric) => metric.label === "Pending");
   const total = metrics.find((metric) => metric.label === "Total files");
@@ -1336,17 +1612,16 @@ function getStatusMetrics({
 
   if (milestone.key === "bidding") {
     return [
-      completed,
+      { label: "Live", count: milestone.liveBids ?? 0, onClick: onLiveBidsClick },
       { label: "In process", count: milestone.inProcessBids ?? 0, onClick: onActiveClick },
       { label: "Opening overdue", count: milestone.overdueBids ?? 0, onClick: onBidOverdueClick },
-      { label: "Live", count: milestone.liveBids ?? 0, onClick: onLiveBidsClick },
+      completed,
       { label: "At previous stages", count: milestone.underProcess, onClick: onUnderProcessClick },
     ];
   }
 
   if (milestone.key === "supplyOrder") {
     return [
-      total,
       completed,
       { label: "Live", count: milestone.liveSupplyOrders ?? 0, onClick: onLiveSupplyOrdersClick },
       { label: milestone.pendingLabel, count: milestone.pending, onClick: onPendingClick },
@@ -1547,7 +1822,7 @@ function DeliveryFlowNode({
               }
             >
               <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-                Due
+                Pending
               </span>
               <span className="block text-base font-semibold tabular-nums">{milestone.due}</span>
             </button>
@@ -1620,79 +1895,276 @@ function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
   };
 }
 
-function getAnalyticsSummary(
-  files: ReturnType<typeof useAccessibleFiles>,
-  milestoneFlow: ReturnType<typeof getManualMilestoneFlow>,
-) {
-  const totalFiles = files.length;
-  const assignedFiles = files.filter((file) => Boolean(file.currentMilestone)).length;
-  const supplyOrderFiles = files.filter(isSupplyOrderPlacedByDate).length;
-  const paymentPendingFiles = files.filter(isPaymentPending).length;
-  const openRiskFiles = files.filter(
-    (file) =>
-      isDeliveryDue(file) ||
-      isDeliveryPeriodExpired(file) ||
-      fileSupplyOrders(file).some(
-        (order) => isYes(order.ld) || isYes(order.demandCancelled) || isYes(order.soCancelled),
-      ),
-  ).length;
-
+function getAnalyticsSummary(files: ReturnType<typeof useAccessibleFiles>) {
   return {
-    totalFiles,
-    assignedFiles,
-    supplyOrderFiles,
-    paymentPendingFiles,
-    openRiskFiles,
-    stageConcentration: milestoneFlow
-      .filter((milestone) => milestone.current > 0)
-      .map((milestone) => ({ name: milestone.name, count: milestone.current }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8),
-    workMix: [
-      { name: "TCEC", count: files.filter((file) => isYes(file.tcec)).length },
-      { name: "GeM", count: files.filter((file) => isYes(file.gem)).length },
-      { name: "High value", count: files.filter((file) => isYes(file.highValue)).length },
-      { name: "R&QA", count: files.filter((file) => isYes(file.rqa)).length },
-      { name: "IFA", count: files.filter((file) => isYes(file.ifa)).length },
-      { name: "BG", count: files.filter((file) => isYes(file.bg)).length },
-    ].filter((item) => item.count > 0),
-    supplyHealth: [
-      {
-        label: "S.O. placed",
-        value: supplyOrderFiles,
-        helper: `${formatPercent(getPercent(supplyOrderFiles, totalFiles))} of files`,
-        filter: "supplyOrders",
-      },
-      {
-        label: "Delivery due",
-        value: files.filter(isDeliveryDue).length,
-        helper: "Past delivery date",
-        filter: "deliveryDue",
-      },
-      {
-        label: "DP expired",
-        value: files.filter(isDeliveryPeriodExpired).length,
-        helper: "Material not received",
-        filter: "deliveryPeriodExpired",
-      },
-      {
-        label: "BG pending",
-        value: files.filter(isBgToBeReceived).length,
-        helper: "BG yes, validity not filled",
-        filter: "bgToBeReceived",
-      },
-    ],
-    cycleTimes: [
-      getAverageCycleMetric(files, "Received to S.O.", "receivedDate", getFirstSoDate),
-      getAverageCycleMetric(files, "Received to payment", "receivedDate", getFirstPaymentDate),
-      getAverageCycleMetric(
-        files,
-        "Scrutiny time",
-        "scrutinyDate",
-        (file) => file.scrutinyCompletionDate,
-      ),
-    ],
+    divisionFileRanking: getDivisionFileRanking(files),
+    divisionValueRanking: getDivisionValueRanking(files),
+    divisionTurnaroundRanking: getDivisionTurnaroundRanking(files),
+    topFirmSupplyOrders: getTopFirmSupplyOrders(files),
+    topIndentorsByFiles: getTopIndentorsByFiles(files),
+    topIndentorsByValue: getTopIndentorsByValue(files),
+    milestoneClearingRanking: getMilestoneClearingRanking(files),
+    monthlyFileInflow: getMonthlyFileInflow(files),
+    biddingModeMix: getBiddingModeMix(files),
+    fileValueThresholds: getFileValueThresholds(files),
+    divisionRiskRanking: getDivisionRiskRanking(files),
+    divisionPaymentPendingRanking: getDivisionPaymentPendingRanking(files),
   };
+}
+
+function getDivisionFileRanking(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    const name = getAnalyticsName(file.division, "Unassigned");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+  return mapEntriesToSortedRows(counts, "count");
+}
+
+function getDivisionValueRanking(files: FileRecord[]) {
+  const totals = new Map<string, number>();
+  files.forEach((file) => {
+    const name = getAnalyticsName(file.division, "Unassigned");
+    totals.set(name, (totals.get(name) ?? 0) + getFileTotalValue(file));
+  });
+  return mapEntriesToSortedRows(totals, "value");
+}
+
+function getDivisionTurnaroundRanking(files: FileRecord[]) {
+  const durations = new Map<string, number[]>();
+  files.forEach((file) => {
+    const days = getDayDifference(file.receivedDate, getFirstSoDate(file));
+    if (days === undefined || days < 0) return;
+    const name = getAnalyticsName(file.division, "Unassigned");
+    durations.set(name, [...(durations.get(name) ?? []), days]);
+  });
+
+  return Array.from(durations.entries())
+    .map(([name, values]) => ({
+      name,
+      averageDays: getRoundedAverage(values),
+      sampleSize: values.length,
+    }))
+    .sort((a, b) => b.averageDays - a.averageDays);
+}
+
+function getTopFirmSupplyOrders(files: FileRecord[]) {
+  const totals = new Map<string, number>();
+  files.forEach((file) => {
+    fileSupplyOrders(file).forEach((order) => {
+      const name = getAnalyticsName(order.firm, "Unassigned firm");
+      const value = getSupplyOrderTotalValue(file, order);
+      if (value <= 0) return;
+      totals.set(name, (totals.get(name) ?? 0) + value);
+    });
+  });
+  return mapEntriesToSortedRows(totals, "value").slice(0, 20);
+}
+
+function getTopIndentorsByFiles(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    const name = getAnalyticsName(file.indentor, "Unassigned indentor");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+  return mapEntriesToSortedRows(counts, "count").slice(0, 10);
+}
+
+function getTopIndentorsByValue(files: FileRecord[]) {
+  const totals = new Map<string, number>();
+  files.forEach((file) => {
+    const name = getAnalyticsName(file.indentor, "Unassigned indentor");
+    totals.set(name, (totals.get(name) ?? 0) + getFileTotalValue(file));
+  });
+  return mapEntriesToSortedRows(totals, "value").slice(0, 10);
+}
+
+function getMilestoneClearingRanking(files: FileRecord[]) {
+  return milestoneClearingDefinitions
+    .map((definition) => {
+      const durations = files
+        .map((file) => getDayDifference(definition.getStartDate(file), definition.getEndDate(file)))
+        .filter((days): days is number => days !== undefined && days >= 0);
+      return {
+        name: definition.name,
+        averageDays: getRoundedAverage(durations),
+        sampleSize: durations.length,
+      };
+    })
+    .filter((item) => item.sampleSize > 0)
+    .sort((a, b) => b.averageDays - a.averageDays);
+}
+
+function getMonthlyFileInflow(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    const month = getMonthKey(file.receivedDate ?? file.date);
+    if (!month) return;
+    counts.set(month, (counts.get(month) ?? 0) + 1);
+  });
+
+  return Array.from(counts.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-12)
+    .map(([name, count]) => ({ name, count }));
+}
+
+function getBiddingModeMix(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    const name = getAnalyticsName(file.mode?.trim().toUpperCase(), "Unassigned");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+  return mapEntriesToSortedRows(counts, "count");
+}
+
+function getFileValueThresholds(files: FileRecord[]) {
+  const values = files.map(getFileTotalValue);
+  return [
+    { name: "< 10,00,000", count: values.filter((value) => value < 1_000_000).length },
+    { name: "> 10,00,000", count: values.filter((value) => value > 1_000_000).length },
+    { name: "> 50,00,000", count: values.filter((value) => value > 5_000_000).length },
+    { name: "> 1,00,00,000", count: values.filter((value) => value > 10_000_000).length },
+  ];
+}
+
+function getDivisionRiskRanking(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    if (!isRiskFile(file)) return;
+    const name = getAnalyticsName(file.division, "Unassigned");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+  return mapEntriesToSortedRows(counts, "count");
+}
+
+function getDivisionPaymentPendingRanking(files: FileRecord[]) {
+  const counts = new Map<string, number>();
+  files.forEach((file) => {
+    if (!isPaymentPending(file)) return;
+    const name = getAnalyticsName(file.division, "Unassigned");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  });
+  return mapEntriesToSortedRows(counts, "count");
+}
+
+function isRiskFile(file: FileRecord) {
+  return (
+    isDeliveryDue(file) ||
+    isDeliveryPeriodExpired(file) ||
+    fileSupplyOrders(file).some(
+      (order) => isYes(order.ld) || isYes(order.demandCancelled) || isYes(order.soCancelled),
+    )
+  );
+}
+
+const milestoneClearingDefinitions = [
+  {
+    name: "Scrutiny",
+    getStartDate: (file: FileRecord) => file.receivedDate,
+    getEndDate: (file: FileRecord) => file.scrutinyCompletionDate,
+  },
+  {
+    name: "High Value",
+    getStartDate: (file: FileRecord) => file.highValueMeetingDate,
+    getEndDate: (file: FileRecord) => file.highValueMinutesDate,
+  },
+  {
+    name: "Pre-TCEC",
+    getStartDate: (file: FileRecord) => file.preTcecDate,
+    getEndDate: (file: FileRecord) => file.preTcecMinutesDate,
+  },
+  {
+    name: "AD",
+    getStartDate: (file: FileRecord) => file.preTcecMinutesDate ?? file.receivedDate,
+    getEndDate: (file: FileRecord) => file.adVettingDate,
+  },
+  {
+    name: "R&QA",
+    getStartDate: (file: FileRecord) => file.receivedDate,
+    getEndDate: (file: FileRecord) => file.rqaApprovalDate,
+  },
+  {
+    name: "Controlling",
+    getStartDate: (file: FileRecord) => file.receivedDate,
+    getEndDate: (file: FileRecord) => file.immsDate,
+  },
+  {
+    name: "IFA",
+    getStartDate: (file: FileRecord) => file.ifaSentDate,
+    getEndDate: (file: FileRecord) => file.ifaFinalDate,
+  },
+  {
+    name: "CFA",
+    getStartDate: (file: FileRecord) => file.cfaSentDate,
+    getEndDate: (file: FileRecord) => file.cfaDate,
+  },
+  {
+    name: "Post-TCEC",
+    getStartDate: (file: FileRecord) => file.postTcecDate,
+    getEndDate: (file: FileRecord) => file.postTcecMinutesDate,
+  },
+  {
+    name: "CNC",
+    getStartDate: (file: FileRecord) => file.cncDate,
+    getEndDate: (file: FileRecord) => file.cncApprovalDate,
+  },
+  {
+    name: "Supply Order",
+    getStartDate: (file: FileRecord) => file.cfaDate,
+    getEndDate: getFirstSoDate,
+  },
+  {
+    name: "Bank Guarantee",
+    getStartDate: getFirstSoDate,
+    getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "bgValidityDate"),
+  },
+  {
+    name: "Delivery",
+    getStartDate: getFirstSoDate,
+    getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "materialReceiptDate"),
+  },
+  {
+    name: "Payment",
+    getStartDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "materialReceiptDate"),
+    getEndDate: getFirstPaymentDate,
+  },
+];
+
+function getFileTotalValue(file: FileRecord) {
+  return (
+    (getInrAmount(file.valueCapital, file) ?? 0) + (getInrAmount(file.valueRevenue, file) ?? 0)
+  );
+}
+
+function getSupplyOrderTotalValue(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    (getInrAmount(order.soValueCapital, file) ?? 0) +
+    (getInrAmount(order.soValueRevenue, file) ?? 0)
+  );
+}
+
+function mapEntriesToSortedRows<T extends "count" | "value">(values: Map<string, number>, key: T) {
+  return Array.from(values.entries())
+    .map(
+      ([name, value]) =>
+        ({ name, [key]: Math.round(value) }) as { name: string } & Record<T, number>,
+    )
+    .sort((a, b) => b[key] - a[key]);
+}
+
+function getRoundedAverage(values: number[]) {
+  if (!values.length) return 0;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function getAnalyticsName(value: string | undefined, fallback: string) {
+  return value?.trim() || fallback;
+}
+
+function getMonthKey(date: string | undefined) {
+  if (!date || !hasDate(date)) return undefined;
+  return date.slice(0, 7);
 }
 
 function getAverageCycleMetric(
@@ -1924,7 +2396,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         reviewed: 0,
         hasReviewed: Boolean(milestone.reviewed),
         cleared: eligibleBgFiles.filter((file) => hasMilestoneDate(file, milestone.current)).length,
-        activeLabel: "Active",
+        activeLabel: "In process",
       };
     }
 
@@ -1941,7 +2413,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
       reviewed: reviewedFiles.length,
       hasReviewed: Boolean(milestone.reviewed),
       cleared,
-      activeLabel: milestone.key === "bidding" ? "In process" : "Active",
+      activeLabel: "In process",
       liveBids:
         milestone.key === "bidding" ? applicableFiles.filter(isFileTenderLive).length : undefined,
       overdueBids:
@@ -2268,7 +2740,7 @@ const statusExportHeaders = ["Division", "Indentor", "Demand description", "Last
 
 const dashboardFilterTitles: Record<string, string> = {
   deliveryCompleted: "Delivery - Completed",
-  deliveryDue: "Delivery - Due",
+  deliveryDue: "Delivery - Pending",
   deliveryPeriodValid: "Delivery Period - Valid",
   deliveryPeriodExpired: "Delivery Period - Expired",
   deliveryPeriodExtended: "Delivery Period - Extended",
@@ -2573,7 +3045,7 @@ function getDashboardFilterTitle(filter: string) {
     return `${getMilestoneTitle(filter.slice(22))} - At previous stage`;
   }
   if (filter.startsWith("milestoneActive:")) {
-    return `${getMilestoneTitle(filter.slice(16))} - Active`;
+    return `${getMilestoneTitle(filter.slice(16))} - In process`;
   }
   if (filter.startsWith("milestoneReviewed:")) {
     return `${getMilestoneTitle(filter.slice(18))} - Reviewed`;
@@ -2682,4 +3154,20 @@ function formatPercent(value: number | undefined) {
 
 function formatCurrency(value: number) {
   return formatThousandsAndLakhs(value);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatCompactCurrency(value: number) {
+  if (Math.abs(value) >= 10_000_000) {
+    return `${formatThousandsAndLakhs(value / 10_000_000, 1)} Cr`;
+  }
+  if (Math.abs(value) >= 100_000) {
+    return `${formatThousandsAndLakhs(value / 100_000, 1)} L`;
+  }
+  return formatThousandsAndLakhs(value, 0);
 }

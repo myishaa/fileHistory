@@ -1,6 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useAccessibleFiles, useAccessibleDivisions, isIncomplete } from "@/lib/files-store";
-import { Download, PieChart, BarChart3 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { FileSpreadsheet, FileText } from "lucide-react";
+import {
+  type FileRecord,
+  type SupplyOrderDetail,
+  useAccessibleDivisions,
+  useAccessibleFiles,
+} from "@/lib/files-store";
 
 export const Route = createFileRoute("/reports")({
   component: ReportsPage,
@@ -9,140 +15,851 @@ export const Route = createFileRoute("/reports")({
 function ReportsPage() {
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
-
-  const total = files.length;
-  const incomplete = files.filter(isIncomplete).length;
-  const complete = total - incomplete;
-
-  const byDivision = divisions.map((d) => ({
-    name: d.name,
-    count: files.filter((f) => f.division === d.name).length,
-  }));
-  const maxDiv = Math.max(1, ...byDivision.map((d) => d.count));
-
-  const officers = Array.from(new Set(files.map((f) => f.officer).filter(Boolean))) as string[];
-  const byOfficer = officers
-    .map((o) => ({ name: o, count: files.filter((f) => f.officer === o).length }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6);
-  const maxOff = Math.max(1, ...byOfficer.map((o) => o.count));
-
-  const completePct = total ? Math.round((complete / total) * 100) : 0;
+  const [selectedDivision, setSelectedDivision] = useState("all");
+  const selectedDivisionIsAccessible =
+    selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
+  const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
+  const reportFiles = useMemo(
+    () =>
+      activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
+    [activeDivision, files],
+  );
+  const statusSummaryGroups = getStatusSummaryTableGroups(reportFiles);
+  const reportTitle =
+    activeDivision === "all"
+      ? "Status summary - All divisions"
+      : `Status summary - ${activeDivision}`;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold inline-flex items-center gap-2">
-              <PieChart className="size-4 text-primary" /> Completion overview
-            </h2>
-            <button className="text-xs inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
-              <Download className="size-3.5" /> Export
-            </button>
-          </div>
-          <div className="flex items-center gap-6">
-            <DonutChart percent={completePct} />
-            <div className="space-y-2 text-sm">
-              <Legend color="bg-success" label="Complete" value={complete} />
-              <Legend color="bg-warning" label="Incomplete" value={incomplete} />
-              <Legend color="bg-secondary" label="Total" value={total} />
-            </div>
-          </div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => printStatusSummaryGroupsToPdf(statusSummaryGroups, reportTitle)}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+          >
+            <FileText className="size-4" />
+            PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => exportStatusSummaryGroupsToExcel(statusSummaryGroups, reportTitle)}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+          >
+            <FileSpreadsheet className="size-4" />
+            Excel
+          </button>
         </div>
-
-        <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
-          <h2 className="text-sm font-semibold inline-flex items-center gap-2 mb-4">
-            <BarChart3 className="size-4 text-primary" /> Files per division
-          </h2>
-          <div className="space-y-3">
-            {byDivision.map((d) => (
-              <div key={d.name}>
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="font-medium">{d.name}</span>
-                  <span className="text-muted-foreground">{d.count}</span>
-                </div>
-                <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-primary to-primary/70"
-                    style={{ width: `${(d.count / maxDiv) * 100}%` }}
-                  />
-                </div>
-              </div>
+        <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
+          <span>Division</span>
+          <select
+            value={activeDivision}
+            onChange={(event) => setSelectedDivision(event.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          >
+            <option value="all">All accessible divisions</option>
+            {divisions.map((division) => (
+              <option key={division.id} value={division.name}>
+                {division.name}
+              </option>
             ))}
-          </div>
-        </div>
+          </select>
+        </label>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
-        <h2 className="text-sm font-semibold mb-4">Top demand officers</h2>
-        {byOfficer.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No officer data yet.</p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
-            {byOfficer.map((o) => (
-              <div key={o.name}>
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="font-medium">{o.name}</span>
-                  <span className="text-muted-foreground">{o.count}</span>
-                </div>
-                <div className="h-2 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full bg-chart-2"
-                    style={{ width: `${(o.count / maxOff) * 100}%` }}
-                  />
-                </div>
+        <div className="mb-5">
+          <h2 className="text-sm font-semibold">Status summary</h2>
+          <p className="text-xs text-muted-foreground">Files at each stage across all milestones</p>
+        </div>
+        <div className="space-y-4">
+          {statusSummaryGroups.map((group) => (
+            <div key={group.key} className="overflow-hidden rounded-lg border border-border">
+              <div className="overflow-x-auto">
+                <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+                      <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">
+                        Milestone
+                      </th>
+                      {group.columns.map((column) => (
+                        <th key={column} className="px-3 py-2.5 text-right font-semibold">
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((row, rowIndex) => (
+                      <tr
+                        key={row.milestone}
+                        className={
+                          "border-b border-border/60 last:border-0 " +
+                          (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                        }
+                      >
+                        <td
+                          className={
+                            "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
+                            (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                          }
+                        >
+                          {row.milestone}
+                        </td>
+                        {group.columns.map((column) => (
+                          <td key={column} className="px-3 py-2.5 text-right tabular-nums">
+                            <StatusCountValue value={row.counts[column]} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DonutChart({ percent }: { percent: number }) {
-  const r = 38;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative size-32 shrink-0">
-      <svg viewBox="0 0 100 100" className="size-full -rotate-90">
-        <circle
-          cx="50"
-          cy="50"
-          r={r}
-          stroke="var(--color-secondary)"
-          strokeWidth="12"
-          fill="none"
-        />
-        <circle
-          cx="50"
-          cy="50"
-          r={r}
-          stroke="var(--color-success)"
-          strokeWidth="12"
-          fill="none"
-          strokeDasharray={c}
-          strokeDashoffset={c - (c * percent) / 100}
-          strokeLinecap="round"
-        />
-      </svg>
-      <div className="absolute inset-0 grid place-items-center">
-        <div className="text-center">
-          <div className="text-xl font-semibold">{percent}%</div>
-          <div className="text-[10px] text-muted-foreground">complete</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-function Legend({ color, label, value }: { color: string; label: string; value: number }) {
+function StatusCountValue({ value }: { value: number | string | undefined }) {
+  if (value === undefined || value === "") {
+    return <span className="text-muted-foreground/40">-</span>;
+  }
+
+  if (value === "-") {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  const isZero = value === 0;
   return (
-    <div className="flex items-center gap-2">
-      <span className={`size-2.5 rounded-sm ${color}`} />
-      <span className="text-muted-foreground w-20">{label}</span>
-      <span className="font-medium">{value}</span>
-    </div>
+    <span
+      className={
+        "inline-flex min-w-8 justify-center rounded px-2 py-0.5 text-xs font-semibold " +
+        (isZero ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-foreground")
+      }
+    >
+      {value}
+    </span>
   );
+}
+
+function exportStatusSummaryGroupsToExcel(groups: StatusSummaryTableGroup[], title: string) {
+  const worksheet = `
+    <html>
+      <head><meta charset="utf-8" /></head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${groups.map((group) => getStatusSummaryGroupHtml(group)).join("")}
+      </body>
+    </html>
+  `;
+  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${getExportFileName(title)}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printStatusSummaryGroupsToPdf(groups: StatusSummaryTableGroup[], title: string) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.alert("Please allow pop-ups to generate the PDF report.");
+    return;
+  }
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+          h1 { font-size: 18px; margin: 0 0 16px; }
+          h2 { font-size: 12px; margin: 18px 0 8px; text-transform: uppercase; color: #4b5563; }
+          table { border-collapse: collapse; margin-bottom: 14px; width: auto; min-width: 520px; }
+          th, td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 11px; }
+          th { background: #f3f4f6; color: #374151; text-align: left; }
+          td:not(:first-child), th:not(:first-child) { text-align: right; }
+          @media print { body { margin: 12mm; } table { page-break-inside: avoid; } }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${groups.map((group) => getStatusSummaryGroupHtml(group)).join("")}
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
+function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Milestone</th>
+          ${group.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        ${group.rows
+          .map(
+            (row) => `
+              <tr>
+                <td>${escapeHtml(row.milestone)}</td>
+                ${group.columns
+                  .map((column) => `<td>${escapeHtml(row.counts[column] ?? "-")}</td>`)
+                  .join("")}
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function getExportFileName(title: string) {
+  return title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function escapeHtml(value: string | number | undefined) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+type MilestoneDefinition = {
+  key: string;
+  label: string;
+  completedLabel?: string;
+  totalLabel?: string;
+  pendingLabel?: string;
+  reviewed?: keyof FileRecord | keyof SupplyOrderDetail;
+  current: keyof FileRecord | keyof SupplyOrderDetail;
+  applies?: (file: FileRecord) => boolean;
+};
+
+type StatusSummaryRow = {
+  milestone: string;
+  stage: string;
+  count: number;
+};
+
+type StatusSummaryTableRow = {
+  milestone: string;
+  counts: Partial<Record<StatusSummaryDisplayColumn, number | string>>;
+};
+
+type StatusSummaryTableGroup = {
+  key: string;
+  title: string;
+  columns: StatusSummaryDisplayColumn[];
+  rows: StatusSummaryTableRow[];
+};
+
+const commonStatusColumns = ["Total", "In process", "Pending", "Completed"] as const;
+
+const statusSummaryColumns = [
+  "Total files",
+  "Total cases",
+  "Placed",
+  "Received",
+  "Reviewed",
+  "Pending",
+  "In process",
+  "Opening overdue",
+  "Live",
+  "Completed",
+  "Valid",
+  "Expired",
+  "Extended",
+] as const;
+
+type StatusSummaryColumn = (typeof statusSummaryColumns)[number];
+type CommonStatusColumn = (typeof commonStatusColumns)[number];
+type StatusSummaryDisplayColumn = StatusSummaryColumn | CommonStatusColumn;
+
+const milestoneDefinitions = [
+  {
+    key: "scrutiny",
+    label: "Scrutiny",
+    totalLabel: "Total files",
+    reviewed: "scrutinyDate",
+    current: "scrutinyCompletionDate",
+  },
+  {
+    key: "highValue",
+    label: "High Value",
+    totalLabel: "Total cases",
+    reviewed: "highValueMeetingDate",
+    current: "highValueMinutesDate",
+    applies: (file) => isYes(file.highValue),
+  },
+  {
+    key: "tcec",
+    label: "Pre-TCEC",
+    totalLabel: "Total cases",
+    reviewed: "preTcecDate",
+    current: "preTcecMinutesDate",
+    applies: (file) => isYes(file.tcec),
+  },
+  {
+    key: "ad",
+    label: "AD",
+    totalLabel: "Total cases",
+    current: "adVettingDate",
+    applies: (file) => isYes(file.ad),
+  },
+  {
+    key: "rqa",
+    label: "R&QA",
+    totalLabel: "Total cases",
+    current: "rqaApprovalDate",
+    applies: (file) => isYes(file.rqa),
+  },
+  { key: "control", label: "Controlling", totalLabel: "Total files", current: "immsDate" },
+  {
+    key: "ifa",
+    label: "IFA",
+    totalLabel: "Total cases",
+    reviewed: "ifaSentDate",
+    current: "ifaFinalDate",
+    applies: (file) => isYes(file.ifa),
+  },
+  {
+    key: "cfa",
+    label: "CFA",
+    totalLabel: "Total files",
+    reviewed: "cfaSentDate",
+    current: "cfaDate",
+  },
+  {
+    key: "bidding",
+    label: "Bidding",
+    totalLabel: "Total files",
+    current: "biddingStageOver",
+  },
+  {
+    key: "postTcec",
+    label: "Post-TCEC",
+    totalLabel: "Total cases",
+    reviewed: "postTcecDate",
+    current: "postTcecMinutesDate",
+    applies: (file) => isYes(file.tcec),
+  },
+  {
+    key: "cnc",
+    label: "CNC",
+    totalLabel: "Total cases",
+    reviewed: "cncDate",
+    current: "cncApprovalDate",
+    applies: (file) => isYes(file.tcec),
+  },
+  {
+    key: "supplyOrder",
+    label: "Supply Order",
+    completedLabel: "Placed",
+    totalLabel: "Total files",
+    current: "soDate",
+  },
+  {
+    key: "bankGuarantee",
+    label: "Bank Guarantee",
+    completedLabel: "Received",
+    totalLabel: "Total files",
+    current: "bgValidityDate",
+    applies: (file) => isYes(file.bg),
+  },
+  { key: "payment", label: "Payment", totalLabel: "Total files", current: "paymentDate" },
+] satisfies MilestoneDefinition[];
+
+function getStatusSummaryTableGroups(files: FileRecord[]): StatusSummaryTableGroup[] {
+  const byMilestone = new Map<string, StatusSummaryTableRow & { columns: StatusSummaryColumn[] }>();
+
+  getStatusSummaryRows(files).forEach((row) => {
+    if (!isStatusSummaryColumn(row.stage)) return;
+    const tableRow = byMilestone.get(row.milestone) ?? {
+      milestone: row.milestone,
+      counts: {},
+      columns: [],
+    };
+    tableRow.counts[row.stage] = row.count;
+    if (!tableRow.columns.includes(row.stage)) tableRow.columns.push(row.stage);
+    byMilestone.set(row.milestone, tableRow);
+  });
+
+  const commonGroup: StatusSummaryTableGroup = {
+    key: "common",
+    title: "Common milestone status",
+    columns: [...commonStatusColumns],
+    rows: [],
+  };
+  const groups = new Map<string, StatusSummaryTableGroup>();
+  Array.from(byMilestone.values()).forEach((row) => {
+    const columns = getStatusSummaryColumnsForRow(row.columns);
+    if (isCommonStatusRow(row)) {
+      commonGroup.rows.push({
+        milestone: row.milestone,
+        counts: {
+          Total: row.counts["Total files"] ?? row.counts["Total cases"],
+          "In process": row.counts["In process"],
+          Completed: row.counts.Completed,
+          Pending: row.counts.Pending ?? "-",
+        },
+      });
+      return;
+    }
+
+    const key = columns.join("|");
+    const group = groups.get(key) ?? {
+      key,
+      title: getStatusSummaryGroupTitle(columns),
+      columns,
+      rows: [],
+    };
+    group.rows.push({ milestone: row.milestone, counts: row.counts });
+    groups.set(key, group);
+  });
+
+  return [...(commonGroup.rows.length ? [commonGroup] : []), ...Array.from(groups.values())];
+}
+
+function isStatusSummaryColumn(stage: string): stage is StatusSummaryColumn {
+  return statusSummaryColumns.includes(stage as StatusSummaryColumn);
+}
+
+function getStatusSummaryColumnsForRow(columns: StatusSummaryColumn[]) {
+  if (columns.includes("Opening overdue")) {
+    return ["Live", "In process", "Opening overdue", "Completed"].filter((column) =>
+      columns.includes(column as StatusSummaryColumn),
+    ) as StatusSummaryColumn[];
+  }
+
+  return statusSummaryColumns.filter((column) => columns.includes(column));
+}
+
+function isCommonStatusRow(row: StatusSummaryTableRow & { columns: StatusSummaryColumn[] }) {
+  return (
+    (row.columns.includes("Total files") || row.columns.includes("Total cases")) &&
+    row.columns.includes("In process") &&
+    row.columns.includes("Completed")
+  );
+}
+
+function getStatusSummaryGroupTitle(columns: StatusSummaryDisplayColumn[]) {
+  if (columns.includes("Total cases")) return "Case approval milestones";
+  if (columns.includes("Reviewed")) return "File approval milestones";
+  if (columns.includes("Opening overdue")) return "Bidding";
+  if (columns.includes("Placed")) return "Supply Order";
+  if (columns.includes("Received")) return "Bank Guarantee";
+  if (columns.includes("Valid")) return "Delivery Period";
+  if (columns.length === 2 && columns.includes("Completed") && columns.includes("Pending")) {
+    return "Delivery";
+  }
+  if (columns.length === 3 && columns.includes("Pending")) return "Payment";
+  return "Other milestones";
+}
+
+function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
+  const rows = milestoneDefinitions.flatMap((milestone) =>
+    getMilestoneStatusRows(files, milestone),
+  );
+
+  const supplyOrderIndex = rows.findIndex((row) => row.milestone === "Supply Order");
+  const deliveryPeriodRows = [
+    {
+      milestone: "Delivery Period",
+      stage: "Valid",
+      count: files.filter(isDeliveryPeriodValid).length,
+    },
+    {
+      milestone: "Delivery Period",
+      stage: "Expired",
+      count: files.filter(isDeliveryPeriodExpired).length,
+    },
+    {
+      milestone: "Delivery Period",
+      stage: "Extended",
+      count: files.filter(isDeliveryPeriodExtended).length,
+    },
+  ];
+  const withDeliveryPeriod =
+    supplyOrderIndex === -1
+      ? [...rows, ...deliveryPeriodRows]
+      : [
+          ...rows.slice(0, supplyOrderIndex + 4),
+          ...deliveryPeriodRows,
+          ...rows.slice(supplyOrderIndex + 4),
+        ];
+
+  const bankGuaranteeIndex = withDeliveryPeriod.findIndex(
+    (row) => row.milestone === "Bank Guarantee",
+  );
+  const deliveryRows = [
+    { milestone: "Delivery", stage: "Completed", count: files.filter(isDeliveryCompleted).length },
+    { milestone: "Delivery", stage: "Pending", count: files.filter(isDeliveryDue).length },
+  ];
+
+  if (bankGuaranteeIndex === -1) return [...withDeliveryPeriod, ...deliveryRows];
+  return [
+    ...withDeliveryPeriod.slice(0, bankGuaranteeIndex + 4),
+    ...deliveryRows,
+    ...withDeliveryPeriod.slice(bankGuaranteeIndex + 4),
+  ];
+}
+
+function getMilestoneStatusRows(
+  files: FileRecord[],
+  milestone: MilestoneDefinition,
+): StatusSummaryRow[] {
+  const applicableFiles = files.filter((file) => isMilestoneApplicable(file, milestone));
+  const reachedFiles = applicableFiles.filter((file) => isEligibleMilestone(file, milestone));
+  const activeFiles = applicableFiles.filter((file) => isManualActiveMilestone(file, milestone));
+  const reviewedFiles = activeFiles.filter((file) => isMilestoneReviewed(file, milestone));
+  const pendingFiles = activeFiles.filter((file) => isPendingMilestone(file, milestone));
+  const clearedFiles = applicableFiles.filter((file) => isMilestoneComplete(file, milestone));
+  const base = (stage: string, count: number) => ({
+    milestone: milestone.label,
+    stage,
+    count,
+  });
+
+  if (milestone.key === "bankGuarantee") {
+    const eligibleBgFiles = applicableFiles.filter(isBankGuaranteeEligible);
+    const activeBgFiles = eligibleBgFiles.filter((file) =>
+      isManualActiveMilestone(file, milestone),
+    );
+    return [
+      base("Total files", eligibleBgFiles.length),
+      base(
+        "Received",
+        eligibleBgFiles.filter((file) => hasMilestoneDate(file, milestone.current)).length,
+      ),
+      base(
+        "Pending",
+        activeBgFiles.filter((file) => !hasMilestoneDate(file, milestone.current)).length,
+      ),
+      base(
+        "At previous stage",
+        applicableFiles.filter((file) => !isEligibleMilestone(file, milestone)).length,
+      ),
+    ];
+  }
+
+  if (milestone.key === "payment") {
+    return [
+      base("Completed", clearedFiles.length),
+      base("Pending", pendingFiles.length),
+      base("At previous stage", Math.max(0, applicableFiles.length - reachedFiles.length)),
+    ];
+  }
+
+  if (milestone.key === "bidding") {
+    return [
+      base("Completed", clearedFiles.length),
+      base("In process", activeFiles.filter((file) => !isFileTenderLive(file)).length),
+      base("Opening overdue", applicableFiles.filter(isBidOverdue).length),
+      base("Live", applicableFiles.filter(isFileTenderLive).length),
+      base("At previous stages", Math.max(0, applicableFiles.length - reachedFiles.length)),
+    ];
+  }
+
+  if (milestone.key === "supplyOrder") {
+    return [
+      base("Placed", clearedFiles.length),
+      base("Live", applicableFiles.filter(isLiveSupplyOrder).length),
+      base("Pending", pendingFiles.length),
+      base("At previous stages", Math.max(0, applicableFiles.length - reachedFiles.length)),
+    ];
+  }
+
+  if (milestone.key === "scrutiny" || milestone.key === "cfa") {
+    return [
+      base("In process", activeFiles.length),
+      base("Reviewed", reviewedFiles.length),
+      base("Pending", pendingFiles.length),
+      base("Total files", applicableFiles.length),
+      base("Completed", clearedFiles.length),
+    ];
+  }
+
+  if (["highValue", "tcec", "ifa", "postTcec", "cnc"].includes(milestone.key)) {
+    return [
+      base(milestone.totalLabel ?? "Total", applicableFiles.length),
+      base("Completed", clearedFiles.length),
+      base("At previous stage", Math.max(0, applicableFiles.length - reachedFiles.length)),
+      base("In process", activeFiles.length),
+      base("Reviewed", reviewedFiles.length),
+      base("Pending", pendingFiles.length),
+    ];
+  }
+
+  return [
+    base(milestone.totalLabel ?? "Total", applicableFiles.length),
+    base("Completed", clearedFiles.length),
+    base("In process", activeFiles.length),
+    base("At previous stage", Math.max(0, applicableFiles.length - reachedFiles.length)),
+  ];
+}
+
+function isMilestoneApplicable(file: FileRecord, milestone: MilestoneDefinition) {
+  return milestone.applies ? milestone.applies(file) : true;
+}
+
+function isEligibleMilestone(file: FileRecord, milestone: MilestoneDefinition) {
+  return (
+    isMilestoneApplicable(file, milestone) && isPreviousApplicableMilestoneComplete(file, milestone)
+  );
+}
+
+function isPreviousApplicableMilestoneComplete(file: FileRecord, milestone: MilestoneDefinition) {
+  if (milestone.key === "bankGuarantee") return isSupplyOrderPlaced(file);
+
+  let previousMilestone: MilestoneDefinition | undefined;
+  for (const item of milestoneDefinitions) {
+    if (item.key === milestone.key) break;
+    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  }
+  return previousMilestone
+    ? isMilestoneComplete(file, previousMilestone)
+    : hasMilestoneDate(file, "receivedDate");
+}
+
+function isMilestoneComplete(file: FileRecord, milestone: MilestoneDefinition) {
+  if (milestone.key === "bidding") return isYes(file.biddingStageOver);
+  return hasMilestoneDate(file, milestone.current);
+}
+
+function isMilestoneReviewed(file: FileRecord, milestone: MilestoneDefinition) {
+  if (!milestone.reviewed) return false;
+  return (
+    isManualActiveMilestone(file, milestone) &&
+    hasMilestoneDate(file, milestone.reviewed) &&
+    !isMilestoneComplete(file, milestone)
+  );
+}
+
+function isPendingMilestone(file: FileRecord, milestone: MilestoneDefinition) {
+  if (milestone.reviewed) {
+    return (
+      isManualActiveMilestone(file, milestone) &&
+      !hasMilestoneDate(file, milestone.reviewed) &&
+      !isMilestoneComplete(file, milestone)
+    );
+  }
+  return isManualActiveMilestone(file, milestone) && !isMilestoneComplete(file, milestone);
+}
+
+function isManualActiveMilestone(file: FileRecord, milestone: MilestoneDefinition) {
+  const current = normalizeMilestoneName(file.currentMilestone);
+  return getMilestoneNameAliases(milestone).some(
+    (name) => current === normalizeMilestoneName(name),
+  );
+}
+
+function getMilestoneNameAliases(milestone: MilestoneDefinition) {
+  return milestone.key === "control" ? [milestone.label, "Controlled"] : [milestone.label];
+}
+
+function normalizeMilestoneName(value: string | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
+  "soDate",
+  "bgValidityDate",
+  "paymentDate",
+]);
+
+function hasMilestoneDate(file: FileRecord, key: keyof FileRecord | keyof SupplyOrderDetail) {
+  return supplyOrderDateKeys.has(key as keyof SupplyOrderDetail)
+    ? fileSupplyOrders(file).some((order) => hasFilledString(order[key as keyof SupplyOrderDetail]))
+    : hasFilledField(file, key as keyof FileRecord);
+}
+
+function hasFilledField(file: FileRecord, key: keyof FileRecord) {
+  const value = file[key];
+  return typeof value === "string" ? hasFilledString(value) : Boolean(value);
+}
+
+function fileSupplyOrders(file: FileRecord) {
+  const rows =
+    file.supplyOrders
+      ?.map((row) => ({ ...row }))
+      .filter((row) => Object.values(row).some((value) => Boolean(String(value ?? "").trim()))) ??
+    [];
+  if (rows.length) return rows;
+
+  const legacy: SupplyOrderDetail = {
+    soDate: file.soDate,
+    dpDate: file.dpDate,
+    bgValidityDate: file.bgValidityDate,
+    dpExtension: file.dpExtension,
+    revisedDp: file.revisedDp,
+    materialReceiptDate: file.materialReceiptDate,
+    paymentDate: file.paymentDate,
+    bgReturnDate: file.bgReturnDate,
+    soCancelled: file.soCancelled,
+  };
+  return Object.values(legacy).some((value) => Boolean(String(value ?? "").trim())) ? [legacy] : [];
+}
+
+function isSupplyOrderPlaced(file: FileRecord) {
+  const supplyOrderMilestone = milestoneDefinitions.find(
+    (milestone) => milestone.key === "supplyOrder",
+  );
+  return supplyOrderMilestone ? isMilestoneComplete(file, supplyOrderMilestone) : false;
+}
+
+function isBankGuaranteeEligible(file: FileRecord) {
+  return (
+    isYes(file.bg) &&
+    fileSupplyOrders(file).some((order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled))
+  );
+}
+
+function isLiveSupplyOrder(file: FileRecord) {
+  return fileSupplyOrders(file).some(
+    (order) =>
+      hasSupplyOrderDate(order) &&
+      !hasFilledString(order.materialReceiptDate) &&
+      !isYes(order.soCancelled),
+  );
+}
+
+function isDeliveryCompleted(file: FileRecord) {
+  return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isCompletedDeliveryOrder);
+}
+
+function isDeliveryDue(file: FileRecord) {
+  return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isDueDeliveryOrder);
+}
+
+function isCompletedDeliveryOrder(order: SupplyOrderDetail) {
+  return hasSupplyOrderDate(order) && hasFilledString(order.materialReceiptDate);
+}
+
+function isDueDeliveryOrder(order: SupplyOrderDetail) {
+  return (
+    hasSupplyOrderDate(order) &&
+    !hasFilledString(order.materialReceiptDate) &&
+    !isYes(order.soCancelled)
+  );
+}
+
+function isDeliveryPeriodValid(file: FileRecord) {
+  return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isValidDeliveryPeriodOrder);
+}
+
+function isDeliveryPeriodExpired(file: FileRecord) {
+  return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isExpiredDeliveryPeriodOrder);
+}
+
+function isDeliveryPeriodExtended(file: FileRecord) {
+  return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isExtendedDeliveryPeriodOrder);
+}
+
+function isValidDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  return (
+    hasSupplyOrderDate(order) &&
+    !hasFilledString(order.revisedDp) &&
+    isDateAfterToday(order.dpDate) &&
+    !hasFilledString(order.materialReceiptDate)
+  );
+}
+
+function isExpiredDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return (
+    hasSupplyOrderDate(order) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateBeforeToday(deliveryPeriodDate) &&
+    !hasFilledString(order.materialReceiptDate)
+  );
+}
+
+function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  return (
+    hasSupplyOrderDate(order) &&
+    hasFilledString(order.revisedDp) &&
+    isDateAfterToday(order.revisedDp) &&
+    !hasFilledString(order.materialReceiptDate)
+  );
+}
+
+function isFileTenderLive(file: FileRecord) {
+  return isYes(file.tenderLive);
+}
+
+function isBidOverdue(file: FileRecord) {
+  return (
+    isNo(file.bidOpened) &&
+    (isDateBeforeToday(file.bidOpeningDate) || isDateBeforeToday(file.refloatBidOpeningDate))
+  );
+}
+
+function hasSupplyOrderDate(order: SupplyOrderDetail) {
+  return hasFilledString(order.soDate);
+}
+
+function hasFilledString(value: string | undefined) {
+  return Boolean(value?.trim());
+}
+
+function isYes(value: string | undefined) {
+  return value?.trim().toLowerCase() === "yes";
+}
+
+function isNo(value: string | undefined) {
+  return value?.trim().toLowerCase() === "no";
+}
+
+function isDateBeforeToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+  if (dateTime === undefined || todayTime === undefined) return false;
+  return dateTime < todayTime;
+}
+
+function isDateAfterToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+  if (dateTime === undefined || todayTime === undefined) return false;
+  return dateTime > todayTime;
+}
+
+function parseLocalDateTime(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const parsed = new Date(`${date}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
