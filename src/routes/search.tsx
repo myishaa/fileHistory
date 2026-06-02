@@ -1290,6 +1290,7 @@ function EditModal({
 
   return (
     <ModalShell title="File details" onClose={onClose}>
+      <p className="mb-4 text-xs text-black">Click Save to save, else data will be lost.</p>
       <div className="space-y-6">
         {fieldSections.map((section) => (
           <section key={section.title}>

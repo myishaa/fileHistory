@@ -592,21 +592,26 @@ function AddFilePage() {
     if (!isEditing) return null;
 
     return (
-      <button
-        type="button"
-        onClick={() => toggleSectionLock(sectionTitle)}
-        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-background text-xs font-medium text-foreground border border-border hover:bg-accent"
-      >
-        {unlockedSections.has(sectionTitle) ? (
-          <>
-            <Unlock className="size-3.5" /> Unlocked
-          </>
-        ) : (
-          <>
-            <Lock className="size-3.5" /> Edit block
-          </>
-        )}
-      </button>
+      <span className="flex flex-col items-end gap-1">
+        <button
+          type="button"
+          onClick={() => toggleSectionLock(sectionTitle)}
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-background text-xs font-medium text-foreground border border-border hover:bg-accent"
+        >
+          {unlockedSections.has(sectionTitle) ? (
+            <>
+              <Unlock className="size-3.5" /> Unlocked
+            </>
+          ) : (
+            <>
+              <Lock className="size-3.5" /> Edit block
+            </>
+          )}
+        </button>
+        <span className="text-[11px] font-normal text-black">
+          Click Update to save, else data will be lost.
+        </span>
+      </span>
     );
   };
   const renderSectionFields = (section: (typeof extraSections)[number]) => (
