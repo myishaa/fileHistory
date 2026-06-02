@@ -847,7 +847,13 @@ type StatusMetric = {
   toneCount?: boolean;
 };
 
-function StatusMetricBox({ metric }: { metric: StatusMetric }) {
+function StatusMetricBox({
+  metric,
+  tone,
+}: {
+  metric: StatusMetric;
+  tone: ReturnType<typeof getMilestoneTone>;
+}) {
   const content = (
     <>
       <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
@@ -858,9 +864,7 @@ function StatusMetricBox({ metric }: { metric: StatusMetric }) {
   );
   const className =
     "min-h-12 rounded-md border px-2 py-1.5 text-center transition hover:ring-2 hover:ring-ring/30 " +
-    (metric.toneCount
-      ? "border-chart-5/40 bg-chart-5/15 text-foreground hover:bg-chart-5/20"
-      : "border-border bg-card hover:bg-accent");
+    (metric.toneCount ? tone.activeCount : "border-border bg-card hover:bg-accent");
 
   if (!metric.onClick) {
     return (
@@ -1087,11 +1091,11 @@ function MilestoneFlowNode({
             </span>
           </span>
           {milestone.key === "scrutiny" ? (
-            <ScrutinyMetricGrid metrics={metrics} />
+            <ScrutinyMetricGrid metrics={metrics} tone={tone} />
           ) : (
             <span className={metricGridClass}>
               {metrics.map((metric) => (
-                <StatusMetricBox key={metric.label} metric={metric} />
+                <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
               ))}
             </span>
           )}
@@ -1112,7 +1116,13 @@ function MilestoneFlowNode({
   );
 }
 
-function ScrutinyMetricGrid({ metrics }: { metrics: StatusMetric[] }) {
+function ScrutinyMetricGrid({
+  metrics,
+  tone,
+}: {
+  metrics: StatusMetric[];
+  tone: ReturnType<typeof getMilestoneTone>;
+}) {
   const active = metrics.find((metric) => metric.label === "Active");
   const reviewed = metrics.find((metric) => metric.label === "Reviewed");
   const pending = metrics.find((metric) => metric.label === "Pending");
@@ -1123,7 +1133,7 @@ function ScrutinyMetricGrid({ metrics }: { metrics: StatusMetric[] }) {
     return (
       <span className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
         {metrics.map((metric) => (
-          <StatusMetricBox key={metric.label} metric={metric} />
+          <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
         ))}
       </span>
     );
@@ -1132,14 +1142,11 @@ function ScrutinyMetricGrid({ metrics }: { metrics: StatusMetric[] }) {
   return (
     <span className="grid gap-1.5">
       <span className="grid grid-cols-2 gap-1.5">
-        <StatusMetricBox metric={total} />
-        <StatusMetricBox metric={completed} />
+        <StatusMetricBox metric={total} tone={tone} />
+        <StatusMetricBox metric={completed} tone={tone} />
       </span>
-      <span className="grid grid-cols-3 gap-1.5 rounded-md border border-chart-5/40 bg-chart-5/10 p-1.5">
-        <MetricButton
-          metric={active}
-          className="border-chart-5/50 bg-chart-5/15 hover:bg-chart-5/20"
-        />
+      <span className={"grid grid-cols-3 gap-1.5 rounded-md border p-1.5 " + tone.activeGroup}>
+        <MetricButton metric={active} className={tone.activeCount} />
         <MetricButton metric={reviewed} className="bg-card hover:bg-accent" compact />
         <MetricButton metric={pending} className="bg-card hover:bg-accent" compact />
       </span>
@@ -1486,6 +1493,8 @@ function getMilestoneTone(count: number) {
       card: "border-success/30 bg-success/10 hover:bg-success/15",
       step: "bg-success text-success-foreground",
       count: "bg-success/15 text-foreground",
+      activeCount: "border-success/45 bg-success/20 text-foreground hover:bg-success/25",
+      activeGroup: "border-success/35 bg-success/15",
       bar: "bg-success",
     };
   }
@@ -1494,6 +1503,9 @@ function getMilestoneTone(count: number) {
       card: "border-destructive/30 bg-destructive/10 hover:bg-destructive/15",
       step: "bg-destructive text-destructive-foreground",
       count: "bg-destructive/15 text-foreground",
+      activeCount:
+        "border-destructive/45 bg-destructive/20 text-foreground hover:bg-destructive/25",
+      activeGroup: "border-destructive/35 bg-destructive/15",
       bar: "bg-destructive",
     };
   }
@@ -1501,6 +1513,8 @@ function getMilestoneTone(count: number) {
     card: "border-warning/35 bg-warning/10 hover:bg-warning/15",
     step: "bg-warning text-warning-foreground",
     count: "bg-warning/15 text-foreground",
+    activeCount: "border-warning/50 bg-warning/20 text-foreground hover:bg-warning/25",
+    activeGroup: "border-warning/40 bg-warning/15",
     bar: "bg-warning",
   };
 }
@@ -1796,14 +1810,9 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     const reviewedFiles = activeFiles.filter((file) => isMilestoneReviewed(file, milestone));
     const clearedFiles = applicableFiles.filter((file) => isMilestoneComplete(file, milestone));
     const pendingFiles = activeFiles.filter((file) => isPendingMilestone(file, milestone));
-    const total =
-      milestone.key === "payment" ? countSupplyOrders(applicableFiles) : applicableFiles.length;
-    const cleared =
-      milestone.key === "payment"
-        ? countPaymentCompletedOrders(applicableFiles)
-        : clearedFiles.length;
-    const pending =
-      milestone.key === "payment" ? countPaymentPendingOrders(activeFiles) : pendingFiles.length;
+    const total = applicableFiles.length;
+    const cleared = clearedFiles.length;
+    const pending = pendingFiles.length;
 
     if (milestone.key === "bankGuarantee") {
       const eligibleBgFiles = applicableFiles.filter(isBankGuaranteeEligible);
@@ -2121,35 +2130,6 @@ function isSupplyOrderPlaced(file: FileRecord) {
     (milestone) => milestone.key === "supplyOrder",
   );
   return supplyOrderMilestone ? isMilestoneComplete(file, supplyOrderMilestone) : false;
-}
-
-function countSupplyOrders(files: FileRecord[]) {
-  return files.reduce(
-    (sum, file) => sum + fileSupplyOrders(file).filter(hasSupplyOrderDate).length,
-    0,
-  );
-}
-
-function countPaymentCompletedOrders(files: FileRecord[]) {
-  return files.reduce(
-    (sum, file) =>
-      sum +
-      fileSupplyOrders(file).filter(
-        (order) => hasSupplyOrderDate(order) && hasFilledString(order.paymentDate),
-      ).length,
-    0,
-  );
-}
-
-function countPaymentPendingOrders(files: FileRecord[]) {
-  return files.reduce(
-    (sum, file) =>
-      sum +
-      fileSupplyOrders(file).filter(
-        (order) => hasSupplyOrderDate(order) && !hasFilledString(order.paymentDate),
-      ).length,
-    0,
-  );
 }
 
 function isBankGuaranteeEligible(file: FileRecord) {

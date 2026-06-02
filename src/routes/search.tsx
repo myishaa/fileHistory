@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 import { formatThousandsAndLakhs, getInrAmount, parseAmount } from "@/lib/money";
+import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
 
 export const Route = createFileRoute("/search")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -1266,7 +1267,17 @@ function EditModal({
   };
 
   const save = () => {
-    store.updateFile(file.id, toFilePatch(applyConditionalRules(formWithLockedYear)));
+    const patch = toFilePatch(applyConditionalRules(formWithLockedYear));
+    const nextFile = { ...file, ...patch };
+    const milestoneErrors = validateMilestoneCompletionConsistency(
+      nextFile,
+      getConfiguredMilestones(settings.milestones),
+    );
+    if (milestoneErrors.length) {
+      alert(["Please fix milestone status before saving:", ...milestoneErrors].join("\n"));
+      return;
+    }
+    store.updateFile(file.id, patch);
     onClose();
   };
 

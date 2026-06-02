@@ -14,6 +14,7 @@ import {
 } from "@/lib/files-store";
 import { Save, Eraser, Lock, Printer, Trash2, Unlock } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
+import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
 
 export const Route = createFileRoute("/add")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -628,7 +629,7 @@ function AddFilePage() {
                   ),
                 }
               : field;
-        const sectionLocked = isEditing && !unlockedSections.has(section.title);
+        const lockFilledFields = isEditing && !unlockedSections.has(section.title);
 
         if (field.key === "valueCapital") {
           return (
@@ -638,7 +639,7 @@ function AddFilePage() {
               revenueValue={formWithLockedYear.valueRevenue}
               capitalSelected={formWithLockedYear.valueCapitalSelected === "Yes"}
               revenueSelected={formWithLockedYear.valueRevenueSelected === "Yes"}
-              disabled={sectionLocked}
+              lockFilledFields={lockFilledFields}
               onChange={(patch) => {
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
                 setSupplyOrders((current) =>
@@ -663,7 +664,7 @@ function AddFilePage() {
               revenueSelected={formWithLockedYear.valueRevenueSelected === "Yes"}
               capitalValue={formWithLockedYear.soValueCapital}
               revenueValue={formWithLockedYear.soValueRevenue}
-              disabled={sectionLocked}
+              lockFilledFields={lockFilledFields}
               onChange={(patch) =>
                 setForm((current) => applyConditionalRules({ ...current, ...patch }))
               }
@@ -680,7 +681,7 @@ function AddFilePage() {
               field.key === "year" ||
               field.key === "uniqueCode" ||
               field.key === "tenderLive" ||
-              sectionLocked ||
+              (lockFilledFields && hasFilledValue(formWithLockedYear[field.key])) ||
               (field.key === "adVettingDate" && adVettingDisabled) ||
               (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
               (gemIsNo && gemDisabledKeys.includes(field.key)) ||
@@ -714,6 +715,11 @@ function AddFilePage() {
       currentMilestone: currentMilestone || undefined,
       completedMilestones: completedMilestones.length ? completedMilestones : undefined,
     };
+    const milestoneErrors = validateMilestoneCompletionConsistency(payload, milestoneOptions);
+    if (milestoneErrors.length) {
+      alert(["Please fix milestone status before saving:", ...milestoneErrors].join("\n"));
+      return;
+    }
     if (editingFile) {
       store.updateFile(editingFile.id, payload);
       setUnlockedSections(new Set());
@@ -789,7 +795,8 @@ function AddFilePage() {
               applicableMilestones={applicableMilestones}
               currentMilestone={currentMilestone}
               completedMilestones={completedMilestones}
-              disabled={milestonesLocked}
+              disabled={false}
+              lockFilledFields={milestonesLocked}
               lockControl={renderSectionUnlockButton("Milestones")}
               onCurrentChange={setCurrentMilestone}
               onCompletedChange={setCompletedMilestones}
@@ -810,7 +817,8 @@ function AddFilePage() {
               {activeSection.title === "Firm details" ? (
                 <FirmDetailsBlock
                   details={firmDetails}
-                  disabled={firmDetailsLocked}
+                  disabled={false}
+                  lockFilledFields={firmDetailsLocked}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
                   onDelete={deleteFirmDetail}
@@ -820,13 +828,16 @@ function AddFilePage() {
                 <SupplyOrdersBlock
                   form={formWithLockedYear}
                   orders={supplyOrders}
-                  disabled={supplyOrdersLocked}
+                  disabled={false}
+                  lockFilledFields={supplyOrdersLocked}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
                   onCountChange={
-                    supplyOrdersLocked ? () => undefined : (value) => update("noOfSo", value)
+                    supplyOrdersLocked && hasFilledValue(formWithLockedYear.noOfSo)
+                      ? () => undefined
+                      : (value) => update("noOfSo", value)
                   }
-                  onOrderChange={supplyOrdersLocked ? () => undefined : updateSupplyOrder}
+                  onOrderChange={updateSupplyOrder}
                 />
               ) : (
                 renderSectionFields(activeSection)
@@ -911,6 +922,7 @@ function SectionBoard({
 function FirmDetailsBlock({
   details,
   disabled,
+  lockFilledFields,
   onAdd,
   onChange,
   onDelete,
@@ -918,6 +930,7 @@ function FirmDetailsBlock({
 }: {
   details: FirmDetailsState;
   disabled: boolean;
+  lockFilledFields: boolean;
   onAdd: (group: keyof FirmDetailsState) => void;
   onChange: (
     group: keyof FirmDetailsState,
@@ -1025,7 +1038,16 @@ function FirmDetailsBlock({
       </div>
 
       <div className="space-y-3">
-        {rows.map((row, index) => (
+        {rows.map((row, index) => {
+          const rowHasValue =
+            hasFilledValue(row.firmName) ||
+            hasFilledValue(row.city) ||
+            hasFilledValue(row.emailId);
+          const firmNameDisabled = disabled || (lockFilledFields && hasFilledValue(row.firmName));
+          const cityDisabled = disabled || (lockFilledFields && hasFilledValue(row.city));
+          const emailDisabled = disabled || (lockFilledFields && hasFilledValue(row.emailId));
+          const rowActionDisabled = disabled || (lockFilledFields && rowHasValue);
+          return (
           <div
             key={index}
             className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
@@ -1035,7 +1057,7 @@ function FirmDetailsBlock({
                 type="checkbox"
                 checked={selectedRows.has(index)}
                 onChange={(event) => toggleSelectedRow(index, event.target.checked)}
-                disabled={disabled}
+                disabled={rowActionDisabled}
                 className="size-4 rounded border-border accent-primary"
               />
               <span className="text-xs text-muted-foreground md:sr-only">Select firm</span>
@@ -1045,8 +1067,8 @@ function FirmDetailsBlock({
               <input
                 value={row.firmName ?? ""}
                 onChange={(event) => onChange(activeTab, index, "firmName", event.target.value)}
-                disabled={disabled}
-                className={inputCls + disabledCls(disabled)}
+                disabled={firmNameDisabled}
+                className={inputCls + disabledCls(firmNameDisabled)}
               />
             </label>
             <label className="block">
@@ -1054,8 +1076,8 @@ function FirmDetailsBlock({
               <input
                 value={row.city ?? ""}
                 onChange={(event) => onChange(activeTab, index, "city", event.target.value)}
-                disabled={disabled}
-                className={inputCls + disabledCls(disabled)}
+                disabled={cityDisabled}
+                className={inputCls + disabledCls(cityDisabled)}
               />
             </label>
             <label className="block">
@@ -1064,25 +1086,26 @@ function FirmDetailsBlock({
                 type="email"
                 value={row.emailId ?? ""}
                 onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
-                disabled={disabled}
-                className={inputCls + disabledCls(disabled)}
+                disabled={emailDisabled}
+                className={inputCls + disabledCls(emailDisabled)}
               />
             </label>
             <button
               type="button"
               onClick={() => deleteFirm(index)}
-              disabled={disabled}
+              disabled={rowActionDisabled}
               aria-label="Delete firm"
               title="Delete firm"
               className={
                 "inline-flex size-9 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10 md:self-end" +
-                disabledCls(disabled)
+                disabledCls(rowActionDisabled)
               }
             >
               <Trash2 className="size-4" />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <button
@@ -1104,6 +1127,7 @@ function SupplyOrdersBlock({
   form,
   orders,
   disabled,
+  lockFilledFields,
   gemDisabled,
   bgDisabled,
   onCountChange,
@@ -1112,6 +1136,7 @@ function SupplyOrdersBlock({
   form: FormState;
   orders: SupplyOrderDetail[];
   disabled: boolean;
+  lockFilledFields: boolean;
   gemDisabled: boolean;
   bgDisabled: boolean;
   onCountChange: (value: string) => void;
@@ -1122,7 +1147,7 @@ function SupplyOrdersBlock({
       <DynamicField
         field={{ key: "noOfSo", label: "No. of S.O.", type: "number" }}
         value={form.noOfSo}
-        disabled={disabled}
+        disabled={disabled || (lockFilledFields && hasFilledValue(form.noOfSo))}
         onChange={onCountChange}
       />
 
@@ -1144,6 +1169,7 @@ function SupplyOrdersBlock({
                     capitalValue={order.soValueCapital ?? ""}
                     revenueValue={order.soValueRevenue ?? ""}
                     disabled={disabled}
+                    lockFilledFields={lockFilledFields}
                     onChange={(patch) => {
                       if ("soValueCapital" in patch) {
                         onOrderChange(index, "soValueCapital", patch.soValueCapital);
@@ -1163,6 +1189,7 @@ function SupplyOrdersBlock({
                   value={String(order[key] ?? "")}
                   disabled={
                     disabled ||
+                    (lockFilledFields && hasFilledValue(String(order[key] ?? ""))) ||
                     (gemDisabled && key === "gemSoNo") ||
                     (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
                   }
@@ -1312,6 +1339,7 @@ function MilestonesBlock({
   currentMilestone,
   completedMilestones,
   disabled,
+  lockFilledFields,
   lockControl,
   onCurrentChange,
   onCompletedChange,
@@ -1321,6 +1349,7 @@ function MilestonesBlock({
   currentMilestone: string;
   completedMilestones: string[];
   disabled: boolean;
+  lockFilledFields: boolean;
   lockControl: ReactNode;
   onCurrentChange: (value: string) => void;
   onCompletedChange: (value: string[]) => void;
@@ -1390,6 +1419,9 @@ function MilestonesBlock({
           {applicableMilestoneList.map((milestone) => {
             const isCompleted = completedSet.has(milestone);
             const isCurrent = currentMilestone === milestone;
+            const currentDisabled =
+              disabled || isCompleted || (lockFilledFields && hasFilledValue(currentMilestone));
+            const completedDisabled = disabled || (lockFilledFields && isCompleted);
             return (
               <div
                 key={milestone}
@@ -1402,7 +1434,7 @@ function MilestonesBlock({
                   <input
                     type="checkbox"
                     checked={isCurrent}
-                    disabled={disabled || isCompleted}
+                    disabled={currentDisabled}
                     onChange={() => toggleCurrent(milestone)}
                     className="size-4 accent-primary disabled:cursor-not-allowed"
                     aria-label={`Mark ${milestone} as current`}
@@ -1412,7 +1444,7 @@ function MilestonesBlock({
                   <input
                     type="checkbox"
                     checked={isCompleted}
-                    disabled={disabled}
+                    disabled={completedDisabled}
                     onChange={() => toggleCompleted(milestone)}
                     className="size-4 accent-primary disabled:cursor-not-allowed"
                     aria-label={`Mark ${milestone} as completed`}
@@ -2142,6 +2174,7 @@ function ValueField({
   capitalSelected,
   revenueSelected,
   disabled,
+  lockFilledFields = false,
   onChange,
 }: {
   capitalValue: string;
@@ -2149,6 +2182,7 @@ function ValueField({
   capitalSelected: boolean;
   revenueSelected: boolean;
   disabled: boolean;
+  lockFilledFields?: boolean;
   onChange: (
     patch: Pick<
       FormState,
@@ -2157,6 +2191,9 @@ function ValueField({
   ) => void;
 }) {
   const value = capitalSelected ? capitalValue : revenueSelected ? revenueValue : "";
+  const selected = capitalSelected || revenueSelected;
+  const selectionDisabled = disabled || (lockFilledFields && selected);
+  const valueDisabled = disabled || !selected || (lockFilledFields && hasFilledValue(value));
 
   const updateCapital = (checked: boolean) => {
     onChange({
@@ -2194,7 +2231,7 @@ function ValueField({
             <input
               type="checkbox"
               checked={capitalSelected}
-              disabled={disabled}
+              disabled={selectionDisabled}
               onChange={(event) => updateCapital(event.target.checked)}
               className="size-4 rounded border-input"
             />
@@ -2204,7 +2241,7 @@ function ValueField({
             <input
               type="checkbox"
               checked={revenueSelected}
-              disabled={disabled}
+              disabled={selectionDisabled}
               onChange={(event) => updateRevenue(event.target.checked)}
               className="size-4 rounded border-input"
             />
@@ -2215,9 +2252,9 @@ function ValueField({
           value={value}
           onChange={(event) => updateValue(event.target.value)}
           inputMode="decimal"
-          disabled={disabled || (!capitalSelected && !revenueSelected)}
+          disabled={valueDisabled}
           placeholder="Enter value"
-          className={inputCls + disabledCls(disabled || (!capitalSelected && !revenueSelected))}
+          className={inputCls + disabledCls(valueDisabled)}
         />
       </div>
     </Field>
@@ -2230,6 +2267,7 @@ function SoValueField({
   capitalValue,
   revenueValue,
   disabled,
+  lockFilledFields = false,
   onChange,
 }: {
   capitalSelected: boolean;
@@ -2237,11 +2275,12 @@ function SoValueField({
   capitalValue: string;
   revenueValue: string;
   disabled: boolean;
+  lockFilledFields?: boolean;
   onChange: (patch: Pick<FormState, "soValueCapital" | "soValueRevenue">) => void;
 }) {
   const selectedType = capitalSelected ? "Capital" : revenueSelected ? "Revenue" : "";
   const value = capitalSelected ? capitalValue : revenueSelected ? revenueValue : "";
-  const fieldDisabled = disabled || !selectedType;
+  const fieldDisabled = disabled || !selectedType || (lockFilledFields && hasFilledValue(value));
 
   const updateValue = (nextValue: string) => {
     const cleanedValue = formatDecimalInput(nextValue);
@@ -2396,6 +2435,10 @@ function DynamicField({
 
 function disabledCls(disabled: boolean) {
   return disabled ? " opacity-60 cursor-not-allowed" : "";
+}
+
+function hasFilledValue(value: string | undefined) {
+  return Boolean(value?.trim());
 }
 
 function formatDecimalInput(value: string) {
