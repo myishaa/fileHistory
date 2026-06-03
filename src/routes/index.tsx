@@ -33,6 +33,21 @@ export const Route = createFileRoute("/")({
 
 type DashboardTab = "snapshot" | "status" | "analytics" | "finance";
 type StatusActionMode = "pdf" | "excel" | "search";
+type AnalyticsPanelKey =
+  | "divisionFiles"
+  | "divisionValue"
+  | "divisionTurnaround"
+  | "fileDistribution"
+  | "topFirms"
+  | "indentorsByFiles"
+  | "indentorsByValue"
+  | "milestoneClearing"
+  | "monthlyInflow"
+  | "biddingMode"
+  | "fileValueThresholds"
+  | "riskLoad"
+  | "paymentPending"
+  | "milestoneClearingTable";
 type SummarySubMetric = { label: string; value: number | string; searchFilter?: string };
 type FinanceSplitValue = { capital: string; revenue: string };
 type SummaryMetricValue = number | string | FinanceSplitValue | SummarySubMetric[];
@@ -69,6 +84,8 @@ export function Dashboard() {
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>("status");
   const [statusActionMode, setStatusActionMode] = useState<StatusActionMode>("search");
+  const [activeAnalyticsPanel, setActiveAnalyticsPanel] =
+    useState<AnalyticsPanelKey>("divisionFiles");
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -168,6 +185,24 @@ export function Dashboard() {
   );
 
   const topSummaryStats: SummaryStat[] = getAttributeSummaryStats(dashboardFiles);
+  const biddingTypeSummaryStat: SummaryStat = {
+    label: "Bidding type",
+    value: modeCounts.map((mode) => ({
+      label: mode.name,
+      value: mode.count,
+      searchFilter: `mode:${mode.name}`,
+    })),
+    hint: "Files grouped by bidding type",
+  };
+  const fileTypeSummaryStat: SummaryStat = {
+    label: "File type",
+    value: getFileTypeCounts(dashboardFiles).map((fileType) => ({
+      label: fileType.name,
+      value: fileType.count,
+      searchFilter: `fileType:${fileType.name}`,
+    })),
+    hint: "Files grouped by file type",
+  };
 
   const compactSummaryStats: SummaryStat[] = [];
 
@@ -236,6 +271,137 @@ export function Dashboard() {
       )}`,
     },
   ];
+  const analyticsPanels: Array<{
+    key: AnalyticsPanelKey;
+    title: string;
+    subtitle: string;
+    content: ReactNode;
+  }> = [
+    {
+      key: "divisionFiles",
+      title: "Division ranking by files",
+      subtitle: "Number of files, descending",
+      content: <AnalyticsBarChart data={analytics.divisionFileRanking} valueKey="count" />,
+    },
+    {
+      key: "divisionValue",
+      title: "Division ranking by value",
+      subtitle: "Total demand value",
+      content: (
+        <AnalyticsBarChart
+          data={analytics.divisionValueRanking}
+          valueKey="value"
+          valueFormatter={formatCompactCurrency}
+        />
+      ),
+    },
+    {
+      key: "divisionTurnaround",
+      title: "Division turnaround ranking",
+      subtitle: "Average days from received date to first S.O.",
+      content: (
+        <AnalyticsBarChart
+          data={analytics.divisionTurnaroundRanking}
+          valueKey="averageDays"
+          valueFormatter={(value) => `${value}d`}
+        />
+      ),
+    },
+    {
+      key: "fileDistribution",
+      title: "File distribution",
+      subtitle: "Share by division",
+      content: <AnalyticsPieChart data={analytics.divisionFileRanking.slice(0, 8)} />,
+    },
+    {
+      key: "topFirms",
+      title: "Top 20 firms by S.O. value",
+      subtitle: "Supply order value, capital plus revenue",
+      content: (
+        <AnalyticsBarChart
+          data={analytics.topFirmSupplyOrders}
+          valueKey="value"
+          valueFormatter={formatCompactCurrency}
+          height={420}
+        />
+      ),
+    },
+    {
+      key: "indentorsByFiles",
+      title: "Top 10 indentors by files",
+      subtitle: "Number of files raised",
+      content: <AnalyticsBarChart data={analytics.topIndentorsByFiles} valueKey="count" />,
+    },
+    {
+      key: "indentorsByValue",
+      title: "Top 10 indentors by value",
+      subtitle: "Total demand value",
+      content: (
+        <AnalyticsBarChart
+          data={analytics.topIndentorsByValue}
+          valueKey="value"
+          valueFormatter={formatCompactCurrency}
+        />
+      ),
+    },
+    {
+      key: "milestoneClearing",
+      title: "Milestones by clearing time",
+      subtitle: "Average clearing time in days",
+      content: (
+        <AnalyticsLineChart data={analytics.milestoneClearingRanking} valueKey="averageDays" />
+      ),
+    },
+    {
+      key: "monthlyInflow",
+      title: "Monthly file inflow",
+      subtitle: "Files received by month",
+      content: <AnalyticsLineChart data={analytics.monthlyFileInflow} valueKey="count" />,
+    },
+    {
+      key: "biddingMode",
+      title: "Bidding mode mix",
+      subtitle: "Distribution by mode",
+      content: <AnalyticsPieChart data={analytics.biddingModeMix} />,
+    },
+    {
+      key: "fileValueThresholds",
+      title: "File value thresholds",
+      subtitle: "Number of files by total demand value",
+      content: <AnalyticsBarChart data={analytics.fileValueThresholds} valueKey="count" />,
+    },
+    {
+      key: "riskLoad",
+      title: "Risk load by division",
+      subtitle: "Delivery pending, expired DP, LD, or cancelled S.O.",
+      content: <AnalyticsBarChart data={analytics.divisionRiskRanking} valueKey="count" />,
+    },
+    {
+      key: "paymentPending",
+      title: "Payment pending by division",
+      subtitle: "Material received but payment not completed",
+      content: (
+        <AnalyticsBarChart data={analytics.divisionPaymentPendingRanking} valueKey="count" />
+      ),
+    },
+    {
+      key: "milestoneClearingTable",
+      title: "Milestone clearing ranking",
+      subtitle: "Slowest milestones by average clearing time",
+      content: (
+        <AnalyticsRankingTable
+          columns={[
+            { key: "name", label: "Milestone", align: "left" },
+            { key: "averageDays", label: "Avg days", format: (value) => `${value}d` },
+            { key: "sampleSize", label: "Files" },
+          ]}
+          rows={analytics.milestoneClearingRanking}
+        />
+      ),
+    },
+  ];
+  const selectedAnalyticsPanel =
+    analyticsPanels.find((panel) => panel.key === activeAnalyticsPanel) ?? analyticsPanels[0];
 
   const openSearchFilter = (dashboardFilter: string) => {
     navigate({
@@ -323,6 +489,14 @@ export function Dashboard() {
                   />
                 );
               })}
+              <SummaryMetric
+                {...biddingTypeSummaryStat}
+                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+              />
+              <SummaryMetric
+                {...fileTypeSummaryStat}
+                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+              />
               <div className="grid grid-cols-2 gap-2">
                 {compactSummaryStats.map((stat) => {
                   const searchFilter = stat.searchFilter;
@@ -350,31 +524,6 @@ export function Dashboard() {
               })}
             </div>
           </div>
-          <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
-            <div className="flex items-center justify-between mb-5">
-              <div>
-                <h2 className="text-sm font-bold">Bidding mode</h2>
-                <p className="text-xs text-muted-foreground">Files grouped by bidding mode</p>
-              </div>
-            </div>
-            {modeCounts.length ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
-                {modeCounts.map((mode) => (
-                  <button
-                    type="button"
-                    key={mode.name}
-                    onClick={() => openSearchFilter(`mode:${mode.name}`)}
-                    className="rounded-lg border border-border bg-secondary/35 p-4 text-left hover:bg-accent"
-                  >
-                    <div className="text-xs text-muted-foreground">{mode.name}</div>
-                    <div className="mt-2 text-2xl font-semibold tracking-tight">{mode.count}</div>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">No modes recorded yet.</div>
-            )}
-          </div>
         </section>
       ) : null}
 
@@ -386,10 +535,7 @@ export function Dashboard() {
           <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold">Milestone flow</h3>
-                <p className="text-xs text-muted-foreground">
-                  Pending files at each clearance stage
-                </p>
+                <h3 className="text-sm font-bold">File status</h3>
               </div>
               <div className="flex flex-wrap items-end justify-end gap-2">
                 <div className="flex rounded-md border border-border bg-secondary/40 p-1">
@@ -529,122 +675,37 @@ export function Dashboard() {
           <div>
             <h2 className="text-sm font-bold">Analytics</h2>
           </div>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard
-              title="Division ranking by files"
-              subtitle="Number of files, descending"
-            >
-              <AnalyticsBarChart data={analytics.divisionFileRanking} valueKey="count" />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard title="Division ranking by value" subtitle="Total demand value">
-              <AnalyticsBarChart
-                data={analytics.divisionValueRanking}
-                valueKey="value"
-                valueFormatter={formatCompactCurrency}
-              />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <AnalyticsChartCard
-              title="Division turnaround ranking"
-              subtitle="Average days from received date to first S.O."
-            >
-              <AnalyticsBarChart
-                data={analytics.divisionTurnaroundRanking}
-                valueKey="averageDays"
-                valueFormatter={(value) => `${value}d`}
-              />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard title="File distribution" subtitle="Share by division">
-              <AnalyticsPieChart data={analytics.divisionFileRanking.slice(0, 8)} />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard
-              title="Top 20 firms by S.O. value"
-              subtitle="Supply order value, capital plus revenue"
-            >
-              <AnalyticsBarChart
-                data={analytics.topFirmSupplyOrders}
-                valueKey="value"
-                valueFormatter={formatCompactCurrency}
-                height={420}
-              />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard title="Top 10 indentors by files" subtitle="Number of files raised">
-              <AnalyticsBarChart data={analytics.topIndentorsByFiles} valueKey="count" />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard title="Top 10 indentors by value" subtitle="Total demand value">
-              <AnalyticsBarChart
-                data={analytics.topIndentorsByValue}
-                valueKey="value"
-                valueFormatter={formatCompactCurrency}
-              />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard
-              title="Milestones by clearing time"
-              subtitle="Average clearing time in days"
-            >
-              <AnalyticsLineChart
-                data={analytics.milestoneClearingRanking}
-                valueKey="averageDays"
-              />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard title="Monthly file inflow" subtitle="Files received by month">
-              <AnalyticsLineChart data={analytics.monthlyFileInflow} valueKey="count" />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard title="Bidding mode mix" subtitle="Distribution by mode">
-              <AnalyticsPieChart data={analytics.biddingModeMix} />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard
-              title="File value thresholds"
-              subtitle="Number of files by total demand value"
-            >
-              <AnalyticsBarChart data={analytics.fileValueThresholds} valueKey="count" />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <AnalyticsChartCard
-              title="Risk load by division"
-              subtitle="Delivery pending, expired DP, LD, or cancelled S.O."
-            >
-              <AnalyticsBarChart data={analytics.divisionRiskRanking} valueKey="count" />
-            </AnalyticsChartCard>
-            <AnalyticsChartCard
-              title="Payment pending by division"
-              subtitle="Material received but payment not completed"
-            >
-              <AnalyticsBarChart data={analytics.divisionPaymentPendingRanking} valueKey="count" />
-            </AnalyticsChartCard>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-            <div className="mb-4">
-              <h3 className="text-sm font-bold">Milestone clearing ranking</h3>
-              <p className="text-xs text-muted-foreground">
-                Slowest milestones by average clearing time
-              </p>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+            <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+              <div className="space-y-1">
+                {analyticsPanels.map((panel) => {
+                  const selected = selectedAnalyticsPanel.key === panel.key;
+                  return (
+                    <button
+                      key={panel.key}
+                      type="button"
+                      onClick={() => setActiveAnalyticsPanel(panel.key)}
+                      className={
+                        "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                        (selected
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                      }
+                    >
+                      {panel.title}
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
+            <div className="min-w-0">
+              <AnalyticsChartCard
+                title={selectedAnalyticsPanel.title}
+                subtitle={selectedAnalyticsPanel.subtitle}
+              >
+                {selectedAnalyticsPanel.content}
+              </AnalyticsChartCard>
             </div>
-            <AnalyticsRankingTable
-              columns={[
-                { key: "name", label: "Milestone", align: "left" },
-                { key: "averageDays", label: "Avg days", format: (value) => `${value}d` },
-                { key: "sampleSize", label: "Files" },
-              ]}
-              rows={analytics.milestoneClearingRanking}
-            />
           </div>
         </section>
       ) : null}
@@ -1721,6 +1782,15 @@ function getStatusMetrics({
   return [total, completed, active, previous];
 }
 
+function getStatusMetricsForExport(metrics: StatusMetric[], milestoneKey: string) {
+  if (milestoneKey !== "scrutiny" && milestoneKey !== "cfa") return metrics;
+
+  const displayOrder = ["Total files", "Completed", "In process", "Reviewed", "Pending"];
+  return displayOrder
+    .map((label) => metrics.find((metric) => metric.label === label))
+    .filter((metric): metric is StatusMetric => Boolean(metric));
+}
+
 function DeliveryPeriodFlowNode({
   milestone,
   index,
@@ -1952,6 +2022,18 @@ function getModeCounts(files: ReturnType<typeof useAccessibleFiles>) {
   }, {});
 
   return modes.map((name) => ({ name, count: counts[name] ?? 0 }));
+}
+
+function getFileTypeCounts(files: ReturnType<typeof useAccessibleFiles>) {
+  const fileTypes = ["General", "AMC", "MPC"];
+  const counts = files.reduce<Record<string, number>>((current, file) => {
+    const fileType = file.fileType?.trim();
+    if (!fileType || !fileTypes.includes(fileType)) return current;
+    current[fileType] = (current[fileType] ?? 0) + 1;
+    return current;
+  }, {});
+
+  return fileTypes.map((name) => ({ name, count: counts[name] ?? 0 }));
 }
 
 const snapshotAttributeDefinitions = [
@@ -2933,6 +3015,7 @@ function isPaymentDue(file: FileRecord) {
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
+  if (filter.startsWith("fileType:")) return (file.fileType ?? "").trim() === filter.slice(9);
   if (filter.startsWith("manualMilestoneCurrent:")) {
     return file.currentMilestone === filter.slice("manualMilestoneCurrent:".length);
   }
@@ -3065,18 +3148,21 @@ function getStatusPageExportRows(
       return;
     }
 
-    getStatusMetrics({
-      milestone,
-      onTotalClick: noop,
-      onUnderProcessClick: noop,
-      onActiveClick: noop,
-      onReviewedClick: noop,
-      onPendingClick: noop,
-      onClearedClick: noop,
-      onLiveBidsClick: noop,
-      onBidOverdueClick: noop,
-      onLiveSupplyOrdersClick: noop,
-    }).forEach((metric) => {
+    getStatusMetricsForExport(
+      getStatusMetrics({
+        milestone,
+        onTotalClick: noop,
+        onUnderProcessClick: noop,
+        onActiveClick: noop,
+        onReviewedClick: noop,
+        onPendingClick: noop,
+        onClearedClick: noop,
+        onLiveBidsClick: noop,
+        onBidOverdueClick: noop,
+        onLiveSupplyOrdersClick: noop,
+      }),
+      milestone.key,
+    ).forEach((metric) => {
       rows.push({ section: milestone.label, metric: metric.label, count: metric.count });
     });
   });

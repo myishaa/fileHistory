@@ -2201,6 +2201,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (value === "no") return isNo(fieldValue);
   }
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
+  if (filter.startsWith("fileType:")) return (file.fileType ?? "").trim() === filter.slice(9);
   if (filter.startsWith("manualMilestoneCurrent:")) {
     return file.currentMilestone === filter.slice("manualMilestoneCurrent:".length);
   }
