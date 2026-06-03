@@ -1,5 +1,6 @@
 // Lightweight localStorage-backed store for files and divisions.
 import * as React from "react";
+import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 
 export type FileRecord = {
   id: string;
@@ -167,6 +168,7 @@ export type AppSettings = {
   deletionPassword: string;
   tcecCommittees: string[];
   milestones: string[];
+  tableFieldPresets: TableFieldPreset[];
   activeUserId?: string;
 };
 
@@ -186,6 +188,7 @@ const defaultSettings: AppSettings = {
   deletionPassword: "",
   tcecCommittees: [],
   milestones: [],
+  tableFieldPresets: defaultTableFieldPresets,
 };
 
 const defaultDivisions: Division[] = [

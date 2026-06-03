@@ -329,13 +329,13 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     ],
   },
   {
-    title: "Scrutiny and IMMS",
+    title: "Scrutiny and control",
     fields: [
       { key: "scrutinyDate", label: "Scrutiny date", type: "date" },
       { key: "scrutinyResponseDate", label: "Scrutiny response", type: "date" },
       { key: "scrutinyCompletionDate", label: "Scrutiny completion date", type: "date" },
-      { key: "imms", label: "IMMS Number" },
-      { key: "immsDate", label: "IMMS Date", type: "date" },
+      { key: "imms", label: "Control number" },
+      { key: "immsDate", label: "Control date", type: "date" },
       { key: "fileNo", label: "File Number" },
       { key: "scrutinyRemark1", label: "Remark-1", type: "textarea" },
       { key: "scrutinyRemark2", label: "Remark-2", type: "textarea" },
@@ -1573,7 +1573,7 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
   }
 
   const details = [
-    { label: "IMMS number", value: form.imms },
+    { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
     { label: "Description", value: form.demandDescription },
     { label: "Indentor", value: form.indentor },

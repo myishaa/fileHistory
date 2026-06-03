@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   Check,
   Lock,
@@ -22,6 +24,7 @@ import {
   useUsers,
   type AppUserRole,
 } from "@/lib/files-store";
+import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
 import { requestDeletionPassword } from "@/lib/delete-password";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -57,20 +60,71 @@ const futureFeatures = [
   },
 ];
 
+const defaultMilestoneSequence = [
+  "Scrutiny",
+  "High Value",
+  "Pre-TCEC",
+  "AD",
+  "R&QA",
+  "Controlled",
+  "IFA",
+  "CFA",
+  "Bidding",
+  "Post-TCEC",
+  "CNC",
+  "Supply Order",
+  "Delivery Period",
+  "Bank Guarantee",
+  "Delivery",
+  "Payment",
+];
+
 function SettingsPage() {
+  const [activeAdminSection, setActiveAdminSection] = useState("divisions");
+  const adminSections = [
+    { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
+    { key: "tcec", label: "TCEC Committee", content: <TcecCommitteeSettings /> },
+    { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
+    { key: "presets", label: "Preset table fields", content: <TableFieldPresetSettings /> },
+    { key: "users", label: "Users", content: <UserSettings /> },
+  ];
+  const selectedAdminSection =
+    adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
+
   return (
-    <div className="space-y-4 max-w-5xl">
+    <div className="space-y-4 max-w-6xl">
       <Tabs defaultValue="admin" className="space-y-4">
         <TabsList aria-label="Settings sections">
           <TabsTrigger value="admin">Admin</TabsTrigger>
           <TabsTrigger value="user">User</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="admin" className="space-y-4">
-          <DivisionSettings />
-          <TcecCommitteeSettings />
-          <MilestoneSettings />
-          <UserSettings />
+        <TabsContent value="admin">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
+            <aside className="rounded-md border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+              <div className="space-y-1">
+                {adminSections.map((section) => {
+                  const selected = selectedAdminSection.key === section.key;
+                  return (
+                    <button
+                      key={section.key}
+                      type="button"
+                      onClick={() => setActiveAdminSection(section.key)}
+                      className={
+                        "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                        (selected
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                      }
+                    >
+                      {section.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
+            <div className="min-w-0">{selectedAdminSection.content}</div>
+          </div>
         </TabsContent>
 
         <TabsContent value="user">
@@ -232,7 +286,11 @@ function MilestoneSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
   const [name, setName] = useState("");
-  const milestones = settings.milestones ?? [];
+  const milestones =
+    settings.milestones && settings.milestones.length > 0
+      ? settings.milestones
+      : defaultMilestoneSequence;
+  const [position, setPosition] = useState(String(milestones.length + 1));
 
   if (activeUser && activeUser.role !== "admin") return null;
 
@@ -250,27 +308,55 @@ function MilestoneSettings() {
       setName("");
       return;
     }
-    updateMilestones([...milestones, trimmed]);
+    const insertIndex = Math.max(0, Math.min(Number(position) - 1, milestones.length));
+    updateMilestones([
+      ...milestones.slice(0, insertIndex),
+      trimmed,
+      ...milestones.slice(insertIndex),
+    ]);
     setName("");
+    setPosition(String(milestones.length + 2));
   };
 
   const remove = (milestone: string) => {
     updateMilestones(milestones.filter((item) => item !== milestone));
   };
 
+  const move = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= milestones.length) return;
+    const next = [...milestones];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    updateMilestones(next);
+  };
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Milestones</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Add milestone names for administrative reference.
+        Add milestone names and place them at the required sequence in the workflow.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
         <DivisionInput value={name} onChange={setName} placeholder="Milestone name" />
+        <label className="block">
+          <div className="text-xs font-medium mb-1.5">Position</div>
+          <select
+            value={position}
+            onChange={(event) => setPosition(event.target.value)}
+            className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+          >
+            {Array.from({ length: milestones.length + 1 }, (_, index) => (
+              <option key={index + 1} value={String(index + 1)}>
+                {index + 1}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           onClick={add}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          className="h-10 self-end px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
         >
           <Plus className="size-4" /> Add
         </button>
@@ -283,22 +369,211 @@ function MilestoneSettings() {
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {milestones.map((milestone) => (
+            {milestones.map((milestone, index) => (
               <li key={milestone} className="flex items-center justify-between gap-3 px-4 py-3">
-                <span className="text-sm font-medium">{milestone}</span>
-                <button
-                  type="button"
-                  onClick={() => remove(milestone)}
-                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                  aria-label={`Delete ${milestone}`}
-                >
-                  <Trash2 className="size-4" />
-                </button>
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-secondary text-xs font-semibold">
+                    {index + 1}
+                  </span>
+                  <span className="truncate text-sm font-medium">{milestone}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => move(index, -1)}
+                    disabled={index === 0}
+                    className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    aria-label={`Move ${milestone} up`}
+                  >
+                    <ArrowUp className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(index, 1)}
+                    disabled={index === milestones.length - 1}
+                    className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    aria-label={`Move ${milestone} down`}
+                  >
+                    <ArrowDown className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(milestone)}
+                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                    aria-label={`Delete ${milestone}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+function TableFieldPresetSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const presets = settings.tableFieldPresets ?? [];
+  const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
+  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? presets[0];
+  const selectedFieldKeys = selectedPreset?.fieldKeys ?? [];
+  const allFieldKeys = tableFieldPresetGroups.flatMap((group) =>
+    group.fields.map((field) => field.key),
+  );
+
+  if (activeUser && activeUser.role !== "admin") return null;
+
+  const updatePresets = (next: TableFieldPreset[]) => {
+    store.updateSettings({ tableFieldPresets: next });
+  };
+
+  const updateSelectedPreset = (patch: Partial<TableFieldPreset>) => {
+    if (!selectedPreset) return;
+    updatePresets(
+      presets.map((preset) => (preset.id === selectedPreset.id ? { ...preset, ...patch } : preset)),
+    );
+  };
+
+  const addPreset = () => {
+    const nextPreset = {
+      id: crypto.randomUUID(),
+      name: `Preset ${presets.length + 1}`,
+      fieldKeys: ["division", "indentor", "demandDescription"],
+    };
+    updatePresets([...presets, nextPreset]);
+    setSelectedPresetId(nextPreset.id);
+  };
+
+  const removePreset = () => {
+    if (!selectedPreset) return;
+    const next = presets.filter((preset) => preset.id !== selectedPreset.id);
+    updatePresets(next);
+    setSelectedPresetId(next[0]?.id ?? "");
+  };
+
+  const toggleField = (fieldKey: string) => {
+    if (!selectedPreset) return;
+    updateSelectedPreset({
+      fieldKeys: selectedFieldKeys.includes(fieldKey)
+        ? selectedFieldKeys.filter((key) => key !== fieldKey)
+        : [...selectedFieldKeys, fieldKey],
+    });
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold mb-1">Preset table fields</h2>
+          <p className="text-xs text-muted-foreground">
+            Create field sets like Director or Head for the Search File table.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addPreset}
+          className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add preset
+        </button>
+      </div>
+
+      {presets.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+          No presets added yet.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="rounded-md border border-border bg-secondary/20 p-2">
+            <div className="space-y-1">
+              {presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setSelectedPresetId(preset.id)}
+                  className={
+                    "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                    (selectedPreset?.id === preset.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  {preset.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {selectedPreset ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="min-w-[220px] flex-1">
+                  <div className="text-xs font-medium mb-1.5">Preset name</div>
+                  <input
+                    value={selectedPreset.name}
+                    onChange={(event) => updateSelectedPreset({ name: event.target.value })}
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedPreset({ fieldKeys: allFieldKeys })}
+                  className="h-10 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedPreset({ fieldKeys: [] })}
+                  className="h-10 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={removePreset}
+                  className="h-10 rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                >
+                  Delete
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {tableFieldPresetGroups.map((group) => (
+                  <section
+                    key={group.title}
+                    className="rounded-md border border-border bg-secondary/20 p-3"
+                  >
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.title}
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                      {group.fields.map((field) => (
+                        <label
+                          key={field.key}
+                          className="flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedFieldKeys.includes(field.key)}
+                            onChange={() => toggleField(field.key)}
+                            className="size-4 rounded border-input"
+                          />
+                          <span>{field.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

@@ -22,6 +22,7 @@ import {
 import { requestDeletionPassword } from "@/lib/delete-password";
 import { formatThousandsAndLakhs, getInrAmount, parseAmount } from "@/lib/money";
 import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
+import type { TableFieldPreset } from "@/lib/table-field-presets";
 
 export const Route = createFileRoute("/search")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -141,14 +142,14 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     title: "File details",
     fields: [
       { key: "division", label: "Division" },
-      { key: "imms", label: "IMMS Number" },
       { key: "year", label: "Year" },
       { key: "uniqueCode", label: "Unique code" },
       { key: "receivedDate", label: "Received date", type: "date" },
       { key: "scrutinyDate", label: "Scrutiny date", type: "date" },
       { key: "scrutinyResponseDate", label: "Scrutiny response date", type: "date" },
       { key: "scrutinyCompletionDate", label: "Scrutiny completion date", type: "date" },
-      { key: "immsDate", label: "IMMS Date", type: "date" },
+      { key: "imms", label: "Control number" },
+      { key: "immsDate", label: "Control date", type: "date" },
       { key: "fileNo", label: "File no" },
       { key: "indentor", label: "Indentor" },
       { key: "demandDescription", label: "Demand description", type: "textarea" },
@@ -172,7 +173,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     ],
   },
   {
-    title: "Scrutiny and IMMS",
+    title: "Scrutiny and control",
     fields: [
       { key: "scrutinyRemark1", label: "Scrutiny Remark-1", type: "textarea" },
       { key: "scrutinyRemark2", label: "Scrutiny Remark-2", type: "textarea" },
@@ -345,6 +346,7 @@ const printColumnGroups = [
 ].filter((group) => group.columns.length > 0);
 
 const allTableColumnKeys = printColumns.map((column) => column.key);
+const manualTablePresetId = "manual";
 const TABLE_FIELDS_DEFAULT_KEY_PREFIX = "ofms.searchTableDefaultFields.v2";
 
 function tableDefaultStorageKey(userId: string | undefined) {
@@ -366,6 +368,15 @@ function readDefaultTableColumnKeys(userId: string | undefined) {
   } catch {
     return null;
   }
+}
+
+function getValidTableColumnKeys(keys: string[]) {
+  const validKeys = new Set(printColumns.map((column) => column.key));
+  return keys.filter((key) => validKeys.has(key));
+}
+
+function sameStringList(left: string[], right: string[]) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function SearchPage() {
@@ -413,6 +424,7 @@ function SearchPage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [divisionWiseSort, setDivisionWiseSort] = useState(false);
   const [showTableOptions, setShowTableOptions] = useState(false);
+  const [activeTablePresetId, setActiveTablePresetId] = useState(manualTablePresetId);
   const [defaultTableColumnKeys, setDefaultTableColumnKeys] = useState<string[] | null>(() =>
     readDefaultTableColumnKeys(settings.activeUserId),
   );
@@ -420,6 +432,16 @@ function SearchPage() {
   const [selectedTableColumnKeys, setSelectedTableColumnKeys] = useState<string[]>(
     () => defaultTableColumnKeys ?? allTableColumnKeys,
   );
+  const tableFieldPresetSignature = JSON.stringify(settings.tableFieldPresets ?? []);
+  const tableFieldPresets = useMemo(() => {
+    try {
+      return JSON.parse(tableFieldPresetSignature) as TableFieldPreset[];
+    } catch {
+      return [];
+    }
+  }, [tableFieldPresetSignature]);
+  const selectedTablePreset = tableFieldPresets.find((preset) => preset.id === activeTablePresetId);
+  const manualTableFieldsSelected = activeTablePresetId === manualTablePresetId;
   const selectedTableColumns = printColumns.filter((column) =>
     selectedTableColumnKeys.includes(column.key),
   );
@@ -434,8 +456,24 @@ function SearchPage() {
   useEffect(() => {
     const userDefault = readDefaultTableColumnKeys(settings.activeUserId);
     setDefaultTableColumnKeys(userDefault);
-    setSelectedTableColumnKeys(userDefault ?? allTableColumnKeys);
-  }, [settings.activeUserId]);
+    if (activeTablePresetId === manualTablePresetId) {
+      setSelectedTableColumnKeys(userDefault ?? allTableColumnKeys);
+    }
+  }, [activeTablePresetId, settings.activeUserId]);
+
+  useEffect(() => {
+    if (activeTablePresetId === manualTablePresetId) return;
+    const preset = tableFieldPresets.find((item) => item.id === activeTablePresetId);
+    if (!preset) {
+      setActiveTablePresetId(manualTablePresetId);
+      setSelectedTableColumnKeys(defaultTableColumnKeys ?? allTableColumnKeys);
+      return;
+    }
+    const nextKeys = getValidTableColumnKeys(preset.fieldKeys);
+    setSelectedTableColumnKeys((current) =>
+      sameStringList(current, nextKeys) ? current : nextKeys,
+    );
+  }, [activeTablePresetId, defaultTableColumnKeys, tableFieldPresets]);
 
   useEffect(() => {
     if (search.division) setDivisionFilter(search.division);
@@ -605,6 +643,15 @@ function SearchPage() {
     setSelectedTableColumnKeys((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
     );
+  };
+  const applyTablePreset = (presetId: string) => {
+    setActiveTablePresetId(presetId);
+    if (presetId === manualTablePresetId) {
+      setSelectedTableColumnKeys(defaultTableColumnKeys ?? allTableColumnKeys);
+      return;
+    }
+    const preset = tableFieldPresets.find((item) => item.id === presetId);
+    setSelectedTableColumnKeys(preset ? getValidTableColumnKeys(preset.fieldKeys) : []);
   };
   const toggleModeFilter = (mode: string, checked: boolean) => {
     setSelectedModes((current) =>
@@ -888,6 +935,21 @@ function SearchPage() {
               </span>
             </div>
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              <label className="inline-flex items-center gap-2">
+                <span>Preset fields</span>
+                <select
+                  value={activeTablePresetId}
+                  onChange={(event) => applyTablePreset(event.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                >
+                  <option value={manualTablePresetId}>Manual</option>
+                  {tableFieldPresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name || "Unnamed preset"}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground">
                 <input
                   type="checkbox"
@@ -951,6 +1013,12 @@ function SearchPage() {
               <button
                 type="button"
                 onClick={() => setShowTableOptions((current) => !current)}
+                disabled={!manualTableFieldsSelected}
+                title={
+                  manualTableFieldsSelected
+                    ? "Choose manual table fields"
+                    : `Using ${selectedTablePreset?.name || "preset"} fields`
+                }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
               >
                 <SlidersHorizontal className="size-3.5" /> Table fields
@@ -958,7 +1026,7 @@ function SearchPage() {
             </div>
           </div>
 
-          {showTableOptions && (
+          {showTableOptions && manualTableFieldsSelected && (
             <div className="ml-auto w-full max-w-5xl rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>

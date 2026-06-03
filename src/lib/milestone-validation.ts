@@ -39,7 +39,7 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   },
   {
     aliases: ["Controlling", "Controlled"],
-    completionLabel: "IMMS date",
+    completionLabel: "Control date",
     isComplete: (file) => hasFilledString(file.immsDate),
   },
   {
