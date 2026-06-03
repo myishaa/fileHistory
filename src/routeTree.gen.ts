@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as QuickEntryRouteImport } from './routes/quick-entry'
 import { Route as DivisionsRouteImport } from './routes/divisions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as AddRouteImport } from './routes/add'
@@ -30,6 +31,11 @@ const SearchRoute = SearchRouteImport.update({
 const ReportsRoute = ReportsRouteImport.update({
   id: '/reports',
   path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QuickEntryRoute = QuickEntryRouteImport.update({
+  id: '/quick-entry',
+  path: '/quick-entry',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DivisionsRoute = DivisionsRouteImport.update({
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/add': typeof AddRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
+  '/quick-entry': typeof QuickEntryRoute
   '/reports': typeof ReportsRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/add': typeof AddRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
+  '/quick-entry': typeof QuickEntryRoute
   '/reports': typeof ReportsRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/add': typeof AddRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
+  '/quick-entry': typeof QuickEntryRoute
   '/reports': typeof ReportsRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/add'
     | '/dashboard'
     | '/divisions'
+    | '/quick-entry'
     | '/reports'
     | '/search'
     | '/settings'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/add'
     | '/dashboard'
     | '/divisions'
+    | '/quick-entry'
     | '/reports'
     | '/search'
     | '/settings'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/add'
     | '/dashboard'
     | '/divisions'
+    | '/quick-entry'
     | '/reports'
     | '/search'
     | '/settings'
@@ -116,6 +128,7 @@ export interface RootRouteChildren {
   AddRoute: typeof AddRoute
   DashboardRoute: typeof DashboardRoute
   DivisionsRoute: typeof DivisionsRoute
+  QuickEntryRoute: typeof QuickEntryRoute
   ReportsRoute: typeof ReportsRoute
   SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
@@ -142,6 +155,13 @@ declare module '@tanstack/react-router' {
       path: '/reports'
       fullPath: '/reports'
       preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/quick-entry': {
+      id: '/quick-entry'
+      path: '/quick-entry'
+      fullPath: '/quick-entry'
+      preLoaderRoute: typeof QuickEntryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/divisions': {
@@ -180,6 +200,7 @@ const rootRouteChildren: RootRouteChildren = {
   AddRoute: AddRoute,
   DashboardRoute: DashboardRoute,
   DivisionsRoute: DivisionsRoute,
+  QuickEntryRoute: QuickEntryRoute,
   ReportsRoute: ReportsRoute,
   SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,

@@ -17,12 +17,12 @@ const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/add", label: "Add File", icon: FilePlus2 },
   { to: "/search", label: "Search Files", icon: Search },
+  { to: "/quick-entry", label: "Quick Entry", icon: ScanLine },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 const futureTools = [
-  { label: "Barcode Scan", icon: ScanLine },
   { label: "QR Integration", icon: QrCode },
   { label: "File Upload", icon: Upload },
 ];

@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Moon,
   Plus,
+  ScanLine,
   Search,
   Settings,
   Sun,
@@ -18,6 +19,7 @@ const titles: Record<string, string> = {
   "/": "Search Files",
   "/add": "Add File",
   "/search": "Search Files",
+  "/quick-entry": "Quick Entry",
   "/reports": "Reports",
   "/dashboard": "Dashboard",
   "/settings": "Settings",
@@ -26,6 +28,7 @@ const titles: Record<string, string> = {
 const nav = [
   { to: "/add", label: "Add File", icon: FilePlus2 },
   { to: "/search", label: "Search Files", icon: Search },
+  { to: "/quick-entry", label: "Quick Entry", icon: ScanLine },
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },

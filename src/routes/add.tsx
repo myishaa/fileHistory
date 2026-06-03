@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   store,
   type Division,
@@ -20,6 +20,7 @@ export const Route = createFileRoute("/add")({
   validateSearch: (search: Record<string, unknown>) => ({
     fileId: typeof search.fileId === "string" ? search.fileId : undefined,
     section: typeof search.section === "string" ? search.section : undefined,
+    quickFocus: search.quickFocus === true || search.quickFocus === "true",
   }),
   component: AddFilePage,
 });
@@ -424,7 +425,7 @@ function AddFilePage() {
   const files = useAccessibleFiles();
   const allFiles = useFiles();
   const settings = useSettings();
-  const { fileId, section } = Route.useSearch();
+  const { fileId, section, quickFocus } = Route.useSearch();
   const navigate = useNavigate();
   const editingFile = files.find((file) => file.id === fileId);
   const isEditing = Boolean(fileId && editingFile);
@@ -448,6 +449,8 @@ function AddFilePage() {
   const [saved, setSaved] = useState(false);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
+  const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
+  const quickFocusAppliedRef = useRef("");
 
   useEffect(() => {
     setForm(
@@ -473,11 +476,14 @@ function AddFilePage() {
   const generatedUniqueCode = isEditing
     ? form.uniqueCode
     : generateUniqueCode(settings.financialYear, form.division, allDivisions, allFiles);
-  const formWithLockedYear = {
-    ...form,
-    year: settings.financialYear,
-    uniqueCode: generatedUniqueCode,
-  };
+  const formWithLockedYear = useMemo(
+    () => ({
+      ...form,
+      year: settings.financialYear,
+      uniqueCode: generatedUniqueCode,
+    }),
+    [form, generatedUniqueCode, settings.financialYear],
+  );
   const tcecIsNo = isNo(formWithLockedYear.tcec);
   const gemIsNo = isNo(formWithLockedYear.gem);
   const highValueIsNo = isNo(formWithLockedYear.highValue);
@@ -512,6 +518,31 @@ function AddFilePage() {
   const activeSectionIndex = extraSections.findIndex(
     (section) => section.title === activeBoardSection,
   );
+
+  useEffect(() => {
+    if (!quickFocus || !editingFile || !activeSection) return;
+
+    if (!unlockedSections.has(activeSection.title)) {
+      setUnlockedSections((current) => new Set([...current, activeSection.title]));
+      return;
+    }
+
+    const focusKey = `${editingFile.id}:${activeSection.title}`;
+    if (quickFocusAppliedRef.current === focusKey) return;
+    quickFocusAppliedRef.current = focusKey;
+
+    window.setTimeout(() => {
+      const firstUnfilledField = getUnfilledFieldKeys(activeSection, formWithLockedYear).find(
+        (fieldKey) => quickFieldRefs.current[fieldKey],
+      );
+      const target = firstUnfilledField ? quickFieldRefs.current[firstUnfilledField] : undefined;
+      if (target) {
+        target.focus();
+        if ("select" in target && typeof target.select === "function") target.select();
+      }
+    }, 100);
+  }, [activeSection, editingFile, formWithLockedYear, quickFocus, unlockedSections]);
+
   const update = (k: keyof typeof form, v: string) => {
     if (k === "year") return;
     if (k === "noOfSo") {
@@ -699,6 +730,9 @@ function AddFilePage() {
               value={formWithLockedYear.fileType}
               disabled={lockFilledFields && hasFilledValue(formWithLockedYear.fileType)}
               onChange={(value) => update("fileType", value)}
+              inputRef={(element) => {
+                quickFieldRefs.current[field.key] = element;
+              }}
             />
           );
         }
@@ -724,13 +758,16 @@ function AddFilePage() {
               (refloatIsNo && refloatDisabledKeys.includes(field.key))
             }
             onChange={(value) => update(field.key, value)}
+            inputRef={(element) => {
+              quickFieldRefs.current[field.key] = element;
+            }}
           />
         );
       })}
     </div>
   );
 
-  const save = () => {
+  const save = (options?: { returnToQuickEntry?: boolean }) => {
     const supplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
     const cleanedSupplyOrders = cleanSupplyOrderRows(
       resizeSupplyOrders(supplyOrders, supplyOrderCount),
@@ -756,6 +793,12 @@ function AddFilePage() {
       store.updateFile(editingFile.id, payload);
       setUnlockedSections(new Set());
       setSaved(true);
+      if (options?.returnToQuickEntry) {
+        setTimeout(() => {
+          navigate({ to: "/quick-entry" });
+        }, 250);
+        return;
+      }
       window.scrollTo({ top: 0, behavior: "smooth" });
       setTimeout(() => setSaved(false), 1200);
       return;
@@ -764,8 +807,32 @@ function AddFilePage() {
     }
     setSaved(true);
     setTimeout(() => {
+      if (options?.returnToQuickEntry) {
+        navigate({ to: "/quick-entry" });
+        return;
+      }
       navigate({ to: "/search", search: { dashboardFilter: undefined, division: undefined } });
     }, 700);
+  };
+
+  const handleQuickEntrySaveKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!quickFocus || !isEditing || event.key !== "Enter" || event.metaKey || event.ctrlKey) {
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    const tagName = target.tagName.toLowerCase();
+    if (tagName === "button" || tagName === "a" || tagName === "select") return;
+    if (tagName === "textarea" && event.shiftKey) return;
+    if (
+      target instanceof HTMLInputElement &&
+      ["checkbox", "radio", "button", "submit"].includes(target.type)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    save({ returnToQuickEntry: true });
   };
 
   const deleteFile = () => {
@@ -803,7 +870,7 @@ function AddFilePage() {
   }
 
   return (
-    <div className="w-full">
+    <div className="w-full" onKeyDownCapture={handleQuickEntrySaveKey}>
       <div className="bg-card border border-border rounded-md shadow-[var(--shadow-card)] overflow-hidden">
         <div className="p-5 border-b border-border bg-secondary/30">
           <h2 className="text-base font-semibold">
@@ -856,6 +923,7 @@ function AddFilePage() {
                   details={firmDetails}
                   disabled={false}
                   lockFilledFields={firmDetailsLocked}
+                  quickFocus={Boolean(quickFocus && activeSection.title === "Firm details")}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
                   onDelete={deleteFirmDetail}
@@ -869,6 +937,9 @@ function AddFilePage() {
                   lockFilledFields={supplyOrdersLocked}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
+                  quickFocus={Boolean(
+                    quickFocus && activeSection.title === "Supply order and payment",
+                  )}
                   onCountChange={
                     supplyOrdersLocked && hasFilledValue(formWithLockedYear.noOfSo)
                       ? () => undefined
@@ -911,7 +982,7 @@ function AddFilePage() {
             )}
             <button
               type="button"
-              onClick={save}
+              onClick={() => save()}
               className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
             >
               <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
@@ -960,6 +1031,7 @@ function FirmDetailsBlock({
   details,
   disabled,
   lockFilledFields,
+  quickFocus,
   onAdd,
   onChange,
   onDelete,
@@ -968,6 +1040,7 @@ function FirmDetailsBlock({
   details: FirmDetailsState;
   disabled: boolean;
   lockFilledFields: boolean;
+  quickFocus?: boolean;
   onAdd: (group: keyof FirmDetailsState) => void;
   onChange: (
     group: keyof FirmDetailsState,
@@ -980,6 +1053,8 @@ function FirmDetailsBlock({
 }) {
   const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("invitedFirms");
   const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
+  const firmInputRefs = useRef<Record<string, HTMLInputElement | HTMLButtonElement | null>>({});
+  const firmQuickFocusAppliedRef = useRef("");
   const tabs: { key: keyof FirmDetailsState; label: string }[] = [
     { key: "invitedFirms", label: "Invited" },
     { key: "bidderFirms", label: "Bidders" },
@@ -994,6 +1069,31 @@ function FirmDetailsBlock({
   useEffect(() => {
     setSelectedRows(new Set());
   }, [activeTab, rows.length]);
+
+  useEffect(() => {
+    if (!quickFocus) return;
+    const focusKey = `${activeTab}:${rows.length}:${rows
+      .map((row) => [row.firmName, row.city, row.emailId].join("|"))
+      .join("::")}`;
+    if (firmQuickFocusAppliedRef.current === focusKey) return;
+    firmQuickFocusAppliedRef.current = focusKey;
+
+    window.setTimeout(() => {
+      if (rows.length === 0) {
+        firmInputRefs.current.addFirm?.focus();
+        return;
+      }
+
+      for (const [index, row] of rows.entries()) {
+        for (const key of ["firmName", "city", "emailId"] as const) {
+          if (!hasFilledValue(row[key])) {
+            firmInputRefs.current[`${index}:${key}`]?.focus();
+            return;
+          }
+        }
+      }
+    }, 100);
+  }, [activeTab, quickFocus, rows]);
 
   const toggleSelectedRow = (index: number, checked: boolean) => {
     setSelectedRows((current) => {
@@ -1100,6 +1200,9 @@ function FirmDetailsBlock({
               <label className="block">
                 <div className="mb-1.5 text-xs font-medium">Firm name</div>
                 <input
+                  ref={(element) => {
+                    firmInputRefs.current[`${index}:firmName`] = element;
+                  }}
                   value={row.firmName ?? ""}
                   onChange={(event) => onChange(activeTab, index, "firmName", event.target.value)}
                   disabled={firmNameDisabled}
@@ -1109,6 +1212,9 @@ function FirmDetailsBlock({
               <label className="block">
                 <div className="mb-1.5 text-xs font-medium">City</div>
                 <input
+                  ref={(element) => {
+                    firmInputRefs.current[`${index}:city`] = element;
+                  }}
                   value={row.city ?? ""}
                   onChange={(event) => onChange(activeTab, index, "city", event.target.value)}
                   disabled={cityDisabled}
@@ -1118,6 +1224,9 @@ function FirmDetailsBlock({
               <label className="block">
                 <div className="mb-1.5 text-xs font-medium">Email id</div>
                 <input
+                  ref={(element) => {
+                    firmInputRefs.current[`${index}:emailId`] = element;
+                  }}
                   type="email"
                   value={row.emailId ?? ""}
                   onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
@@ -1144,6 +1253,9 @@ function FirmDetailsBlock({
       </div>
 
       <button
+        ref={(element) => {
+          firmInputRefs.current.addFirm = element;
+        }}
         type="button"
         onClick={() => onAdd(activeTab)}
         disabled={disabled}
@@ -1165,6 +1277,7 @@ function SupplyOrdersBlock({
   lockFilledFields,
   gemDisabled,
   bgDisabled,
+  quickFocus,
   onCountChange,
   onOrderChange,
 }: {
@@ -1174,9 +1287,46 @@ function SupplyOrdersBlock({
   lockFilledFields: boolean;
   gemDisabled: boolean;
   bgDisabled: boolean;
+  quickFocus?: boolean;
   onCountChange: (value: string) => void;
   onOrderChange: (index: number, key: SupplyOrderKey, value: string) => void;
 }) {
+  const orderFieldRefs = useRef<Record<string, HTMLElement | null>>({});
+  const orderQuickFocusAppliedRef = useRef("");
+
+  useEffect(() => {
+    if (!quickFocus) return;
+    const focusKey = orders
+      .map((order) => supplyOrderFields.map((field) => String(order[field.key] ?? "")).join("|"))
+      .join("::");
+    if (orderQuickFocusAppliedRef.current === focusKey) return;
+    orderQuickFocusAppliedRef.current = focusKey;
+
+    window.setTimeout(() => {
+      if (!hasFilledValue(form.noOfSo)) {
+        orderFieldRefs.current.noOfSo?.focus();
+        return;
+      }
+
+      for (const [index, order] of orders.entries()) {
+        for (const field of supplyOrderFields) {
+          if (field.key === "soValueCapital") continue;
+          const key = field.key as SupplyOrderKey;
+          if (
+            (gemDisabled && key === "gemSoNo") ||
+            (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
+          ) {
+            continue;
+          }
+          if (!hasFilledValue(String(order[key] ?? ""))) {
+            orderFieldRefs.current[`${index}:${key}`]?.focus();
+            return;
+          }
+        }
+      }
+    }, 100);
+  }, [bgDisabled, form.noOfSo, gemDisabled, orders, quickFocus]);
+
   return (
     <div className="space-y-5">
       <DynamicField
@@ -1184,6 +1334,9 @@ function SupplyOrdersBlock({
         value={form.noOfSo}
         disabled={disabled || (lockFilledFields && hasFilledValue(form.noOfSo))}
         onChange={onCountChange}
+        inputRef={(element) => {
+          orderFieldRefs.current.noOfSo = element;
+        }}
       />
 
       {orders.map((order, index) => (
@@ -1229,6 +1382,9 @@ function SupplyOrdersBlock({
                     (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
                   }
                   onChange={(value) => onOrderChange(index, key, value)}
+                  inputRef={(element) => {
+                    orderFieldRefs.current[`${index}:${key}`] = element;
+                  }}
                 />
               );
             })}
@@ -2379,10 +2535,12 @@ function FileTypeField({
   value,
   disabled,
   onChange,
+  inputRef,
 }: {
   value: string;
   disabled: boolean;
   onChange: (value: string) => void;
+  inputRef?: (element: HTMLInputElement | null) => void;
 }) {
   return (
     <Field label="File type">
@@ -2393,6 +2551,7 @@ function FileTypeField({
             className="flex h-10 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
           >
             <input
+              ref={option === fileTypeOptions[0] ? inputRef : undefined}
               type="checkbox"
               checked={value === option}
               disabled={disabled}
@@ -2412,11 +2571,13 @@ function DynamicField({
   value,
   disabled = false,
   onChange,
+  inputRef,
 }: {
   field: ExtraField;
   value: string;
   disabled?: boolean;
   onChange: (value: string) => void;
+  inputRef?: (element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null) => void;
 }) {
   if (field.options && isYesNoOptions(field.options)) {
     return (
@@ -2437,6 +2598,7 @@ function DynamicField({
     return (
       <Field label={field.label}>
         <input
+          ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
@@ -2457,6 +2619,7 @@ function DynamicField({
     return (
       <Field label={field.label}>
         <select
+          ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
@@ -2477,6 +2640,7 @@ function DynamicField({
     return (
       <Field label={field.label}>
         <textarea
+          ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
@@ -2490,6 +2654,7 @@ function DynamicField({
   return (
     <Field label={field.label}>
       <input
+        ref={inputRef}
         type={field.key === "exchangeRate" ? "text" : (field.type ?? "text")}
         value={value}
         onChange={(e) =>
@@ -2514,6 +2679,12 @@ function disabledCls(disabled: boolean) {
 
 function hasFilledValue(value: string | undefined) {
   return Boolean(value?.trim());
+}
+
+function getUnfilledFieldKeys(section: (typeof extraSections)[number], form: FormState) {
+  return section.fields
+    .filter((field) => !hasFilledValue(String(form[field.key] ?? "")))
+    .map((field) => field.key);
 }
 
 function formatDecimalInput(value: string) {
