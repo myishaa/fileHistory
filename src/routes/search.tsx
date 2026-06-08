@@ -2096,10 +2096,19 @@ function isDpExpired(file: FileRecord) {
 }
 
 function isDeliveryOverdue(file: FileRecord) {
-  return fileSupplyOrders(file).some((order) => {
-    const deliveryDate = order.revisedDp || order.dpDate;
-    return isDateBeforeToday(deliveryDate);
-  });
+  return isDeliveryActive(file) && fileSupplyOrders(file).some(isOverdueDeliveryOrder);
+}
+
+function isDeliveryDueToday(file: FileRecord) {
+  return isDeliveryActive(file) && fileSupplyOrders(file).some(isDueTodayDeliveryOrder);
+}
+
+function isDeliveryUpcoming(file: FileRecord) {
+  return isDeliveryActive(file) && fileSupplyOrders(file).some(isUpcomingDeliveryOrder);
+}
+
+function isDeliveryDeliveredLate(file: FileRecord) {
+  return isDeliveryActive(file) && fileSupplyOrders(file).some(isLateDeliveredOrder);
 }
 
 function isDeliveryCompleted(file: FileRecord) {
@@ -2128,6 +2137,29 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
   return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+}
+
+function isOverdueDeliveryOrder(order: SupplyOrderDetail) {
+  return isDueDeliveryOrder(order) && isDateBeforeToday(getDeliveryDueDate(order));
+}
+
+function isDueTodayDeliveryOrder(order: SupplyOrderDetail) {
+  return isDueDeliveryOrder(order) && isDateToday(getDeliveryDueDate(order));
+}
+
+function isUpcomingDeliveryOrder(order: SupplyOrderDetail) {
+  return isDueDeliveryOrder(order) && isDateAfterToday(getDeliveryDueDate(order));
+}
+
+function isLateDeliveredOrder(order: SupplyOrderDetail) {
+  const dueTime = parseLocalDateTime(getDeliveryDueDate(order) ?? "");
+  const receiptTime = parseLocalDateTime(order.materialReceiptDate ?? "");
+  return (
+    isCompletedDeliveryOrder(order) &&
+    dueTime !== undefined &&
+    receiptTime !== undefined &&
+    receiptTime > dueTime
+  );
 }
 
 function isDeliveryPeriodValid(file: FileRecord) {
@@ -2220,6 +2252,17 @@ function isDateAfterToday(date: string | undefined) {
   return dateTime > todayTime;
 }
 
+function isDateToday(date: string | undefined) {
+  const dateTime = parseLocalDateTime(date ?? "");
+  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
+
+  if (dateTime === undefined || todayTime === undefined) {
+    return false;
+  }
+
+  return dateTime === todayTime;
+}
+
 function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("attribute:")) {
     const [, key, value] = filter.split(":");
@@ -2254,7 +2297,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "dpExtension") return isYes(file.dpExtension);
   if (filter === "dpExpired") return isDpExpired(file);
   if (filter === "deliveryOverdue") return isDeliveryOverdue(file);
+  if (filter === "deliveryDueToday") return isDeliveryDueToday(file);
+  if (filter === "deliveryUpcoming") return isDeliveryUpcoming(file);
   if (filter === "deliveryCompleted") return isDeliveryCompleted(file);
+  if (filter === "deliveryDeliveredLate") return isDeliveryDeliveredLate(file);
   if (filter === "deliveryDue") return isDeliveryDue(file);
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
@@ -2533,12 +2579,13 @@ function printFile(file: FileRecord) {
           <table>
             <tbody>
               ${section.fields
-                .map((field) => {
+                .map((field, index) => {
                   const value = printColumns
                     .find((column) => column.key === field.key)
                     ?.getValue(file);
                   return `
                     <tr>
+                      <td class="sno">${index + 1}</td>
                       <th>${escapeHtml(field.label)}</th>
                       <td>${escapeHtml(value || "Not set")}</td>
                     </tr>
@@ -2603,6 +2650,10 @@ function printFile(file: FileRecord) {
             background: #f3f3f3;
             font-weight: 600;
           }
+          .sno {
+            width: 44px;
+            text-align: right;
+          }
           @media print {
             body { margin: 12mm; }
           }
@@ -2641,8 +2692,9 @@ function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
   const title = file.uniqueCode || file.imms || "File record";
   const rows = columns
     .map(
-      (column) => `
+      (column, index) => `
         <tr>
+          <td class="sno">${index + 1}</td>
           <th>${escapeHtml(column.label)}</th>
           <td>${escapeHtml(column.getValue(file) || "Not set")}</td>
         </tr>
@@ -2691,6 +2743,10 @@ function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
             width: 34%;
             background: #f3f3f3;
             font-weight: 600;
+          }
+          .sno {
+            width: 44px;
+            text-align: right;
           }
           @media print {
             body { margin: 10mm; }

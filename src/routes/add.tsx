@@ -2026,8 +2026,9 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
   ];
   const detailRows = details
     .map(
-      (detail) => `
+      (detail, index) => `
         <tr>
+          <td class="sno">${index + 1}</td>
           <th>${escapeHtml(detail.label)}</th>
           <td>${escapeHtml(detail.value || "Not set")}</td>
         </tr>
@@ -2043,6 +2044,7 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
 
       return `
         <tr>
+          <td class="sno">${index + 1}</td>
           <td>${escapeHtml(item.label)}</td>
           <td>${escapeHtml(formatTimelineDate(item.date))}</td>
           <td>${escapeHtml(formatDayCount(gapDays))}</td>
@@ -2099,14 +2101,18 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
           .detail-table th {
             width: 28%;
           }
-          .timeline-table th:nth-child(1) {
-            width: 42%;
+          .sno {
+            width: 44px;
+            text-align: right;
           }
           .timeline-table th:nth-child(2) {
+            width: 42%;
+          }
+          .timeline-table th:nth-child(3) {
             width: 18%;
           }
-          .timeline-table th:nth-child(3),
-          .timeline-table th:nth-child(4) {
+          .timeline-table th:nth-child(4),
+          .timeline-table th:nth-child(5) {
             width: 20%;
           }
           @media print {
@@ -2130,6 +2136,7 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
             ? `<table class="timeline-table">
                 <thead>
                   <tr>
+                    <th>S.No.</th>
                     <th>Field</th>
                     <th>Date</th>
                     <th>Time gap</th>
@@ -2167,8 +2174,9 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
   ];
   const detailRows = details
     .map(
-      (detail) => `
+      (detail, index) => `
         <tr>
+          <td class="sno">${index + 1}</td>
           <th>${escapeHtml(detail.label)}</th>
           <td>${escapeHtml(detail.value || "Not set")}</td>
         </tr>
@@ -2177,8 +2185,9 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
     .join("");
   const remarkRows = remarks
     .map(
-      (remark) => `
+      (remark, index) => `
         <tr>
+          <td class="sno">${index + 1}</td>
           <td>${escapeHtml(formatRemarkDate(remark.createdAt))}</td>
           <td>${escapeHtml(remark.section)}</td>
           <td>${escapeHtml(remark.text).replace(/\n/g, "<br />")}</td>
@@ -2234,10 +2243,14 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
           .detail-table th {
             width: 28%;
           }
-          .remarks-table th:nth-child(1) {
-            width: 18%;
+          .sno {
+            width: 44px;
+            text-align: right;
           }
           .remarks-table th:nth-child(2) {
+            width: 18%;
+          }
+          .remarks-table th:nth-child(3) {
             width: 24%;
           }
           @media print {
@@ -2262,6 +2275,7 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
             ? `<table class="remarks-table">
                 <thead>
                   <tr>
+                    <th>S.No.</th>
                     <th>Date</th>
                     <th>Stage</th>
                     <th>Remark</th>

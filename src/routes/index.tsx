@@ -66,6 +66,23 @@ const statusActionModes = [
   { key: "search", label: "Search file", icon: Search },
 ] satisfies Array<{ key: StatusActionMode; label: string; icon: typeof Search }>;
 
+const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
+  "topFirms",
+  "indentorsByFiles",
+  "indentorsByValue",
+  "milestoneClearing",
+  "monthlyInflow",
+  "biddingMode",
+  "fileValueThresholds",
+  "riskLoad",
+  "paymentPending",
+  "milestoneClearingTable",
+];
+
+function isDivisionFilterableAnalyticsPanel(panelKey: AnalyticsPanelKey) {
+  return divisionFilterableAnalyticsPanels.includes(panelKey);
+}
+
 export function Dashboard() {
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
@@ -77,9 +94,16 @@ export function Dashboard() {
   const [statusActionMode, setStatusActionMode] = useState<StatusActionMode>("search");
   const [activeAnalyticsPanel, setActiveAnalyticsPanel] =
     useState<AnalyticsPanelKey>("divisionFiles");
+  const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
+  const selectedAnalyticsDivisionIsAccessible =
+    selectedAnalyticsDivision === "all" ||
+    divisions.some((division) => division.name === selectedAnalyticsDivision);
+  const activeAnalyticsDivision = selectedAnalyticsDivisionIsAccessible
+    ? selectedAnalyticsDivision
+    : "all";
   const dashboardFiles = useMemo(
     () =>
       activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
@@ -91,6 +115,20 @@ export function Dashboard() {
         ? divisions
         : divisions.filter((division) => division.name === activeDivision),
     [activeDivision, divisions],
+  );
+  const filteredAnalyticsFiles = useMemo(
+    () =>
+      activeAnalyticsDivision === "all"
+        ? dashboardFiles
+        : files.filter((file) => file.division === activeAnalyticsDivision),
+    [activeAnalyticsDivision, dashboardFiles, files],
+  );
+  const filteredAnalyticsDivisions = useMemo(
+    () =>
+      activeAnalyticsDivision === "all"
+        ? dashboardDivisions
+        : divisions.filter((division) => division.name === activeAnalyticsDivision),
+    [activeAnalyticsDivision, dashboardDivisions, divisions],
   );
 
   const modeCounts = getModeCounts(dashboardFiles);
@@ -112,6 +150,10 @@ export function Dashboard() {
     dashboardFiles.length,
   );
   const analytics = getAnalyticsSummary(dashboardFiles, dashboardDivisions);
+  const divisionFilteredAnalytics = getAnalyticsSummary(
+    filteredAnalyticsFiles,
+    filteredAnalyticsDivisions,
+  );
   const financeTotals = {
     allocatedCapital: dashboardDivisions.reduce(
       (sum, division) => sum + (parseAmount(division.allocatedCapital) ?? 0),
@@ -296,74 +338,77 @@ export function Dashboard() {
       title: "Top 20 firms by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
       columns: getValueAnalyticsColumns("Firm", "S.O. value"),
-      rows: analytics.topFirmSupplyOrders,
+      rows: divisionFilteredAnalytics.topFirmSupplyOrders,
     },
     {
       key: "indentorsByFiles",
       title: "Top 10 indentors by files",
       subtitle: "Number of files raised",
       columns: getCountAnalyticsColumns("Indentor"),
-      rows: analytics.topIndentorsByFiles,
+      rows: divisionFilteredAnalytics.topIndentorsByFiles,
     },
     {
       key: "indentorsByValue",
       title: "Top 10 indentors by value",
       subtitle: "Total demand value",
       columns: getValueAnalyticsColumns("Indentor", "Total value"),
-      rows: analytics.topIndentorsByValue,
+      rows: divisionFilteredAnalytics.topIndentorsByValue,
     },
     {
       key: "milestoneClearing",
       title: "Milestones by clearing time",
       subtitle: "Average clearing time in days",
       columns: getAverageDaysAnalyticsColumns("Milestone"),
-      rows: analytics.milestoneClearingRanking,
+      rows: divisionFilteredAnalytics.milestoneClearingRanking,
     },
     {
       key: "monthlyInflow",
       title: "Monthly file inflow",
       subtitle: "Files received by month",
       columns: getCountAnalyticsColumns("Month"),
-      rows: analytics.monthlyFileInflow,
+      rows: divisionFilteredAnalytics.monthlyFileInflow,
     },
     {
       key: "biddingMode",
       title: "Bidding mode mix",
       subtitle: "Distribution by mode",
       columns: getCountAnalyticsColumns("Mode"),
-      rows: analytics.biddingModeMix,
+      rows: divisionFilteredAnalytics.biddingModeMix,
     },
     {
       key: "fileValueThresholds",
       title: "File value thresholds",
       subtitle: "Number of files by total demand value",
       columns: getCountAnalyticsColumns("Value range"),
-      rows: analytics.fileValueThresholds,
+      rows: divisionFilteredAnalytics.fileValueThresholds,
     },
     {
       key: "riskLoad",
       title: "Risk load by division",
       subtitle: "Delivery pending, expired DP, LD, or cancelled S.O.",
       columns: getCountAnalyticsColumns("Division"),
-      rows: analytics.divisionRiskRanking,
+      rows: divisionFilteredAnalytics.divisionRiskRanking,
     },
     {
       key: "paymentPending",
       title: "Payment pending by division",
       subtitle: "Material received but payment not completed",
       columns: getCountAnalyticsColumns("Division"),
-      rows: analytics.divisionPaymentPendingRanking,
+      rows: divisionFilteredAnalytics.divisionPaymentPendingRanking,
     },
     {
       key: "milestoneClearingTable",
       title: "Milestone clearing ranking",
       subtitle: "Slowest milestones by average clearing time",
       columns: getAverageDaysAnalyticsColumns("Milestone"),
-      rows: analytics.milestoneClearingRanking,
+      rows: divisionFilteredAnalytics.milestoneClearingRanking,
     },
   ];
   const selectedAnalyticsPanel =
     analyticsPanels.find((panel) => panel.key === activeAnalyticsPanel) ?? analyticsPanels[0];
+  const analyticsDivisionFilterEnabled = isDivisionFilterableAnalyticsPanel(
+    selectedAnalyticsPanel.key,
+  );
 
   const openSearchFilter = (dashboardFilter: string) => {
     navigate({
@@ -576,6 +621,7 @@ export function Dashboard() {
                       isLast={false}
                       onCompletedClick={() => handleStatusFilter("deliveryCompleted")}
                       onDueClick={() => handleStatusFilter("deliveryDue")}
+                      onOverdueClick={() => handleStatusFilter("deliveryOverdue")}
                     />
                   );
                 }
@@ -666,6 +712,23 @@ export function Dashboard() {
                 subtitle={selectedAnalyticsPanel.subtitle}
                 actions={
                   <>
+                    {analyticsDivisionFilterEnabled ? (
+                      <label className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium">
+                        <span className="text-muted-foreground">Division</span>
+                        <select
+                          value={activeAnalyticsDivision}
+                          onChange={(event) => setSelectedAnalyticsDivision(event.target.value)}
+                          className="h-6 min-w-32 bg-transparent text-xs text-foreground outline-none"
+                        >
+                          <option value="all">All divisions</option>
+                          {divisions.map((division) => (
+                            <option key={division.id} value={division.name}>
+                              {division.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => printAnalyticsPanelToPdf(selectedAnalyticsPanel)}
@@ -1179,8 +1242,8 @@ function getDivisionValueAnalyticsColumns(): AnalyticsTableColumn[] {
   });
   return [
     { key: "name", label: "Division", align: "left" },
-    currencyColumn("allocatedCapital", "Total value (Lakhs)", "Capital", "allocatedCapital", false),
-    currencyColumn("allocatedRevenue", "Total value (Lakhs)", "Revenue", "allocatedRevenue", false),
+    currencyColumn("allocatedCapital", "Allocated (Lakhs)", "Capital", "allocatedCapital", false),
+    currencyColumn("allocatedRevenue", "Allocated (Lakhs)", "Revenue", "allocatedRevenue", false),
     currencyColumn("intendedCapital", "Intended (Lakhs)", "Capital", "allocatedCapital"),
     currencyColumn("intendedRevenue", "Intended (Lakhs)", "Revenue", "allocatedRevenue"),
     currencyColumn("bookedCapital", "Booked (Lakhs)", "Capital", "allocatedCapital"),
@@ -1866,19 +1929,22 @@ function DeliveryFlowNode({
   isLast,
   onCompletedClick,
   onDueClick,
+  onOverdueClick,
 }: {
   milestone: {
     key: string;
     label: string;
     completed: number;
     due: number;
+    overdue: number;
   };
   index: number;
   isLast: boolean;
   onCompletedClick: () => void;
   onDueClick: () => void;
+  onOverdueClick: () => void;
 }) {
-  const tone = getMilestoneTone(milestone.due);
+  const tone = getMilestoneTone(milestone.overdue || milestone.due);
 
   return (
     <div className="relative min-w-0">
@@ -1902,7 +1968,7 @@ function DeliveryFlowNode({
               <span className="block truncate text-sm font-semibold">{milestone.label}</span>
             </span>
           </span>
-          <span className="grid grid-cols-2 gap-1.5">
+          <span className="grid grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={onCompletedClick}
@@ -1926,6 +1992,21 @@ function DeliveryFlowNode({
                 Pending
               </span>
               <span className="block text-base font-semibold tabular-nums">{milestone.due}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onOverdueClick}
+              className={
+                "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
+                getMilestoneTone(milestone.overdue).count
+              }
+            >
+              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                Overdue
+              </span>
+              <span className="block text-base font-semibold tabular-nums">
+                {milestone.overdue}
+              </span>
             </button>
           </span>
         </span>
@@ -2243,9 +2324,15 @@ function getFileValueThresholds(files: FileRecord[]) {
   const values = files.map(getFileTotalValue);
   return [
     { name: "< 10,00,000", count: values.filter((value) => value < 1_000_000).length },
-    { name: "> 10,00,000", count: values.filter((value) => value > 1_000_000).length },
-    { name: "> 50,00,000", count: values.filter((value) => value > 5_000_000).length },
-    { name: "> 1,00,00,000", count: values.filter((value) => value > 10_000_000).length },
+    {
+      name: "10,00,000 - 50,00,000",
+      count: values.filter((value) => value >= 1_000_000 && value < 5_000_000).length,
+    },
+    {
+      name: "50,00,000 - 1,00,00,000",
+      count: values.filter((value) => value >= 5_000_000 && value < 10_000_000).length,
+    },
+    { name: ">= 1,00,00,000", count: values.filter((value) => value >= 10_000_000).length },
   ];
 }
 
@@ -2675,6 +2762,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     label: "Delivery",
     completed: files.filter(isDeliveryCompleted).length,
     due: files.filter(isDeliveryDue).length,
+    overdue: files.filter(isDeliveryOverdue).length,
   };
   const deliveryPeriod = {
     key: "deliveryPeriod",
@@ -2879,8 +2967,7 @@ function isDpExpired(file: FileRecord) {
 }
 
 function isDeliveryOverdue(file: FileRecord) {
-  const deliveryDate = hasFilledField(file, "revisedDp") ? file.revisedDp : file.dpDate;
-  return isDateBeforeToday(deliveryDate);
+  return isDeliveryActive(file) && fileSupplyOrders(file).some(isOverdueDeliveryOrder);
 }
 
 function isDeliveryCompleted(file: FileRecord) {
@@ -2909,6 +2996,10 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
   return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+}
+
+function isOverdueDeliveryOrder(order: SupplyOrderDetail) {
+  return isDueDeliveryOrder(order) && isDateBeforeToday(getDeliveryDueDate(order));
 }
 
 function isDeliveryPeriodValid(file: FileRecord) {
@@ -2977,9 +3068,16 @@ function hasSupplyOrderDate(order: SupplyOrderDetail) {
   return hasFilledString(order.soDate);
 }
 
-const statusExportHeaders = ["Division", "Indentor", "Demand description", "Last status", "Date"];
-const statusPageExportHeaders = ["Section", "Metric", "Count"];
-const financeExportHeaders = ["Category", "Capital", "Revenue", "Notes"];
+const statusExportHeaders = [
+  "S.No.",
+  "Division",
+  "Indentor",
+  "Demand description",
+  "Last status",
+  "Date",
+];
+const statusPageExportHeaders = ["S.No.", "Section", "Metric", "Count"];
+const financeExportHeaders = ["S.No.", "Category", "Capital", "Revenue", "Notes"];
 
 type StatusPageExportRow = {
   section: string;
@@ -2997,6 +3095,7 @@ type FinanceExportRow = {
 const dashboardFilterTitles: Record<string, string> = {
   deliveryCompleted: "Delivery - Completed",
   deliveryDue: "Delivery - Pending",
+  deliveryOverdue: "Delivery - Overdue",
   deliveryPeriodValid: "Delivery Period - Valid",
   deliveryPeriodExpired: "Delivery Period - Expired",
   deliveryPeriodExtended: "Delivery Period - Extended",
@@ -3187,6 +3286,7 @@ function getStatusPageExportRows(
       rows.push(
         { section: milestone.label, metric: "Completed", count: milestone.completed },
         { section: milestone.label, metric: "Pending", count: milestone.due },
+        { section: milestone.label, metric: "Overdue", count: milestone.overdue },
       );
       return;
     }
@@ -3235,14 +3335,14 @@ function exportStatusPageRowsToExcel(rows: StatusPageExportRow[], title: string)
       <body>
         <table>
           <thead>
-            <tr><th colspan="3">${escapeHtml(title)}</th></tr>
+            <tr><th colspan="${statusPageExportHeaders.length}">${escapeHtml(title)}</th></tr>
             <tr>${statusPageExportHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
           </thead>
           <tbody>
             ${rows
               .map(
-                (row) =>
-                  `<tr>${[row.section, row.metric, row.count]
+                (row, index) =>
+                  `<tr>${[String(index + 1), row.section, row.metric, row.count]
                     .map((value) => `<td>${escapeHtml(value)}</td>`)
                     .join("")}</tr>`,
               )
@@ -3282,7 +3382,7 @@ function printStatusPageRowsToPdf(rows: StatusPageExportRow[], title: string) {
           table { width: 100%; border-collapse: collapse; font-size: 12px; }
           th, td { border: 1px solid #d1d5db; padding: 7px; text-align: left; vertical-align: top; }
           th { background: #f3f4f6; font-weight: 700; }
-          td:nth-child(3), th:nth-child(3) { text-align: right; }
+          td:nth-child(1), th:nth-child(1), td:nth-child(4), th:nth-child(4) { text-align: right; }
           @media print { body { margin: 12mm; } }
         </style>
       </head>
@@ -3295,8 +3395,8 @@ function printStatusPageRowsToPdf(rows: StatusPageExportRow[], title: string) {
           <tbody>
             ${rows
               .map(
-                (row) =>
-                  `<tr>${[row.section, row.metric, row.count]
+                (row, index) =>
+                  `<tr>${[String(index + 1), row.section, row.metric, row.count]
                     .map((value) => `<td>${escapeHtml(value)}</td>`)
                     .join("")}</tr>`,
               )
@@ -3320,14 +3420,15 @@ function exportStatusFilesToExcel(files: FileRecord[], dashboardFilter: string) 
       <body>
         <table>
           <thead>
-            <tr><th colspan="5">${escapeHtml(title)}</th></tr>
+            <tr><th colspan="${statusExportHeaders.length}">${escapeHtml(title)}</th></tr>
             <tr>${statusExportHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
           </thead>
           <tbody>
             ${rows
               .map(
-                (row) =>
+                (row, index) =>
                   `<tr>${[
+                    String(index + 1),
                     row.division,
                     row.indentor,
                     row.demandDescription,
@@ -3361,14 +3462,14 @@ function exportFinanceRowsToExcel(rows: FinanceExportRow[], title: string) {
       <body>
         <table>
           <thead>
-            <tr><th colspan="4">${escapeHtml(title)}</th></tr>
+            <tr><th colspan="${financeExportHeaders.length}">${escapeHtml(title)}</th></tr>
             <tr>${financeExportHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
           </thead>
           <tbody>
             ${rows
               .map(
-                (row) =>
-                  `<tr>${[row.category, row.capital, row.revenue, row.notes]
+                (row, index) =>
+                  `<tr>${[String(index + 1), row.category, row.capital, row.revenue, row.notes]
                     .map((value) => `<td>${escapeHtml(value)}</td>`)
                     .join("")}</tr>`,
               )
@@ -3392,23 +3493,36 @@ function exportFinanceRowsToExcel(rows: FinanceExportRow[], title: string) {
 function exportAnalyticsPanelToExcel(panel: AnalyticsPanel) {
   const worksheet = `
     <html>
-      <head><meta charset="utf-8" /></head>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          th, td { border: 1px solid #d1d5db; padding: 7px; vertical-align: top; }
+          th { background: #f3f4f6; font-weight: 700; text-align: center; }
+          td { text-align: left; }
+          td:not(:first-child) { text-align: right; }
+          .title-heading, .subtitle-heading { text-align: center; }
+          .serial-cell { text-align: right; }
+          .value-cell { text-align: left !important; }
+          .split-value { width: 100%; border-collapse: collapse; font-size: inherit; }
+          .split-value td { border: 0; padding: 0; }
+          .split-value .amount { text-align: left; }
+          .split-value .percent { color: #6b7280; text-align: right; white-space: nowrap; }
+        </style>
+      </head>
       <body>
         <table>
           <thead>
-            <tr><th colspan="${panel.columns.length}">${escapeHtml(panel.title)}</th></tr>
-            <tr><th colspan="${panel.columns.length}">${escapeHtml(panel.subtitle)}</th></tr>
-            ${getAnalyticsHeaderHtml(panel.columns)}
+            <tr><th class="title-heading" colspan="${panel.columns.length + 1}">${escapeHtml(panel.title)}</th></tr>
+            <tr><th class="subtitle-heading" colspan="${panel.columns.length + 1}">${escapeHtml(panel.subtitle)}</th></tr>
+            ${getAnalyticsHeaderHtml(panel.columns, true)}
           </thead>
           <tbody>
             ${panel.rows
               .map(
-                (row) =>
-                  `<tr>${panel.columns
-                    .map(
-                      (column) =>
-                        `<td>${escapeHtml(getAnalyticsCellValue(row, column)).replace(/\n/g, "<br />")}</td>`,
-                    )
+                (row, index) =>
+                  `<tr><td class="serial-cell">${index + 1}</td>${panel.columns
+                    .map((column) => getAnalyticsExportCellHtml(row, column, panel))
                     .join("")}</tr>`,
               )
               .join("")}
@@ -3433,16 +3547,17 @@ function getAnalyticsCellValue(row: Record<string, number | string>, column: Ana
   return column.format ? column.format(value, row) : String(value);
 }
 
-function getAnalyticsHeaderHtml(columns: AnalyticsTableColumn[]) {
+function getAnalyticsHeaderHtml(columns: AnalyticsTableColumn[], includeSerial = false) {
   const groupedHeaders = getAnalyticsGroupedHeaders(columns);
   const hasGroupedHeaders = groupedHeaders.some((header) => header.group);
 
   if (!hasGroupedHeaders) {
-    return `<tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr>`;
+    return `<tr>${includeSerial ? "<th>S.No.</th>" : ""}${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr>`;
   }
 
   return `
     <tr>
+      ${includeSerial ? `<th rowspan="2">S.No.</th>` : ""}
       ${groupedHeaders
         .map((header) =>
           header.group
@@ -3495,8 +3610,9 @@ function printStatusFilesToPdf(files: FileRecord[], dashboardFilter: string) {
           <tbody>
             ${rows
               .map(
-                (row) =>
+                (row, index) =>
                   `<tr>${[
+                    String(index + 1),
                     row.division,
                     row.indentor,
                     row.demandDescription,
@@ -3536,26 +3652,30 @@ function printAnalyticsPanelToPdf(panel: AnalyticsPanel) {
           p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
           table { width: 100%; border-collapse: collapse; font-size: 12px; }
           th, td { border: 1px solid #d1d5db; padding: 7px; text-align: left; vertical-align: top; }
-          th { background: #f3f4f6; font-weight: 700; }
-          td:not(:first-child), th:not(:first-child) { text-align: right; }
+          th { background: #f3f4f6; font-weight: 700; text-align: center; }
+          td:not(:first-child) { text-align: right; }
+          .serial-cell { text-align: right; }
+          .value-cell { text-align: left !important; }
+          .split-value { width: 100%; border-collapse: collapse; font-size: inherit; }
+          .split-value td { border: 0; padding: 0; }
+          .split-value .amount { text-align: left; }
+          .split-value .percent { color: #6b7280; text-align: right; white-space: nowrap; }
           @media print { body { margin: 12mm; } }
         </style>
       </head>
       <body>
         <h1>${escapeHtml(panel.title)}</h1>
+        <p>${escapeHtml(panel.subtitle)}</p>
         <table>
           <thead>
-            ${getAnalyticsHeaderHtml(panel.columns)}
+            ${getAnalyticsHeaderHtml(panel.columns, true)}
           </thead>
           <tbody>
             ${panel.rows
               .map(
-                (row) =>
-                  `<tr>${panel.columns
-                    .map(
-                      (column) =>
-                        `<td>${escapeHtml(getAnalyticsCellValue(row, column)).replace(/\n/g, "<br />")}</td>`,
-                    )
+                (row, index) =>
+                  `<tr><td class="serial-cell">${index + 1}</td>${panel.columns
+                    .map((column) => getAnalyticsExportCellHtml(row, column, panel))
                     .join("")}</tr>`,
               )
               .join("")}
@@ -3567,6 +3687,34 @@ function printAnalyticsPanelToPdf(panel: AnalyticsPanel) {
   printWindow.document.close();
   printWindow.focus();
   printWindow.print();
+}
+
+function getAnalyticsExportCellHtml(
+  row: Record<string, number | string>,
+  column: AnalyticsTableColumn,
+  panel: AnalyticsPanel,
+) {
+  if (panel.key === "divisionValue" && column.group) {
+    const value = Number(row[column.key] ?? 0);
+    const allocatedKey = column.key.endsWith("Revenue") ? "allocatedRevenue" : "allocatedCapital";
+    const showPercent = !column.key.startsWith("allocated");
+    if (showPercent) {
+      const percent = getPercent(value, Number(row[allocatedKey] ?? 0));
+      return `
+        <td class="value-cell">
+          <table class="split-value">
+            <tr>
+              <td class="amount">${escapeHtml(formatLakhsValue(value))}</td>
+              <td class="percent">${escapeHtml(percent === undefined ? "-" : `(${formatPercent(percent)})`)}</td>
+            </tr>
+          </table>
+        </td>
+      `;
+    }
+    return `<td class="value-cell">${escapeHtml(formatLakhsValue(value))}</td>`;
+  }
+
+  return `<td>${escapeHtml(getAnalyticsCellValue(row, column)).replace(/\n/g, "<br />")}</td>`;
 }
 
 function printFinanceRowsToPdf(rows: FinanceExportRow[], title: string) {
@@ -3588,7 +3736,7 @@ function printFinanceRowsToPdf(rows: FinanceExportRow[], title: string) {
           table { width: 100%; border-collapse: collapse; font-size: 12px; }
           th, td { border: 1px solid #d1d5db; padding: 7px; text-align: left; vertical-align: top; }
           th { background: #f3f4f6; font-weight: 700; }
-          td:nth-child(2), td:nth-child(3), th:nth-child(2), th:nth-child(3) { text-align: right; }
+          td:nth-child(1), th:nth-child(1), td:nth-child(3), td:nth-child(4), th:nth-child(3), th:nth-child(4) { text-align: right; }
           @media print { body { margin: 12mm; } }
         </style>
       </head>
@@ -3601,8 +3749,8 @@ function printFinanceRowsToPdf(rows: FinanceExportRow[], title: string) {
           <tbody>
             ${rows
               .map(
-                (row) =>
-                  `<tr>${[row.category, row.capital, row.revenue, row.notes]
+                (row, index) =>
+                  `<tr>${[String(index + 1), row.category, row.capital, row.revenue, row.notes]
                     .map((value) => `<td>${escapeHtml(value)}</td>`)
                     .join("")}</tr>`,
               )
@@ -3779,11 +3927,11 @@ function formatLakhsValueWithPercent(value: number, allocatedValue: number) {
 function renderLakhsValueWithPercent(value: number, allocatedValue: number) {
   const percent = getPercent(value, allocatedValue);
   return (
-    <span className="flex items-center justify-between gap-2">
+    <span className="flex w-full items-center justify-between gap-2">
+      <span>{formatLakhsValue(value)}</span>
       <span className="text-muted-foreground">
         {percent === undefined ? "-" : `(${formatPercent(percent)})`}
       </span>
-      <span>{formatLakhsValue(value)}</span>
     </span>
   );
 }

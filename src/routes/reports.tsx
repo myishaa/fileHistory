@@ -7,6 +7,7 @@ import {
   useAccessibleDivisions,
   useAccessibleFiles,
 } from "@/lib/files-store";
+import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
 
 export const Route = createFileRoute("/reports")({
   component: ReportsPage,
@@ -16,6 +17,7 @@ function ReportsPage() {
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
   const [selectedDivision, setSelectedDivision] = useState("all");
+  const [reportMode, setReportMode] = useState<ReportMode>("status");
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -25,18 +27,45 @@ function ReportsPage() {
     [activeDivision, files],
   );
   const statusSummaryGroups = getStatusSummaryTableGroups(reportFiles);
-  const reportTitle =
+  const cashOutgoRows = getExpectedCashOutgoRows(reportFiles);
+  const statusReportTitle =
     activeDivision === "all"
       ? "Status summary - All divisions"
       : `Status summary - ${activeDivision}`;
+  const cashOutgoReportTitle =
+    activeDivision === "all"
+      ? "Expected cash outgo monthly - All divisions"
+      : `Expected cash outgo monthly - ${activeDivision}`;
+  const reportTitle = reportMode === "status" ? statusReportTitle : cashOutgoReportTitle;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-card p-0.5">
+            {reportModes.map((mode) => (
+              <button
+                key={mode.key}
+                type="button"
+                onClick={() => setReportMode(mode.key)}
+                className={
+                  "h-8 rounded px-3 text-sm font-medium transition-colors " +
+                  (reportMode === mode.key
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                }
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            onClick={() => printStatusSummaryGroupsToPdf(statusSummaryGroups, reportTitle)}
+            onClick={() =>
+              reportMode === "status"
+                ? printStatusSummaryGroupsToPdf(statusSummaryGroups, reportTitle)
+                : printExpectedCashOutgoToPdf(cashOutgoRows, reportTitle)
+            }
             className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
           >
             <FileText className="size-4" />
@@ -44,7 +73,11 @@ function ReportsPage() {
           </button>
           <button
             type="button"
-            onClick={() => exportStatusSummaryGroupsToExcel(statusSummaryGroups, reportTitle)}
+            onClick={() =>
+              reportMode === "status"
+                ? exportStatusSummaryGroupsToExcel(statusSummaryGroups, reportTitle)
+                : exportExpectedCashOutgoToExcel(cashOutgoRows, reportTitle)
+            }
             className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
           >
             <FileSpreadsheet className="size-4" />
@@ -68,58 +101,228 @@ function ReportsPage() {
         </label>
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
-        <div className="mb-5">
-          <h2 className="text-sm font-semibold">Status summary</h2>
-          <p className="text-xs text-muted-foreground">Files at each stage across all milestones</p>
-        </div>
-        <div className="space-y-4">
-          {statusSummaryGroups.map((group) => (
-            <div key={group.key} className="overflow-hidden rounded-lg border border-border">
-              <div className="overflow-x-auto">
-                <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
-                      <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">
-                        Milestone
+      {reportMode === "status" ? (
+        <StatusSummaryReport groups={statusSummaryGroups} />
+      ) : (
+        <ExpectedCashOutgoReport rows={cashOutgoRows} />
+      )}
+    </div>
+  );
+}
+
+type ReportMode = "status" | "cashOutgo";
+
+const reportModes = [
+  { key: "status", label: "Status summary" },
+  { key: "cashOutgo", label: "Expected cash outgo" },
+] satisfies Array<{ key: ReportMode; label: string }>;
+
+function StatusSummaryReport({ groups }: { groups: StatusSummaryTableGroup[] }) {
+  return (
+    <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
+      <div className="mb-5">
+        <h2 className="text-sm font-semibold">Status summary</h2>
+        <p className="text-xs text-muted-foreground">Files at each stage across all milestones</p>
+      </div>
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <div key={group.key} className="overflow-hidden rounded-lg border border-border">
+            <div className="overflow-x-auto">
+              <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+                    <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">
+                      Milestone
+                    </th>
+                    {group.columns.map((column) => (
+                      <th key={column} className="px-3 py-2.5 text-right font-semibold">
+                        {column}
                       </th>
-                      {group.columns.map((column) => (
-                        <th key={column} className="px-3 py-2.5 text-right font-semibold">
-                          {column}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.rows.map((row, rowIndex) => (
-                      <tr
-                        key={row.milestone}
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.rows.map((row, rowIndex) => (
+                    <tr
+                      key={row.milestone}
+                      className={
+                        "border-b border-border/60 last:border-0 " +
+                        (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                      }
+                    >
+                      <td
                         className={
-                          "border-b border-border/60 last:border-0 " +
+                          "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
                           (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
                         }
                       >
-                        <td
-                          className={
-                            "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
-                            (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
-                          }
-                        >
-                          {row.milestone}
+                        {row.milestone}
+                      </td>
+                      {group.columns.map((column) => (
+                        <td key={column} className="px-3 py-2.5 text-right tabular-nums">
+                          <StatusCountValue value={row.counts[column]} />
                         </td>
-                        {group.columns.map((column) => (
-                          <td key={column} className="px-3 py-2.5 text-right tabular-nums">
-                            <StatusCountValue value={row.counts[column]} />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ExpectedCashOutgoReport({ rows }: { rows: ExpectedCashOutgoRow[] }) {
+  const totals = getExpectedCashOutgoTotals(rows);
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">Expected cash outgo monthly</h2>
+          <p className="text-xs text-muted-foreground">
+            Uses material receipt date if filled, otherwise DP date, then adds 10 days.
+          </p>
         </div>
+        <div className="grid grid-cols-3 gap-2 text-right text-xs">
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
+            <div className="text-muted-foreground">Capital</div>
+            <div className="font-semibold tabular-nums">{formatCurrency(totals.capital)}</div>
+          </div>
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
+            <div className="text-muted-foreground">Revenue</div>
+            <div className="font-semibold tabular-nums">{formatCurrency(totals.revenue)}</div>
+          </div>
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
+            <div className="text-muted-foreground">Total</div>
+            <div className="font-semibold tabular-nums">{formatCurrency(totals.total)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-border">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+                {cashOutgoColumns.map((column) => (
+                  <th
+                    key={column.key}
+                    className={
+                      "px-3 py-2.5 font-semibold " +
+                      (column.align === "right" ? "text-right" : "text-left")
+                    }
+                  >
+                    {column.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length ? (
+                rows.map((row, index) => (
+                  <tr
+                    key={row.monthKey}
+                    className={
+                      "border-b border-border/60 last:border-0 " +
+                      (index % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                    }
+                  >
+                    {cashOutgoColumns.map((column) => (
+                      <td
+                        key={column.key}
+                        className={
+                          "px-3 py-2.5 tabular-nums " +
+                          (column.align === "right" ? "text-right" : "text-left")
+                        }
+                      >
+                        {getCashOutgoDisplayValue(row, column.key, index)}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    colSpan={cashOutgoColumns.length}
+                    className="px-3 py-8 text-center text-sm text-muted-foreground"
+                  >
+                    No expected cash outgo rows found.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CashOutgoTable({
+  rows,
+  emptyMessage,
+}: {
+  rows: ExpectedCashOutgoRow[];
+  emptyMessage: string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[680px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+              {cashOutgoColumns.map((column) => (
+                <th
+                  key={column.key}
+                  className={
+                    "px-3 py-2.5 font-semibold " +
+                    (column.align === "right" ? "text-right" : "text-left")
+                  }
+                >
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? (
+              rows.map((row, index) => (
+                <tr
+                  key={row.monthKey}
+                  className={
+                    "border-b border-border/60 last:border-0 " +
+                    (index % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                  }
+                >
+                  {cashOutgoColumns.map((column) => (
+                    <td
+                      key={column.key}
+                      className={
+                        "px-3 py-2.5 tabular-nums " +
+                        (column.align === "right" ? "text-right" : "text-left")
+                      }
+                    >
+                      {getCashOutgoDisplayValue(row, column.key, index)}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td
+                  colSpan={cashOutgoColumns.length}
+                  className="px-3 py-8 text-center text-sm text-muted-foreground"
+                >
+                  {emptyMessage}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -188,7 +391,8 @@ function printStatusSummaryGroupsToPdf(groups: StatusSummaryTableGroup[], title:
           table { border-collapse: collapse; margin-bottom: 14px; width: auto; min-width: 520px; }
           th, td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 11px; }
           th { background: #f3f4f6; color: #374151; text-align: left; }
-          td:not(:first-child), th:not(:first-child) { text-align: right; }
+          td:first-child, th:first-child { text-align: right; }
+          td:nth-child(n+3), th:nth-child(n+3) { text-align: right; }
           @media print { body { margin: 12mm; } table { page-break-inside: avoid; } }
         </style>
       </head>
@@ -208,6 +412,7 @@ function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
     <table>
       <thead>
         <tr>
+          <th>S.No.</th>
           <th>Milestone</th>
           ${group.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
         </tr>
@@ -215,8 +420,9 @@ function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
       <tbody>
         ${group.rows
           .map(
-            (row) => `
+            (row, index) => `
               <tr>
+                <td>${index + 1}</td>
                 <td>${escapeHtml(row.milestone)}</td>
                 ${group.columns
                   .map((column) => `<td>${escapeHtml(row.counts[column] ?? "-")}</td>`)
@@ -238,6 +444,121 @@ function getExportFileName(title: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+function exportExpectedCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string) {
+  exportCashOutgoToExcel(rows, title, "No expected cash outgo rows found.");
+}
+
+function exportCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string, emptyMessage: string) {
+  const worksheet = `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          table { border-collapse: collapse; }
+          th, td { border: 1px solid #999; padding: 6px; text-align: left; }
+          th { font-weight: 700; background: #f3f4f6; }
+          td:nth-child(1), td:nth-child(n+3), th:nth-child(1), th:nth-child(n+3) { text-align: right; }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${getCashOutgoTableHtml(rows, emptyMessage)}
+      </body>
+    </html>
+  `;
+  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${getExportFileName(title)}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printExpectedCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) {
+  printCashOutgoToPdf(
+    rows,
+    title,
+    "Base date is material receipt date if available, otherwise DP date. Cash outgo month is base date plus 10 days.",
+    "No expected cash outgo rows found.",
+  );
+}
+
+function printCashOutgoToPdf(
+  rows: ExpectedCashOutgoRow[],
+  title: string,
+  description: string,
+  emptyMessage: string,
+) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.alert("Please allow pop-ups to generate the PDF report.");
+    return;
+  }
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+          h1 { font-size: 18px; margin: 0 0 4px; }
+          p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          th, td { border: 1px solid #d1d5db; padding: 7px; text-align: left; vertical-align: top; }
+          th { background: #f3f4f6; font-weight: 700; }
+          td:nth-child(1), td:nth-child(n+3), th:nth-child(1), th:nth-child(n+3) { text-align: right; }
+          @media print { body { margin: 12mm; } }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        <p>${escapeHtml(description)}</p>
+        ${getCashOutgoTableHtml(rows, emptyMessage)}
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
+function getCashOutgoTableHtml(rows: ExpectedCashOutgoRow[], emptyMessage: string) {
+  return `
+    <table>
+      <thead>
+        <tr>
+          ${cashOutgoColumns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        ${
+          rows.length
+            ? rows
+                .map(
+                  (row, index) => `
+                    <tr>
+                      ${cashOutgoColumns
+                        .map(
+                          (column) =>
+                            `<td>${escapeHtml(getCashOutgoDisplayValue(row, column.key, index))}</td>`,
+                        )
+                        .join("")}
+                    </tr>
+                  `,
+                )
+                .join("")
+            : `<tr><td colspan="${cashOutgoColumns.length}">${escapeHtml(emptyMessage)}</td></tr>`
+        }
+      </tbody>
+    </table>
+  `;
+}
+
 function escapeHtml(value: string | number | undefined) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -245,6 +566,104 @@ function escapeHtml(value: string | number | undefined) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+type ExpectedCashOutgoRow = {
+  monthKey: string;
+  month: string;
+  capital: number;
+  revenue: number;
+  total: number;
+};
+
+type CashOutgoColumnKey = "serial" | "month" | "capital" | "revenue" | "total";
+
+const cashOutgoColumns = [
+  { key: "serial", label: "S.No.", align: "right" },
+  { key: "month", label: "Month", align: "left" },
+  { key: "capital", label: "Capital", align: "right" },
+  { key: "revenue", label: "Revenue", align: "right" },
+  { key: "total", label: "Total", align: "right" },
+] satisfies Array<{ key: CashOutgoColumnKey; label: string; align: "left" | "right" }>;
+
+function getExpectedCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
+  const totals = new Map<string, ExpectedCashOutgoRow>();
+
+  files.forEach((file) => {
+    fileSupplyOrders(file).forEach((order) => {
+      if (!hasSupplyOrderDate(order) || isYes(order.soCancelled)) return;
+      const baseDate = hasFilledString(order.materialReceiptDate)
+        ? order.materialReceiptDate
+        : order.dpDate;
+      const cashOutgoDate = addDays(baseDate, 10);
+      if (!cashOutgoDate) return;
+
+      const monthKey = cashOutgoDate.slice(0, 7);
+      const current = totals.get(monthKey) ?? {
+        monthKey,
+        month: formatMonthLabel(cashOutgoDate),
+        capital: 0,
+        revenue: 0,
+        total: 0,
+      };
+      const capital = getInrAmount(order.soValueCapital, file) ?? 0;
+      const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
+      current.capital += capital;
+      current.revenue += revenue;
+      current.total += capital + revenue;
+      totals.set(monthKey, current);
+    });
+  });
+
+  return Array.from(totals.values())
+    .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
+    .map((row) => ({
+      ...row,
+      capital: Math.round(row.capital),
+      revenue: Math.round(row.revenue),
+      total: Math.round(row.total),
+    }));
+}
+
+function getExpectedCashOutgoTotals(rows: ExpectedCashOutgoRow[]) {
+  return rows.reduce(
+    (totals, row) => ({
+      capital: totals.capital + row.capital,
+      revenue: totals.revenue + row.revenue,
+      total: totals.total + row.total,
+    }),
+    { capital: 0, revenue: 0, total: 0 },
+  );
+}
+
+function getCashOutgoDisplayValue(
+  row: ExpectedCashOutgoRow,
+  key: CashOutgoColumnKey,
+  index: number,
+) {
+  if (key === "serial") return String(index + 1);
+  if (key === "month") return row.month;
+  return formatCurrency(row[key]);
+}
+
+function addDays(date: string | undefined, days: number) {
+  const time = parseLocalDateTime(date ?? "");
+  if (time === undefined) return undefined;
+  const next = new Date(time);
+  next.setDate(next.getDate() + days);
+  return formatLocalDate(next);
+}
+
+function formatMonthLabel(date: string) {
+  const time = parseLocalDateTime(date);
+  if (time === undefined) return date;
+  return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(
+    new Date(time),
+  );
+}
+
+function formatCurrency(value: number) {
+  return `${formatThousandsAndLakhs(value / 100_000, 2)} Lakh`;
 }
 
 type MilestoneDefinition = {
@@ -712,14 +1131,23 @@ function fileSupplyOrders(file: FileRecord) {
   if (rows.length) return rows;
 
   const legacy: SupplyOrderDetail = {
+    soNo: file.soNo,
+    gemSoNo: file.gemSoNo,
     soDate: file.soDate,
+    soValueCapital: file.soValueCapital,
+    soValueRevenue: file.soValueRevenue,
     dpDate: file.dpDate,
+    firm: file.firm,
     bgValidityDate: file.bgValidityDate,
     dpExtension: file.dpExtension,
+    dpExtensionCount: file.dpExtensionCount,
+    ld: file.ld,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
     paymentDate: file.paymentDate,
+    paymentMode: file.paymentMode,
     bgReturnDate: file.bgReturnDate,
+    demandCancelled: file.demandCancelled,
     soCancelled: file.soCancelled,
   };
   return Object.values(legacy).some((value) => Boolean(String(value ?? "").trim())) ? [legacy] : [];
@@ -768,6 +1196,10 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
   );
 }
 
+function getDeliveryPeriodDate(order: SupplyOrderDetail) {
+  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+}
+
 function isDeliveryPeriodValid(file: FileRecord) {
   return isSupplyOrderPlaced(file) && fileSupplyOrders(file).some(isValidDeliveryPeriodOrder);
 }
@@ -790,7 +1222,7 @@ function isValidDeliveryPeriodOrder(order: SupplyOrderDetail) {
 }
 
 function isExpiredDeliveryPeriodOrder(order: SupplyOrderDetail) {
-  const deliveryPeriodDate = hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
     Boolean(deliveryPeriodDate) &&
