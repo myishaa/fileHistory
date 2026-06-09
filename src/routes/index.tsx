@@ -119,6 +119,7 @@ export function Dashboard() {
   const [divisionTotalValueSortKey, setDivisionTotalValueSortKey] =
     useState<DivisionTotalValueSortKey>("allocatedTotal");
   const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
+  const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>();
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -159,6 +160,15 @@ export function Dashboard() {
   const manualMilestoneFlow = getManualMilestoneFlow(
     dashboardFiles,
     getConfiguredMilestones(settings.milestones),
+  );
+  const visibleLiveMilestoneNames =
+    selectedLiveMilestones?.filter((name) =>
+      manualMilestoneFlow.some((milestone) => milestone.name === name),
+    ) ?? manualMilestoneFlow.map((milestone) => milestone.name);
+  const liveStatusRows = getLiveStatusDivisionRows(
+    dashboardFiles,
+    dashboardDivisions,
+    visibleLiveMilestoneNames,
   );
   const statusFlow = getMilestoneFlow(dashboardFiles);
   const miscellaneousCounts = getMiscellaneousCounts(dashboardFiles);
@@ -470,6 +480,15 @@ export function Dashboard() {
       },
     });
   };
+  const openLiveStatusFilter = (division: string, milestoneName: string) => {
+    navigate({
+      to: "/search",
+      search: {
+        dashboardFilter: `manualMilestoneCurrent:${milestoneName}`,
+        division,
+      },
+    });
+  };
   const handleStatusFilter = (dashboardFilter: string) => {
     if (statusActionMode === "search") {
       openSearchFilter(dashboardFilter);
@@ -733,10 +752,22 @@ export function Dashboard() {
       {activeDashboardTab === "liveStatus" ? (
         <LiveStatusSection
           milestones={manualMilestoneFlow}
+          visibleMilestoneNames={visibleLiveMilestoneNames}
+          rows={liveStatusRows}
           totalFiles={dashboardFiles.length}
-          onMilestoneClick={(milestoneName) =>
-            openSearchFilter(`manualMilestoneCurrent:${milestoneName}`)
+          onMilestoneToggle={(milestoneName) =>
+            setSelectedLiveMilestones((current) => {
+              const selected = current ?? manualMilestoneFlow.map((milestone) => milestone.name);
+              return selected.includes(milestoneName)
+                ? selected.filter((name) => name !== milestoneName)
+                : [...selected, milestoneName];
+            })
           }
+          onSelectAllMilestones={() =>
+            setSelectedLiveMilestones(manualMilestoneFlow.map((milestone) => milestone.name))
+          }
+          onClearMilestones={() => setSelectedLiveMilestones([])}
+          onCountClick={openLiveStatusFilter}
         />
       ) : null}
 
@@ -1048,14 +1079,28 @@ function isFinanceSplitValue(value: SummaryMetricValue): value is FinanceSplitVa
 
 function LiveStatusSection({
   milestones,
+  visibleMilestoneNames,
+  rows,
   totalFiles,
-  onMilestoneClick,
+  onMilestoneToggle,
+  onSelectAllMilestones,
+  onClearMilestones,
+  onCountClick,
 }: {
   milestones: Array<{ name: string; current: number; completed: number }>;
+  visibleMilestoneNames: string[];
+  rows: LiveStatusDivisionRow[];
   totalFiles: number;
-  onMilestoneClick: (milestoneName: string) => void;
+  onMilestoneToggle: (milestoneName: string) => void;
+  onSelectAllMilestones: () => void;
+  onClearMilestones: () => void;
+  onCountClick: (division: string, milestoneName: string) => void;
 }) {
   const liveTotal = milestones.reduce((sum, milestone) => sum + milestone.current, 0);
+  const selectedMilestoneSet = new Set(visibleMilestoneNames);
+  const displayedMilestones = milestones.filter((milestone) =>
+    selectedMilestoneSet.has(milestone.name),
+  );
 
   return (
     <section className="space-y-4">
@@ -1065,9 +1110,9 @@ function LiveStatusSection({
       <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold">Current milestone position</h3>
+            <h3 className="text-sm font-bold">Division-wise current milestones</h3>
             <p className="text-xs text-muted-foreground">
-              Files grouped by their current milestone.
+              Counts show how many files are currently at each selected milestone.
             </p>
           </div>
           <div className="flex gap-2 text-right text-xs">
@@ -1081,61 +1126,156 @@ function LiveStatusSection({
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {milestones.map((milestone, index) => (
-            <LiveStatusMilestoneCard
-              key={milestone.name}
-              milestone={milestone}
-              index={index}
-              onClick={() => onMilestoneClick(milestone.name)}
-            />
-          ))}
+        <div className="mb-4 rounded-md border border-border bg-secondary/25 p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-semibold uppercase text-muted-foreground">Milestones</div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={onSelectAllMilestones}
+                className="h-7 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                onClick={onClearMilestones}
+                className="h-7 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {milestones.map((milestone) => {
+              const checked = selectedMilestoneSet.has(milestone.name);
+              return (
+                <label
+                  key={milestone.name}
+                  className={
+                    "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition " +
+                    (checked
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onMilestoneToggle(milestone.name)}
+                    className="size-3 accent-primary"
+                  />
+                  <span className="max-w-[150px] truncate">{milestone.name}</span>
+                  <span className="rounded bg-secondary px-1.5 py-0.5 tabular-nums">
+                    {milestone.current}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </div>
+        {displayedMilestones.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] table-fixed border-collapse text-sm">
+              <colgroup>
+                <col className="w-48" />
+                <col className="w-24" />
+                {displayedMilestones.map((milestone) => (
+                  <col key={milestone.name} className="w-28" />
+                ))}
+              </colgroup>
+              <thead>
+                <tr className="border-b border-border text-xs uppercase text-muted-foreground">
+                  <th className="px-3 py-2 text-left font-medium">Division</th>
+                  <th className="px-3 py-2 text-center font-medium">Total</th>
+                  {displayedMilestones.map((milestone) => (
+                    <th key={milestone.name} className="px-3 py-2 text-center font-medium">
+                      <span className="block truncate">{milestone.name}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.division} className="border-b border-border/60 last:border-0">
+                    <td className="px-3 py-2 font-medium">{row.division}</td>
+                    <td className="px-3 py-2 text-center font-semibold tabular-nums">
+                      {row.total}
+                    </td>
+                    {displayedMilestones.map((milestone) => {
+                      const count = row.counts[milestone.name] ?? 0;
+                      return (
+                        <td key={milestone.name} className="px-2 py-2 text-center">
+                          {count > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => onCountClick(row.division, milestone.name)}
+                              className="h-8 min-w-12 rounded-md border border-border bg-secondary/35 px-2 font-semibold tabular-nums transition hover:bg-accent hover:ring-2 hover:ring-ring/25"
+                              aria-label={`Open ${count} ${row.division} files at ${milestone.name}`}
+                            >
+                              {count}
+                            </button>
+                          ) : (
+                            <span className="inline-flex h-8 min-w-12 items-center justify-center rounded-md border border-border/60 bg-card px-2 text-muted-foreground tabular-nums">
+                              0
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">
+            Select at least one milestone to show division-wise counts.
+          </div>
+        )}
+        {!rows.length && displayedMilestones.length ? (
+          <div className="mt-3 text-sm text-muted-foreground">No division data available.</div>
+        ) : null}
       </div>
     </section>
   );
 }
 
-function LiveStatusMilestoneCard({
-  milestone,
-  index,
-  onClick,
-}: {
-  milestone: { name: string; current: number };
-  index: number;
-  onClick: () => void;
-}) {
-  const clickable = milestone.current > 0;
-  const content = (
-    <>
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-secondary text-[11px] font-bold text-muted-foreground">
-          {String(index + 1).padStart(2, "0")}
-        </span>
-        <span className="truncate text-sm font-semibold">{milestone.name}</span>
-      </div>
-      <div className="mt-3 flex items-end justify-between gap-3">
-        <span className="text-[11px] font-medium uppercase text-muted-foreground">Current</span>
-        <span className="text-2xl font-semibold tabular-nums">{milestone.current}</span>
-      </div>
-    </>
-  );
+type LiveStatusDivisionRow = {
+  division: string;
+  total: number;
+  counts: Record<string, number>;
+};
 
-  if (!clickable) {
-    return (
-      <div className="rounded-lg border border-border bg-secondary/20 p-3 text-left">{content}</div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-lg border border-border bg-secondary/35 p-3 text-left transition hover:bg-accent hover:ring-2 hover:ring-ring/25"
-    >
-      {content}
-    </button>
+function getLiveStatusDivisionRows(
+  files: ReturnType<typeof useAccessibleFiles>,
+  divisions: Division[],
+  milestoneNames: string[],
+): LiveStatusDivisionRow[] {
+  const configuredDivisionNames = divisions.map((division) => division.name);
+  const fileDivisionNames = Array.from(
+    new Set(
+      files.map((file) => file.division?.trim()).filter((name): name is string => Boolean(name)),
+    ),
   );
+  const divisionNames = Array.from(new Set([...configuredDivisionNames, ...fileDivisionNames]));
+
+  return divisionNames
+    .map((division) => {
+      const divisionFiles = files.filter((file) => file.division === division);
+      const counts = Object.fromEntries(
+        milestoneNames.map((milestoneName) => [
+          milestoneName,
+          divisionFiles.filter((file) => file.currentMilestone === milestoneName).length,
+        ]),
+      ) as Record<string, number>;
+      return {
+        division,
+        counts,
+        total: Object.values(counts).reduce((sum, count) => sum + count, 0),
+      };
+    })
+    .sort((a, b) => b.total - a.total || a.division.localeCompare(b.division));
 }
 
 function ManualMilestoneFlowNode({
