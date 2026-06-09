@@ -18,7 +18,7 @@ export const Route = createFileRoute("/")({
   },
 });
 
-type DashboardTab = "snapshot" | "status" | "analytics" | "finance";
+type DashboardTab = "snapshot" | "status" | "liveStatus" | "analytics" | "finance";
 type StatusActionMode = "pdf" | "excel" | "search";
 type DivisionValueSortMode = "value" | "percent";
 type DivisionValueSortKey =
@@ -30,9 +30,15 @@ type DivisionValueSortKey =
   | "bookedRevenue"
   | "committedCapital"
   | "committedRevenue";
+type DivisionTotalValueSortKey =
+  | "allocatedTotal"
+  | "intendedTotal"
+  | "bookedTotal"
+  | "committedTotal";
 type AnalyticsPanelKey =
   | "divisionFiles"
   | "divisionValue"
+  | "divisionTotalValue"
   | "divisionTurnaround"
   | "fileDistribution"
   | "topFirms"
@@ -108,6 +114,10 @@ export function Dashboard() {
     useState<DivisionValueSortMode>("value");
   const [divisionValueSortKey, setDivisionValueSortKey] =
     useState<DivisionValueSortKey>("allocatedCapital");
+  const [divisionTotalValueSortMode, setDivisionTotalValueSortMode] =
+    useState<DivisionValueSortMode>("value");
+  const [divisionTotalValueSortKey, setDivisionTotalValueSortKey] =
+    useState<DivisionTotalValueSortKey>("allocatedTotal");
   const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
@@ -334,6 +344,13 @@ export function Dashboard() {
       rows: analytics.divisionValueRanking,
     },
     {
+      key: "divisionTotalValue",
+      title: "Division ranking by total value",
+      subtitle: "Allocated, intended, booked, and committed totals",
+      columns: getDivisionTotalValueAnalyticsColumns(),
+      rows: analytics.divisionValueRanking,
+    },
+    {
       key: "divisionTurnaround",
       title: "Division turnaround ranking",
       subtitle: "Average days from received date to first S.O.",
@@ -430,7 +447,16 @@ export function Dashboard() {
             divisionValueSortMode,
           ),
         }
-      : selectedAnalyticsPanel;
+      : selectedAnalyticsPanel.key === "divisionTotalValue"
+        ? {
+            ...selectedAnalyticsPanel,
+            rows: sortDivisionTotalValueRows(
+              selectedAnalyticsPanel.rows,
+              divisionTotalValueSortKey,
+              divisionTotalValueSortMode,
+            ),
+          }
+        : selectedAnalyticsPanel;
   const analyticsDivisionFilterEnabled = isDivisionFilterableAnalyticsPanel(
     selectedAnalyticsPanel.key,
   );
@@ -467,6 +493,7 @@ export function Dashboard() {
         <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
           {[
             { key: "status", label: "Status" },
+            { key: "liveStatus", label: "Live status" },
             { key: "snapshot", label: "Snapshot" },
             { key: "analytics", label: "Analytics" },
             { key: "finance", label: "Finance" },
@@ -703,6 +730,16 @@ export function Dashboard() {
         </section>
       ) : null}
 
+      {activeDashboardTab === "liveStatus" ? (
+        <LiveStatusSection
+          milestones={manualMilestoneFlow}
+          totalFiles={dashboardFiles.length}
+          onMilestoneClick={(milestoneName) =>
+            openSearchFilter(`manualMilestoneCurrent:${milestoneName}`)
+          }
+        />
+      ) : null}
+
       {activeDashboardTab === "analytics" ? (
         <section className="space-y-4">
           <div>
@@ -777,6 +814,14 @@ export function Dashboard() {
                     sortKey={divisionValueSortKey}
                     onModeChange={setDivisionValueSortMode}
                     onSortKeyChange={setDivisionValueSortKey}
+                  />
+                ) : null}
+                {displayedAnalyticsPanel.key === "divisionTotalValue" ? (
+                  <DivisionTotalValueSortControls
+                    mode={divisionTotalValueSortMode}
+                    sortKey={divisionTotalValueSortKey}
+                    onModeChange={setDivisionTotalValueSortMode}
+                    onSortKeyChange={setDivisionTotalValueSortKey}
                   />
                 ) : null}
                 <AnalyticsRankingTable
@@ -999,6 +1044,98 @@ function SummaryMetric({
 
 function isFinanceSplitValue(value: SummaryMetricValue): value is FinanceSplitValue {
   return !Array.isArray(value) && typeof value === "object" && value !== null;
+}
+
+function LiveStatusSection({
+  milestones,
+  totalFiles,
+  onMilestoneClick,
+}: {
+  milestones: Array<{ name: string; current: number; completed: number }>;
+  totalFiles: number;
+  onMilestoneClick: (milestoneName: string) => void;
+}) {
+  const liveTotal = milestones.reduce((sum, milestone) => sum + milestone.current, 0);
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-sm font-bold">Live status</h2>
+      </div>
+      <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold">Current milestone position</h3>
+            <p className="text-xs text-muted-foreground">
+              Files grouped by their current milestone.
+            </p>
+          </div>
+          <div className="flex gap-2 text-right text-xs">
+            <div className="rounded-md border border-border bg-secondary/40 px-3 py-2">
+              <div className="text-muted-foreground">Live counted</div>
+              <div className="text-lg font-semibold tabular-nums">{liveTotal}</div>
+            </div>
+            <div className="rounded-md border border-border bg-secondary/40 px-3 py-2">
+              <div className="text-muted-foreground">Total files</div>
+              <div className="text-lg font-semibold tabular-nums">{totalFiles}</div>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {milestones.map((milestone, index) => (
+            <LiveStatusMilestoneCard
+              key={milestone.name}
+              milestone={milestone}
+              index={index}
+              onClick={() => onMilestoneClick(milestone.name)}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LiveStatusMilestoneCard({
+  milestone,
+  index,
+  onClick,
+}: {
+  milestone: { name: string; current: number };
+  index: number;
+  onClick: () => void;
+}) {
+  const clickable = milestone.current > 0;
+  const content = (
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-secondary text-[11px] font-bold text-muted-foreground">
+          {String(index + 1).padStart(2, "0")}
+        </span>
+        <span className="truncate text-sm font-semibold">{milestone.name}</span>
+      </div>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <span className="text-[11px] font-medium uppercase text-muted-foreground">Current</span>
+        <span className="text-2xl font-semibold tabular-nums">{milestone.current}</span>
+      </div>
+    </>
+  );
+
+  if (!clickable) {
+    return (
+      <div className="rounded-lg border border-border bg-secondary/20 p-3 text-left">{content}</div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border border-border bg-secondary/35 p-3 text-left transition hover:bg-accent hover:ring-2 hover:ring-ring/25"
+    >
+      {content}
+    </button>
+  );
 }
 
 function ManualMilestoneFlowNode({
@@ -1225,6 +1362,13 @@ const divisionValueSortOptions = [
   { key: "committedRevenue", label: "Committed R" },
 ] satisfies Array<{ key: DivisionValueSortKey; label: string }>;
 
+const divisionTotalValueSortOptions = [
+  { key: "allocatedTotal", label: "Allocated" },
+  { key: "intendedTotal", label: "Intended" },
+  { key: "bookedTotal", label: "Booked" },
+  { key: "committedTotal", label: "Committed" },
+] satisfies Array<{ key: DivisionTotalValueSortKey; label: string }>;
+
 function DivisionValueSortControls({
   mode,
   sortKey,
@@ -1264,6 +1408,68 @@ function DivisionValueSortControls({
       </div>
       <div className="flex flex-wrap items-center gap-1">
         {divisionValueSortOptions.map((option) => (
+          <label
+            key={option.key}
+            className={
+              "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
+              (sortKey === option.key
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+            }
+          >
+            <input
+              type="checkbox"
+              checked={sortKey === option.key}
+              onChange={() => onSortKeyChange(option.key)}
+              className="size-3 accent-primary"
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DivisionTotalValueSortControls({
+  mode,
+  sortKey,
+  onModeChange,
+  onSortKeyChange,
+}: {
+  mode: DivisionValueSortMode;
+  sortKey: DivisionTotalValueSortKey;
+  onModeChange: (mode: DivisionValueSortMode) => void;
+  onSortKeyChange: (key: DivisionTotalValueSortKey) => void;
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-secondary/25 px-2.5 py-2 text-xs">
+      <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+        {[
+          { key: "value", label: "Value" },
+          { key: "percent", label: "%" },
+        ].map((item) => (
+          <label
+            key={item.key}
+            className={
+              "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
+              (mode === item.key
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground")
+            }
+          >
+            <input
+              type="checkbox"
+              checked={mode === item.key}
+              onChange={() => onModeChange(item.key as DivisionValueSortMode)}
+              className="size-3 accent-current"
+            />
+            {item.label}
+          </label>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        {divisionTotalValueSortOptions.map((option) => (
           <label
             key={option.key}
             className={
@@ -1359,6 +1565,28 @@ function getDivisionValueAnalyticsColumns(): AnalyticsTableColumn[] {
   ];
 }
 
+function getDivisionTotalValueAnalyticsColumns(): AnalyticsTableColumn[] {
+  const totalColumn = (key: string, label: string, showPercent = true): AnalyticsTableColumn => ({
+    key,
+    label,
+    format: (value, row) =>
+      showPercent
+        ? formatLakhsValueWithPercent(Number(value), Number(row.allocatedTotal))
+        : formatLakhsValue(Number(value)),
+    render: (value, row) =>
+      showPercent
+        ? renderLakhsValueWithPercent(Number(value), Number(row.allocatedTotal))
+        : formatLakhsValue(Number(value)),
+  });
+  return [
+    { key: "name", label: "Division", align: "left" },
+    totalColumn("allocatedTotal", "Allocated total", false),
+    totalColumn("intendedTotal", "Intended total"),
+    totalColumn("bookedTotal", "Booked total"),
+    totalColumn("committedTotal", "Committed total"),
+  ];
+}
+
 function sortDivisionValueRows(
   rows: Array<Record<string, number | string>>,
   sortKey: DivisionValueSortKey,
@@ -1381,6 +1609,30 @@ function getDivisionValueSortValue(
   if (mode === "value" || sortKey.startsWith("allocated")) return value;
   const allocationKey = sortKey.endsWith("Revenue") ? "allocatedRevenue" : "allocatedCapital";
   const allocation = Number(row[allocationKey] ?? 0);
+  return allocation > 0 ? value / allocation : 0;
+}
+
+function sortDivisionTotalValueRows(
+  rows: Array<Record<string, number | string>>,
+  sortKey: DivisionTotalValueSortKey,
+  mode: DivisionValueSortMode,
+) {
+  return [...rows].sort((a, b) => {
+    const aValue = getDivisionTotalValueSortValue(a, sortKey, mode);
+    const bValue = getDivisionTotalValueSortValue(b, sortKey, mode);
+    if (bValue !== aValue) return bValue - aValue;
+    return String(a.name ?? "").localeCompare(String(b.name ?? ""));
+  });
+}
+
+function getDivisionTotalValueSortValue(
+  row: Record<string, number | string>,
+  sortKey: DivisionTotalValueSortKey,
+  mode: DivisionValueSortMode,
+) {
+  const value = Number(row[sortKey] ?? 0);
+  if (mode === "value" || sortKey === "allocatedTotal") return value;
+  const allocation = Number(row.allocatedTotal ?? 0);
   return allocation > 0 ? value / allocation : 0;
 }
 
@@ -2358,12 +2610,16 @@ function getDivisionValueRanking(files: FileRecord[], divisions: Division[]) {
       name,
       allocatedCapital: Math.round(values.allocatedCapital),
       allocatedRevenue: Math.round(values.allocatedRevenue),
+      allocatedTotal: Math.round(values.allocatedCapital + values.allocatedRevenue),
       intendedCapital: Math.round(values.intendedCapital),
       intendedRevenue: Math.round(values.intendedRevenue),
+      intendedTotal: Math.round(values.intendedCapital + values.intendedRevenue),
       bookedCapital: Math.round(values.bookedCapital),
       bookedRevenue: Math.round(values.bookedRevenue),
+      bookedTotal: Math.round(values.bookedCapital + values.bookedRevenue),
       committedCapital: Math.round(values.committedCapital),
       committedRevenue: Math.round(values.committedRevenue),
+      committedTotal: Math.round(values.committedCapital + values.committedRevenue),
     }))
     .sort(
       (a, b) => b.allocatedCapital + b.allocatedRevenue - (a.allocatedCapital + a.allocatedRevenue),
@@ -2822,7 +3078,12 @@ function getManualMilestoneFlow(
   files: ReturnType<typeof useAccessibleFiles>,
   milestones: string[],
 ) {
-  return milestones.map((name) => ({
+  const configured = milestones.map((name) => name.trim()).filter(Boolean);
+  const extras = files
+    .map((file) => file.currentMilestone?.trim())
+    .filter((name): name is string => Boolean(name))
+    .filter((name) => !configured.includes(name));
+  return [...configured, ...Array.from(new Set(extras)).sort()].map((name) => ({
     name,
     current: files.filter((file) => file.currentMilestone === name).length,
     completed: files.filter((file) => file.completedMilestones?.includes(name)).length,
