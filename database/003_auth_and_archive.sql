@@ -36,9 +36,4 @@ create index if not exists files_archived_at_idx on files(archived_at);
 
 insert into app_users (name, username, role, password_hash, is_active)
 values ('Ovais', 'ovais', 'admin', crypt('ovais123', gen_salt('bf')), true)
-on conflict (username) do update
-set
-  name = excluded.name,
-  role = 'admin',
-  password_hash = excluded.password_hash,
-  is_active = true;
+on conflict (username) do nothing;

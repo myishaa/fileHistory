@@ -28,15 +28,46 @@ Note: the build may show a Wrangler permission warning about writing logs to `~/
 
 ## Data Storage
 
-Data is currently saved in browser `localStorage`, not a SQL database.
+Data is saved in PostgreSQL through the Express backend in [backend](backend).
 
-Main storage keys are defined in [src/lib/files-store.ts](src/lib/files-store.ts):
+Before deploying, run every SQL file in [database](database) against the production database in
+number order. The seed migration creates an initial admin account only when it does not already
+exist.
 
-- `ofms.files.v1`: saved file records
-- `ofms.divisions.v1`: division records
-- `ofms.settings.v1`: app settings
+Initial admin login after a fresh seed:
 
-Because this is browser storage, data is local to that browser profile. For real multi-user use, this should later move to a backend database.
+- Username: `ovais`
+- Password: `ovais123`
+
+Change this password immediately after the first production login, or create a new admin and remove
+the seed account after confirming the new login works.
+
+## Deployment Notes
+
+Backend production environment:
+
+```env
+NODE_ENV=production
+DATABASE_URL=postgresql://...
+FRONTEND_ORIGIN=https://your-frontend-domain.example
+SESSION_COOKIE_SAMESITE=lax
+```
+
+Use `SESSION_COOKIE_SAMESITE=none` only when the frontend and backend are deployed on different
+sites and both are served over HTTPS.
+
+Frontend production environment:
+
+```env
+VITE_API_BASE_URL=https://your-backend-domain.example
+```
+
+Production checklist:
+
+- Change the seeded admin password before real use.
+- Keep at least one active admin user; the backend blocks deleting or downgrading the last one.
+- Enable scheduled PostgreSQL backups with the database provider.
+- Lock `FRONTEND_ORIGIN` to the real frontend domain, plus any deliberate staging domain.
 
 ## Main Screens
 

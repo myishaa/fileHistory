@@ -6,6 +6,8 @@ import { HttpError } from "./http.js";
 
 const sessionCookieName = "recordkeeper_session";
 const sessionDays = 7;
+const isProduction = process.env.NODE_ENV === "production";
+const sameSiteSetting = readSameSiteSetting(process.env.SESSION_COOKIE_SAMESITE);
 
 export type AuthRequest = Request & {
   authUser?: AuthUser;
@@ -35,23 +37,35 @@ function parseCookies(header: string | undefined) {
   return cookies;
 }
 
+function readSameSiteSetting(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "none" || normalized === "strict" || normalized === "lax") {
+    return normalized;
+  }
+  return "lax";
+}
+
+function sessionCookieOptions(maxAge?: number) {
+  return {
+    httpOnly: true,
+    sameSite: sameSiteSetting,
+    secure: isProduction || sameSiteSetting === "none",
+    ...(maxAge !== undefined ? { maxAge } : {}),
+    path: "/",
+  } as const;
+}
+
 export function getSessionToken(request: Request) {
   return parseCookies(request.headers.cookie).get(sessionCookieName);
 }
 
 export function setSessionCookie(response: Response, token: string) {
   const maxAge = sessionDays * 24 * 60 * 60;
-  response.cookie(sessionCookieName, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: false,
-    maxAge: maxAge * 1000,
-    path: "/",
-  });
+  response.cookie(sessionCookieName, token, sessionCookieOptions(maxAge * 1000));
 }
 
 export function clearSessionCookie(response: Response) {
-  response.clearCookie(sessionCookieName, { path: "/" });
+  response.clearCookie(sessionCookieName, sessionCookieOptions());
 }
 
 export function createSessionToken() {

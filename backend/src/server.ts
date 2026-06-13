@@ -14,6 +14,7 @@ import { HttpError } from "./utils/http.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
+const isProduction = process.env.NODE_ENV === "production";
 const frontendOrigins = (process.env.FRONTEND_ORIGIN ?? "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
@@ -22,7 +23,11 @@ const frontendOrigins = (process.env.FRONTEND_ORIGIN ?? "http://localhost:5173")
 function isAllowedFrontendOrigin(origin: string | undefined) {
   if (!origin) return true;
   if (frontendOrigins.includes(origin)) return true;
-  return /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin) || /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin);
+  if (isProduction) return false;
+  return (
+    /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin) ||
+    /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin)
+  );
 }
 
 app.use(

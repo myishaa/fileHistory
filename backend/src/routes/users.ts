@@ -66,15 +66,17 @@ async function getUser(id: string) {
   return users.find((user) => user.id === id);
 }
 
-async function replaceUserDivisions(userId: string, divisionIds: string[]) {
-  await pool.query("delete from user_divisions where user_id = $1", [userId]);
-  for (const divisionId of divisionIds) {
-    await pool.query(
-      `insert into user_divisions (user_id, division_id)
-       values ($1, $2)
-       on conflict do nothing`,
-      [userId, divisionId],
-    );
+async function ensureNotLastAdmin(userId: string, action: string) {
+  const result = await pool.query<{ remaining_admins: string }>(
+    `select count(*)::text as remaining_admins
+     from app_users
+     where role = 'admin'
+       and is_active = true
+       and id <> $1`,
+    [userId],
+  );
+  if (Number(result.rows[0]?.remaining_admins ?? 0) === 0) {
+    throw new HttpError(400, `Cannot ${action} the last active admin user.`);
   }
 }
 
@@ -149,8 +151,19 @@ usersRouter.patch(
     const client = await pool.connect();
     try {
       await client.query("begin");
-      const existing = await client.query("select id from app_users where id = $1", [id]);
+      const existing = await client.query<{ id: string; role: AppUserRole; is_active: boolean }>(
+        "select id, role, is_active from app_users where id = $1",
+        [id],
+      );
       if (existing.rowCount === 0) throw new HttpError(404, "User not found.");
+      if (
+        existing.rows[0].role === "admin" &&
+        existing.rows[0].is_active &&
+        "role" in body &&
+        readRole(body.role) !== "admin"
+      ) {
+        await ensureNotLastAdmin(id, "change role for");
+      }
       if (fields.length) {
         values.push(id);
         const setSql = fields
@@ -195,6 +208,7 @@ usersRouter.delete(
     const id = requireParam(request.params.id, "id");
     const user = await getUser(id);
     if (!user) throw new HttpError(404, "User not found.");
+    if (user.role === "admin") await ensureNotLastAdmin(id, "delete");
 
     await pool.query("delete from app_users where id = $1", [id]);
     response.json({ deleted: true, user });
