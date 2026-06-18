@@ -505,6 +505,61 @@ function supplyOrderTextExpression(column: string) {
     where so.file_id = f.id)`;
 }
 
+function freeSearchTextExpression() {
+  const fileTextColumns = Object.values(fileSearchColumns)
+    .map((column) => `coalesce(${column}::text, '')`)
+    .join(", ");
+
+  return `concat_ws(' ', ${fileTextColumns},
+    coalesce((
+      select string_agg(concat_ws(' ',
+        so.so_no,
+        so.gem_so_no,
+        so.so_date,
+        so.so_value_capital,
+        so.so_value_revenue,
+        so.dp_date,
+        so.firm,
+        so.bg_validity_date,
+        so.dp_extension,
+        so.dp_extension_count,
+        so.ld,
+        so.revised_dp,
+        so.material_receipt_date,
+        so.bill_sent_for_payment_date,
+        so.payment_date,
+        so.payment_mode,
+        so.bg_return_date,
+        so.demand_cancelled,
+        so.so_cancelled,
+        so.so_cancelled_date
+      ), ' ' order by so.sort_order, so.id)
+      from supply_orders so
+      where so.file_id = f.id
+    ), ''),
+    coalesce((
+      select string_agg(concat_ws(' ', ff.firm_name, ff.city, ff.email_id), ' ' order by ff.sort_order, ff.id)
+      from file_firms ff
+      where ff.file_id = f.id
+    ), ''),
+    coalesce((
+      select string_agg(concat_ws(' ', fr.section, fr.text), ' ' order by fr.created_at, fr.id)
+      from file_remarks fr
+      where fr.file_id = f.id
+    ), ''),
+    coalesce((
+      select string_agg(completed.milestone, ' ' order by completed.milestone)
+      from file_completed_milestones completed
+      where completed.file_id = f.id
+    ), ''),
+    coalesce((
+      select string_agg(activity.financial_year, ' ' order by activity.financial_year)
+      from file_year_activity activity
+      where activity.file_id = f.id and activity.status = 'active'
+    ), '')
+  )`;
+}
+
 const fileSearchColumns = {
   title: "f.title",
   division: "d.name",
@@ -965,15 +1020,14 @@ function buildSearchSql(
 
   if (params.freeText?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.freeText));
-    const fileTextColumns = Object.values(fileSearchColumns)
-      .map((column) => `coalesce(${column}::text, '')`)
-      .join(", ");
-    conditions.push(`lower(concat_ws(' ', ${fileTextColumns},
-      coalesce((select string_agg(concat_ws(' ', so.so_no, so.gem_so_no, so.so_date, so.so_value_capital, so.so_value_revenue, so.dp_date, so.firm, so.bg_validity_date, so.dp_extension, so.dp_extension_count, so.ld, so.revised_dp, so.material_receipt_date, so.bill_sent_for_payment_date, so.payment_date, so.payment_mode, so.bg_return_date, so.demand_cancelled, so.so_cancelled, so.so_cancelled_date), ' ') from supply_orders so where so.file_id = f.id), ''),
-      coalesce((select string_agg(concat_ws(' ', fr.section, fr.text), ' ') from file_remarks fr where fr.file_id = f.id), ''),
-      coalesce((select count(*)::text from file_firms ff where ff.file_id = f.id and ff.firm_type = 'invited' and (${hasTextSql("ff.firm_name")} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.email_id")})), '0'),
-      coalesce((select count(*)::text from file_firms ff where ff.file_id = f.id and ff.firm_type = 'bidder' and (${hasTextSql("ff.firm_name")} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.email_id")})), '0')
-    )) like ${placeholder}`);
+    const normalizedQuery = params.freeText.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const freeSearchText = freeSearchTextExpression();
+    const freeSearchConditions = [`lower(${freeSearchText}) like ${placeholder}`];
+    if (normalizedQuery) {
+      const normalizedPlaceholder = addSqlValue(values, `%${normalizedQuery}%`);
+      freeSearchConditions.push(`${normalizedSql(freeSearchText)} like ${normalizedPlaceholder}`);
+    }
+    conditions.push(`(${freeSearchConditions.join(" or ")})`);
   }
 
   if (isValidDate(params.freeDate)) {

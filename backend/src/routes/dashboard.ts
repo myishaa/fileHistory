@@ -149,6 +149,25 @@ const statusMilestoneDefinitions = [
   { key: "payment", label: "Payment", supplyOrderDate: "payment_date" },
 ] as const;
 
+const defaultManualMilestones = [
+  "Scrutiny",
+  "High Value",
+  "Pre-TCEC",
+  "AD",
+  "R&QA",
+  "Controlled",
+  "IFA",
+  "CFA",
+  "Bidding",
+  "Post-TCEC",
+  "CNC",
+  "Supply Order",
+  "Delivery Period",
+  "Bank Guarantee",
+  "Delivery",
+  "Payment",
+];
+
 function mapDivision(row: DivisionRow): Division {
   return {
     id: row.id,
@@ -200,7 +219,7 @@ async function loadDivisions(user: ReturnType<typeof requireAuth>, financialYear
        d.ad
      from divisions d
      left join division_year_allocations a
-       on a.division_id = d.id and a.financial_year = $${yearParam}
+       on a.division_id = d.id and a.financial_year = $${yearParam}::text
      where ${conditions.join(" and ")}
      order by d.name asc`,
     values,
@@ -230,7 +249,7 @@ async function loadValueThresholdLevels(financialYear: string): Promise<ValueThr
   }>(
     `select id, level_number, label, min_value, max_value, applies_to
      from value_threshold_levels
-     where financial_year = $1
+     where financial_year = $1::text
      order by level_number asc`,
     [financialYear],
   );
@@ -316,9 +335,9 @@ function getSelectedYearCondition(selectedYear: string | undefined, values: unkn
   }
 
   const placeholder = addValue(values, selectedYear);
-  return `(f.year = ${placeholder} or exists (
+  return `(f.year = ${placeholder}::text or exists (
     select 1 from file_year_activity a
-    where a.file_id = f.id and a.financial_year = ${placeholder} and a.status = 'active'
+    where a.file_id = f.id and a.financial_year = ${placeholder}::text and a.status = 'active'
   ))`;
 }
 
@@ -434,6 +453,59 @@ type StatusCounts = {
   deliveryPeriodExtended: number;
 };
 
+type CountAnalyticsRow = { name: string; count: number };
+type ValueAnalyticsRow = { name: string; value: number };
+type AverageDaysAnalyticsRow = { name: string; averageDays: number; sampleSize: number };
+type ThresholdAnalyticsRow = {
+  name: string;
+  appliesTo: string;
+  range: string;
+  count: number;
+  capital: number;
+  revenue: number;
+  value: number;
+};
+type DivisionValueAnalyticsRow = {
+  name: string;
+  allocatedCapital: number;
+  allocatedRevenue: number;
+  allocatedTotal: number;
+  intendedCapital: number;
+  intendedRevenue: number;
+  intendedTotal: number;
+  bookedCapital: number;
+  bookedRevenue: number;
+  bookedTotal: number;
+  committedCapital: number;
+  committedRevenue: number;
+  committedTotal: number;
+};
+
+type AnalyticsSqlSlice = {
+  divisionFileRanking: CountAnalyticsRow[];
+  divisionValueRanking: DivisionValueAnalyticsRow[];
+  divisionTurnaroundRanking: AverageDaysAnalyticsRow[];
+  topFirmSupplyOrders: ValueAnalyticsRow[];
+  topIndentorsByFiles: CountAnalyticsRow[];
+  topIndentorsByValue: ValueAnalyticsRow[];
+  milestoneClearingRanking: AverageDaysAnalyticsRow[];
+  monthlyFileInflow: CountAnalyticsRow[];
+  biddingModeMix: CountAnalyticsRow[];
+  fileValueThresholds: ThresholdAnalyticsRow[];
+  divisionRiskRanking: CountAnalyticsRow[];
+  divisionPaymentPendingRanking: CountAnalyticsRow[];
+};
+
+type ManualMilestoneSqlSlice = {
+  manualMilestoneFlow: Array<{ name: string; current: number; completed: number }>;
+  visibleLiveMilestoneNames: string[];
+  liveStatusRows: Array<{
+    division: string;
+    counts: Record<string, number>;
+    total: number;
+  }>;
+};
+
 async function loadSimpleDashboardCounts({
   whereSql,
   values,
@@ -447,7 +519,7 @@ async function loadSimpleDashboardCounts({
   const extraConditions: string[] = [];
   if (activeDivision !== "all") {
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
-    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}`);
+    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
 
   const modeSelects = modeNames.map(
@@ -652,7 +724,7 @@ async function loadFinanceTotals({
   const extraConditions: string[] = [];
   if (activeDivision !== "all") {
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
-    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}`);
+    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
   const cancelled = isCancelledExpression();
   const valueCapital = inrAmountExpression("f.value_capital");
@@ -735,6 +807,530 @@ function roundedFinanceTotals(totals: FinanceTotals): FinanceTotals {
   };
 }
 
+function analyticsDivisionExtraCondition(values: unknown[], divisionName: string) {
+  if (divisionName === "all") return undefined;
+  const placeholder = addValue(values, divisionName.toLowerCase());
+  return `lower(coalesce(d.name, '')) = ${placeholder}::text`;
+}
+
+function analyticsNameExpression(column: string, fallback: string) {
+  return `coalesce(nullif(trim(coalesce(${column}, '')), ''), '${fallback}')`;
+}
+
+function childSupplyOrderValueSumExpression(column: "so_value_capital" | "so_value_revenue") {
+  return `coalesce((
+    select sum(${inrAmountExpression(`so_value.${column}`)})
+    from supply_orders so_value
+    where so_value.file_id = f.id
+  ), 0)`;
+}
+
+function committedValueExpression(
+  fileColumn: "f.so_value_capital" | "f.so_value_revenue",
+  supplyOrderColumn: "so_value_capital" | "so_value_revenue",
+) {
+  return `case
+    when ${supplyOrderRowExists()} then ${childSupplyOrderValueSumExpression(supplyOrderColumn)}
+    else ${inrAmountExpression(fileColumn)}
+  end`;
+}
+
+function earliestSupplyOrderDateExpression(column: string) {
+  return `case
+    when ${supplyOrderRowExists()} then (
+      select min(so_date_value.${column})
+      from supply_orders so_date_value
+      where so_date_value.file_id = f.id and so_date_value.${column} is not null
+    )
+    else f.${column}
+  end`;
+}
+
+function averageDaysExpression(startDate: string, endDate: string) {
+  return `round(avg((${endDate}) - (${startDate})))::integer`;
+}
+
+function dateDiffCondition(startDate: string, endDate: string) {
+  return `(${startDate}) is not null and (${endDate}) is not null and ((${endDate}) - (${startDate})) >= 0`;
+}
+
+function formatThresholdAppliesTo(value: ValueThresholdLevel["appliesTo"]) {
+  if (value === "capital") return "Capital";
+  if (value === "revenue") return "Revenue";
+  return "Both";
+}
+
+function formatPlainAmount(value: number) {
+  return Math.round(value).toLocaleString("en-IN");
+}
+
+function formatThresholdRange(level: ValueThresholdLevel) {
+  const min = Number(String(level.minValue ?? "").replace(/,/g, "").trim());
+  const max = Number(String(level.maxValue ?? "").replace(/,/g, "").trim());
+  const hasMin = Number.isFinite(min) && String(level.minValue ?? "").trim() !== "";
+  const hasMax = Number.isFinite(max) && String(level.maxValue ?? "").trim() !== "";
+  if (hasMin && hasMax) return `${formatPlainAmount(min)}-${formatPlainAmount(max)}`;
+  if (hasMin) return `${formatPlainAmount(min)}+`;
+  if (hasMax) return `0-${formatPlainAmount(max)}`;
+  return "Any value";
+}
+
+function roundDivisionValueRows(
+  rows: Map<string, Omit<DivisionValueAnalyticsRow, "name" | "allocatedTotal" | "intendedTotal" | "bookedTotal" | "committedTotal">>,
+) {
+  return Array.from(rows.entries())
+    .map(([name, values]) => ({
+      name,
+      allocatedCapital: Math.round(values.allocatedCapital),
+      allocatedRevenue: Math.round(values.allocatedRevenue),
+      allocatedTotal: Math.round(values.allocatedCapital + values.allocatedRevenue),
+      intendedCapital: Math.round(values.intendedCapital),
+      intendedRevenue: Math.round(values.intendedRevenue),
+      intendedTotal: Math.round(values.intendedCapital + values.intendedRevenue),
+      bookedCapital: Math.round(values.bookedCapital),
+      bookedRevenue: Math.round(values.bookedRevenue),
+      bookedTotal: Math.round(values.bookedCapital + values.bookedRevenue),
+      committedCapital: Math.round(values.committedCapital),
+      committedRevenue: Math.round(values.committedRevenue),
+      committedTotal: Math.round(values.committedCapital + values.committedRevenue),
+    }))
+    .sort((a, b) => b.allocatedCapital + b.allocatedRevenue - (a.allocatedCapital + a.allocatedRevenue));
+}
+
+async function loadAnalyticsSqlSlice({
+  whereSql,
+  values,
+  divisionName,
+  divisions,
+  valueThresholdLevels,
+}: {
+  whereSql: string;
+  values: unknown[];
+  divisionName: string;
+  divisions: Division[];
+  valueThresholdLevels: ValueThresholdLevel[];
+}): Promise<AnalyticsSqlSlice> {
+  const fileRankingValues = [...values];
+  const fileRankingConditions: string[] = [];
+  const fileRankingDivision = analyticsDivisionExtraCondition(fileRankingValues, divisionName);
+  if (fileRankingDivision) fileRankingConditions.push(fileRankingDivision);
+
+  const divisionNameSql = analyticsNameExpression("d.name", "Unassigned");
+  const fileRankingResult = await pool.query<{ name: string; count: number }>(
+    `select ${divisionNameSql} as name, count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+     group by 1
+     order by count desc`,
+    fileRankingValues,
+  );
+
+  const indentorNameSql = analyticsNameExpression("f.indentor", "Unassigned indentor");
+  const indentorFileResult = await pool.query<{ name: string; count: number }>(
+    `select ${indentorNameSql} as name, count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+     group by 1
+     order by count desc`,
+    fileRankingValues,
+  );
+
+  const demandTotal = `${inrAmountExpression("f.value_capital")} + ${inrAmountExpression("f.value_revenue")}`;
+  const indentorValueResult = await pool.query<{ name: string; value: string | number }>(
+    `select ${indentorNameSql} as name, round(coalesce(sum(${demandTotal}), 0))::integer as value
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+     group by 1
+     order by value desc`,
+    fileRankingValues,
+  );
+
+  const modeNameSql = analyticsNameExpression("upper(trim(coalesce(f.mode, '')))", "Unassigned");
+  const biddingModeResult = await pool.query<{ name: string; count: number }>(
+    `select ${modeNameSql} as name, count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+     group by 1
+     order by count desc`,
+    fileRankingValues,
+  );
+
+  const firstSoDate = earliestSupplyOrderDateExpression("so_date");
+  const turnaroundResult = await pool.query<AverageDaysAnalyticsRow>(
+    `select ${divisionNameSql} as name,
+            ${averageDaysExpression("f.received_date", firstSoDate)} as "averageDays",
+            count(*)::integer as "sampleSize"
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [
+       ...fileRankingConditions,
+       dateDiffCondition("f.received_date", firstSoDate),
+     ])}
+     group by 1
+     order by "averageDays" desc`,
+    fileRankingValues,
+  );
+
+  const milestoneClearingDefinitions = [
+    { name: "Scrutiny", start: "f.received_date", end: "f.scrutiny_completion_date" },
+    { name: "High Value", start: "f.high_value_meeting_date", end: "f.high_value_minutes_date" },
+    { name: "Pre-TCEC", start: "f.pre_tcec_date", end: "f.pre_tcec_minutes_date" },
+    { name: "AD", start: "coalesce(f.pre_tcec_minutes_date, f.received_date)", end: "f.ad_vetting_date" },
+    { name: "R&QA", start: "f.received_date", end: "f.rqa_approval_date" },
+    { name: "Controlling", start: "f.received_date", end: "f.imms_date" },
+    { name: "IFA", start: "f.ifa_sent_date", end: "f.ifa_final_date" },
+    { name: "CFA", start: "f.cfa_sent_date", end: "f.cfa_date" },
+    { name: "Post-TCEC", start: "f.post_tcec_date", end: "f.post_tcec_minutes_date" },
+    { name: "CNC", start: "f.cnc_date", end: "f.cnc_approval_date" },
+    { name: "Supply Order", start: "f.cfa_date", end: firstSoDate },
+    { name: "Bank Guarantee", start: firstSoDate, end: earliestSupplyOrderDateExpression("bg_validity_date") },
+    { name: "Delivery", start: firstSoDate, end: earliestSupplyOrderDateExpression("material_receipt_date") },
+    {
+      name: "Payment",
+      start: earliestSupplyOrderDateExpression("material_receipt_date"),
+      end: earliestSupplyOrderDateExpression("payment_date"),
+    },
+  ];
+  const milestoneSelects = milestoneClearingDefinitions.map(
+    (definition, index) =>
+      `select ${index} as sort_order,
+              '${definition.name}' as name,
+              ${averageDaysExpression(definition.start, definition.end)} as "averageDays",
+              count(*)::integer as "sampleSize"
+       from files f
+       left join divisions d on d.id = f.division_id
+       ${appendDashboardWhereClause(whereSql, [
+         ...fileRankingConditions,
+         dateDiffCondition(definition.start, definition.end),
+       ])}`,
+  );
+  const milestoneResult = await pool.query<AverageDaysAnalyticsRow & { sort_order: number }>(
+    `${milestoneSelects.join("\nunion all\n")}
+     order by "averageDays" desc`,
+    fileRankingValues,
+  );
+
+  const monthlyValues = [...fileRankingValues];
+  const monthlyResult = await pool.query<{ name: string; count: number }>(
+    `select to_char(coalesce(f.received_date, f.file_date), 'YYYY-MM') as name,
+            count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [
+       ...fileRankingConditions,
+       "coalesce(f.received_date, f.file_date) is not null",
+     ])}
+     group by 1
+     order by name desc
+     limit 12`,
+    monthlyValues,
+  );
+
+  const firmValues = [...fileRankingValues];
+  const firmResult = await pool.query<{ name: string; value: string | number }>(
+    `with effective_supply_orders as (
+       select
+         f.id as file_id,
+         ${analyticsNameExpression("so.firm", "Unassigned firm")} as name,
+         ${inrAmountExpression("so.so_value_capital")} + ${inrAmountExpression("so.so_value_revenue")} as value
+       from files f
+       left join divisions d on d.id = f.division_id
+       join supply_orders so on so.file_id = f.id
+       ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+       union all
+       select
+         f.id as file_id,
+         ${analyticsNameExpression("f.firm", "Unassigned firm")} as name,
+         ${inrAmountExpression("f.so_value_capital")} + ${inrAmountExpression("f.so_value_revenue")} as value
+       from files f
+       left join divisions d on d.id = f.division_id
+       ${appendDashboardWhereClause(whereSql, [
+         ...fileRankingConditions,
+         `not ${supplyOrderRowExists()}`,
+       ])}
+     )
+     select name, round(sum(value))::integer as value
+     from effective_supply_orders
+     where value > 0
+     group by 1
+     order by value desc`,
+    firmValues,
+  );
+
+  const riskCondition = `((not ${isCancelledExpression()} and ${deliveryDueOrderExpression()})
+    or (not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
+      `${hasFilledExpression("so.so_date")}
+       and coalesce(so.revised_dp, so.dp_date) is not null
+       and coalesce(so.revised_dp, so.dp_date) < current_date
+       and not ${hasFilledExpression("so.material_receipt_date")}`,
+      `${hasFilledExpression("f.so_date")}
+       and coalesce(f.revised_dp, f.dp_date) is not null
+       and coalesce(f.revised_dp, f.dp_date) < current_date
+       and not ${hasFilledExpression("f.material_receipt_date")}`,
+    )})
+    or ${supplyOrderChildOrLegacyExpression(
+      `${isYesExpression("so.ld")} or ${isYesExpression("so.demand_cancelled")} or ${isYesExpression("so.so_cancelled")}`,
+      isYesExpression("f.so_cancelled"),
+    )})`;
+  const riskResult = await pool.query<CountAnalyticsRow>(
+    `select ${divisionNameSql} as name, count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, riskCondition])}
+     group by 1
+     order by count desc`,
+    fileRankingValues,
+  );
+
+  const paymentPendingCondition = `not ${isCancelledExpression()} and ${supplyOrderChildOrLegacyExpression(
+    `${hasFilledExpression("so.material_receipt_date")} and not ${hasFilledExpression("so.payment_date")}`,
+    `${hasFilledExpression("f.material_receipt_date")} and not ${hasFilledExpression("f.payment_date")}`,
+  )}`;
+  const paymentPendingResult = await pool.query<CountAnalyticsRow>(
+    `select ${divisionNameSql} as name, count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, paymentPendingCondition])}
+     group by 1
+     order by count desc`,
+    fileRankingValues,
+  );
+
+  const thresholdRows: ThresholdAnalyticsRow[] = [];
+  const unmatched = {
+    name: "Unmatched",
+    appliesTo: "Both",
+    range: "Outside configured ranges",
+    count: 0,
+    capital: 0,
+    revenue: 0,
+    value: 0,
+  };
+  const previousThresholdMatches: string[] = [];
+  for (const level of valueThresholdLevels) {
+    const capital = inrAmountExpression("f.value_capital");
+    const revenue = inrAmountExpression("f.value_revenue");
+    const valueType = `case when ${capital} > 0 then 'capital' when ${revenue} > 0 then 'revenue' end`;
+    const amount = `case when ${capital} > 0 then ${capital} when ${revenue} > 0 then ${revenue} else 0 end`;
+    const levelMatchConditions = [`${amount} > 0`];
+    if (level.appliesTo !== "both") levelMatchConditions.push(`${valueType} = '${level.appliesTo}'`);
+    const minValue = Number(String(level.minValue ?? "").replace(/,/g, "").trim());
+    const maxValue = Number(String(level.maxValue ?? "").replace(/,/g, "").trim());
+    if (Number.isFinite(minValue) && String(level.minValue ?? "").trim() !== "") {
+      levelMatchConditions.push(`${amount} >= ${minValue}`);
+    }
+    if (Number.isFinite(maxValue) && String(level.maxValue ?? "").trim() !== "") {
+      levelMatchConditions.push(`${amount} <= ${maxValue}`);
+    }
+    const levelMatch = `(${levelMatchConditions.join(" and ")})`;
+    const thresholdConditions = [
+      ...fileRankingConditions,
+      `not ${isCancelledExpression()}`,
+      levelMatch,
+    ];
+    if (previousThresholdMatches.length) {
+      thresholdConditions.push(`not (${previousThresholdMatches.join(" or ")})`);
+    }
+    const thresholdResult = await pool.query<{
+      count: number;
+      capital: string | number;
+      revenue: string | number;
+    }>(
+      `select count(*)::integer as count,
+              coalesce(sum(${capital}), 0) as capital,
+              coalesce(sum(${revenue}), 0) as revenue
+       from files f
+       left join divisions d on d.id = f.division_id
+       ${appendDashboardWhereClause(whereSql, thresholdConditions)}`,
+      fileRankingValues,
+    );
+    const row = thresholdResult.rows[0];
+    thresholdRows.push({
+      name: level.label,
+      appliesTo: formatThresholdAppliesTo(level.appliesTo),
+      range: formatThresholdRange(level),
+      count: Number(row?.count ?? 0),
+      capital: Math.round(Number(row?.capital ?? 0)),
+      revenue: Math.round(Number(row?.revenue ?? 0)),
+      value: Math.round(Number(row?.capital ?? 0) + Number(row?.revenue ?? 0)),
+    });
+    previousThresholdMatches.push(levelMatch);
+  }
+  if (valueThresholdLevels.length) {
+    const capital = inrAmountExpression("f.value_capital");
+    const revenue = inrAmountExpression("f.value_revenue");
+    const valueType = `case when ${capital} > 0 then 'capital' when ${revenue} > 0 then 'revenue' end`;
+    const amount = `case when ${capital} > 0 then ${capital} when ${revenue} > 0 then ${revenue} else 0 end`;
+    const levelMatchConditions = valueThresholdLevels.map((level) => {
+      const conditions = [`${amount} > 0`];
+      if (level.appliesTo !== "both") conditions.push(`${valueType} = '${level.appliesTo}'`);
+      const minValue = Number(String(level.minValue ?? "").replace(/,/g, "").trim());
+      const maxValue = Number(String(level.maxValue ?? "").replace(/,/g, "").trim());
+      if (Number.isFinite(minValue) && String(level.minValue ?? "").trim() !== "") {
+        conditions.push(`${amount} >= ${minValue}`);
+      }
+      if (Number.isFinite(maxValue) && String(level.maxValue ?? "").trim() !== "") {
+        conditions.push(`${amount} <= ${maxValue}`);
+      }
+      return `(${conditions.join(" and ")})`;
+    });
+    const unmatchedResult = await pool.query<{
+      count: number;
+      capital: string | number;
+      revenue: string | number;
+    }>(
+      `select count(*)::integer as count,
+              coalesce(sum(${capital}), 0) as capital,
+              coalesce(sum(${revenue}), 0) as revenue
+       from files f
+       left join divisions d on d.id = f.division_id
+       ${appendDashboardWhereClause(whereSql, [
+         ...fileRankingConditions,
+         `not ${isCancelledExpression()}`,
+         `${amount} > 0`,
+         `not (${levelMatchConditions.join(" or ")})`,
+       ])}`,
+      fileRankingValues,
+    );
+    const row = unmatchedResult.rows[0];
+    unmatched.count = Number(row?.count ?? 0);
+    unmatched.capital = Math.round(Number(row?.capital ?? 0));
+    unmatched.revenue = Math.round(Number(row?.revenue ?? 0));
+    unmatched.value = Math.round(Number(row?.capital ?? 0) + Number(row?.revenue ?? 0));
+  }
+
+  const valueValues = [...values];
+  const valueConditions: string[] = [];
+  const valueDivision = analyticsDivisionExtraCondition(valueValues, divisionName);
+  if (valueDivision) valueConditions.push(valueDivision);
+  const cancelled = isCancelledExpression();
+  const demandCapital = inrAmountExpression("f.value_capital");
+  const demandRevenue = inrAmountExpression("f.value_revenue");
+  const committedCapital = committedValueExpression("f.so_value_capital", "so_value_capital");
+  const committedRevenue = committedValueExpression("f.so_value_revenue", "so_value_revenue");
+  const valueResult = await pool.query<{
+    name: string;
+    intended_capital: string | number;
+    intended_revenue: string | number;
+    booked_capital: string | number;
+    booked_revenue: string | number;
+    committed_capital: string | number;
+    committed_revenue: string | number;
+  }>(
+    `select
+       ${divisionNameSql} as name,
+       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${demandCapital} else 0 end), 0)
+         as intended_capital,
+       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${demandRevenue} else 0 end), 0)
+         as intended_revenue,
+       coalesce(sum(case when not ${cancelled} and ${committedCapital} <= 0 then ${demandCapital} else 0 end), 0)
+         as booked_capital,
+       coalesce(sum(case when not ${cancelled} and ${committedRevenue} <= 0 then ${demandRevenue} else 0 end), 0)
+         as booked_revenue,
+       coalesce(sum(case when not ${cancelled} then ${committedCapital} else 0 end), 0)
+         as committed_capital,
+       coalesce(sum(case when not ${cancelled} then ${committedRevenue} else 0 end), 0)
+         as committed_revenue
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, valueConditions)}
+     group by 1`,
+    valueValues,
+  );
+
+  const divisionValues = new Map<
+    string,
+    Omit<DivisionValueAnalyticsRow, "name" | "allocatedTotal" | "intendedTotal" | "bookedTotal" | "committedTotal">
+  >();
+  const getDivisionValues = (name: string) =>
+    divisionValues.get(name) ?? {
+      allocatedCapital: 0,
+      allocatedRevenue: 0,
+      intendedCapital: 0,
+      intendedRevenue: 0,
+      bookedCapital: 0,
+      bookedRevenue: 0,
+      committedCapital: 0,
+      committedRevenue: 0,
+    };
+  for (const division of divisions) {
+    const name = division.name?.trim() || "Unassigned";
+    const current = getDivisionValues(name);
+    divisionValues.set(name, {
+      ...current,
+      allocatedCapital:
+        current.allocatedCapital + (Number(String(division.allocatedCapital ?? "").replace(/,/g, "")) || 0),
+      allocatedRevenue:
+        current.allocatedRevenue + (Number(String(division.allocatedRevenue ?? "").replace(/,/g, "")) || 0),
+    });
+  }
+  for (const row of valueResult.rows) {
+    const current = getDivisionValues(row.name);
+    divisionValues.set(row.name, {
+      allocatedCapital: current.allocatedCapital,
+      allocatedRevenue: current.allocatedRevenue,
+      intendedCapital: current.intendedCapital + Number(row.intended_capital ?? 0),
+      intendedRevenue: current.intendedRevenue + Number(row.intended_revenue ?? 0),
+      bookedCapital: current.bookedCapital + Number(row.booked_capital ?? 0),
+      bookedRevenue: current.bookedRevenue + Number(row.booked_revenue ?? 0),
+      committedCapital: current.committedCapital + Number(row.committed_capital ?? 0),
+      committedRevenue: current.committedRevenue + Number(row.committed_revenue ?? 0),
+    });
+  }
+
+  return {
+    divisionFileRanking: fileRankingResult.rows.map((row) => ({
+      name: row.name,
+      count: Number(row.count ?? 0),
+    })),
+    divisionValueRanking: roundDivisionValueRows(divisionValues),
+    divisionTurnaroundRanking: turnaroundResult.rows.map((row) => ({
+      name: row.name,
+      averageDays: Number(row.averageDays ?? 0),
+      sampleSize: Number(row.sampleSize ?? 0),
+    })),
+    topFirmSupplyOrders: firmResult.rows.map((row) => ({
+      name: row.name,
+      value: Number(row.value ?? 0),
+    })),
+    topIndentorsByFiles: indentorFileResult.rows.map((row) => ({
+      name: row.name,
+      count: Number(row.count ?? 0),
+    })),
+    topIndentorsByValue: indentorValueResult.rows.map((row) => ({
+      name: row.name,
+      value: Number(row.value ?? 0),
+    })),
+    milestoneClearingRanking: milestoneResult.rows
+      .filter((row) => Number(row.sampleSize ?? 0) > 0)
+      .map((row) => ({
+        name: row.name,
+        averageDays: Number(row.averageDays ?? 0),
+        sampleSize: Number(row.sampleSize ?? 0),
+      })),
+    monthlyFileInflow: monthlyResult.rows
+      .map((row) => ({ name: row.name, count: Number(row.count ?? 0) }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    biddingModeMix: biddingModeResult.rows.map((row) => ({
+      name: row.name,
+      count: Number(row.count ?? 0),
+    })),
+    fileValueThresholds: unmatched.count ? [...thresholdRows, unmatched] : thresholdRows,
+    divisionRiskRanking: riskResult.rows.map((row) => ({
+      name: row.name,
+      count: Number(row.count ?? 0),
+    })),
+    divisionPaymentPendingRanking: paymentPendingResult.rows.map((row) => ({
+      name: row.name,
+      count: Number(row.count ?? 0),
+    })),
+  };
+}
+
 async function loadMiscellaneousCounts({
   whereSql,
   values,
@@ -748,7 +1344,7 @@ async function loadMiscellaneousCounts({
   const extraConditions: string[] = [];
   if (activeDivision !== "all") {
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
-    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}`);
+    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
   const result = await pool.query<Record<string, string | number>>(
     `select
@@ -792,6 +1388,131 @@ async function loadMiscellaneousCounts({
   };
 }
 
+function getConfiguredMilestones(milestones: string[] | undefined) {
+  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  return values.length ? values : defaultManualMilestones;
+}
+
+async function loadManualMilestoneSqlSlice({
+  whereSql,
+  values,
+  activeDivision,
+  divisions,
+  configuredMilestones,
+  liveMilestones,
+}: {
+  whereSql: string;
+  values: unknown[];
+  activeDivision: string;
+  divisions: Division[];
+  configuredMilestones: string[];
+  liveMilestones?: string[];
+}): Promise<ManualMilestoneSqlSlice> {
+  const queryValues = [...values];
+  const extraConditions: string[] = [];
+  if (activeDivision !== "all") {
+    const placeholder = addValue(queryValues, activeDivision.toLowerCase());
+    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
+  }
+  const extrasValues = [...queryValues];
+  const configuredPlaceholder = addValue(extrasValues, configuredMilestones);
+  const extrasResult = await pool.query<{ name: string }>(
+    `select distinct trim(f.current_milestone) as name
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [
+       ...extraConditions,
+       "trim(coalesce(f.current_milestone, '')) <> ''",
+       `not (trim(f.current_milestone) = any(${configuredPlaceholder}::text[]))`,
+     ])}
+     order by name asc`,
+    extrasValues,
+  );
+  const milestoneNames = [
+    ...configuredMilestones,
+    ...extrasResult.rows.map((row) => row.name).filter(Boolean),
+  ];
+  const currentValues = [...queryValues];
+  const currentMilestonePlaceholder = addValue(currentValues, milestoneNames);
+  const currentResult = await pool.query<{ name: string; count: number }>(
+    `select milestone.name, count(f.id)::integer as count
+     from unnest(${currentMilestonePlaceholder}::text[]) as milestone(name)
+     left join files f on f.current_milestone = milestone.name
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
+       ...extraConditions,
+       `not ${isCancelledExpression()}`,
+     ])}
+     group by milestone.name`,
+    currentValues,
+  );
+  const completedValues = [...queryValues];
+  const completedMilestonePlaceholder = addValue(completedValues, milestoneNames);
+  const completedResult = await pool.query<{ name: string; count: number }>(
+    `select milestone.name, count(completed.file_id)::integer as count
+     from unnest(${completedMilestonePlaceholder}::text[]) as milestone(name)
+     left join file_completed_milestones completed on completed.milestone = milestone.name
+     left join files f on f.id = completed.file_id
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), extraConditions)}
+     group by milestone.name`,
+    completedValues,
+  );
+  const currentCounts = new Map(currentResult.rows.map((row) => [row.name, Number(row.count ?? 0)]));
+  const completedCounts = new Map(completedResult.rows.map((row) => [row.name, Number(row.count ?? 0)]));
+  const manualMilestoneFlow = milestoneNames.map((name) => ({
+    name,
+    current: currentCounts.get(name) ?? 0,
+    completed: completedCounts.get(name) ?? 0,
+  }));
+  const visibleLiveMilestoneNames =
+    liveMilestones?.filter((name) => manualMilestoneFlow.some((milestone) => milestone.name === name)) ??
+    manualMilestoneFlow.map((milestone) => milestone.name);
+
+  const liveValues = [...queryValues];
+  const livePlaceholder = addValue(liveValues, visibleLiveMilestoneNames);
+  const liveCountsResult = await pool.query<{ division: string; milestone: string; count: number }>(
+    `select ${analyticsNameExpression("d.name", "Unassigned")} as division,
+            f.current_milestone as milestone,
+            count(*)::integer as count
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, [
+       ...extraConditions,
+       `f.current_milestone = any(${livePlaceholder}::text[])`,
+       `not ${isCancelledExpression()}`,
+     ])}
+     group by 1, 2`,
+    liveValues,
+  );
+  const divisionNames = Array.from(
+    new Set([
+      ...divisions.map((division) => division.name),
+      ...liveCountsResult.rows.map((row) => row.division),
+    ]),
+  );
+  const liveCounts = new Map(
+    liveCountsResult.rows.map((row) => [`${row.division}\u0000${row.milestone}`, Number(row.count ?? 0)]),
+  );
+  const liveStatusRows = divisionNames
+    .map((division) => {
+      const counts = Object.fromEntries(
+        visibleLiveMilestoneNames.map((milestone) => [
+          milestone,
+          liveCounts.get(`${division}\u0000${milestone}`) ?? 0,
+        ]),
+      );
+      return {
+        division,
+        counts,
+        total: Object.values(counts).reduce((sum, count) => sum + count, 0),
+      };
+    })
+    .sort((a, b) => b.total - a.total || a.division.localeCompare(b.division));
+
+  return { manualMilestoneFlow, visibleLiveMilestoneNames, liveStatusRows };
+}
+
 async function loadStatusCounts({
   whereSql,
   values,
@@ -805,7 +1526,7 @@ async function loadStatusCounts({
   const extraConditions: string[] = [];
   if (activeDivision !== "all") {
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
-    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}`);
+    extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
   const cancelled = isCancelledExpression();
   const supplyOrderPlaced = supplyOrderPlacedExpression();
@@ -1061,6 +1782,146 @@ function warnIfStatusCountsDiffer(reference: StatusCounts, candidate: StatusCoun
   });
 }
 
+function getStatusMilestonePresentation(key: string) {
+  if (key === "highValue" || key === "tcec" || key === "ad" || key === "rqa" || key === "ifa" || key === "postTcec" || key === "cnc") {
+    return { totalLabel: "Total cases", completedLabel: "Completed" };
+  }
+  if (key === "supplyOrder") {
+    return { totalLabel: "Total files", completedLabel: "Placed" };
+  }
+  if (key === "bankGuarantee") {
+    return { totalLabel: "Total files", completedLabel: "Received" };
+  }
+  return { totalLabel: "Total files", completedLabel: "Completed" };
+}
+
+function buildStatusFlowFromSql(counts: StatusCounts) {
+  const milestoneCounts = new Map(counts.milestoneRows.map((row) => [row.key, row]));
+  const milestoneRows = statusMilestoneDefinitions.map((milestone) => {
+    const row = milestoneCounts.get(milestone.key);
+    const presentation = getStatusMilestonePresentation(milestone.key);
+    const base = {
+      key: milestone.key,
+      label: milestone.label,
+      completedLabel: presentation.completedLabel,
+      totalLabel: presentation.totalLabel,
+      pendingLabel: "Pending",
+      total: row?.total ?? 0,
+      underProcess: row?.underProcess ?? 0,
+      active: row?.active ?? 0,
+      pending: row?.pending ?? 0,
+      reviewed: row?.reviewed ?? 0,
+      hasReviewed: "reviewedColumn" in milestone && Boolean(milestone.reviewedColumn),
+      cleared: row?.cleared ?? 0,
+      activeLabel: "In process",
+    };
+    if (milestone.key === "bidding") {
+      return {
+        ...base,
+        liveBids: counts.liveBids,
+        overdueBids: counts.overdueBids,
+        inProcessBids: counts.inProcessBids,
+      };
+    }
+    if (milestone.key === "supplyOrder") {
+      return { ...base, liveSupplyOrders: counts.liveSupplyOrders };
+    }
+    return base;
+  });
+  const supplyOrderIndex = milestoneRows.findIndex((row) => row.key === "supplyOrder");
+  const deliveryPeriod = {
+    key: "deliveryPeriod",
+    label: "Delivery Period",
+    valid: counts.deliveryPeriodValid,
+    expired: counts.deliveryPeriodExpired,
+    extended: counts.deliveryPeriodExtended,
+  };
+  const withDeliveryPeriod =
+    supplyOrderIndex === -1
+      ? [...milestoneRows, deliveryPeriod]
+      : [
+          ...milestoneRows.slice(0, supplyOrderIndex + 1),
+          deliveryPeriod,
+          ...milestoneRows.slice(supplyOrderIndex + 1),
+        ];
+  const bankGuaranteeIndex = withDeliveryPeriod.findIndex((row) => row.key === "bankGuarantee");
+  const delivery = {
+    key: "delivery",
+    label: "Delivery",
+    completed: counts.deliveryCompleted,
+    due: counts.deliveryDue,
+    overdue: counts.deliveryOverdue,
+  };
+  return bankGuaranteeIndex === -1
+    ? [...withDeliveryPeriod, delivery]
+    : [
+        ...withDeliveryPeriod.slice(0, bankGuaranteeIndex + 1),
+        delivery,
+        ...withDeliveryPeriod.slice(bankGuaranteeIndex + 1),
+      ];
+}
+
+function getAnalyticsSqlSlice(analytics: AnalyticsSqlSlice): AnalyticsSqlSlice {
+  return {
+    divisionFileRanking: analytics.divisionFileRanking,
+    divisionValueRanking: analytics.divisionValueRanking,
+    divisionTurnaroundRanking: analytics.divisionTurnaroundRanking,
+    topFirmSupplyOrders: analytics.topFirmSupplyOrders,
+    topIndentorsByFiles: analytics.topIndentorsByFiles,
+    topIndentorsByValue: analytics.topIndentorsByValue,
+    milestoneClearingRanking: analytics.milestoneClearingRanking,
+    monthlyFileInflow: analytics.monthlyFileInflow,
+    biddingModeMix: analytics.biddingModeMix,
+    fileValueThresholds: analytics.fileValueThresholds,
+    divisionRiskRanking: analytics.divisionRiskRanking,
+    divisionPaymentPendingRanking: analytics.divisionPaymentPendingRanking,
+  };
+}
+
+function warnIfAnalyticsSqlSliceDiffers(
+  label: string,
+  reference: AnalyticsSqlSlice,
+  candidate: AnalyticsSqlSlice,
+) {
+  if (stableJson(reference) === stableJson(candidate)) return;
+  console.warn(`Dashboard SQL ${label} analytics differ from TypeScript summary.`, {
+    reference,
+    candidate,
+  });
+}
+
+function mergeAnalyticsSqlSlice<T extends AnalyticsSqlSlice>(
+  analytics: T,
+  slice: AnalyticsSqlSlice,
+) {
+  return {
+    ...analytics,
+    divisionFileRanking: slice.divisionFileRanking,
+    divisionValueRanking: slice.divisionValueRanking,
+    divisionTurnaroundRanking: slice.divisionTurnaroundRanking,
+    topFirmSupplyOrders: slice.topFirmSupplyOrders,
+    topIndentorsByFiles: slice.topIndentorsByFiles,
+    topIndentorsByValue: slice.topIndentorsByValue,
+    milestoneClearingRanking: slice.milestoneClearingRanking,
+    monthlyFileInflow: slice.monthlyFileInflow,
+    biddingModeMix: slice.biddingModeMix,
+    fileValueThresholds: slice.fileValueThresholds,
+    divisionRiskRanking: slice.divisionRiskRanking,
+    divisionPaymentPendingRanking: slice.divisionPaymentPendingRanking,
+  };
+}
+
+function warnIfManualMilestoneSqlSliceDiffers(
+  reference: ManualMilestoneSqlSlice,
+  candidate: ManualMilestoneSqlSlice,
+) {
+  if (stableJson(reference) === stableJson(candidate)) return;
+  console.warn("Dashboard SQL manual milestone flow differs from TypeScript summary.", {
+    reference,
+    candidate,
+  });
+}
+
 dashboardRouter.get(
   "/summary",
   asyncHandler(async (request, response) => {
@@ -1096,14 +1957,22 @@ dashboardRouter.get(
       activeDivision === "all"
         ? divisions
         : divisions.filter((division) => division.name === activeDivision);
+    const analyticsSliceDivision = activeDivision;
+    const divisionFilteredSliceDivision =
+      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
+    const divisionFilteredSliceDivisions =
+      activeAnalyticsDivision === "all"
+        ? dashboardDivisions
+        : divisions.filter((division) => division.name === activeAnalyticsDivision);
     const [
-      files,
       sqlSimpleCounts,
       sqlFinanceTotals,
       sqlMiscellaneousCounts,
       sqlStatusCounts,
+      sqlAnalyticsSlice,
+      sqlDivisionFilteredAnalyticsSlice,
+      sqlManualMilestoneSlice,
     ] = await Promise.all([
-      loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
       loadSimpleDashboardCounts({
         whereSql: dashboardFileWhere.whereSql,
         values: dashboardFileWhere.values,
@@ -1125,36 +1994,86 @@ dashboardRouter.get(
         values: dashboardFileWhere.values,
         activeDivision,
       }),
+      loadAnalyticsSqlSlice({
+        whereSql: dashboardFileWhere.whereSql,
+        values: dashboardFileWhere.values,
+        divisionName: analyticsSliceDivision,
+        divisions: dashboardDivisions,
+        valueThresholdLevels,
+      }),
+      loadAnalyticsSqlSlice({
+        whereSql: dashboardFileWhere.whereSql,
+        values: dashboardFileWhere.values,
+        divisionName: divisionFilteredSliceDivision,
+        divisions: divisionFilteredSliceDivisions,
+        valueThresholdLevels,
+      }),
+      loadManualMilestoneSqlSlice({
+        whereSql: dashboardFileWhere.whereSql,
+        values: dashboardFileWhere.values,
+        activeDivision,
+        divisions: dashboardDivisions,
+        configuredMilestones: getConfiguredMilestones(settings.milestones),
+        liveMilestones: readList(request.query.liveMilestones),
+      }),
     ]);
-    const summary = buildDashboardSummary({
-      files,
-      divisions,
-      settings: { ...settings, valueThresholdLevels },
-      division: activeDivision,
-      analyticsDivision: activeAnalyticsDivision,
-      liveMilestones: readList(request.query.liveMilestones),
-    });
-    warnIfSimpleCountsDiffer(
-      {
-        dashboardFileCount: summary.dashboardFileCount,
-        modeCounts: summary.modeCounts,
-        fileTypeCounts: summary.fileTypeCounts,
-        topSummaryStats: summary.topSummaryStats,
-      },
-      sqlSimpleCounts,
-    );
-    warnIfFinanceTotalsDiffer(summary.financeTotals, sqlFinanceTotals);
-    warnIfMiscellaneousCountsDiffer(summary.miscellaneousCounts, sqlMiscellaneousCounts);
-    warnIfStatusCountsDiffer(getStatusCountsFromFlow(summary.statusFlow), sqlStatusCounts);
+    if (process.env.DASHBOARD_SQL_COMPARE === "true") {
+      const files = await loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values);
+      const summary = buildDashboardSummary({
+        files,
+        divisions,
+        settings: { ...settings, valueThresholdLevels },
+        division: activeDivision,
+        analyticsDivision: activeAnalyticsDivision,
+        liveMilestones: readList(request.query.liveMilestones),
+      });
+      warnIfSimpleCountsDiffer(
+        {
+          dashboardFileCount: summary.dashboardFileCount,
+          modeCounts: summary.modeCounts,
+          fileTypeCounts: summary.fileTypeCounts,
+          topSummaryStats: summary.topSummaryStats,
+        },
+        sqlSimpleCounts,
+      );
+      warnIfFinanceTotalsDiffer(summary.financeTotals, sqlFinanceTotals);
+      warnIfMiscellaneousCountsDiffer(summary.miscellaneousCounts, sqlMiscellaneousCounts);
+      warnIfStatusCountsDiffer(getStatusCountsFromFlow(summary.statusFlow), sqlStatusCounts);
+      warnIfAnalyticsSqlSliceDiffers(
+        "dashboard",
+        getAnalyticsSqlSlice(summary.analytics),
+        sqlAnalyticsSlice,
+      );
+      warnIfAnalyticsSqlSliceDiffers(
+        "division-filtered",
+        getAnalyticsSqlSlice(summary.divisionFilteredAnalytics),
+        sqlDivisionFilteredAnalyticsSlice,
+      );
+      warnIfManualMilestoneSqlSliceDiffers(
+        {
+          manualMilestoneFlow: summary.manualMilestoneFlow,
+          visibleLiveMilestoneNames: summary.visibleLiveMilestoneNames,
+          liveStatusRows: summary.liveStatusRows,
+        },
+        sqlManualMilestoneSlice,
+      );
+    }
 
     response.json({
       summary: {
-        ...summary,
+        activeDivision,
+        activeAnalyticsDivision,
+        dashboardDivisions,
         ...sqlSimpleCounts,
         financeTotals: sqlFinanceTotals,
         financePercents: getFinancePercents(sqlFinanceTotals),
         miscellaneousCounts: sqlMiscellaneousCounts,
-        statusFlow: mergeStatusCountsIntoFlow(summary.statusFlow, sqlStatusCounts),
+        statusFlow: buildStatusFlowFromSql(sqlStatusCounts),
+        manualMilestoneFlow: sqlManualMilestoneSlice.manualMilestoneFlow,
+        visibleLiveMilestoneNames: sqlManualMilestoneSlice.visibleLiveMilestoneNames,
+        liveStatusRows: sqlManualMilestoneSlice.liveStatusRows,
+        analytics: sqlAnalyticsSlice,
+        divisionFilteredAnalytics: sqlDivisionFilteredAnalyticsSlice,
       },
     });
   }),
