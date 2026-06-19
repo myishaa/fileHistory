@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
+  fetchIndentors,
   store,
   type Division,
   type FileRecord,
@@ -13,7 +14,6 @@ import {
   useActiveUser,
   useDivisions,
   useFiles,
-  useIndentors,
   useSettings,
 } from "@/lib/files-store";
 import { Save, Eraser, Lock, Plus, Printer, Trash2, Unlock } from "lucide-react";
@@ -318,7 +318,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
 };
 
 const supplyOrderFields: ExtraField[] = [
-  { key: "soNo", label: "S.0. No." },
+  { key: "soNo", label: "S.O. No." },
   { key: "gemSoNo", label: "GeM S.O. NO." },
   { key: "soDate", label: "S.O. date", type: "date" },
   { key: "soValueCapital", label: "S.O. value" },
@@ -335,7 +335,7 @@ const supplyOrderFields: ExtraField[] = [
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "bgReturnDate", label: "BG return date", type: "date" },
   { key: "demandCancelled", label: "Demand cancelled (Yes/No)", options: yesNo },
-  { key: "soCancelled", label: "S.O. Cancelled (Yes/No)", options: yesNo },
+  { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
 ];
 
@@ -472,7 +472,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const divisions = useAccessibleDivisions();
   const files = useAccessibleFiles();
   const allFiles = useFiles();
-  const indentors = useIndentors();
   const settings = useSettings();
   const { fileId, section, quickFocus } = Route.useSearch();
   const navigate = useNavigate();
@@ -593,11 +592,37 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     (division) =>
       division.name.trim().toLowerCase() === formWithLockedYear.division.trim().toLowerCase(),
   );
-  const indentorOptions = selectedDivision
-    ? indentors
-        .filter((indentor) => indentor.divisionId === selectedDivision.id)
-        .map((indentor) => indentor.name)
-    : [];
+  const [indentorOptions, setIndentorOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!selectedDivision) {
+      setIndentorOptions([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      fetchIndentors({
+        divisionId: selectedDivision.id,
+        q: formWithLockedYear.indentor,
+        page: 1,
+        pageSize: 50,
+      })
+        .then((result) => {
+          if (!controller.signal.aborted) {
+            setIndentorOptions(result.indentors.map((indentor) => indentor.name));
+          }
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            console.error(error);
+            setIndentorOptions([]);
+          }
+        });
+    }, 200);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [selectedDivision?.id, formWithLockedYear.indentor]);
   const tcecIsNo = isNo(formWithLockedYear.tcec);
   const gemIsNo = isNo(formWithLockedYear.gem);
   const highValueIsNo = isNo(formWithLockedYear.highValue);
@@ -721,15 +746,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         patch.paymentMode = "Online";
       }
       if (k === "division") {
-        const nextDivision = divisions.find(
-          (division) => division.name.trim().toLowerCase() === v.trim().toLowerCase(),
-        );
-        const nextIndentorNames = nextDivision
-          ? indentors
-              .filter((indentor) => indentor.divisionId === nextDivision.id)
-              .map((indentor) => indentor.name)
-          : [];
-        if (!nextIndentorNames.includes(f.indentor)) {
+        if (f.division.trim().toLowerCase() !== v.trim().toLowerCase()) {
           patch.indentor = "";
         }
       }

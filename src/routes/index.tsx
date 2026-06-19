@@ -5,6 +5,7 @@ import {
   type FileRecord,
   type SupplyOrderDetail,
   type ValueThresholdLevel,
+  store,
   useAccessibleDivisions,
   useAccessibleFiles,
   useActiveUser,
@@ -20,7 +21,7 @@ export const Route = createFileRoute("/")({
   },
 });
 
-type DashboardTab = "snapshot" | "status" | "liveStatus" | "analytics" | "finance";
+type DashboardTab = "snapshot" | "status" | "liveStatus" | "status3" | "analytics" | "finance";
 type StatusActionMode = "pdf" | "excel" | "search";
 type DivisionValueSortMode = "value" | "percent";
 type AnalyticsResultLimitKey = "5" | "10" | "20" | "50" | "all";
@@ -44,7 +45,6 @@ type AnalyticsPanelKey =
   | "divisionValue"
   | "divisionTotalValue"
   | "divisionTurnaround"
-  | "fileDistribution"
   | "topFirms"
   | "indentorsByFiles"
   | "indentorsByValue"
@@ -127,6 +127,18 @@ type DashboardSummaryPayload = {
   };
 };
 
+type StatusSummaryTableRow = {
+  milestone: string;
+  counts: Partial<Record<string, number | string>>;
+};
+
+type StatusSummaryTableGroup = {
+  key: string;
+  title: string;
+  columns: string[];
+  rows: StatusSummaryTableRow[];
+};
+
 async function fetchDashboardSummary(query: string, signal: AbortSignal) {
   const response = await fetch(`${API_BASE_URL}/api/dashboard/summary?${query}`, {
     credentials: "include",
@@ -137,6 +149,18 @@ async function fetchDashboardSummary(query: string, signal: AbortSignal) {
     throw new Error(body?.error ?? `Dashboard summary request failed: ${response.status}`);
   }
   return (await response.json()) as { summary: DashboardSummaryPayload };
+}
+
+async function fetchDashboardStatusSummary(query: string, signal: AbortSignal) {
+  const response = await fetch(`${API_BASE_URL}/api/reports/summary?${query}`, {
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+    throw new Error(body?.error ?? `Status summary request failed: ${response.status}`);
+  }
+  return (await response.json()) as { summary: { statusSummaryGroups: StatusSummaryTableGroup[] } };
 }
 
 const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
@@ -164,8 +188,6 @@ function isDivisionFilterableAnalyticsPanel(panelKey: AnalyticsPanelKey) {
   return divisionFilterableAnalyticsPanels.includes(panelKey);
 }
 
-let liveMilestoneSelectionForSession: string[] | undefined;
-
 export function Dashboard() {
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
@@ -191,14 +213,20 @@ export function Dashboard() {
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
   const [indentorsByValueLimit, setIndentorsByValueLimit] = useState<AnalyticsResultLimitKey>("10");
+  const [topFirmPage, setTopFirmPage] = useState(1);
+  const [indentorsByFilesPage, setIndentorsByFilesPage] = useState(1);
+  const [indentorsByValuePage, setIndentorsByValuePage] = useState(1);
   const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
-  const [selectedLiveMilestones, setSelectedLiveMilestonesState] = useState<string[] | undefined>(
-    liveMilestoneSelectionForSession,
+  const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
+    settings.liveStatusLockedFields,
   );
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummaryPayload | undefined>();
   const [dashboardSummaryLoading, setDashboardSummaryLoading] = useState(false);
   const [hasLoadedDashboardSummary, setHasLoadedDashboardSummary] = useState(false);
   const [dashboardSummaryError, setDashboardSummaryError] = useState<string | undefined>();
+  const [status3Groups, setStatus3Groups] = useState<StatusSummaryTableGroup[]>([]);
+  const [status3Loading, setStatus3Loading] = useState(false);
+  const [status3Error, setStatus3Error] = useState<string | undefined>();
   const hasLoadedDashboardSummaryRef = useRef(false);
   useEffect(() => {
     const visibleSortKeys = visibleDivisionValueMetrics.flatMap(
@@ -208,16 +236,9 @@ export function Dashboard() {
       setDivisionValueSortKey(visibleSortKeys[0] ?? "allocatedCapital");
     }
   }, [divisionValueSortKey, visibleDivisionValueMetrics]);
-  const setSelectedLiveMilestones = (
-    nextSelection: string[] | ((current: string[] | undefined) => string[]),
-  ) => {
-    setSelectedLiveMilestonesState((current) => {
-      const next =
-        typeof nextSelection === "function" ? nextSelection(current) : nextSelection;
-      liveMilestoneSelectionForSession = next;
-      return next;
-    });
-  };
+  useEffect(() => {
+    setSelectedLiveMilestones(settings.liveStatusLockedFields);
+  }, [settings.liveStatusLockedFields, activeUser?.id]);
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -268,6 +289,15 @@ export function Dashboard() {
     }
     return params.toString();
   }, [activeDivision, activeAnalyticsDivision, selectedLiveMilestones, settings.selectedYear]);
+  const status3Query = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("division", activeDivision);
+    params.set("selectedYear", settings.selectedYear);
+    params.set("delayDays", "5");
+    params.set("expectedCashOutgoDays", "10");
+    params.set("delayMilestone", "all");
+    return params.toString();
+  }, [activeDivision, settings.selectedYear]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -299,6 +329,25 @@ export function Dashboard() {
       controller.abort();
     };
   }, [dashboardSummaryQuery]);
+
+  useEffect(() => {
+    if (activeDashboardTab !== "status3") return;
+    const controller = new AbortController();
+    setStatus3Loading(true);
+    setStatus3Error(undefined);
+    fetchDashboardStatusSummary(status3Query, controller.signal)
+      .then((payload) => setStatus3Groups(payload.summary.statusSummaryGroups))
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error(error);
+        setStatus3Error(error instanceof Error ? error.message : "Status summary request failed.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setStatus3Loading(false);
+      });
+
+    return () => controller.abort();
+  }, [activeDashboardTab, status3Query]);
 
   const needsLocalDashboardFallback = !dashboardSummary;
   const localModeCounts = needsLocalDashboardFallback ? getModeCounts(dashboardFiles) : undefined;
@@ -412,6 +461,9 @@ export function Dashboard() {
           manualMilestoneFlow.some((milestone) => milestone.name === name),
         )
       : (dashboardSummary?.visibleLiveMilestoneNames ?? localVisibleLiveMilestoneNames ?? []);
+  const lockLiveStatusSelection = () => {
+    store.updateSettings({ liveStatusLockedFields: visibleLiveMilestoneNames });
+  };
   const liveStatusRows = dashboardSummary?.liveStatusRows ?? localLiveStatusRows ?? [];
   const statusFlow = dashboardSummary?.statusFlow ?? localStatusFlow ?? [];
   const miscellaneousCounts = dashboardSummary?.miscellaneousCounts ??
@@ -439,6 +491,7 @@ export function Dashboard() {
     };
   const divisionFilteredAnalytics =
     dashboardSummary?.divisionFilteredAnalytics ?? localDivisionFilteredAnalytics ?? analytics;
+  const assignedDivisionNames = getAssignedDivisionNames(activeUser?.divisionIds, divisions);
   const financeTotals = dashboardSummary?.financeTotals ??
     localFinanceTotals ?? {
       allocatedCapital: 0,
@@ -565,81 +618,88 @@ export function Dashboard() {
       )}`,
     },
   ];
-  const topFirmRows = applyAnalyticsResultLimit(
-    divisionFilteredAnalytics.topFirmSupplyOrders,
-    topFirmLimit,
-  );
-  const topIndentorsByFilesRows = applyAnalyticsResultLimit(
+  const topFirmRankedRows = withAnalyticsRanks(divisionFilteredAnalytics.topFirmSupplyOrders);
+  const topIndentorsByFilesRankedRows = withAnalyticsRanks(
     divisionFilteredAnalytics.topIndentorsByFiles,
-    indentorsByFilesLimit,
   );
-  const topIndentorsByValueRows = applyAnalyticsResultLimit(
+  const topIndentorsByValueRankedRows = withAnalyticsRanks(
     divisionFilteredAnalytics.topIndentorsByValue,
+  );
+  const topFirmPagination = getAnalyticsPagination(topFirmRankedRows, topFirmLimit, topFirmPage);
+  const indentorsByFilesPagination = getAnalyticsPagination(
+    topIndentorsByFilesRankedRows,
+    indentorsByFilesLimit,
+    indentorsByFilesPage,
+  );
+  const indentorsByValuePagination = getAnalyticsPagination(
+    topIndentorsByValueRankedRows,
     indentorsByValueLimit,
+    indentorsByValuePage,
   );
   const analyticsPanels: AnalyticsPanel[] = [
     {
       key: "divisionFiles",
       title: "Division ranking by files",
       subtitle: "Number of files, descending",
-      columns: getCountAnalyticsColumns("Division"),
-      rows: analytics.divisionFileRanking,
+      columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
+      rows: withAssignedDivisionRankRows(
+        withAnalyticsRanks(analytics.divisionFileRanking),
+        assignedDivisionNames,
+      ),
     },
     {
       key: "divisionValue",
       title: "Division ranking by value",
       subtitle: "",
-      columns: getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics),
+      columns: withRankAnalyticsColumns(
+        getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics),
+      ),
       rows: analytics.divisionValueRanking,
     },
     {
       key: "divisionTotalValue",
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
-      columns: getDivisionTotalValueAnalyticsColumns(),
+      columns: withRankAnalyticsColumns(getDivisionTotalValueAnalyticsColumns()),
       rows: analytics.divisionValueRanking,
     },
     {
       key: "divisionTurnaround",
       title: "Division turnaround ranking",
       subtitle: "Average days from received date to first S.O.",
-      columns: getAverageDaysAnalyticsColumns("Division"),
-      rows: analytics.divisionTurnaroundRanking,
-    },
-    {
-      key: "fileDistribution",
-      title: "File distribution",
-      subtitle: "Share by division",
-      columns: getCountAnalyticsColumns("Division"),
-      rows: analytics.divisionFileRanking.slice(0, 8),
+      columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Division")),
+      rows: withAssignedDivisionRankRows(
+        withAnalyticsRanks(analytics.divisionTurnaroundRanking),
+        assignedDivisionNames,
+      ),
     },
     {
       key: "topFirms",
       title: "Firms ranking by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
-      columns: getValueAnalyticsColumns("Firm", "S.O. value"),
-      rows: topFirmRows,
+      columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Firm", "S.O. value")),
+      rows: topFirmPagination.rows,
     },
     {
       key: "indentorsByFiles",
       title: "Top indentors by files",
       subtitle: "Number of files raised",
-      columns: getCountAnalyticsColumns("Indentor"),
-      rows: topIndentorsByFilesRows,
+      columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Indentor")),
+      rows: indentorsByFilesPagination.rows,
     },
     {
       key: "indentorsByValue",
       title: "Top indentors by value",
       subtitle: "Total demand value",
-      columns: getValueAnalyticsColumns("Indentor", "Total value"),
-      rows: topIndentorsByValueRows,
+      columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Indentor", "Total value")),
+      rows: indentorsByValuePagination.rows,
     },
     {
       key: "milestoneClearing",
       title: "Milestones by clearing time",
       subtitle: "Average clearing time in days",
-      columns: getAverageDaysAnalyticsColumns("Milestone"),
-      rows: divisionFilteredAnalytics.milestoneClearingRanking,
+      columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Milestone")),
+      rows: withAnalyticsRanks(divisionFilteredAnalytics.milestoneClearingRanking),
     },
     {
       key: "monthlyInflow",
@@ -666,22 +726,28 @@ export function Dashboard() {
       key: "riskLoad",
       title: "Risk load by division",
       subtitle: "Delivery pending, expired DP, LD, or cancelled S.O.",
-      columns: getCountAnalyticsColumns("Division"),
-      rows: divisionFilteredAnalytics.divisionRiskRanking,
+      columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
+      rows: withAssignedDivisionRankRows(
+        withAnalyticsRanks(divisionFilteredAnalytics.divisionRiskRanking),
+        assignedDivisionNames,
+      ),
     },
     {
       key: "paymentPending",
       title: "Payment pending by division",
       subtitle: "Material received but payment not completed",
-      columns: getCountAnalyticsColumns("Division"),
-      rows: divisionFilteredAnalytics.divisionPaymentPendingRanking,
+      columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
+      rows: withAssignedDivisionRankRows(
+        withAnalyticsRanks(divisionFilteredAnalytics.divisionPaymentPendingRanking),
+        assignedDivisionNames,
+      ),
     },
     {
       key: "milestoneClearingTable",
       title: "Milestone clearing ranking",
       subtitle: "Slowest milestones by average clearing time",
-      columns: getAverageDaysAnalyticsColumns("Milestone"),
-      rows: divisionFilteredAnalytics.milestoneClearingRanking,
+      columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Milestone")),
+      rows: withAnalyticsRanks(divisionFilteredAnalytics.milestoneClearingRanking),
     },
   ];
   const selectedAnalyticsPanel =
@@ -691,19 +757,29 @@ export function Dashboard() {
       ? {
           ...selectedAnalyticsPanel,
           exportNote: getDivisionValueRankingCriteria(divisionValueSortKey, divisionValueSortMode),
-          rows: sortDivisionValueRows(
-            selectedAnalyticsPanel.rows,
-            divisionValueSortKey,
-            divisionValueSortMode,
+          rows: withAssignedDivisionRankRows(
+            withAnalyticsRanks(
+              sortDivisionValueRows(
+                selectedAnalyticsPanel.rows,
+                divisionValueSortKey,
+                divisionValueSortMode,
+              ),
+            ),
+            assignedDivisionNames,
           ),
         }
       : selectedAnalyticsPanel.key === "divisionTotalValue"
         ? {
             ...selectedAnalyticsPanel,
-            rows: sortDivisionTotalValueRows(
-              selectedAnalyticsPanel.rows,
-              divisionTotalValueSortKey,
-              divisionTotalValueSortMode,
+            rows: withAssignedDivisionRankRows(
+              withAnalyticsRanks(
+                sortDivisionTotalValueRows(
+                  selectedAnalyticsPanel.rows,
+                  divisionTotalValueSortKey,
+                  divisionTotalValueSortMode,
+                ),
+              ),
+              assignedDivisionNames,
             ),
           }
         : selectedAnalyticsPanel;
@@ -714,20 +790,46 @@ export function Dashboard() {
     selectedAnalyticsPanel.key === "topFirms"
       ? {
           value: topFirmLimit,
-          onChange: setTopFirmLimit,
+          onChange: (value: AnalyticsResultLimitKey) => {
+            setTopFirmLimit(value);
+            setTopFirmPage(1);
+          },
           total: divisionFilteredAnalytics.topFirmSupplyOrders.length,
         }
       : selectedAnalyticsPanel.key === "indentorsByFiles"
         ? {
             value: indentorsByFilesLimit,
-            onChange: setIndentorsByFilesLimit,
+            onChange: (value: AnalyticsResultLimitKey) => {
+              setIndentorsByFilesLimit(value);
+              setIndentorsByFilesPage(1);
+            },
             total: divisionFilteredAnalytics.topIndentorsByFiles.length,
           }
         : selectedAnalyticsPanel.key === "indentorsByValue"
           ? {
               value: indentorsByValueLimit,
-              onChange: setIndentorsByValueLimit,
+              onChange: (value: AnalyticsResultLimitKey) => {
+                setIndentorsByValueLimit(value);
+                setIndentorsByValuePage(1);
+              },
               total: divisionFilteredAnalytics.topIndentorsByValue.length,
+            }
+          : undefined;
+  const analyticsPagination =
+    selectedAnalyticsPanel.key === "topFirms"
+      ? {
+          ...topFirmPagination,
+          onPageChange: setTopFirmPage,
+        }
+      : selectedAnalyticsPanel.key === "indentorsByFiles"
+        ? {
+            ...indentorsByFilesPagination,
+            onPageChange: setIndentorsByFilesPage,
+          }
+        : selectedAnalyticsPanel.key === "indentorsByValue"
+          ? {
+              ...indentorsByValuePagination,
+              onPageChange: setIndentorsByValuePage,
             }
           : undefined;
   const analyticsTransferType =
@@ -798,8 +900,9 @@ export function Dashboard() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
           {[
-            { key: "status", label: "Status" },
-            { key: "liveStatus", label: "Live status" },
+            { key: "status", label: "Status-1" },
+            { key: "liveStatus", label: "Status-2" },
+            { key: "status3", label: "Status-3" },
             { key: "snapshot", label: "Snapshot" },
             { key: "analytics", label: "Analytics" },
             { key: "finance", label: "Finance" },
@@ -909,7 +1012,7 @@ export function Dashboard() {
       {activeDashboardTab === "status" ? (
         <section className="space-y-4">
           <div>
-            <h2 className="text-sm font-bold">Status</h2>
+            <h2 className="text-sm font-bold">Status-1</h2>
           </div>
           <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -1073,7 +1176,20 @@ export function Dashboard() {
             setSelectedLiveMilestones(manualMilestoneFlow.map((milestone) => milestone.name))
           }
           onClearMilestones={() => setSelectedLiveMilestones([])}
+          onLockMilestones={lockLiveStatusSelection}
+          lockedMilestoneNames={settings.liveStatusLockedFields}
           onCountClick={openLiveStatusFilter}
+        />
+      ) : null}
+
+      {activeDashboardTab === "status3" ? (
+        <DashboardStatusSummarySection
+          groups={status3Groups}
+          loading={status3Loading}
+          error={status3Error}
+          onOpenStatus={(milestone, stage) =>
+            openSearchFilter(getStatusSummaryDashboardFilter(milestone, stage))
+          }
         />
       ) : null}
 
@@ -1201,6 +1317,9 @@ export function Dashboard() {
                   columns={displayedAnalyticsPanel.columns}
                   rows={displayedAnalyticsPanel.rows}
                 />
+                {analyticsPagination && analyticsPagination.totalPages > 1 ? (
+                  <AnalyticsPaginationControls {...analyticsPagination} />
+                ) : null}
               </AnalyticsChartCard>
             </div>
           </div>
@@ -1427,15 +1546,19 @@ function LiveStatusSection({
   onMilestoneToggle,
   onSelectAllMilestones,
   onClearMilestones,
+  onLockMilestones,
+  lockedMilestoneNames,
   onCountClick,
 }: {
-  milestones: Array<{ name: string; current: number; completed: number }>;
+  milestones: LiveStatusMilestone[];
   visibleMilestoneNames: string[];
   rows: LiveStatusDivisionRow[];
   totalFiles: number;
   onMilestoneToggle: (milestoneName: string) => void;
   onSelectAllMilestones: () => void;
   onClearMilestones: () => void;
+  onLockMilestones: () => void;
+  lockedMilestoneNames?: string[];
   onCountClick: (division: string, milestoneName: string) => void;
 }) {
   const liveTotal = milestones.reduce((sum, milestone) => sum + milestone.current, 0);
@@ -1443,6 +1566,10 @@ function LiveStatusSection({
   const displayedMilestones = milestones.filter((milestone) =>
     selectedMilestoneSet.has(milestone.name),
   );
+  const lockMatchesCurrentSelection =
+    lockedMilestoneNames !== undefined &&
+    lockedMilestoneNames.length === visibleMilestoneNames.length &&
+    lockedMilestoneNames.every((name) => selectedMilestoneSet.has(name));
 
   return (
     <section className="space-y-4">
@@ -1474,6 +1601,28 @@ function LiveStatusSection({
             <div className="flex items-center gap-1">
               <button
                 type="button"
+                onClick={() =>
+                  printLiveStatusRowsToPdf(rows, displayedMilestones, "Live status dashboard")
+                }
+                disabled={!displayedMilestones.length}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+              >
+                <FileText className="size-3.5" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  exportLiveStatusRowsToExcel(rows, displayedMilestones, "Live status dashboard")
+                }
+                disabled={!displayedMilestones.length}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+              >
+                <FileSpreadsheet className="size-3.5" />
+                Excel
+              </button>
+              <button
+                type="button"
                 onClick={onSelectAllMilestones}
                 className="h-7 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
               >
@@ -1486,8 +1635,20 @@ function LiveStatusSection({
               >
                 Clear
               </button>
+              <button
+                type="button"
+                onClick={onLockMilestones}
+                className="h-7 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
+              >
+                {lockMatchesCurrentSelection ? "Locked" : "Lock selection"}
+              </button>
             </div>
           </div>
+          {lockedMilestoneNames !== undefined ? (
+            <div className="mb-2 text-xs text-muted-foreground">
+              Locked for this login. Change the selection and lock again to update it.
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-1.5">
             {milestones.map((milestone) => {
               const checked = selectedMilestoneSet.has(milestone.name);
@@ -1583,11 +1744,154 @@ function LiveStatusSection({
   );
 }
 
+function DashboardStatusSummarySection({
+  groups,
+  loading,
+  error,
+  onOpenStatus,
+}: {
+  groups: StatusSummaryTableGroup[];
+  loading: boolean;
+  error?: string;
+  onOpenStatus: (milestone: string, stage: string) => void;
+}) {
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-sm font-bold">Status-3</h2>
+      </div>
+      <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold">Status summary</h3>
+            <p className="text-xs text-muted-foreground">
+              Files at each stage across all milestones.
+            </p>
+          </div>
+          <div className="flex rounded-md border border-border bg-secondary/40 p-1">
+            <button
+              type="button"
+              onClick={() => printStatusSummaryGroupsToPdf(groups, "Status-3")}
+              disabled={!groups.length}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <FileText className="size-3.5" />
+              PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => exportStatusSummaryGroupsToExcel(groups, "Status-3")}
+              disabled={!groups.length}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <FileSpreadsheet className="size-3.5" />
+              Excel
+            </button>
+          </div>
+        </div>
+        {error ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        ) : loading && !groups.length ? (
+          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+            Loading status summary...
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {groups.map((group) => (
+              <div key={group.key} className="overflow-hidden rounded-lg border border-border">
+                <div className="overflow-x-auto">
+                  <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+                        <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">
+                          Milestone
+                        </th>
+                        {group.columns.map((column) => (
+                          <th key={column} className="px-3 py-2.5 text-right font-semibold">
+                            {column}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.rows.map((row, rowIndex) => (
+                        <tr
+                          key={row.milestone}
+                          className={
+                            "border-b border-border/60 last:border-0 " +
+                            (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                          }
+                        >
+                          <td
+                            className={
+                              "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
+                              (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
+                            }
+                          >
+                            {row.milestone}
+                          </td>
+                          {group.columns.map((column) => (
+                            <td key={column} className="px-3 py-2.5 text-right tabular-nums">
+                              <DashboardStatusSummaryValue
+                                value={row.counts[column]}
+                                onClick={() => onOpenStatus(row.milestone, column)}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+            {!groups.length ? (
+              <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">
+                No status summary rows found.
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DashboardStatusSummaryValue({
+  value,
+  onClick,
+}: {
+  value: number | string | undefined;
+  onClick: () => void;
+}) {
+  if (value === undefined || value === "") {
+    return <span className="text-muted-foreground/40">-</span>;
+  }
+  if (value === "-") {
+    return <span className="text-muted-foreground">-</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "inline-flex min-w-8 justify-center rounded px-2 py-0.5 text-xs font-semibold transition hover:ring-2 hover:ring-ring/30 " +
+        (value === 0 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-foreground")
+      }
+    >
+      {value}
+    </button>
+  );
+}
+
 type LiveStatusDivisionRow = {
   division: string;
   total: number;
   counts: Record<string, number>;
 };
+type LiveStatusMilestone = { name: string; current: number; completed: number };
 
 function getLiveStatusDivisionRows(
   files: ReturnType<typeof useAccessibleFiles>,
@@ -2081,6 +2385,10 @@ function getCountAnalyticsColumns(nameLabel: string): AnalyticsTableColumn[] {
   ];
 }
 
+function withRankAnalyticsColumns(columns: AnalyticsTableColumn[]) {
+  return [{ key: "rank", label: "Rank" }, ...columns];
+}
+
 function getValueAnalyticsColumns(nameLabel: string, valueLabel: string): AnalyticsTableColumn[] {
   return [
     { key: "name", label: nameLabel, align: "left" },
@@ -2227,6 +2535,82 @@ function getAverageDaysAnalyticsColumns(nameLabel: string): AnalyticsTableColumn
   ];
 }
 
+function withAnalyticsRanks(rows: Array<Record<string, number | string>>) {
+  return rows.map((row, index) => ({ ...row, rank: index + 1 }));
+}
+
+function withAssignedDivisionRankRows(
+  rows: Array<Record<string, number | string>>,
+  assignedDivisionNames: string[],
+) {
+  if (!assignedDivisionNames.length) return rows;
+  const existingNames = new Set(rows.map((row) => normalizeAnalyticsName(String(row.name ?? ""))));
+  const assignedRows = assignedDivisionNames
+    .filter((name) => !existingNames.has(normalizeAnalyticsName(name)))
+    .map((name, index) => ({
+      name,
+      rank: rows.length + index + 1,
+      count: 0,
+      averageDays: 0,
+      sampleSize: 0,
+      allocatedCapital: 0,
+      allocatedRevenue: 0,
+      allocatedTotal: 0,
+      intendedCapital: 0,
+      intendedRevenue: 0,
+      intendedTotal: 0,
+      bookedCapital: 0,
+      bookedRevenue: 0,
+      bookedTotal: 0,
+      committedCapital: 0,
+      committedRevenue: 0,
+      committedTotal: 0,
+    }));
+  return assignedRows.length ? [...rows, ...assignedRows] : rows;
+}
+
+function getAssignedDivisionNames(divisionIds: string[] | undefined, divisions: Division[]) {
+  if (!divisionIds?.length) return [];
+  const assignedIds = new Set(divisionIds);
+  return divisions
+    .filter((division) => assignedIds.has(division.id))
+    .map((division) => division.name)
+    .filter(Boolean);
+}
+
+function normalizeAnalyticsName(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function getAnalyticsPagination(
+  rows: Array<Record<string, number | string>>,
+  limit: AnalyticsResultLimitKey,
+  requestedPage: number,
+) {
+  const pageSize = limit === "all" ? rows.length || 1 : Number(limit);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, requestedPage), totalPages);
+  const start = (page - 1) * pageSize;
+  const end = Math.min(start + pageSize, rows.length);
+  return {
+    rows: limit === "all" ? rows : rows.slice(start, end),
+    page,
+    pageSize,
+    total: rows.length,
+    totalPages,
+    start: rows.length ? start + 1 : 0,
+    end,
+    pageNumbers: getAnalyticsPaginationPages(page, totalPages),
+  };
+}
+
+function getAnalyticsPaginationPages(currentPage: number, totalPages: number) {
+  const firstPage = Math.max(1, currentPage - 2);
+  const lastPage = Math.min(totalPages, firstPage + 4);
+  const startPage = Math.max(1, lastPage - 4);
+  return Array.from({ length: lastPage - startPage + 1 }, (_, index) => startPage + index);
+}
+
 function AnalyticsRankingTable({
   columns,
   rows,
@@ -2314,6 +2698,59 @@ function AnalyticsRankingTable({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function AnalyticsPaginationControls({
+  page,
+  totalPages,
+  total,
+  start,
+  end,
+  pageNumbers,
+  onPageChange,
+}: ReturnType<typeof getAnalyticsPagination> & {
+  onPageChange: (page: number) => void;
+}) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div className="text-xs text-muted-foreground">
+        Showing {start}-{end} of {total}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          disabled={page === 1}
+          className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+        >
+          Previous
+        </button>
+        {pageNumbers.map((pageNumber) => (
+          <button
+            key={pageNumber}
+            type="button"
+            onClick={() => onPageChange(pageNumber)}
+            className={
+              "h-8 min-w-8 rounded-md border px-2 text-xs font-medium " +
+              (pageNumber === page
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-background hover:bg-accent")
+            }
+          >
+            {pageNumber}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          disabled={page === totalPages}
+          className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+        >
+          Next
+        </button>
+      </div>
     </div>
   );
 }
@@ -3110,7 +3547,8 @@ function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
   return Boolean(
     file.completedMilestones?.some(
-      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+      (milestone) =>
+        normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
     ),
   );
 }
@@ -3270,13 +3708,6 @@ function getTopIndentorsByValue(files: FileRecord[]) {
     totals.set(name, (totals.get(name) ?? 0) + getFileTotalValue(file));
   });
   return mapEntriesToSortedRows(totals, "value");
-}
-
-function applyAnalyticsResultLimit(
-  rows: Array<Record<string, number | string>>,
-  limit: AnalyticsResultLimitKey,
-) {
-  return limit === "all" ? rows : rows.slice(0, Number(limit));
 }
 
 function getMilestoneClearingRanking(files: FileRecord[]) {
@@ -3758,7 +4189,8 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
 
 function appendFileClosedMilestone(milestones: string[]) {
   const withoutFileClosed = milestones.filter(
-    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+    (milestone) =>
+      normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
 }
@@ -4062,7 +4494,7 @@ function isBgToBeReturned(file: FileRecord) {
 }
 
 function isDpExpired(file: FileRecord) {
-  return isDateBeforeToday(file.dpDate) && !hasFilledField(file, "revisedDp");
+  return fileSupplyOrders(file).some((order) => isDateBeforeToday(getDeliveryPeriodDate(order)));
 }
 
 function isDeliveryOverdue(file: FileRecord) {
@@ -4095,7 +4527,7 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
-  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return getLaterDate(order.dpDate, order.revisedDp);
 }
 
 function isOverdueDeliveryOrder(order: SupplyOrderDetail) {
@@ -4135,10 +4567,11 @@ function isBankGuaranteeEligible(file: FileRecord) {
 }
 
 function isValidDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
-    !hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.dpDate) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
 }
@@ -4154,16 +4587,26 @@ function isExpiredDeliveryPeriodOrder(order: SupplyOrderDetail) {
 }
 
 function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
     hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.revisedDp) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
 }
 
 function getDeliveryPeriodDate(order: SupplyOrderDetail) {
-  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return getLaterDate(order.dpDate, order.revisedDp);
+}
+
+function getLaterDate(first: string | undefined, second: string | undefined) {
+  const firstTime = parseLocalDateTime(first ?? "");
+  const secondTime = parseLocalDateTime(second ?? "");
+  if (firstTime === undefined) return second;
+  if (secondTime === undefined) return first;
+  return secondTime > firstTime ? second : first;
 }
 
 function hasSupplyOrderDate(order: SupplyOrderDetail) {
@@ -4258,6 +4701,10 @@ function isPaymentDue(file: FileRecord) {
   return fileSupplyOrders(file).some(
     (order) => hasFilledString(order.materialReceiptDate) && !hasFilledString(order.paymentDate),
   );
+}
+
+function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
+  return `statusSummary:${encodeURIComponent(milestone)}:${encodeURIComponent(stage)}`;
 }
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
@@ -4435,6 +4882,92 @@ function getStatusPageExportRows(
   return rows;
 }
 
+function exportStatusSummaryGroupsToExcel(groups: StatusSummaryTableGroup[], title: string) {
+  const worksheet = `
+    <html>
+      <head><meta charset="utf-8" /></head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${groups.map((group) => getStatusSummaryGroupHtml(group)).join("")}
+      </body>
+    </html>
+  `;
+  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${getExportFileName(title)}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printStatusSummaryGroupsToPdf(groups: StatusSummaryTableGroup[], title: string) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.alert("Please allow pop-ups to generate the PDF report.");
+    return;
+  }
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+          h1 { font-size: 18px; margin: 0 0 16px; }
+          h2 { font-size: 12px; margin: 18px 0 8px; text-transform: uppercase; color: #4b5563; }
+          table { border-collapse: collapse; margin-bottom: 14px; width: auto; min-width: 520px; }
+          th, td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 11px; }
+          th { background: #f3f4f6; color: #374151; text-align: left; }
+          td:first-child, th:first-child { text-align: right; }
+          td:nth-child(n+3), th:nth-child(n+3) { text-align: right; }
+          @media print { body { margin: 12mm; } table { page-break-inside: avoid; } }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${groups.map((group) => getStatusSummaryGroupHtml(group)).join("")}
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
+function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>S.No.</th>
+          <th>Milestone</th>
+          ${group.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        ${group.rows
+          .map(
+            (row, index) => `
+              <tr>
+                <td>${index + 1}</td>
+                <td>${escapeHtml(row.milestone)}</td>
+                ${group.columns
+                  .map((column) => `<td>${escapeHtml(row.counts[column] ?? "-")}</td>`)
+                  .join("")}
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
 function exportStatusPageRowsToExcel(rows: StatusPageExportRow[], title: string) {
   const worksheet = `
     <html>
@@ -4468,6 +5001,102 @@ function exportStatusPageRowsToExcel(rows: StatusPageExportRow[], title: string)
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function getLiveStatusTableHtml(rows: LiveStatusDivisionRow[], milestones: LiveStatusMilestone[]) {
+  const headers = ["S.No.", "Division", "Total", ...milestones.map((milestone) => milestone.name)];
+  return `
+    <table>
+      <thead>
+        <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
+      </thead>
+      <tbody>
+        ${
+          rows.length
+            ? rows
+                .map(
+                  (row, index) => `
+                    <tr>
+                      ${[
+                        String(index + 1),
+                        row.division,
+                        String(row.total),
+                        ...milestones.map((milestone) => String(row.counts[milestone.name] ?? 0)),
+                      ]
+                        .map((value) => `<td>${escapeHtml(value)}</td>`)
+                        .join("")}
+                    </tr>
+                  `,
+                )
+                .join("")
+            : `<tr><td colspan="${headers.length}">No division data available.</td></tr>`
+        }
+      </tbody>
+    </table>
+  `;
+}
+
+function exportLiveStatusRowsToExcel(
+  rows: LiveStatusDivisionRow[],
+  milestones: LiveStatusMilestone[],
+  title: string,
+) {
+  const worksheet = `
+    <html>
+      <head><meta charset="utf-8" /></head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${getLiveStatusTableHtml(rows, milestones)}
+      </body>
+    </html>
+  `;
+  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${getExportFileName(title)}.xls`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function printLiveStatusRowsToPdf(
+  rows: LiveStatusDivisionRow[],
+  milestones: LiveStatusMilestone[],
+  title: string,
+) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.alert("Please allow pop-ups to generate the PDF report.");
+    return;
+  }
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+          h1 { font-size: 18px; margin: 0 0 16px; }
+          table { width: 100%; border-collapse: collapse; font-size: 11px; }
+          th, td { border: 1px solid #d1d5db; padding: 6px 7px; text-align: left; vertical-align: top; }
+          th { background: #f3f4f6; font-weight: 700; }
+          td:nth-child(1), th:nth-child(1), td:nth-child(n+3), th:nth-child(n+3) { text-align: right; }
+          @media print { body { margin: 12mm; } }
+        </style>
+      </head>
+      <body>
+        <h1>${escapeHtml(title)}</h1>
+        ${getLiveStatusTableHtml(rows, milestones)}
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
 }
 
 function printStatusPageRowsToPdf(rows: StatusPageExportRow[], title: string) {

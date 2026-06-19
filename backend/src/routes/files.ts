@@ -22,6 +22,108 @@ import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../uti
 
 export const filesRouter = Router();
 const allActiveFilesYear = "__all_active_files__";
+const fileClosedMilestone = "File Closed";
+
+const statusSummaryMilestones = [
+  {
+    key: "scrutiny",
+    label: "Scrutiny",
+    totalLabel: "Total files",
+    reviewedColumn: "f.scrutiny_date",
+    currentColumn: "f.scrutiny_completion_date",
+  },
+  {
+    key: "highValue",
+    label: "High Value",
+    totalLabel: "Total cases",
+    reviewedColumn: "f.high_value_meeting_date",
+    currentColumn: "f.high_value_minutes_date",
+    appliesColumn: "f.high_value",
+  },
+  {
+    key: "tcec",
+    label: "Pre-TCEC",
+    totalLabel: "Total cases",
+    reviewedColumn: "f.pre_tcec_date",
+    currentColumn: "f.pre_tcec_minutes_date",
+    appliesColumn: "f.tcec",
+  },
+  {
+    key: "ad",
+    label: "AD",
+    totalLabel: "Total cases",
+    currentColumn: "f.ad_vetting_date",
+    appliesColumn: "f.ad",
+  },
+  {
+    key: "rqa",
+    label: "R&QA",
+    totalLabel: "Total cases",
+    currentColumn: "f.rqa_approval_date",
+    appliesColumn: "f.rqa",
+  },
+  {
+    key: "control",
+    label: "Controlling",
+    totalLabel: "Total files",
+    currentColumn: "f.imms_date",
+    aliases: ["Controlling", "Controlled"],
+  },
+  {
+    key: "ifa",
+    label: "IFA",
+    totalLabel: "Total cases",
+    reviewedColumn: "f.ifa_sent_date",
+    currentColumn: "f.ifa_final_date",
+    appliesColumn: "f.ifa",
+  },
+  {
+    key: "cfa",
+    label: "CFA",
+    totalLabel: "Total files",
+    reviewedColumn: "f.cfa_sent_date",
+    currentColumn: "f.cfa_date",
+  },
+  {
+    key: "bidding",
+    label: "Bidding",
+    totalLabel: "Total files",
+    currentColumn: "f.bidding_stage_over",
+    yesComplete: true,
+  },
+  {
+    key: "postTcec",
+    label: "Post-TCEC",
+    totalLabel: "Total cases",
+    reviewedColumn: "f.post_tcec_date",
+    currentColumn: "f.post_tcec_minutes_date",
+    appliesColumn: "f.tcec",
+  },
+  {
+    key: "cnc",
+    label: "CNC",
+    totalLabel: "Total cases",
+    reviewedColumn: "f.cnc_date",
+    currentColumn: "f.cnc_approval_date",
+    appliesColumn: "f.tcec",
+  },
+  {
+    key: "supplyOrder",
+    label: "Supply Order",
+    completedLabel: "Placed",
+    totalLabel: "Total files",
+    supplyOrderDate: "so_date",
+  },
+  {
+    key: "bankGuarantee",
+    label: "Bank Guarantee",
+    completedLabel: "Received",
+    totalLabel: "Total files",
+    appliesColumn: "f.bg",
+    supplyOrderDate: "bg_validity_date",
+  },
+  { key: "payment", label: "Payment", totalLabel: "Total files", supplyOrderDate: "payment_date" },
+] as const;
 
 type ValueKind = "text" | "date" | "number" | "integer";
 
@@ -500,6 +602,18 @@ function supplyOrderExists(condition: string) {
   return `exists (select 1 from supply_orders so where so.file_id = f.id and ${condition})`;
 }
 
+function supplyOrderRowExists() {
+  return "exists (select 1 from supply_orders so_existing where so_existing.file_id = f.id)";
+}
+
+function supplyOrderChildOrLegacySql(childCondition: string, legacyCondition: string) {
+  return `(${supplyOrderExists(childCondition)} or (not ${supplyOrderRowExists()} and ${legacyCondition}))`;
+}
+
+function effectiveDpDateSql(alias: string) {
+  return `greatest(coalesce(${alias}.revised_dp, ${alias}.dp_date), coalesce(${alias}.dp_date, ${alias}.revised_dp))`;
+}
+
 function supplyOrderValueTotalSql(capitalOnly: boolean, revenueOnly: boolean) {
   const includeCapital = !revenueOnly || capitalOnly;
   const includeRevenue = !capitalOnly || revenueOnly;
@@ -792,8 +906,261 @@ function deliveryDueOrderSql(extra = "true") {
   );
 }
 
+function normalizeMilestoneName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function statusAppliesSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  return "appliesColumn" in milestone && milestone.appliesColumn
+    ? isYesSql(milestone.appliesColumn)
+    : "true";
+}
+
+function statusCompleteSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  if ("yesComplete" in milestone && milestone.yesComplete) {
+    return isYesSql(milestone.currentColumn);
+  }
+  if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
+    return supplyOrderChildOrLegacySql(
+      hasTextSql(`so.${milestone.supplyOrderDate}`),
+      hasTextSql(`f.${milestone.supplyOrderDate}`),
+    );
+  }
+  return "currentColumn" in milestone && milestone.currentColumn
+    ? hasTextSql(milestone.currentColumn)
+    : "false";
+}
+
+function statusReviewedSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  return "reviewedColumn" in milestone && milestone.reviewedColumn
+    ? hasTextSql(milestone.reviewedColumn)
+    : "false";
+}
+
+function statusActiveSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  const aliases =
+    "aliases" in milestone && milestone.aliases ? milestone.aliases : [milestone.label];
+  const normalizedAliases = aliases.map((alias) => `'${normalizeMilestoneName(alias)}'`).join(", ");
+  return `not ${isCancelledFileSql()}
+    and not ${fileClosedSql()}
+    and ${normalizedSql("f.current_milestone")} in (${normalizedAliases})`;
+}
+
+function previousStatusCompleteSql(index: number) {
+  const previous = statusSummaryMilestones.slice(0, index).reverse();
+  if (!previous.length) return hasTextSql("f.received_date");
+  return `case
+    ${previous
+      .map(
+        (milestone) => `when ${statusAppliesSql(milestone)} then ${statusCompleteSql(milestone)}`,
+      )
+      .join("\n    ")}
+    else ${hasTextSql("f.received_date")}
+  end`;
+}
+
+function statusSupplyOrderPlacedSql() {
+  return supplyOrderChildOrLegacySql(hasTextSql("so.so_date"), hasTextSql("f.so_date"));
+}
+
+function statusDeliveryDueOrderSql(extraCondition = "true") {
+  return supplyOrderChildOrLegacySql(
+    `${hasTextSql("so.so_date")}
+     and not ${hasTextSql("so.material_receipt_date")}
+     and not ${isYesSql("so.so_cancelled")}
+     and ${extraCondition}`,
+    `${hasTextSql("f.so_date")}
+     and not ${hasTextSql("f.material_receipt_date")}
+     and not ${isYesSql("f.so_cancelled")}
+     and ${extraCondition.replaceAll("so.", "f.")}`,
+  );
+}
+
+function bankGuaranteeEligibleSql() {
+  return `not ${isCancelledFileSql()}
+    and ${isYesSql("f.bg")}
+    and ${supplyOrderChildOrLegacySql(
+      `${hasTextSql("so.so_date")} and not ${isYesSql("so.so_cancelled")}`,
+      `${hasTextSql("f.so_date")} and not ${isYesSql("f.so_cancelled")}`,
+    )}`;
+}
+
+function decodeStatusFilterPart(value: string | undefined) {
+  if (!value) return "";
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function statusSummaryFilterSql(filter: string) {
+  const [, rawMilestone, rawStage] = filter.split(":");
+  const milestoneName = decodeStatusFilterPart(rawMilestone);
+  const stage = decodeStatusFilterPart(rawStage);
+  const base = `not ${fileClosedSql()}`;
+
+  if (milestoneName === "Delivery Period") {
+    const soEffectiveDp = effectiveDpDateSql("so");
+    const fileEffectiveDp = effectiveDpDateSql("f");
+    if (stage === "Valid") {
+      return `${base} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
+        `${hasTextSql("so.so_date")} and ${soEffectiveDp} is not null and ${soEffectiveDp} > current_date and not ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${fileEffectiveDp} is not null and ${fileEffectiveDp} > current_date and not ${hasTextSql("f.material_receipt_date")}`,
+      )}`;
+    }
+    if (stage === "Expired") {
+      return `${base} and not ${isCancelledFileSql()} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
+        `${hasTextSql("so.so_date")} and ${soEffectiveDp} is not null and ${soEffectiveDp} < current_date and not ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${fileEffectiveDp} is not null and ${fileEffectiveDp} < current_date and not ${hasTextSql("f.material_receipt_date")}`,
+      )}`;
+    }
+    if (stage === "Extended") {
+      return `${base} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
+        `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${soEffectiveDp} > current_date and not ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${hasTextSql("f.revised_dp")} and ${fileEffectiveDp} > current_date and not ${hasTextSql("f.material_receipt_date")}`,
+      )}`;
+    }
+    return "false";
+  }
+
+  if (milestoneName === "Delivery") {
+    if (stage === "Completed") {
+      return `${base} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
+        `${hasTextSql("so.so_date")} and ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${hasTextSql("f.material_receipt_date")}`,
+      )}`;
+    }
+    if (stage === "Pending") {
+      return `${base} and not ${isCancelledFileSql()} and ${statusSupplyOrderPlacedSql()} and ${statusDeliveryDueOrderSql()}`;
+    }
+    return "false";
+  }
+
+  const milestoneIndex = statusSummaryMilestones.findIndex((item) => item.label === milestoneName);
+  const milestone = statusSummaryMilestones[milestoneIndex];
+  if (!milestone) return "false";
+
+  const applies = statusAppliesSql(milestone);
+  const process = `${applies} and not ${isCancelledFileSql()}`;
+  const complete = statusCompleteSql(milestone);
+  const reached = previousStatusCompleteSql(milestoneIndex);
+  const active = `${process} and ${statusActiveSql(milestone)}`;
+  const reviewed = statusReviewedSql(milestone);
+  const pending =
+    "reviewedColumn" in milestone && milestone.reviewedColumn
+      ? `${active} and not (${reviewed}) and not (${complete})`
+      : `${active} and not (${complete})`;
+
+  if (stage === "Pending" && milestone.key === "bankGuarantee") {
+    return `${base} and ${bankGuaranteeEligibleSql()} and ${statusActiveSql(milestone)} and not (${complete})`;
+  }
+  if (stage === "Total" || stage === milestone.totalLabel) return `${base} and ${applies}`;
+  if (stage === "Completed") return `${base} and ${process} and ${complete}`;
+  if (stage === "Pending") return `${base} and ${pending}`;
+  if (stage === "In process") {
+    if (milestone.key === "bidding") {
+      return `${base} and ${active} and not ${isYesSql("f.tender_live")}`;
+    }
+    return `${base} and ${active}`;
+  }
+  if (stage === "Reviewed") return `${base} and ${active} and ${reviewed} and not (${complete})`;
+  if (stage === "Opening overdue") {
+    return `${base} and ${applies} and ${isNoSql("f.bid_opened")} and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
+  }
+  if (stage === "Live") {
+    if (milestone.key === "bidding")
+      return `${base} and ${applies} and ${isYesSql("f.tender_live")}`;
+    if (milestone.key === "supplyOrder") return `${base} and ${statusDeliveryDueOrderSql()}`;
+  }
+  if (stage === "Placed" && milestone.key === "supplyOrder") {
+    return `${base} and ${process} and ${complete}`;
+  }
+  if (stage === "Received" && milestone.key === "bankGuarantee") {
+    return `${base} and ${bankGuaranteeEligibleSql()} and ${complete}`;
+  }
+  if (stage === "At previous stage" || stage === "At previous stages") {
+    return `${base} and ${applies} and not (${reached})`;
+  }
+  return "false";
+}
+
+function readCashOutgoFilter(filter: string) {
+  const [, mode, rawMonthKey, rawOffsetDays] = filter.split(":");
+  const monthKey = decodeStatusFilterPart(rawMonthKey);
+  const offsetDays = Number.parseInt(rawOffsetDays ?? "0", 10);
+  if (
+    !["expectedDp", "expectedReceipt", "actual"].includes(mode) ||
+    !/^\d{4}-\d{2}$/.test(monthKey) ||
+    !Number.isFinite(offsetDays) ||
+    offsetDays < 0
+  ) {
+    return undefined;
+  }
+  return {
+    mode: mode as "expectedDp" | "expectedReceipt" | "actual",
+    monthKey,
+    offsetDays,
+  };
+}
+
+function monthMatchesSql(dateExpression: string, monthPlaceholder: string) {
+  return `to_char(${dateExpression}, 'YYYY-MM') = ${monthPlaceholder}`;
+}
+
+function cashOutgoFilterSql(filter: string, values: unknown[]) {
+  const parsed = readCashOutgoFilter(filter);
+  if (!parsed) return "false";
+
+  const monthPlaceholder = addSqlValue(values, parsed.monthKey);
+  const offsetPlaceholder =
+    parsed.mode === "actual" ? undefined : addSqlValue(values, parsed.offsetDays);
+  const offsetInterval = `(${offsetPlaceholder}::integer * interval '1 day')`;
+  const activeFile = `not ${isCancelledFileSql()}`;
+
+  if (parsed.mode === "expectedDp") {
+    return `${activeFile} and ${supplyOrderChildOrLegacySql(
+      `coalesce(so.revised_dp, so.dp_date) is not null
+       and not ${isYesSql("so.so_cancelled")}
+       and not ${hasTextSql("so.material_receipt_date")}
+       and not ${hasTextSql("so.payment_date")}
+       and ${monthMatchesSql(`(coalesce(so.revised_dp, so.dp_date) + ${offsetInterval})::date`, monthPlaceholder)}`,
+      `coalesce(f.revised_dp, f.dp_date) is not null
+       and not ${isYesSql("f.so_cancelled")}
+       and not ${hasTextSql("f.material_receipt_date")}
+       and not ${hasTextSql("f.payment_date")}
+       and ${monthMatchesSql(`(coalesce(f.revised_dp, f.dp_date) + ${offsetInterval})::date`, monthPlaceholder)}`,
+    )}`;
+  }
+
+  if (parsed.mode === "expectedReceipt") {
+    return `${activeFile} and ${supplyOrderChildOrLegacySql(
+      `${hasTextSql("so.material_receipt_date")}
+       and not ${hasTextSql("so.payment_date")}
+       and ${monthMatchesSql(`(so.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+      `${hasTextSql("f.material_receipt_date")}
+       and not ${hasTextSql("f.payment_date")}
+       and ${monthMatchesSql(`(f.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+    )}`;
+  }
+
+  return `${activeFile} and ${supplyOrderChildOrLegacySql(
+    `${hasTextSql("so.payment_date")}
+     and not (${isYesSql("so.so_cancelled")} and ${hasTextSql("so.so_cancelled_date")})
+     and ${monthMatchesSql("so.payment_date", monthPlaceholder)}`,
+    `${hasTextSql("f.payment_date")}
+     and not (${isYesSql("f.so_cancelled")} and ${hasTextSql("f.so_cancelled_date")})
+     and ${monthMatchesSql("f.payment_date", monthPlaceholder)}`,
+  )}`;
+}
+
 function dashboardFilterSql(filter: string, values: unknown[]) {
   const today = "current_date";
+  if (filter.startsWith("cashOutgo:")) return cashOutgoFilterSql(filter, values);
+  if (filter.startsWith("statusSummary:")) return statusSummaryFilterSql(filter);
   if (filter.startsWith("delayFile:")) {
     const placeholder = addSqlValue(values, filter.slice("delayFile:".length));
     return `f.id = ${placeholder}`;
@@ -847,18 +1214,18 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     );
   if (filter === "dpExtension") return isYesSql("f.dp_extension");
   if (filter === "dpExpired")
-    return supplyOrderExists(`so.dp_date < ${today} and not ${hasTextSql("so.revised_dp")}`);
+    return supplyOrderExists(`${effectiveDpDateSql("so")} < ${today}`);
   if (filter === "deliveryOverdue")
     return `${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
-      "coalesce(so.revised_dp, so.dp_date) < current_date",
+      `${effectiveDpDateSql("so")} < current_date`,
     )}`;
   if (filter === "deliveryDueToday")
     return `${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
-      "coalesce(so.revised_dp, so.dp_date) = current_date",
+      `${effectiveDpDateSql("so")} = current_date`,
     )}`;
   if (filter === "deliveryUpcoming")
     return `${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
-      "coalesce(so.revised_dp, so.dp_date) > current_date",
+      `${effectiveDpDateSql("so")} > current_date`,
     )}`;
   if (filter === "deliveryCompleted")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
@@ -866,25 +1233,25 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     )}`;
   if (filter === "deliveryDeliveredLate")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and ${hasTextSql("so.material_receipt_date")} and coalesce(so.revised_dp, so.dp_date) is not null and so.material_receipt_date > coalesce(so.revised_dp, so.dp_date)`,
+      `${hasTextSql("so.so_date")} and ${hasTextSql("so.material_receipt_date")} and ${effectiveDpDateSql("so")} is not null and so.material_receipt_date > ${effectiveDpDateSql("so")}`,
     )}`;
   if (filter === "deliveryDue")
     return `not ${isCancelledFileSql()} and ${supplyOrderPlacedSql()} and ${deliveryDueOrderSql()}`;
   if (filter === "deliveryPeriodValid")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and not ${hasTextSql("so.revised_dp")} and so.dp_date > current_date and not ${hasTextSql(
+      `${hasTextSql("so.so_date")} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} > current_date and not ${hasTextSql(
         "so.material_receipt_date",
       )}`,
     )}`;
   if (filter === "deliveryPeriodExpired")
     return `not ${isCancelledFileSql()} and ${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and coalesce(so.revised_dp, so.dp_date) is not null and coalesce(so.revised_dp, so.dp_date) < current_date and not ${hasTextSql(
+      `${hasTextSql("so.so_date")} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} < current_date and not ${hasTextSql(
         "so.material_receipt_date",
       )}`,
     )}`;
   if (filter === "deliveryPeriodExtended")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and so.revised_dp > current_date and not ${hasTextSql(
+      `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${effectiveDpDateSql("so")} > current_date and not ${hasTextSql(
         "so.material_receipt_date",
       )}`,
     )}`;
@@ -1083,13 +1450,14 @@ function buildSearchSql(
 
   if (isValidDate(params.dpFrom) || isValidDate(params.dpTo)) {
     const dpConditions: string[] = [];
+    const effectiveDpDate = effectiveDpDateSql("so");
     if (isValidDate(params.dpFrom)) {
       const placeholder = addSqlValue(values, params.dpFrom);
-      dpConditions.push(`so.dp_date >= ${placeholder}::date`);
+      dpConditions.push(`${effectiveDpDate} >= ${placeholder}::date`);
     }
     if (isValidDate(params.dpTo)) {
       const placeholder = addSqlValue(values, params.dpTo);
-      dpConditions.push(`so.dp_date <= ${placeholder}::date`);
+      dpConditions.push(`${effectiveDpDate} <= ${placeholder}::date`);
     }
     conditions.push(supplyOrderExists(dpConditions.join(" and ")));
   }

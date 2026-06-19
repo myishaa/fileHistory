@@ -75,3 +75,18 @@ on supply_orders using gin (lower(coalesce(firm, '')) gin_trgm_ops);
 
 create index if not exists file_remarks_text_lower_trgm_idx
 on file_remarks using gin (lower(coalesce(text, '')) gin_trgm_ops);
+
+create index if not exists indentors_division_name_idx
+on indentors(division_id, lower(name), id);
+
+create index if not exists indentors_name_lower_trgm_idx
+on indentors using gin (lower(coalesce(name, '')) gin_trgm_ops);
+
+create index if not exists indentors_sf_id_lower_trgm_idx
+on indentors using gin (lower(coalesce(sf_id, '')) gin_trgm_ops);
+
+create index if not exists indentors_designation_lower_trgm_idx
+on indentors using gin (lower(coalesce(designation, '')) gin_trgm_ops);
+
+create index if not exists indentors_email_lower_trgm_idx
+on indentors using gin (lower(coalesce(email, '')) gin_trgm_ops);

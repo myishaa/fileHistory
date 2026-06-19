@@ -2,11 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
 import {
+  fetchIndentors,
   store,
   useActiveUser,
   useDivisions,
   useFiles,
-  useIndentors,
   useSettings,
   useUsers,
   type AppUserRole,
@@ -1194,7 +1194,6 @@ const indentorDesignationOptions = [
 function IndentorSettings() {
   const activeUser = useActiveUser();
   const divisions = useDivisions();
-  const indentors = useIndentors();
   const canManage = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const availableDivisions =
     !activeUser || canManage
@@ -1202,6 +1201,14 @@ function IndentorSettings() {
       : divisions.filter((division) => activeUser.divisionIds.includes(division.id));
   const [draft, setDraft] = useState<IndentorDraft>(emptyIndentorDraft);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [divisionFilter, setDivisionFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [indentors, setIndentors] = useState<Indentor[]>([]);
+  const [indentorTotal, setIndentorTotal] = useState(0);
+  const [indentorsLoading, setIndentorsLoading] = useState(false);
+  const [indentorsError, setIndentorsError] = useState<string | undefined>();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<IndentorDraft>(emptyIndentorDraft);
 
@@ -1211,13 +1218,44 @@ function IndentorSettings() {
     }
   }, [availableDivisions, draft.divisionId]);
 
-  const visibleIndentors = indentors
-    .filter((indentor) =>
-      canManage || !activeUser
-        ? true
-        : activeUser.divisionIds.includes(indentor.divisionId),
-    )
-    .filter((indentor) => indentor.name.toLowerCase().includes(search.trim().toLowerCase()));
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [search]);
+
+  const loadIndentors = () => {
+    setIndentorsLoading(true);
+    setIndentorsError(undefined);
+    fetchIndentors({
+      divisionId: divisionFilter === "all" ? undefined : divisionFilter,
+      q: debouncedSearch,
+      page,
+      pageSize,
+    })
+      .then((result) => {
+        setIndentors(result.indentors);
+        setIndentorTotal(result.total);
+        if (result.page !== page) setPage(result.page);
+        if (result.pageSize !== pageSize) setPageSize(result.pageSize);
+      })
+      .catch((error) => {
+        console.error(error);
+        setIndentorsError(error instanceof Error ? error.message : "Failed to load indentors.");
+      })
+      .finally(() => setIndentorsLoading(false));
+  };
+
+  useEffect(() => {
+    loadIndentors();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [divisionFilter, debouncedSearch, page, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(indentorTotal / pageSize));
+  const firstResultNumber = indentorTotal === 0 ? 0 : (page - 1) * pageSize + 1;
+  const lastResultNumber = Math.min(indentorTotal, (page - 1) * pageSize + indentors.length);
 
   const updateDraft = (key: keyof IndentorDraft, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1239,7 +1277,7 @@ function IndentorSettings() {
   const resetDraft = () =>
     setDraft({ ...emptyIndentorDraft, divisionId: availableDivisions[0]?.id ?? "" });
 
-  const addIndentor = () => {
+  const addIndentor = async () => {
     if (!isComplete(draft)) return;
     if (
       activeUser?.role === "viewer" &&
@@ -1249,7 +1287,7 @@ function IndentorSettings() {
     ) {
       return;
     }
-    store.addIndentor({
+    await store.addIndentor({
       divisionId: draft.divisionId,
       name: draft.name.trim(),
       sfId: draft.sfId.trim(),
@@ -1259,6 +1297,8 @@ function IndentorSettings() {
       email: draft.email.trim(),
     });
     resetDraft();
+    setPage(1);
+    loadIndentors();
   };
 
   const startEdit = (indentor: Indentor) => {
@@ -1274,9 +1314,9 @@ function IndentorSettings() {
     });
   };
 
-  const saveEdit = (id: string) => {
+  const saveEdit = async (id: string) => {
     if (!isComplete(editDraft)) return;
-    store.updateIndentor(id, {
+    await store.updateIndentor(id, {
       divisionId: editDraft.divisionId,
       name: editDraft.name.trim(),
       sfId: editDraft.sfId.trim(),
@@ -1286,6 +1326,16 @@ function IndentorSettings() {
       email: editDraft.email.trim(),
     });
     setEditingId(null);
+    loadIndentors();
+  };
+
+  const deleteIndentor = async (id: string) => {
+    await store.deleteIndentor(id);
+    if (indentors.length === 1 && page > 1) {
+      setPage((current) => Math.max(1, current - 1));
+    } else {
+      loadIndentors();
+    }
   };
 
   return (
@@ -1297,12 +1347,29 @@ function IndentorSettings() {
             Add and search division-wise indentors used when files are created.
           </p>
         </div>
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by name"
-          className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 sm:max-w-xs"
-        />
+        <div className="flex w-full flex-col gap-2 sm:max-w-xl sm:flex-row">
+          <select
+            value={divisionFilter}
+            onChange={(event) => {
+              setDivisionFilter(event.target.value);
+              setPage(1);
+            }}
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+          >
+            <option value="all">All divisions</option>
+            {availableDivisions.map((division) => (
+              <option key={division.id} value={division.id}>
+                {division.name}
+              </option>
+            ))}
+          </select>
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search name, SF ID, designation, email"
+            className="h-10 flex-1 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+        </div>
       </div>
 
       <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1351,7 +1418,7 @@ function IndentorSettings() {
         </button>
       </div>
 
-      <div className="mt-5 overflow-x-auto rounded-md border border-border">
+	      <div className="mt-5 overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[1050px] table-fixed text-sm">
           <colgroup>
             <col className="w-[14%]" />
@@ -1376,14 +1443,18 @@ function IndentorSettings() {
             </tr>
           </thead>
           <tbody>
-            {visibleIndentors.length === 0 ? (
-              <tr className="border-t border-border">
-                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={8}>
-                  No indentors found.
-                </td>
-              </tr>
-            ) : (
-              visibleIndentors.map((indentor) => {
+	            {indentors.length === 0 ? (
+	              <tr className="border-t border-border">
+	                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={8}>
+	                  {indentorsLoading
+	                    ? "Loading indentors..."
+	                    : indentorsError
+	                      ? indentorsError
+	                      : "No indentors found."}
+	                </td>
+	              </tr>
+	            ) : (
+	              indentors.map((indentor) => {
                 const isEditing = editingId === indentor.id;
                 return (
                   <tr key={indentor.id} className="border-t border-border align-top">
@@ -1459,7 +1530,7 @@ function IndentorSettings() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => store.deleteIndentor(indentor.id)}
+	                                onClick={() => deleteIndentor(indentor.id)}
                                 className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
                               >
                                 <Trash2 className="size-4" />
@@ -1476,11 +1547,51 @@ function IndentorSettings() {
               })
             )}
           </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+	        </table>
+	      </div>
+	      <div className="mt-3 flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+	        <span>
+	          Showing {firstResultNumber}-{lastResultNumber} of {indentorTotal}
+	        </span>
+	        <div className="flex flex-wrap items-center gap-2">
+	          <select
+	            value={pageSize}
+	            onChange={(event) => {
+	              setPageSize(Number(event.target.value));
+	              setPage(1);
+	            }}
+	            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+	          >
+	            {[25, 50, 100, 200].map((size) => (
+	              <option key={size} value={size}>
+	                {size} / page
+	              </option>
+	            ))}
+	          </select>
+	          <button
+	            type="button"
+	            disabled={page <= 1}
+	            onClick={() => setPage((current) => Math.max(1, current - 1))}
+	            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+	          >
+	            Previous
+	          </button>
+	          <span>
+	            Page {page} of {totalPages}
+	          </span>
+	          <button
+	            type="button"
+	            disabled={page >= totalPages}
+	            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+	            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+	          >
+	            Next
+	          </button>
+	        </div>
+	      </div>
+	    </div>
+	  );
+	}
 
 function UserSettings() {
   const users = useUsers();

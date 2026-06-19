@@ -346,7 +346,7 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     }
     if (
       !fileSupplyOrders(file).some((order) =>
-        matchesDateRange(order.dpDate, params.dpFrom ?? "", params.dpTo ?? ""),
+        matchesDateRange(getDeliveryPeriodDate(order), params.dpFrom ?? "", params.dpTo ?? ""),
       )
     ) {
       return false;
@@ -686,7 +686,7 @@ function isBgToBeReturned(file: FileRecord) {
 
 function isDpExpired(file: FileRecord) {
   return fileSupplyOrders(file).some(
-    (order) => isDateBeforeToday(order.dpDate) && !order.revisedDp,
+    (order) => isDateBeforeToday(getDeliveryPeriodDate(order)),
   );
 }
 
@@ -732,7 +732,7 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
-  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return getLaterDate(order.dpDate, order.revisedDp);
 }
 
 function isOverdueDeliveryOrder(order: SupplyOrderDetail) {
@@ -790,10 +790,11 @@ function isBankGuaranteeEligible(file: FileRecord) {
 }
 
 function isValidDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
-    !hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.dpDate) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
 }
@@ -809,16 +810,26 @@ function isExpiredDeliveryPeriodOrder(order: SupplyOrderDetail) {
 }
 
 function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
     hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.revisedDp) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
 }
 
 function getDeliveryPeriodDate(order: SupplyOrderDetail) {
-  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return getLaterDate(order.dpDate, order.revisedDp);
+}
+
+function getLaterDate(first: string | undefined, second: string | undefined) {
+  const firstTime = parseLocalDateTime(first ?? "");
+  const secondTime = parseLocalDateTime(second ?? "");
+  if (firstTime === undefined) return second;
+  if (secondTime === undefined) return first;
+  return secondTime > firstTime ? second : first;
 }
 
 function isPaymentDue(file: FileRecord) {

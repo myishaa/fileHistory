@@ -59,6 +59,15 @@ function readTrimmed(value: unknown, field: string) {
   return requireString(value, field);
 }
 
+function readPositiveInteger(value: unknown, fallback: number, max: number) {
+  const parsed =
+    typeof value === "string" || typeof value === "number"
+      ? Number.parseInt(String(value), 10)
+      : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
 async function assertDivisionAccess(user: AuthUser, divisionId: string) {
   const division = await pool.query<{ id: string }>(
     "select id from divisions where id = $1 and archived_at is null",
@@ -95,8 +104,11 @@ indentorsRouter.get(
       typeof request.query.divisionId === "string" && request.query.divisionId.trim()
         ? request.query.divisionId.trim()
         : "";
-    const q =
-      typeof request.query.q === "string" && request.query.q.trim() ? request.query.q.trim() : "";
+	    const q =
+	      typeof request.query.q === "string" && request.query.q.trim() ? request.query.q.trim() : "";
+	    const page = readPositiveInteger(request.query.page, 1, 1_000_000);
+	    const pageSize = readPositiveInteger(request.query.pageSize, 50, 200);
+	    const offset = (page - 1) * pageSize;
 
     if (divisionId) {
       if (!canAccessDivision(user, divisionId)) {
@@ -105,34 +117,50 @@ indentorsRouter.get(
       values.push(divisionId);
       where.push(`i.division_id = $${values.length}`);
     } else if (!canUseAllDivisions(user)) {
-      if (user.divisionIds.length === 0) {
-        response.json({ indentors: [] });
-        return;
-      }
+	      if (user.divisionIds.length === 0) {
+	        response.json({ indentors: [], total: 0, page, pageSize });
+	        return;
+	      }
       values.push(user.divisionIds);
       where.push(`i.division_id = any($${values.length}::uuid[])`);
     }
 
-    if (q) {
-      values.push(`%${q}%`);
-      where.push(`i.name ilike $${values.length}`);
-    }
+	    if (q) {
+	      values.push(`%${q.toLowerCase()}%`);
+	      where.push(`(
+	        lower(i.name) like $${values.length}
+	        or lower(i.sf_id) like $${values.length}
+	        or lower(i.designation) like $${values.length}
+	        or lower(i.email) like $${values.length}
+	      )`);
+	    }
 
-    const result = await pool.query<IndentorRow>(
-      `select
-         i.*,
+	    const totalResult = await pool.query<{ total: string }>(
+	      `select count(*)::text as total
+	       from indentors i
+	       join divisions d on d.id = i.division_id
+	       where ${where.join(" and ")}`,
+	      values,
+	    );
+	    const total = Number(totalResult.rows[0]?.total ?? 0);
+	    const resultValues = [...values, pageSize, offset];
+	    const result = await pool.query<IndentorRow>(
+	      `select
+	         i.*,
          d.name as division_name,
          u.name as created_by_name
        from indentors i
        join divisions d on d.id = i.division_id
-       left join app_users u on u.id = i.created_by
-       where ${where.join(" and ")}
-       order by d.name asc, i.name asc`,
-      values,
-    );
-    response.json({ indentors: result.rows.map(mapIndentor) });
-  }),
-);
+	       left join app_users u on u.id = i.created_by
+	       where ${where.join(" and ")}
+	       order by d.name asc, i.name asc, i.id asc
+	       limit $${values.length + 1}
+	       offset $${values.length + 2}`,
+	      resultValues,
+	    );
+	    response.json({ indentors: result.rows.map(mapIndentor), total, page, pageSize });
+	  }),
+	);
 
 indentorsRouter.post(
   "/",

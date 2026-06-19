@@ -75,7 +75,7 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "paymentMode", label: "Payment mode(Online/Offline)" },
       { key: "bgReturnDate", label: "BG return date" },
       { key: "demandCancelled", label: "Demand cancelled (Yes/No)" },
-      { key: "soCancelled", label: "S.O. Cancelled (Yes/No)" },
+      { key: "soCancelled", label: "S.O. cancelled (Yes/No)" },
       { key: "soCancelledDate", label: "S.O. cancelled date" },
     ],
   },

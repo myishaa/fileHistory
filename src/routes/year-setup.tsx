@@ -2,11 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { GitMerge, Landmark, Plus, RotateCw, Save } from "lucide-react";
 import {
+  fetchIndentors,
   store,
   type Division,
+  type Indentor,
   useActiveUser,
   useFiles,
-  useIndentors,
   useSettings,
 } from "@/lib/files-store";
 import { isAllActiveFilesYear, isFileVisibleForYear } from "@/lib/year-filter";
@@ -36,7 +37,6 @@ export function YearSetupPanel() {
   const activeUser = useActiveUser();
   const settings = useSettings();
   const files = useFiles();
-  const indentors = useIndentors();
   const [currentDivisions, setCurrentDivisions] = useState<Division[]>([]);
   const [drafts, setDrafts] = useState<Record<string, DraftAllocation>>({});
   const [savingId, setSavingId] = useState<string | undefined>();
@@ -56,6 +56,11 @@ export function YearSetupPanel() {
   const [mergeSaving, setMergeSaving] = useState(false);
   const [mergeMessage, setMergeMessage] = useState("");
   const [splitSourceDivisionId, setSplitSourceDivisionId] = useState("");
+  const [splitIndentors, setSplitIndentors] = useState<Indentor[]>([]);
+  const [splitIndentorTotal, setSplitIndentorTotal] = useState(0);
+  const [splitIndentorSearch, setSplitIndentorSearch] = useState("");
+  const [splitIndentorPage, setSplitIndentorPage] = useState(1);
+  const [selectedSplitIndentorNames, setSelectedSplitIndentorNames] = useState<Record<string, string>>({});
   const [splitIndentorIds, setSplitIndentorIds] = useState<string[]>([]);
   const [splitTargetId, setSplitTargetId] = useState("");
   const [splitTargetName, setSplitTargetName] = useState("");
@@ -161,23 +166,39 @@ export function YearSetupPanel() {
   const splitSourceDivision = currentDivisions.find(
     (division) => division.id === splitSourceDivisionId,
   );
-  const splitSourceIndentors = useMemo(
-    () =>
-      splitSourceDivisionId
-        ? indentors.filter((indentor) => indentor.divisionId === splitSourceDivisionId)
-        : [],
-    [indentors, splitSourceDivisionId],
-  );
+  useEffect(() => {
+    if (!splitSourceDivisionId) {
+      setSplitIndentors([]);
+      setSplitIndentorTotal(0);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      fetchIndentors({
+        divisionId: splitSourceDivisionId,
+        q: splitIndentorSearch,
+        page: splitIndentorPage,
+        pageSize: 100,
+      })
+        .then((result) => {
+          setSplitIndentors(result.indentors);
+          setSplitIndentorTotal(result.total);
+        })
+        .catch((error) => {
+          console.error(error);
+          setSplitIndentors([]);
+          setSplitIndentorTotal(0);
+        });
+    }, 200);
+    return () => window.clearTimeout(timeoutId);
+  }, [splitSourceDivisionId, splitIndentorSearch, splitIndentorPage]);
+  const splitIndentorTotalPages = Math.max(1, Math.ceil(splitIndentorTotal / 100));
   const splitTargetOptions = useMemo(
     () => currentDivisions.filter((division) => division.id !== splitSourceDivisionId),
     [currentDivisions, splitSourceDivisionId],
   );
   const splitSelectedIndentorNames = useMemo(
-    () =>
-      splitSourceIndentors
-        .filter((indentor) => splitIndentorIds.includes(indentor.id))
-        .map((indentor) => indentor.name),
-    [splitIndentorIds, splitSourceIndentors],
+    () => splitIndentorIds.map((id) => selectedSplitIndentorNames[id]).filter(Boolean),
+    [selectedSplitIndentorNames, splitIndentorIds],
   );
   const splitSelectedFileCount = useMemo(() => {
     if (!splitSourceDivision || splitSelectedIndentorNames.length === 0) return 0;
@@ -293,6 +314,16 @@ export function YearSetupPanel() {
 
   const toggleSplitIndentor = (indentorId: string, checked: boolean) => {
     setSplitMessage("");
+    const indentor = splitIndentors.find((item) => item.id === indentorId);
+    setSelectedSplitIndentorNames((current) => {
+      const next = { ...current };
+      if (checked && indentor) {
+        next[indentorId] = indentor.name;
+      } else {
+        delete next[indentorId];
+      }
+      return next;
+    });
     setSplitIndentorIds((current) =>
       checked ? [...current, indentorId] : current.filter((id) => id !== indentorId),
     );
@@ -332,9 +363,10 @@ export function YearSetupPanel() {
         effectiveDate: splitEffectiveDate || undefined,
         notes: splitNotes.trim() || undefined,
         deactivateSourceDivision: deactivateSplitSource,
-      });
-      setSplitIndentorIds([]);
-      setSplitTargetId("");
+	      });
+	      setSplitIndentorIds([]);
+	      setSelectedSplitIndentorNames({});
+	      setSplitTargetId("");
       setSplitTargetName("");
       setSplitTargetCode("");
       setSplitCapital("");
@@ -702,12 +734,15 @@ export function YearSetupPanel() {
                 </div>
                 <select
                   value={splitSourceDivisionId}
-                  onChange={(event) => {
-                    setSplitSourceDivisionId(event.target.value);
-                    setSplitIndentorIds([]);
-                    setSplitTargetId("");
-                    setSplitMessage("");
-                  }}
+	                  onChange={(event) => {
+	                    setSplitSourceDivisionId(event.target.value);
+	                    setSplitIndentorIds([]);
+	                    setSelectedSplitIndentorNames({});
+	                    setSplitIndentorPage(1);
+	                    setSplitIndentorSearch("");
+	                    setSplitTargetId("");
+	                    setSplitMessage("");
+	                  }}
                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 >
                   <option value="">Select source division</option>
@@ -719,13 +754,25 @@ export function YearSetupPanel() {
                 </select>
               </label>
 
-              <div>
-                <div className="mb-2 text-xs font-medium text-muted-foreground">
-                  Indentors to transfer
-                </div>
-                <div className="grid max-h-72 gap-2 overflow-auto rounded-md border border-border bg-background p-2">
-                  {splitSourceIndentors.map((indentor) => (
-                    <label
+	              <div>
+	                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	                  <div className="text-xs font-medium text-muted-foreground">
+	                    Indentors to transfer
+	                  </div>
+	                  <input
+	                    value={splitIndentorSearch}
+	                    onChange={(event) => {
+	                      setSplitIndentorSearch(event.target.value);
+	                      setSplitIndentorPage(1);
+	                    }}
+	                    disabled={!splitSourceDivisionId}
+	                    placeholder="Search indentors"
+	                    className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+	                  />
+	                </div>
+	                <div className="grid max-h-72 gap-2 overflow-auto rounded-md border border-border bg-background p-2">
+	                  {splitIndentors.map((indentor) => (
+	                    <label
                       key={indentor.id}
                       className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
                     >
@@ -749,13 +796,45 @@ export function YearSetupPanel() {
                     <div className="px-2 py-3 text-sm text-muted-foreground">
                       Select a source division first.
                     </div>
-                  ) : splitSourceIndentors.length === 0 ? (
-                    <div className="px-2 py-3 text-sm text-muted-foreground">
-                      No indentors found for this division.
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+	                  ) : splitIndentors.length === 0 ? (
+	                    <div className="px-2 py-3 text-sm text-muted-foreground">
+	                      No indentors found for this division.
+	                    </div>
+	                  ) : null}
+	                </div>
+	                {splitSourceDivisionId ? (
+	                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+	                    <span>
+	                      Showing {splitIndentors.length} of {splitIndentorTotal}
+	                    </span>
+	                    <div className="flex items-center gap-2">
+	                      <button
+	                        type="button"
+	                        disabled={splitIndentorPage <= 1}
+	                        onClick={() => setSplitIndentorPage((current) => Math.max(1, current - 1))}
+	                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+	                      >
+	                        Previous
+	                      </button>
+	                      <span>
+	                        Page {splitIndentorPage} of {splitIndentorTotalPages}
+	                      </span>
+	                      <button
+	                        type="button"
+	                        disabled={splitIndentorPage >= splitIndentorTotalPages}
+	                        onClick={() =>
+	                          setSplitIndentorPage((current) =>
+	                            Math.min(splitIndentorTotalPages, current + 1),
+	                          )
+	                        }
+	                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+	                      >
+	                        Next
+	                      </button>
+	                    </div>
+	                  </div>
+	                ) : null}
+	              </div>
             </div>
 
             <div className="space-y-3">

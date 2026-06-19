@@ -160,6 +160,12 @@ export type Indentor = {
   createdAt: string;
   updatedAt: string;
 };
+export type IndentorSearchResult = {
+  indentors: Indentor[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
 export type DivisionMergePayload = {
   financialYear: string;
   sourceDivisionIds: string[];
@@ -215,6 +221,7 @@ export type AppSettings = {
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: TableFieldPreset[];
+  liveStatusLockedFields?: string[];
   activeUserId?: string;
 };
 
@@ -354,9 +361,8 @@ async function loadAll(force = false) {
       const baseRequests = [
         request<{ files: FileRecord[] }>(filesPath(settings.settings.selectedYear)),
         request<{ divisions: Division[] }>(divisionsPath(settings.settings.selectedYear)),
-        request<{ indentors: Indentor[] }>("/api/indentors"),
       ] as const;
-      const [files, divisions, indentors] = await Promise.all(baseRequests);
+      const [files, divisions] = await Promise.all(baseRequests);
       const users =
         auth.user.role === "admin"
           ? await request<{ users: AppUser[] }>("/api/users")
@@ -365,7 +371,7 @@ async function loadAll(force = false) {
       setState({
         files: files.files,
         divisions: divisions.divisions,
-        indentors: indentors.indentors,
+        indentors: [],
         users: users.users,
         authUser: auth.user,
         settings: {
@@ -643,19 +649,17 @@ export const store = {
       await loadAll(true);
     })();
   },
-  addIndentor(
-    indentor: Pick<
-      Indentor,
-      "divisionId" | "name" | "sfId" | "designation" | "mobileNo" | "landlineNo" | "email"
-    >,
-  ) {
-    runMutation(() =>
-      request("/api/indentors", {
-        method: "POST",
-        body: JSON.stringify(indentor),
-      }),
-    );
-  },
+	  addIndentor(
+	    indentor: Pick<
+	      Indentor,
+	      "divisionId" | "name" | "sfId" | "designation" | "mobileNo" | "landlineNo" | "email"
+	    >,
+	  ) {
+	    return request<{ indentor: Indentor }>("/api/indentors", {
+	        method: "POST",
+	        body: JSON.stringify(indentor),
+	      });
+	  },
   updateIndentor(
     id: string,
     patch: Pick<
@@ -663,22 +667,16 @@ export const store = {
       "divisionId" | "name" | "sfId" | "designation" | "mobileNo" | "landlineNo" | "email"
     >,
   ) {
-    setState({
-      indentors: state.indentors.map((indentor) =>
-        indentor.id === id ? { ...indentor, ...patch } : indentor,
-      ),
-    });
-    runMutation(() =>
-      request(`/api/indentors/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      }),
-    );
-  },
-  deleteIndentor(id: string) {
-    setState({ indentors: state.indentors.filter((indentor) => indentor.id !== id) });
-    runMutation(() => request(`/api/indentors/${id}`, { method: "DELETE" }));
-  },
+	    return request<{ indentor: Indentor }>(`/api/indentors/${id}`, {
+	        method: "PATCH",
+	        body: JSON.stringify(patch),
+	      });
+	  },
+	  deleteIndentor(id: string) {
+	    return request<{ deleted: true; indentor: Indentor }>(`/api/indentors/${id}`, {
+	      method: "DELETE",
+	    });
+	  },
   addUser(user: Omit<AppUser, "id"> & { password: string }) {
     runMutation(() =>
       request("/api/users", {
@@ -709,6 +707,25 @@ export const store = {
     return loadAll(true);
   },
 };
+
+export function fetchIndentors({
+  divisionId,
+  q,
+  page = 1,
+  pageSize = 50,
+}: {
+  divisionId?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const params = new URLSearchParams();
+  if (divisionId) params.set("divisionId", divisionId);
+  if (q?.trim()) params.set("q", q.trim());
+  params.set("page", String(page));
+  params.set("pageSize", String(pageSize));
+  return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`);
+}
 
 export function useFiles() {
   const [, setTick] = React.useState(0);

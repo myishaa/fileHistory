@@ -211,9 +211,11 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 10): Cas
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!hasFilledString(order.dpDate) || isYes(order.soCancelled)) return;
+      const deliveryPeriodDate = getDeliveryPeriodDate(order);
+      if (!hasFilledString(deliveryPeriodDate) || isYes(order.soCancelled)) return;
       if (hasFilledString(order.materialReceiptDate)) return;
-      const cashOutgoDate = addDays(order.dpDate, offsetDays);
+      if (hasFilledString(order.paymentDate)) return;
+      const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays);
       if (!cashOutgoDate) return;
 
       addCashOutgoTotal(totals, cashOutgoDate, file, order);
@@ -855,7 +857,7 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 }
 
 function getDeliveryPeriodDate(order: SupplyOrderDetail) {
-  return hasFilledString(order.revisedDp) ? order.revisedDp : order.dpDate;
+  return getLaterDate(order.dpDate, order.revisedDp);
 }
 
 function isDeliveryPeriodValid(file: FileRecord) {
@@ -872,10 +874,11 @@ function isDeliveryPeriodExtended(file: FileRecord) {
 }
 
 function isValidDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
-    !hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.dpDate) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
 }
@@ -891,12 +894,22 @@ function isExpiredDeliveryPeriodOrder(order: SupplyOrderDetail) {
 }
 
 function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {
+  const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
     hasSupplyOrderDate(order) &&
     hasFilledString(order.revisedDp) &&
-    isDateAfterToday(order.revisedDp) &&
+    Boolean(deliveryPeriodDate) &&
+    isDateAfterToday(deliveryPeriodDate) &&
     !hasFilledString(order.materialReceiptDate)
   );
+}
+
+function getLaterDate(first: string | undefined, second: string | undefined) {
+  const firstTime = parseLocalDateTime(first ?? "");
+  const secondTime = parseLocalDateTime(second ?? "");
+  if (firstTime === undefined) return second;
+  if (secondTime === undefined) return first;
+  return secondTime > firstTime ? second : first;
 }
 
 function isFileTenderLive(file: FileRecord) {

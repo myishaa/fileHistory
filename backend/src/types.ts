@@ -57,6 +57,7 @@ export type AppSettings = {
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: unknown[];
+  liveStatusLockedFields?: string[];
   activeUserId?: string;
 };
 

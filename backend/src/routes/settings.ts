@@ -21,11 +21,7 @@ export const settingsRouter = Router();
 
 const themes = new Set<AppTheme>(["light", "dark"]);
 const themeTints = new Set<AppThemeTint>(["plain", "yellow", "green", "blue", "pink", "lavender"]);
-const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>([
-  "capital",
-  "revenue",
-  "both",
-]);
+const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>(["capital", "revenue", "both"]);
 const allActiveFilesYear = "__all_active_files__";
 
 type SettingsRow = {
@@ -122,6 +118,28 @@ async function loadUserTableFieldPresets(ownerKey: string) {
   return result.rows[0]?.presets ?? [];
 }
 
+async function ensureUserLiveStatusPreferencesTable() {
+  await pool.query(
+    `create table if not exists user_live_status_preferences (
+       owner_key text primary key,
+       field_keys jsonb not null default '[]'::jsonb,
+       updated_at timestamptz not null default now()
+     )`,
+  );
+}
+
+async function loadUserLiveStatusFields(ownerKey: string) {
+  await ensureUserLiveStatusPreferencesTable();
+  const result = await pool.query<{ field_keys: unknown }>(
+    "select field_keys from user_live_status_preferences where owner_key = $1",
+    [ownerKey],
+  );
+  if (!result.rows[0]) return undefined;
+  return fromDbJsonArray(result.rows[0].field_keys).filter(
+    (key): key is string => typeof key === "string",
+  );
+}
+
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
   const financialYears = await loadFinancialYears();
   const mergedFinancialYears = Array.from(
@@ -137,6 +155,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     user && user.role !== "admin" && ownerKey
       ? tagPresets(await loadUserTableFieldPresets(ownerKey), "personal", ownerKey)
       : [];
+  const liveStatusLockedFields = ownerKey ? await loadUserLiveStatusFields(ownerKey) : undefined;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
@@ -149,6 +168,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     valueThresholdLevels: await loadValueThresholdLevels(row.selected_year),
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: [...globalPresets, ...personalPresets],
+    ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
 }
@@ -286,6 +306,21 @@ async function replaceUserTableFieldPresets(ownerKey: string, presets: unknown[]
   );
 }
 
+function readStringArray(value: unknown, field: string) {
+  return readArrayValue(value, field).filter((item): item is string => typeof item === "string");
+}
+
+async function replaceUserLiveStatusFields(ownerKey: string, fieldKeys: string[]) {
+  await ensureUserLiveStatusPreferencesTable();
+  await pool.query(
+    `insert into user_live_status_preferences (owner_key, field_keys)
+     values ($1, $2::jsonb)
+     on conflict (owner_key)
+     do update set field_keys = excluded.field_keys, updated_at = now()`,
+    [ownerKey, JSON.stringify(fieldKeys)],
+  );
+}
+
 settingsRouter.get(
   "/",
   asyncHandler(async (request, response) => {
@@ -310,7 +345,13 @@ settingsRouter.patch(
     const user = requireAuth(request as AuthRequest);
     const body = requireObjectBody(request.body);
     const bodyFields = Object.keys(body);
-    const userEditableFields = new Set(["selectedYear", "theme", "themeTint", "tableFieldPresets"]);
+    const userEditableFields = new Set([
+      "selectedYear",
+      "theme",
+      "themeTint",
+      "tableFieldPresets",
+      "liveStatusLockedFields",
+    ]);
     const canUpdateTableFieldPresets =
       !("tableFieldPresets" in body) ||
       user.role === "admin" ||
@@ -387,13 +428,22 @@ settingsRouter.patch(
       if (!ownerKey) throw new HttpError(400, "Preset owner is required.");
       await replaceUserTableFieldPresets(ownerKey, personalPresets);
     }
+    if ("liveStatusLockedFields" in body) {
+      const ownerKey = presetOwnerKey(user);
+      if (!ownerKey) throw new HttpError(400, "Live status owner is required.");
+      await replaceUserLiveStatusFields(
+        ownerKey,
+        readStringArray(body.liveStatusLockedFields, "liveStatusLockedFields"),
+      );
+    }
     if ("activeUserId" in body) addField("active_user_id", toDbText(body.activeUserId));
 
     if (
       !fields.length &&
       !("tcecCommittees" in body) &&
       !("valueThresholdLevels" in body) &&
-      !("tableFieldPresets" in body)
+      !("tableFieldPresets" in body) &&
+      !("liveStatusLockedFields" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }

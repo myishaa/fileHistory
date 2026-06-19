@@ -302,6 +302,10 @@ function supplyOrderChildOrLegacyExpression(childCondition: string, legacyCondit
   return `(${supplyOrderExists(childCondition)} or (not ${supplyOrderRowExists()} and ${legacyCondition}))`;
 }
 
+function effectiveDpDateExpression(alias: string) {
+  return `greatest(coalesce(${alias}.revised_dp, ${alias}.dp_date), coalesce(${alias}.dp_date, ${alias}.revised_dp))`;
+}
+
 function isCancelledExpression() {
   return `(${isYesExpression("f.demand_cancelled")}
     or ${isYesExpression("f.so_cancelled")}
@@ -628,24 +632,24 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
     "Delivery Period",
     "Valid",
     `${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
-      `${hasFilledExpression("so.so_date")} and not ${hasFilledExpression("so.revised_dp")} and so.dp_date > current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
-      `${hasFilledExpression("f.so_date")} and not ${hasFilledExpression("f.revised_dp")} and f.dp_date > current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
+      `${hasFilledExpression("so.so_date")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} > current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
+      `${hasFilledExpression("f.so_date")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} > current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
     )}`,
   );
   addRow(
     "Delivery Period",
     "Expired",
     `not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
-      `${hasFilledExpression("so.so_date")} and coalesce(so.revised_dp, so.dp_date) is not null and coalesce(so.revised_dp, so.dp_date) < current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
-      `${hasFilledExpression("f.so_date")} and coalesce(f.revised_dp, f.dp_date) is not null and coalesce(f.revised_dp, f.dp_date) < current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
+      `${hasFilledExpression("so.so_date")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
+      `${hasFilledExpression("f.so_date")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} < current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
     )}`,
   );
   addRow(
     "Delivery Period",
     "Extended",
     `${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
-      `${hasFilledExpression("so.so_date")} and ${hasFilledExpression("so.revised_dp")} and so.revised_dp > current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
-      `${hasFilledExpression("f.so_date")} and ${hasFilledExpression("f.revised_dp")} and f.revised_dp > current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
+      `${hasFilledExpression("so.so_date")} and ${hasFilledExpression("so.revised_dp")} and ${effectiveDpDateExpression("so")} > current_date and not ${hasFilledExpression("so.material_receipt_date")}`,
+      `${hasFilledExpression("f.so_date")} and ${hasFilledExpression("f.revised_dp")} and ${effectiveDpDateExpression("f")} > current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
     )}`,
   );
   addRow("Delivery", "Completed", `${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
@@ -672,7 +676,7 @@ async function loadCashOutgoRows(
     mode === "actual" ? undefined : addValue(queryValues, expectedCashOutgoDays);
   const dateExpression = (() => {
     if (mode === "expectedDp") {
-      return `(effective.dp_date + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
+      return `(coalesce(effective.revised_dp, effective.dp_date) + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
     }
     if (mode === "expectedReceipt") {
       return `(effective.material_receipt_date + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
@@ -681,7 +685,7 @@ async function loadCashOutgoRows(
   })();
   const extraCondition = (() => {
     if (mode === "expectedDp") {
-      return "effective.dp_date is not null and not effective.so_cancelled_yes and effective.material_receipt_date is null";
+      return "coalesce(effective.revised_dp, effective.dp_date) is not null and not effective.so_cancelled_yes and effective.material_receipt_date is null and effective.payment_date is null";
     }
     if (mode === "expectedReceipt") {
       return "effective.material_receipt_date is not null and effective.payment_date is null";
@@ -700,6 +704,7 @@ async function loadCashOutgoRows(
          f.id as file_id,
          so.so_date,
          so.dp_date,
+         so.revised_dp,
          so.material_receipt_date,
          so.bill_sent_for_payment_date,
          so.payment_date,
@@ -716,6 +721,7 @@ async function loadCashOutgoRows(
          f.id as file_id,
          f.so_date,
          f.dp_date,
+         f.revised_dp,
          f.material_receipt_date,
          f.bill_sent_for_payment_date,
          f.payment_date,

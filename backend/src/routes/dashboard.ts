@@ -621,6 +621,10 @@ function supplyOrderChildOrLegacyExpression(childCondition: string, legacyCondit
   return `(${supplyOrderExists(childCondition)} or (not ${supplyOrderRowExists()} and ${legacyCondition}))`;
 }
 
+function effectiveDpDateExpression(alias: string) {
+  return `greatest(coalesce(${alias}.revised_dp, ${alias}.dp_date), coalesce(${alias}.dp_date, ${alias}.revised_dp))`;
+}
+
 function supplyOrderPlacedExpression() {
   return supplyOrderChildOrLegacyExpression(
     hasFilledExpression("so.so_date"),
@@ -1083,12 +1087,12 @@ async function loadAnalyticsSqlSlice({
   const riskCondition = `((not ${isCancelledExpression()} and ${deliveryDueOrderExpression()})
     or (not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
       `${hasFilledExpression("so.so_date")}
-       and coalesce(so.revised_dp, so.dp_date) is not null
-       and coalesce(so.revised_dp, so.dp_date) < current_date
+       and ${effectiveDpDateExpression("so")} is not null
+       and ${effectiveDpDateExpression("so")} < current_date
        and not ${hasFilledExpression("so.material_receipt_date")}`,
       `${hasFilledExpression("f.so_date")}
-       and coalesce(f.revised_dp, f.dp_date) is not null
-       and coalesce(f.revised_dp, f.dp_date) < current_date
+       and ${effectiveDpDateExpression("f")} is not null
+       and ${effectiveDpDateExpression("f")} < current_date
        and not ${hasFilledExpression("f.material_receipt_date")}`,
     )})
     or ${supplyOrderChildOrLegacyExpression(
@@ -1627,30 +1631,30 @@ async function loadStatusCounts({
          as delivery_due,
        ${countFilter(
          `${supplyOrderPlaced} and ${deliveryDueOrderExpression(
-           "coalesce(so.revised_dp, so.dp_date) < current_date",
+           `${effectiveDpDateExpression("so")} < current_date`,
          )}`,
        )} as delivery_overdue,
        ${countFilter(
          `${supplyOrderPlaced} and ${supplyOrderChildOrLegacyExpression(
            `${hasFilledExpression("so.so_date")}
-            and not ${hasFilledExpression("so.revised_dp")}
-            and so.dp_date > current_date
+            and ${effectiveDpDateExpression("so")} is not null
+            and ${effectiveDpDateExpression("so")} > current_date
             and not ${hasFilledExpression("so.material_receipt_date")}`,
            `${hasFilledExpression("f.so_date")}
-            and not ${hasFilledExpression("f.revised_dp")}
-            and f.dp_date > current_date
+            and ${effectiveDpDateExpression("f")} is not null
+            and ${effectiveDpDateExpression("f")} > current_date
             and not ${hasFilledExpression("f.material_receipt_date")}`,
          )}`,
        )} as delivery_period_valid,
        ${countFilter(
          `not ${cancelled} and ${supplyOrderPlaced} and ${supplyOrderChildOrLegacyExpression(
            `${hasFilledExpression("so.so_date")}
-            and coalesce(so.revised_dp, so.dp_date) is not null
-            and coalesce(so.revised_dp, so.dp_date) < current_date
+            and ${effectiveDpDateExpression("so")} is not null
+            and ${effectiveDpDateExpression("so")} < current_date
             and not ${hasFilledExpression("so.material_receipt_date")}`,
            `${hasFilledExpression("f.so_date")}
-            and coalesce(f.revised_dp, f.dp_date) is not null
-            and coalesce(f.revised_dp, f.dp_date) < current_date
+            and ${effectiveDpDateExpression("f")} is not null
+            and ${effectiveDpDateExpression("f")} < current_date
             and not ${hasFilledExpression("f.material_receipt_date")}`,
          )}`,
        )} as delivery_period_expired,
@@ -1658,11 +1662,11 @@ async function loadStatusCounts({
          `${supplyOrderPlaced} and ${supplyOrderChildOrLegacyExpression(
            `${hasFilledExpression("so.so_date")}
             and ${hasFilledExpression("so.revised_dp")}
-            and so.revised_dp > current_date
+            and ${effectiveDpDateExpression("so")} > current_date
             and not ${hasFilledExpression("so.material_receipt_date")}`,
            `${hasFilledExpression("f.so_date")}
             and ${hasFilledExpression("f.revised_dp")}
-            and f.revised_dp > current_date
+            and ${effectiveDpDateExpression("f")} > current_date
             and not ${hasFilledExpression("f.material_receipt_date")}`,
          )}`,
        )} as delivery_period_extended
