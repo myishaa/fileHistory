@@ -38,6 +38,7 @@ type DivisionTotalValueSortKey =
   | "intendedTotal"
   | "bookedTotal"
   | "committedTotal";
+type DivisionValueMetricKey = "allocated" | "intended" | "booked" | "committed";
 type AnalyticsPanelKey =
   | "divisionFiles"
   | "divisionValue"
@@ -157,10 +158,13 @@ const analyticsResultLimitOptions = [
   { value: "50", label: "Top 50" },
   { value: "all", label: "All" },
 ] satisfies Array<{ value: AnalyticsResultLimitKey; label: string }>;
+const fileClosedMilestone = "File Closed";
 
 function isDivisionFilterableAnalyticsPanel(panelKey: AnalyticsPanelKey) {
   return divisionFilterableAnalyticsPanels.includes(panelKey);
 }
+
+let liveMilestoneSelectionForSession: string[] | undefined;
 
 export function Dashboard() {
   const files = useAccessibleFiles();
@@ -177,6 +181,9 @@ export function Dashboard() {
     useState<DivisionValueSortMode>("value");
   const [divisionValueSortKey, setDivisionValueSortKey] =
     useState<DivisionValueSortKey>("allocatedCapital");
+  const [visibleDivisionValueMetrics, setVisibleDivisionValueMetrics] = useState<
+    DivisionValueMetricKey[]
+  >(["allocated", "intended", "booked", "committed"]);
   const [divisionTotalValueSortMode, setDivisionTotalValueSortMode] =
     useState<DivisionValueSortMode>("value");
   const [divisionTotalValueSortKey, setDivisionTotalValueSortKey] =
@@ -185,12 +192,32 @@ export function Dashboard() {
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
   const [indentorsByValueLimit, setIndentorsByValueLimit] = useState<AnalyticsResultLimitKey>("10");
   const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
-  const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>();
+  const [selectedLiveMilestones, setSelectedLiveMilestonesState] = useState<string[] | undefined>(
+    liveMilestoneSelectionForSession,
+  );
   const [dashboardSummary, setDashboardSummary] = useState<DashboardSummaryPayload | undefined>();
   const [dashboardSummaryLoading, setDashboardSummaryLoading] = useState(false);
   const [hasLoadedDashboardSummary, setHasLoadedDashboardSummary] = useState(false);
   const [dashboardSummaryError, setDashboardSummaryError] = useState<string | undefined>();
   const hasLoadedDashboardSummaryRef = useRef(false);
+  useEffect(() => {
+    const visibleSortKeys = visibleDivisionValueMetrics.flatMap(
+      (metric) => divisionValueMetricSortKeys[metric],
+    );
+    if (!visibleSortKeys.includes(divisionValueSortKey)) {
+      setDivisionValueSortKey(visibleSortKeys[0] ?? "allocatedCapital");
+    }
+  }, [divisionValueSortKey, visibleDivisionValueMetrics]);
+  const setSelectedLiveMilestones = (
+    nextSelection: string[] | ((current: string[] | undefined) => string[]),
+  ) => {
+    setSelectedLiveMilestonesState((current) => {
+      const next =
+        typeof nextSelection === "function" ? nextSelection(current) : nextSelection;
+      liveMilestoneSelectionForSession = next;
+      return next;
+    });
+  };
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
@@ -204,6 +231,10 @@ export function Dashboard() {
     () =>
       activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
     [activeDivision, files],
+  );
+  const activeDashboardStatusFiles = useMemo(
+    () => dashboardFiles.filter((file) => !isFileClosed(file)),
+    [dashboardFiles],
   );
   const dashboardDivisions = useMemo(
     () =>
@@ -232,7 +263,7 @@ export function Dashboard() {
     params.set("division", activeDivision);
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
-    if (selectedLiveMilestones?.length) {
+    if (selectedLiveMilestones) {
       params.set("liveMilestones", selectedLiveMilestones.join(","));
     }
     return params.toString();
@@ -272,7 +303,10 @@ export function Dashboard() {
   const needsLocalDashboardFallback = !dashboardSummary;
   const localModeCounts = needsLocalDashboardFallback ? getModeCounts(dashboardFiles) : undefined;
   const localManualMilestoneFlow = needsLocalDashboardFallback
-    ? getManualMilestoneFlow(dashboardFiles, getConfiguredMilestones(settings.milestones))
+    ? getManualMilestoneFlow(
+        activeDashboardStatusFiles,
+        getConfiguredMilestones(settings.milestones),
+      )
     : undefined;
   const localVisibleLiveMilestoneNames =
     needsLocalDashboardFallback && localManualMilestoneFlow
@@ -283,12 +317,14 @@ export function Dashboard() {
   const localLiveStatusRows =
     needsLocalDashboardFallback && localVisibleLiveMilestoneNames
       ? getLiveStatusDivisionRows(
-          dashboardFiles,
+          activeDashboardStatusFiles,
           dashboardDivisions,
           localVisibleLiveMilestoneNames,
         )
       : undefined;
-  const localStatusFlow = needsLocalDashboardFallback ? getMilestoneFlow(dashboardFiles) : undefined;
+  const localStatusFlow = needsLocalDashboardFallback
+    ? getMilestoneFlow(activeDashboardStatusFiles)
+    : undefined;
   const localMiscellaneousCounts = needsLocalDashboardFallback
     ? getMiscellaneousCounts(dashboardFiles)
     : undefined;
@@ -371,11 +407,16 @@ export function Dashboard() {
     (needsLocalDashboardFallback ? getAttributeSummaryStats(dashboardFiles) : []);
   const manualMilestoneFlow = dashboardSummary?.manualMilestoneFlow ?? localManualMilestoneFlow;
   const visibleLiveMilestoneNames =
-    dashboardSummary?.visibleLiveMilestoneNames ?? localVisibleLiveMilestoneNames ?? [];
+    selectedLiveMilestones && manualMilestoneFlow
+      ? selectedLiveMilestones.filter((name) =>
+          manualMilestoneFlow.some((milestone) => milestone.name === name),
+        )
+      : (dashboardSummary?.visibleLiveMilestoneNames ?? localVisibleLiveMilestoneNames ?? []);
   const liveStatusRows = dashboardSummary?.liveStatusRows ?? localLiveStatusRows ?? [];
   const statusFlow = dashboardSummary?.statusFlow ?? localStatusFlow ?? [];
   const miscellaneousCounts = dashboardSummary?.miscellaneousCounts ??
     localMiscellaneousCounts ?? {
+      fileClosed: 0,
       ld: 0,
       demandCancelled: 0,
       soCancelled: 0,
@@ -548,7 +589,7 @@ export function Dashboard() {
       key: "divisionValue",
       title: "Division ranking by value",
       subtitle: "",
-      columns: getDivisionValueAnalyticsColumns(),
+      columns: getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics),
       rows: analytics.divisionValueRanking,
     },
     {
@@ -725,6 +766,14 @@ export function Dashboard() {
         analyticsType: analyticsTransferType,
         analyticsNames: JSON.stringify(displayedAnalyticsPanel.rows.map((row) => String(row.name))),
       },
+    });
+  };
+  const toggleDivisionValueMetric = (metric: DivisionValueMetricKey) => {
+    setVisibleDivisionValueMetrics((current) => {
+      if (current.includes(metric)) {
+        return current.length === 1 ? current : current.filter((item) => item !== metric);
+      }
+      return [...current, metric];
     });
   };
   const handleStatusFilter = (dashboardFilter: string) => {
@@ -975,6 +1024,11 @@ export function Dashboard() {
                 isLast
                 items={[
                   {
+                    label: "File closed",
+                    count: miscellaneousCounts.fileClosed,
+                    onClick: () => handleStatusFilter("miscFileClosed"),
+                  },
+                  {
                     label: "LD",
                     count: miscellaneousCounts.ld,
                     onClick: () => handleStatusFilter("miscLd"),
@@ -1129,8 +1183,10 @@ export function Dashboard() {
                   <DivisionValueSortControls
                     mode={divisionValueSortMode}
                     sortKey={divisionValueSortKey}
+                    visibleMetrics={visibleDivisionValueMetrics}
                     onModeChange={setDivisionValueSortMode}
                     onSortKeyChange={setDivisionValueSortKey}
+                    onToggleMetric={toggleDivisionValueMetric}
                   />
                 ) : null}
                 {displayedAnalyticsPanel.key === "divisionTotalValue" ? (
@@ -1790,6 +1846,20 @@ const divisionValueSortOptions = [
   { key: "committedRevenue", label: "Committed R" },
 ] satisfies Array<{ key: DivisionValueSortKey; label: string }>;
 
+const divisionValueMetricOptions = [
+  { key: "allocated", label: "Allocated" },
+  { key: "intended", label: "Intended" },
+  { key: "booked", label: "Booked" },
+  { key: "committed", label: "Committed" },
+] satisfies Array<{ key: DivisionValueMetricKey; label: string }>;
+
+const divisionValueMetricSortKeys = {
+  allocated: ["allocatedCapital", "allocatedRevenue"],
+  intended: ["intendedCapital", "intendedRevenue"],
+  booked: ["bookedCapital", "bookedRevenue"],
+  committed: ["committedCapital", "committedRevenue"],
+} satisfies Record<DivisionValueMetricKey, DivisionValueSortKey[]>;
+
 const divisionValueSortExportLabels = {
   allocatedCapital: "Allocated Capital",
   allocatedRevenue: "Allocated Revenue",
@@ -1811,60 +1881,96 @@ const divisionTotalValueSortOptions = [
 function DivisionValueSortControls({
   mode,
   sortKey,
+  visibleMetrics,
   onModeChange,
   onSortKeyChange,
+  onToggleMetric,
 }: {
   mode: DivisionValueSortMode;
   sortKey: DivisionValueSortKey;
+  visibleMetrics: DivisionValueMetricKey[];
   onModeChange: (mode: DivisionValueSortMode) => void;
   onSortKeyChange: (key: DivisionValueSortKey) => void;
+  onToggleMetric: (key: DivisionValueMetricKey) => void;
 }) {
+  const visibleSortKeys = new Set(
+    visibleMetrics.flatMap((metric) => divisionValueMetricSortKeys[metric]),
+  );
+  const sortOptions = divisionValueSortOptions.filter((option) => visibleSortKeys.has(option.key));
+
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-secondary/25 px-2.5 py-2 text-xs">
-      <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-        {[
-          { key: "value", label: "Value" },
-          { key: "percent", label: "%" },
-        ].map((item) => (
-          <label
-            key={item.key}
-            className={
-              "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
-              (mode === item.key
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            <input
-              type="checkbox"
-              checked={mode === item.key}
-              onChange={() => onModeChange(item.key as DivisionValueSortMode)}
-              className="size-3 accent-current"
-            />
-            {item.label}
-          </label>
-        ))}
+    <div className="mb-3 space-y-2 rounded-md border border-border bg-secondary/25 px-2.5 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Fields to display</span>
+        <div className="flex flex-wrap items-center gap-1">
+          {divisionValueMetricOptions.map((option) => (
+            <label
+              key={option.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
+                (visibleMetrics.includes(option.key)
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={visibleMetrics.includes(option.key)}
+                onChange={() => onToggleMetric(option.key)}
+                className="size-3 accent-primary"
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1">
-        {divisionValueSortOptions.map((option) => (
-          <label
-            key={option.key}
-            className={
-              "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
-              (sortKey === option.key
-                ? "border-primary bg-primary/10 text-foreground"
-                : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            <input
-              type="checkbox"
-              checked={sortKey === option.key}
-              onChange={() => onSortKeyChange(option.key)}
-              className="size-3 accent-primary"
-            />
-            {option.label}
-          </label>
-        ))}
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Sort according to</span>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+          {[
+            { key: "value", label: "Value" },
+            { key: "percent", label: "%" },
+          ].map((item) => (
+            <label
+              key={item.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
+                (mode === item.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={mode === item.key}
+                onChange={() => onModeChange(item.key as DivisionValueSortMode)}
+                className="size-3 accent-current"
+              />
+              {item.label}
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          {sortOptions.map((option) => (
+            <label
+              key={option.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
+                (sortKey === option.key
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={sortKey === option.key}
+                onChange={() => onSortKeyChange(option.key)}
+                className="size-3 accent-primary"
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1992,7 +2098,9 @@ function getFileValueThresholdColumns(): AnalyticsTableColumn[] {
   ];
 }
 
-function getDivisionValueAnalyticsColumns(): AnalyticsTableColumn[] {
+function getDivisionValueAnalyticsColumns(
+  visibleMetrics: DivisionValueMetricKey[],
+): AnalyticsTableColumn[] {
   const currencyColumn = (
     key: string,
     group: string,
@@ -2012,17 +2120,32 @@ function getDivisionValueAnalyticsColumns(): AnalyticsTableColumn[] {
         ? renderLakhsValueWithPercent(Number(value), Number(row[allocationKey]))
         : formatLakhsValue(Number(value)),
   });
-  return [
-    { key: "name", label: "Division", align: "left" },
-    currencyColumn("allocatedCapital", "Allocated (Lakhs)", "Capital", "allocatedCapital", false),
-    currencyColumn("allocatedRevenue", "Allocated (Lakhs)", "Revenue", "allocatedRevenue", false),
-    currencyColumn("intendedCapital", "Intended (Lakhs)", "Capital", "allocatedCapital"),
-    currencyColumn("intendedRevenue", "Intended (Lakhs)", "Revenue", "allocatedRevenue"),
-    currencyColumn("bookedCapital", "Booked (Lakhs)", "Capital", "allocatedCapital"),
-    currencyColumn("bookedRevenue", "Booked (Lakhs)", "Revenue", "allocatedRevenue"),
-    currencyColumn("committedCapital", "Committed (Lakhs)", "Capital", "allocatedCapital"),
-    currencyColumn("committedRevenue", "Committed (Lakhs)", "Revenue", "allocatedRevenue"),
-  ];
+  const columns: AnalyticsTableColumn[] = [{ key: "name", label: "Division", align: "left" }];
+  if (visibleMetrics.includes("allocated")) {
+    columns.push(
+      currencyColumn("allocatedCapital", "Allocated (Lakhs)", "Capital", "allocatedCapital", false),
+      currencyColumn("allocatedRevenue", "Allocated (Lakhs)", "Revenue", "allocatedRevenue", false),
+    );
+  }
+  if (visibleMetrics.includes("intended")) {
+    columns.push(
+      currencyColumn("intendedCapital", "Intended (Lakhs)", "Capital", "allocatedCapital"),
+      currencyColumn("intendedRevenue", "Intended (Lakhs)", "Revenue", "allocatedRevenue"),
+    );
+  }
+  if (visibleMetrics.includes("booked")) {
+    columns.push(
+      currencyColumn("bookedCapital", "Booked (Lakhs)", "Capital", "allocatedCapital"),
+      currencyColumn("bookedRevenue", "Booked (Lakhs)", "Revenue", "allocatedRevenue"),
+    );
+  }
+  if (visibleMetrics.includes("committed")) {
+    columns.push(
+      currencyColumn("committedCapital", "Committed (Lakhs)", "Capital", "allocatedCapital"),
+      currencyColumn("committedRevenue", "Committed (Lakhs)", "Revenue", "allocatedRevenue"),
+    );
+  }
+  return columns;
 }
 
 function getDivisionTotalValueAnalyticsColumns(): AnalyticsTableColumn[] {
@@ -2972,6 +3095,7 @@ function getAttributeSummaryStats(files: ReturnType<typeof useAccessibleFiles>):
 
 function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
   return {
+    fileClosed: files.filter(isFileClosed).length,
     ld: files.filter((file) => fileSupplyOrders(file).some((order) => isYes(order.ld))).length,
     demandCancelled: files.filter((file) =>
       fileSupplyOrders(file).some((order) => isYes(order.demandCancelled)),
@@ -2981,6 +3105,14 @@ function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
     ).length,
     multipleSupplyOrders: files.filter((file) => fileSupplyOrders(file).length > 1).length,
   };
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
+  );
 }
 
 function getAnalyticsSummary(
@@ -3615,18 +3747,30 @@ const defaultManualMilestones = [
   "Bank Guarantee",
   "Delivery",
   "Payment",
+  fileClosedMilestone,
 ];
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
-  return values.length ? values : defaultManualMilestones;
+  const configured = values.length ? values : defaultManualMilestones;
+  return appendFileClosedMilestone(configured);
+}
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
 }
 
 function getManualMilestoneFlow(
   files: ReturnType<typeof useAccessibleFiles>,
   milestones: string[],
 ) {
-  const configured = milestones.map((name) => name.trim()).filter(Boolean);
+  const configured = milestones
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .filter((name) => normalizeMilestoneName(name) !== normalizeMilestoneName(fileClosedMilestone));
   const extras = files
     .map((file) => file.currentMilestone?.trim())
     .filter((name): name is string => Boolean(name))
@@ -4060,6 +4204,7 @@ const dashboardFilterTitles: Record<string, string> = {
   liveBids: "Bidding - Live",
   bidOverdue: "Bidding - Opening overdue",
   liveSupplyOrders: "Supply Order - Live",
+  miscFileClosed: "Miscellaneous - File closed",
   miscLd: "Miscellaneous - LD",
   miscDemandCancelled: "Miscellaneous - Demand cancelled",
   miscSoCancelled: "Miscellaneous - S.O. cancelled",
@@ -4149,6 +4294,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled") {
     return fileSupplyOrders(file).some((order) => isYes(order.demandCancelled));
@@ -4271,6 +4417,7 @@ function getStatusPageExportRows(
   });
 
   rows.push(
+    { section: "Miscellaneous", metric: "File closed", count: miscellaneousCounts.fileClosed },
     { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
     {
       section: "Miscellaneous",

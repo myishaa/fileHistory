@@ -135,7 +135,9 @@ const defaultMilestones = [
   "Bank Guarantee",
   "Delivery",
   "Payment",
+  "File Closed",
 ];
+const fileClosedMilestone = "File Closed";
 
 type FormState = typeof empty;
 type FieldKey = keyof FormState;
@@ -447,11 +449,13 @@ type TimelineItem = {
 
 function AddFilePage() {
   const activeUser = useActiveUser();
+  const { fileId } = Route.useSearch();
   const canEditFiles =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor";
-  if (!canEditFiles) {
+  const canViewExistingFile = activeUser?.role === "viewer" && Boolean(fileId);
+  if (!canEditFiles && !canViewExistingFile) {
     return (
       <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">File editing unavailable</h1>
@@ -460,10 +464,10 @@ function AddFilePage() {
     );
   }
 
-  return <AddFileEditor />;
+  return <AddFileEditor readOnlyMode={!canEditFiles} />;
 }
 
-function AddFileEditor() {
+function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const allDivisions = useDivisions();
   const divisions = useAccessibleDivisions();
   const files = useAccessibleFiles();
@@ -670,6 +674,7 @@ function AddFileEditor() {
   }, [activeSection, divisions, editingFile, formWithLockedYear, quickFocus, unlockedSections]);
 
   const update = (k: keyof typeof form, v: string) => {
+    if (readOnlyMode) return;
     if (k === "year") return;
     if (k === "noOfSo") {
       const count = clampSupplyOrderCount(v);
@@ -733,6 +738,7 @@ function AddFileEditor() {
     });
   };
   const updateSupplyOrder = (index: number, key: SupplyOrderKey, value: string) => {
+    if (readOnlyMode) return;
     setSupplyOrders((current) =>
       current.map((order, orderIndex) =>
         orderIndex === index
@@ -742,6 +748,7 @@ function AddFileEditor() {
     );
   };
   const toggleSectionLock = (sectionTitle: string) => {
+    if (readOnlyMode) return;
     setUnlockedSections((current) => {
       const next = new Set(current);
       if (next.has(sectionTitle)) {
@@ -758,6 +765,7 @@ function AddFileEditor() {
     key: keyof FirmDetail,
     value: string,
   ) => {
+    if (readOnlyMode) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: current[group].map((row, rowIndex) =>
@@ -766,18 +774,21 @@ function AddFileEditor() {
     }));
   };
   const addFirmDetail = (group: keyof FirmDetailsState) => {
+    if (readOnlyMode) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: [...current[group], { ...emptyFirmDetail }],
     }));
   };
   const deleteFirmDetail = (group: keyof FirmDetailsState, index: number) => {
+    if (readOnlyMode) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: current[group].filter((_, rowIndex) => rowIndex !== index),
     }));
   };
   const deleteSelectedFirmDetails = (group: keyof FirmDetailsState, indexes: number[]) => {
+    if (readOnlyMode) return;
     const selected = new Set(indexes);
     setFirmDetails((current) => ({
       ...current,
@@ -785,6 +796,7 @@ function AddFileEditor() {
     }));
   };
   const addRemark = (sectionTitle: string) => {
+    if (readOnlyMode) return;
     setFileRemarks((current) => [
       ...current,
       {
@@ -796,23 +808,26 @@ function AddFileEditor() {
     ]);
   };
   const updateRemark = (remarkId: string, text: string) => {
+    if (readOnlyMode) return;
     setFileRemarks((current) =>
       current.map((remark) => (remark.id === remarkId ? { ...remark, text } : remark)),
     );
   };
   const updateRemarkDate = (remarkId: string, date: string) => {
+    if (readOnlyMode) return;
     setFileRemarks((current) =>
       current.map((remark) => (remark.id === remarkId ? { ...remark, createdAt: date } : remark)),
     );
   };
   const deleteRemark = (remarkId: string) => {
+    if (readOnlyMode) return;
     setFileRemarks((current) => current.filter((remark) => remark.id !== remarkId));
   };
   const firmDetailsLocked = isEditing && !unlockedSections.has("Firm details");
   const supplyOrdersLocked = isEditing && !unlockedSections.has("Supply order and payment");
   const milestonesLocked = isEditing && !unlockedSections.has("Milestones");
   const renderSectionUnlockButton = (sectionTitle: string) => {
-    if (!isEditing) return null;
+    if (!isEditing || readOnlyMode) return null;
 
     return (
       <span className="flex flex-col items-end gap-1">
@@ -867,6 +882,7 @@ function AddFileEditor() {
                   }
                 : field;
         const lockFilledFields = isEditing && !unlockedSections.has(section.title);
+        const fieldReadOnly = readOnlyMode;
 
         if (field.key === "valueCapital") {
           return (
@@ -880,7 +896,7 @@ function AddFileEditor() {
                 settings.valueThresholdLevels,
                 formWithLockedYear,
               )}
-              disabled={false}
+              disabled={fieldReadOnly}
               lockFilledFields={lockFilledFields}
               lockedSelectionFilled={
                 hasFileValueForLock(savedFormForLocks, "valueCapital") ||
@@ -891,6 +907,7 @@ function AddFileEditor() {
                 hasFileValueForLock(savedFormForLocks, "valueRevenue")
               }
               onChange={(patch) => {
+                if (readOnlyMode) return;
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
                 setSupplyOrders((current) =>
                   current.map((order) => ({
@@ -914,15 +931,16 @@ function AddFileEditor() {
               revenueSelected={formWithLockedYear.valueRevenueSelected === "Yes"}
               capitalValue={formWithLockedYear.soValueCapital}
               revenueValue={formWithLockedYear.soValueRevenue}
-              disabled={false}
+              disabled={fieldReadOnly}
               lockFilledFields={lockFilledFields}
               lockedValueFilled={
                 hasFileValueForLock(savedFormForLocks, "soValueCapital") ||
                 hasFileValueForLock(savedFormForLocks, "soValueRevenue")
               }
-              onChange={(patch) =>
-                setForm((current) => applyConditionalRules({ ...current, ...patch }))
-              }
+              onChange={(patch) => {
+                if (readOnlyMode) return;
+                setForm((current) => applyConditionalRules({ ...current, ...patch }));
+              }}
             />
           );
         }
@@ -932,7 +950,10 @@ function AddFileEditor() {
             <FileTypeField
               key={field.key}
               value={formWithLockedYear.fileType}
-              disabled={lockFilledFields && hasFileValueForLock(savedFormForLocks, "fileType")}
+              disabled={
+                fieldReadOnly ||
+                (lockFilledFields && hasFileValueForLock(savedFormForLocks, "fileType"))
+              }
               onChange={(value) => update("fileType", value)}
               inputRef={(element) => {
                 quickFieldRefs.current[field.key] = element;
@@ -950,6 +971,7 @@ function AddFileEditor() {
               field.key === "year" ||
               field.key === "uniqueCode" ||
               field.key === "tenderLive" ||
+              fieldReadOnly ||
               (lockFilledFields && hasFileValueForLock(savedFormForLocks, field.key)) ||
               (field.key === "adVettingDate" && adVettingDisabled) ||
               (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
@@ -972,6 +994,7 @@ function AddFileEditor() {
   );
 
   const save = (options?: { returnToQuickEntry?: boolean }) => {
+    if (readOnlyMode) return;
     const supplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
     const cleanedSupplyOrders = cleanSupplyOrderRows(
       resizeSupplyOrders(supplyOrders, supplyOrderCount),
@@ -1046,6 +1069,7 @@ function AddFileEditor() {
   };
 
   const handleQuickEntrySaveKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (readOnlyMode) return;
     if (!quickFocus || !isEditing || event.key !== "Enter" || event.metaKey || event.ctrlKey) {
       return;
     }
@@ -1071,6 +1095,7 @@ function AddFileEditor() {
   };
 
   const deleteFile = () => {
+    if (readOnlyMode) return;
     if (!editingFile) return;
     const label =
       editingFile.uniqueCode || editingFile.imms || editingFile.demandDescription || "this file";
@@ -1110,12 +1135,14 @@ function AddFileEditor() {
       <div className="bg-card border border-border rounded-md shadow-[var(--shadow-card)] overflow-hidden">
         <div className="p-5 border-b border-border bg-secondary/30">
           <h2 className="text-base font-semibold">
-            {isEditing ? "Edit file details" : "Add a new file"}
+            {readOnlyMode ? "View file details" : isEditing ? "Edit file details" : "Add a new file"}
           </h2>
           <p className="text-xs text-muted-foreground mt-1">
-            {isEditing
-              ? "Update the filled and unfilled details for this file."
-              : "All fields are optional — save now and complete missing details later."}
+            {readOnlyMode
+              ? "Viewer access is read-only. You can inspect milestones, dates, and file details."
+              : isEditing
+                ? "Update the filled and unfilled details for this file."
+                : "All fields are optional — save now and complete missing details later."}
           </p>
         </div>
 
@@ -1145,7 +1172,7 @@ function AddFileEditor() {
               )}
               lockedCurrentMilestone={editingFile?.currentMilestone ?? ""}
               lockedCompletedMilestones={savedCompletedMilestonesForLocks}
-              disabled={false}
+              disabled={readOnlyMode}
               lockFilledFields={milestonesLocked}
               lockControl={renderSectionUnlockButton("Milestones")}
               onCurrentChange={setCurrentMilestone}
@@ -1168,7 +1195,7 @@ function AddFileEditor() {
                 <FirmDetailsBlock
                   details={firmDetails}
                   lockedDetails={savedFirmDetailsForLocks}
-                  disabled={false}
+                  disabled={readOnlyMode}
                   lockFilledFields={firmDetailsLocked}
                   quickFocus={Boolean(quickFocus && activeSection.title === "Firm details")}
                   onAdd={addFirmDetail}
@@ -1182,7 +1209,7 @@ function AddFileEditor() {
                   lockedForm={savedFormForLocks}
                   orders={supplyOrders}
                   lockedOrders={savedSupplyOrdersForLocks}
-                  disabled={false}
+                  disabled={readOnlyMode}
                   lockFilledFields={supplyOrdersLocked}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
@@ -1203,7 +1230,7 @@ function AddFileEditor() {
                       years={activeYearOptions}
                       selectedYears={activeYears}
                       originYear={formWithLockedYear.year}
-                      locked={settings.yearSelectionLocked}
+                      locked={settings.yearSelectionLocked || readOnlyMode}
                       onChange={setActiveYears}
                     />
                   ) : null}
@@ -1217,6 +1244,7 @@ function AddFileEditor() {
                 onChange={updateRemark}
                 onDateChange={updateRemarkDate}
                 onDelete={deleteRemark}
+                disabled={readOnlyMode}
               />
             </section>
           )}
@@ -1224,7 +1252,7 @@ function AddFileEditor() {
 
         <div className="px-5 py-4 border-t border-border bg-secondary/40 flex flex-wrap items-center justify-between gap-2">
           <div>
-            {isEditing && (
+            {isEditing && !readOnlyMode && (
               <button
                 type="button"
                 onClick={deleteFile}
@@ -1235,7 +1263,7 @@ function AddFileEditor() {
             )}
           </div>
           <div className="flex items-center justify-end gap-2">
-            {!isEditing && (
+            {!isEditing && !readOnlyMode && (
               <button
                 type="button"
                 onClick={() => {
@@ -1250,17 +1278,19 @@ function AddFileEditor() {
                 <Eraser className="size-4" /> Clear
               </button>
             )}
-            <button
-              type="button"
-              onClick={() =>
-                save({
-                  returnToQuickEntry: Boolean(quickFocus),
-                })
-              }
-              className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
-            >
-              <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
-            </button>
+            {!readOnlyMode ? (
+              <button
+                type="button"
+                onClick={() =>
+                  save({
+                    returnToQuickEntry: Boolean(quickFocus),
+                  })
+                }
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+              >
+                <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -1313,6 +1343,7 @@ function SectionRemarks({
   onChange,
   onDateChange,
   onDelete,
+  disabled = false,
 }: {
   sectionTitle: string;
   remarks: FileRemark[];
@@ -1320,6 +1351,7 @@ function SectionRemarks({
   onChange: (remarkId: string, text: string) => void;
   onDateChange: (remarkId: string, date: string) => void;
   onDelete: (remarkId: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="mt-5 border-t border-border pt-4">
@@ -1327,13 +1359,15 @@ function SectionRemarks({
         <div className="text-xs font-medium text-muted-foreground">
           {remarks.length ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"}` : ""}
         </div>
-        <button
-          type="button"
-          onClick={onAdd}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
-        >
-          <Plus className="size-3.5" /> Add remark
-        </button>
+        {!disabled ? (
+          <button
+            type="button"
+            onClick={onAdd}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
+          >
+            <Plus className="size-3.5" /> Add remark
+          </button>
+        ) : null}
       </div>
 
       {remarks.length ? (
@@ -1347,24 +1381,31 @@ function SectionRemarks({
                     type="date"
                     value={getRemarkDateInputValue(remark.createdAt)}
                     onChange={(event) => onDateChange(remark.id, event.target.value)}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                    disabled={disabled}
+                    className={
+                      "h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40" +
+                      disabledCls(disabled)
+                    }
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => onDelete(remark.id)}
-                  aria-label={`Delete remark from ${sectionTitle}`}
-                  title="Delete remark"
-                  className="inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
+                {!disabled ? (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(remark.id)}
+                    aria-label={`Delete remark from ${sectionTitle}`}
+                    title="Delete remark"
+                    className="inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                ) : null}
               </div>
               <textarea
                 value={remark.text}
                 onChange={(event) => onChange(remark.id, event.target.value)}
                 placeholder="Type remark"
-                className={textareaCls}
+                disabled={disabled}
+                className={textareaCls + disabledCls(disabled)}
               />
             </div>
           ))}
@@ -2138,7 +2179,9 @@ function MilestonesBlock({
             const isCompleted = completedSet.has(milestone);
             const isAutoCompleted = autoCompletedSet.has(milestone);
             const isCurrent = currentMilestone === milestone;
+            const isFileClosed = normalizeMilestoneName(milestone) === "fileclosed";
             const currentDisabled =
+              isFileClosed ||
               disabled ||
               isCompleted ||
               (lockFilledFields && hasFilledValue(lockedCurrentMilestone));
@@ -2155,14 +2198,18 @@ function MilestonesBlock({
               >
                 <div className="min-w-0 truncate">{milestone}</div>
                 <div className="flex justify-center">
-                  <input
-                    type="checkbox"
-                    checked={isCurrent}
-                    disabled={currentDisabled}
-                    onChange={() => toggleCurrent(milestone)}
-                    className="size-4 accent-primary disabled:cursor-not-allowed"
-                    aria-label={`Mark ${milestone} as current`}
-                  />
+                  {isFileClosed ? (
+                    <span className="text-xs text-muted-foreground">-</span>
+                  ) : (
+                    <input
+                      type="checkbox"
+                      checked={isCurrent}
+                      disabled={currentDisabled}
+                      onChange={() => toggleCurrent(milestone)}
+                      className="size-4 accent-primary disabled:cursor-not-allowed"
+                      aria-label={`Mark ${milestone} as current`}
+                    />
+                  )}
                 </div>
                 <div className="flex justify-center">
                   <input
@@ -2672,7 +2719,15 @@ function getTcecCommitteeOptions(committees: string[] | undefined, currentValue:
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
-  return values.length ? values : defaultMilestones;
+  const configured = values.length ? values : defaultMilestones;
+  return appendFileClosedMilestone(configured);
+}
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
 }
 
 function getApplicableMilestones(

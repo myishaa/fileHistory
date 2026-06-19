@@ -6,6 +6,10 @@ export type FileSearchParams = {
   divisionFilter?: string;
   valueFrom?: string;
   valueTo?: string;
+  soValueFrom?: string;
+  soValueTo?: string;
+  soCapitalOnly?: boolean;
+  soRevenueOnly?: boolean;
   capitalOnly?: boolean;
   revenueOnly?: boolean;
   description?: string;
@@ -49,6 +53,7 @@ type FileKey = Exclude<
   | "completedMilestones"
 >;
 type SupplyOrderKey = keyof SupplyOrderDetail;
+const fileClosedMilestone = "File Closed";
 
 const sortCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -241,6 +246,8 @@ const milestoneDefinitions = [
 export function searchFiles(files: FileRecord[], params: FileSearchParams) {
   const minValue = parseAmount(params.valueFrom);
   const maxValue = parseAmount(params.valueTo);
+  const minSoValue = parseAmount(params.soValueFrom);
+  const maxSoValue = parseAmount(params.soValueTo);
   const selectedModes = params.selectedModes ?? [];
   const selectedFileTypes = params.selectedFileTypes ?? [];
   const analyticsNameSet = new Set((params.analyticsNames ?? []).map(normalizeAnalyticsName));
@@ -326,6 +333,17 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     if (!matchesValueType(file, Boolean(params.capitalOnly), Boolean(params.revenueOnly)))
       return false;
     if (!matchesValueRange(file, minValue, maxValue)) return false;
+    if (
+      !matchesSoValueRange(
+        file,
+        minSoValue,
+        maxSoValue,
+        Boolean(params.soCapitalOnly),
+        Boolean(params.soRevenueOnly),
+      )
+    ) {
+      return false;
+    }
     if (
       !fileSupplyOrders(file).some((order) =>
         matchesDateRange(order.dpDate, params.dpFrom ?? "", params.dpTo ?? ""),
@@ -507,6 +525,29 @@ function matchesValueRange(
     getInrAmount(file.valueCapital, file),
     getInrAmount(file.valueRevenue, file),
   ].filter((amount): amount is number => amount !== undefined);
+  if (amounts.length === 0) return false;
+  const total = amounts.reduce((sum, amount) => sum + amount, 0);
+  if (minValue !== undefined && total < minValue) return false;
+  if (maxValue !== undefined && total > maxValue) return false;
+  return true;
+}
+
+function matchesSoValueRange(
+  file: FileRecord,
+  minValue: number | undefined,
+  maxValue: number | undefined,
+  capitalOnly: boolean,
+  revenueOnly: boolean,
+) {
+  if (minValue === undefined && maxValue === undefined && !capitalOnly && !revenueOnly) return true;
+  const includeCapital = !revenueOnly || capitalOnly;
+  const includeRevenue = !capitalOnly || revenueOnly;
+  const amounts = fileSupplyOrders(file).flatMap((order) =>
+    [
+      includeCapital ? parseAmount(order.soValueCapital) : undefined,
+      includeRevenue ? parseAmount(order.soValueRevenue) : undefined,
+    ].filter((amount): amount is number => amount !== undefined),
+  );
   if (amounts.length === 0) return false;
   const total = amounts.reduce((sum, amount) => sum + amount, 0);
   if (minValue !== undefined && total < minValue) return false;
@@ -932,7 +973,7 @@ function isManualActiveMilestone(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  if (isCancelledFile(file)) return false;
+  if (isCancelledFile(file) || isFileClosed(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneLabelAliases(milestone.key).some(
     (label) => current === normalizeMilestoneName(label),
@@ -972,6 +1013,14 @@ function normalizeMilestoneName(value: string | undefined) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
+  );
 }
 
 function hasMilestoneDate(file: FileRecord, key: FileKey | SupplyOrderKey) {
@@ -1031,6 +1080,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled")
     return fileSupplyOrders(file).some((order) => isYes(order.demandCancelled));

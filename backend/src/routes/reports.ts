@@ -46,7 +46,8 @@ type ReportsSummaryPayload = {
   activeDivision: string;
   reportFileCount: number;
   statusSummaryGroups: StatusSummaryTableGroup[];
-  expectedCashOutgoRows: CashOutgoRow[];
+  expectedCashOutgoDpRows: CashOutgoRow[];
+  expectedCashOutgoReceiptRows: CashOutgoRow[];
   actualCashOutgoRows: CashOutgoRow[];
   delayRows: DelayStatusRow[];
   delaySummary: {
@@ -167,6 +168,7 @@ function readString(value: unknown) {
 }
 
 const allActiveFilesYear = "__all_active_files__";
+const fileClosedMilestone = "File Closed";
 
 function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, year: string) {
   return file.year === year || file.activeYears?.includes(year);
@@ -325,6 +327,16 @@ function normalizeMilestoneName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+function fileClosedExpression() {
+  return `exists (
+    select 1 from file_completed_milestones completed_closed
+    where completed_closed.file_id = f.id
+      and ${normalizeMilestoneExpression("completed_closed.milestone")} = '${normalizeMilestoneName(
+        fileClosedMilestone,
+      )}'
+  )`;
+}
+
 function reportAppliesExpression(milestone: (typeof reportMilestoneDefinitions)[number]) {
   return "appliesColumn" in milestone && milestone.appliesColumn
     ? isYesExpression(milestone.appliesColumn)
@@ -355,6 +367,7 @@ function reportActiveExpression(milestone: (typeof reportMilestoneDefinitions)[n
     "aliases" in milestone && milestone.aliases ? milestone.aliases : [milestone.label];
   const normalizedAliases = aliases.map((alias) => `'${normalizeMilestoneName(alias)}'`).join(", ");
   return `not ${isCancelledExpression()}
+    and not ${fileClosedExpression()}
     and ${normalizeMilestoneExpression("f.current_milestone")} in (${normalizedAliases})`;
 }
 
@@ -541,7 +554,7 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       `select '${milestone}' as milestone, '${stage}' as stage, ${countFilter(condition)} as count
        from files f
        left join divisions d on d.id = f.division_id
-       ${appendReportWhereClause(whereSql)}`,
+       ${appendReportWhereClause(whereSql, [`not ${fileClosedExpression()}`])}`,
     );
   };
   reportMilestoneDefinitions.forEach((milestone, index) => {
@@ -651,16 +664,30 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
 async function loadCashOutgoRows(
   whereSql: string,
   values: unknown[],
-  mode: "expected" | "actual",
+  mode: "expectedDp" | "expectedReceipt" | "actual",
+  expectedCashOutgoDays = 10,
 ): Promise<CashOutgoRow[]> {
-  const dateExpression =
-    mode === "expected"
-      ? "(coalesce(effective.material_receipt_date, effective.dp_date) + interval '10 days')::date"
-      : "effective.bill_sent_for_payment_date";
-  const extraCondition =
-    mode === "expected"
-      ? "effective.so_date is not null and not effective.so_cancelled_yes and coalesce(effective.material_receipt_date, effective.dp_date) is not null"
-      : "effective.bill_sent_for_payment_date is not null and not (effective.so_cancelled_yes and effective.so_cancelled_date is not null)";
+  const queryValues = [...values];
+  const expectedDaysPlaceholder =
+    mode === "actual" ? undefined : addValue(queryValues, expectedCashOutgoDays);
+  const dateExpression = (() => {
+    if (mode === "expectedDp") {
+      return `(effective.dp_date + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
+    }
+    if (mode === "expectedReceipt") {
+      return `(effective.material_receipt_date + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
+    }
+    return "effective.payment_date";
+  })();
+  const extraCondition = (() => {
+    if (mode === "expectedDp") {
+      return "effective.dp_date is not null and not effective.so_cancelled_yes and effective.material_receipt_date is null";
+    }
+    if (mode === "expectedReceipt") {
+      return "effective.material_receipt_date is not null and effective.payment_date is null";
+    }
+    return "effective.payment_date is not null and not (effective.so_cancelled_yes and effective.so_cancelled_date is not null)";
+  })();
   const result = await pool.query<{
     month_key: string;
     month: string;
@@ -675,6 +702,7 @@ async function loadCashOutgoRows(
          so.dp_date,
          so.material_receipt_date,
          so.bill_sent_for_payment_date,
+         so.payment_date,
          so.so_cancelled_date,
          ${isYesExpression("so.so_cancelled")} as so_cancelled_yes,
          ${inrAmountExpression("so.so_value_capital")} as capital,
@@ -690,6 +718,7 @@ async function loadCashOutgoRows(
          f.dp_date,
          f.material_receipt_date,
          f.bill_sent_for_payment_date,
+         f.payment_date,
          f.so_cancelled_date,
          ${isYesExpression("f.so_cancelled")} as so_cancelled_yes,
          ${inrAmountExpression("f.so_value_capital")} as capital,
@@ -711,7 +740,7 @@ async function loadCashOutgoRows(
      where ${extraCondition}
      group by 1, 2
      order by 1 asc`,
-    values,
+    queryValues,
   );
   return result.rows.map((row) => ({
     monthKey: row.month_key,
@@ -820,6 +849,7 @@ async function loadDelayRows(
         from files f
         left join divisions d on d.id = f.division_id
         ${appendReportWhereClause(whereSql, [
+          `not ${fileClosedExpression()}`,
           active,
           `not (${complete})`,
           `(${startDate}) is not null`,
@@ -863,23 +893,27 @@ async function buildReportsSummarySql({
   division,
   delayDays,
   delayMilestone,
+  expectedCashOutgoDays,
 }: {
   whereSql: string;
   values: unknown[];
   division: string;
   delayDays: number;
   delayMilestone: string;
+  expectedCashOutgoDays: number;
 }): Promise<ReportsSummaryPayload> {
   const [
     reportFileCount,
     statusSummaryGroups,
-    expectedCashOutgoRows,
+    expectedCashOutgoDpRows,
+    expectedCashOutgoReceiptRows,
     actualCashOutgoRows,
     delayRows,
   ] = await Promise.all([
     loadReportFileCount(whereSql, [...values]),
     loadStatusSummaryGroups(whereSql, [...values]),
-    loadCashOutgoRows(whereSql, [...values], "expected"),
+    loadCashOutgoRows(whereSql, [...values], "expectedDp", expectedCashOutgoDays),
+    loadCashOutgoRows(whereSql, [...values], "expectedReceipt", expectedCashOutgoDays),
     loadCashOutgoRows(whereSql, [...values], "actual"),
     loadDelayRows(whereSql, [...values], delayDays, delayMilestone),
   ]);
@@ -887,7 +921,8 @@ async function buildReportsSummarySql({
     activeDivision: division,
     reportFileCount,
     statusSummaryGroups,
-    expectedCashOutgoRows,
+    expectedCashOutgoDpRows,
+    expectedCashOutgoReceiptRows,
     actualCashOutgoRows,
     delayRows,
     delaySummary: getDelaySummary(delayRows),
@@ -904,6 +939,7 @@ reportsRouter.get(
     const division = readString(request.query.division) ?? "all";
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
+    const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 10);
     const reportWhere = getReportWhereSql({
       scopeSql: scope.sql,
       scopeValues: scope.values,
@@ -916,6 +952,7 @@ reportsRouter.get(
       division,
       delayDays,
       delayMilestone,
+      expectedCashOutgoDays,
     });
 
     if (process.env.REPORTS_SQL_COMPARE === "true") {
@@ -931,6 +968,7 @@ reportsRouter.get(
         division,
         delayDays,
         delayMilestone,
+        expectedCashOutgoDays,
       });
       if (JSON.stringify(legacySummary) !== JSON.stringify(summary)) {
         console.warn("Reports SQL summary differs from TypeScript summary.", {

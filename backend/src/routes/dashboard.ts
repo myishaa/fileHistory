@@ -268,6 +268,7 @@ function readString(value: unknown) {
 }
 
 const allActiveFilesYear = "__all_active_files__";
+const fileClosedMilestone = "File Closed";
 
 function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, year: string) {
   return file.year === year || file.activeYears?.includes(year);
@@ -302,8 +303,14 @@ function isInactiveFile(
 }
 
 function readList(value: unknown) {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
-  if (typeof value !== "string" || !value.trim()) return undefined;
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (typeof value !== "string") return undefined;
+  if (!value.trim()) return [];
   return value
     .split(",")
     .map((item) => item.trim())
@@ -425,6 +432,7 @@ type FinanceTotals = {
 };
 
 type MiscellaneousCounts = {
+  fileClosed: number;
   ld: number;
   demandCancelled: number;
   soCancelled: number;
@@ -641,6 +649,16 @@ function normalizeMilestoneName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+function fileClosedExpression() {
+  return `exists (
+    select 1 from file_completed_milestones completed_closed
+    where completed_closed.file_id = f.id
+      and ${normalizeMilestoneExpression("completed_closed.milestone")} = '${normalizeMilestoneName(
+        fileClosedMilestone,
+      )}'
+  )`;
+}
+
 function statusAppliesExpression(
   milestone: (typeof statusMilestoneDefinitions)[number],
 ) {
@@ -683,6 +701,7 @@ function statusActiveExpression(
     .map((alias) => `'${normalizeMilestoneName(alias)}'`)
     .join(", ");
   return `not ${isCancelledExpression()}
+    and not ${fileClosedExpression()}
     and ${normalizeMilestoneExpression("f.current_milestone")} in (${normalizedAliases})`;
 }
 
@@ -1349,6 +1368,9 @@ async function loadMiscellaneousCounts({
   const result = await pool.query<Record<string, string | number>>(
     `select
        count(*) filter (
+         where ${fileClosedExpression()}
+       )::integer as file_closed,
+       count(*) filter (
          where exists (
            select 1 from supply_orders so
            where so.file_id = f.id and ${isYesExpression("so.ld")}
@@ -1381,6 +1403,7 @@ async function loadMiscellaneousCounts({
   const row = result.rows[0] ?? {};
   const readCount = (key: string) => Number(row[key] ?? 0);
   return {
+    fileClosed: readCount("file_closed"),
     ld: readCount("ld"),
     demandCancelled: readCount("demand_cancelled"),
     soCancelled: readCount("so_cancelled"),
@@ -1390,7 +1413,15 @@ async function loadMiscellaneousCounts({
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
-  return values.length ? values : defaultManualMilestones;
+  const configured = values.length ? values : defaultManualMilestones;
+  return appendFileClosedMilestone(configured);
+}
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
 }
 
 async function loadManualMilestoneSqlSlice({
@@ -1414,14 +1445,18 @@ async function loadManualMilestoneSqlSlice({
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
+  const liveConfiguredMilestones = configuredMilestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
   const extrasValues = [...queryValues];
-  const configuredPlaceholder = addValue(extrasValues, configuredMilestones);
+  const configuredPlaceholder = addValue(extrasValues, liveConfiguredMilestones);
   const extrasResult = await pool.query<{ name: string }>(
     `select distinct trim(f.current_milestone) as name
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
        ...extraConditions,
+       `not ${fileClosedExpression()}`,
        "trim(coalesce(f.current_milestone, '')) <> ''",
        `not (trim(f.current_milestone) = any(${configuredPlaceholder}::text[]))`,
      ])}
@@ -1429,7 +1464,7 @@ async function loadManualMilestoneSqlSlice({
     extrasValues,
   );
   const milestoneNames = [
-    ...configuredMilestones,
+    ...liveConfiguredMilestones,
     ...extrasResult.rows.map((row) => row.name).filter(Boolean),
   ];
   const currentValues = [...queryValues];
@@ -1441,6 +1476,7 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
        ...extraConditions,
+       `not ${fileClosedExpression()}`,
        `not ${isCancelledExpression()}`,
      ])}
      group by milestone.name`,
@@ -1454,7 +1490,10 @@ async function loadManualMilestoneSqlSlice({
      left join file_completed_milestones completed on completed.milestone = milestone.name
      left join files f on f.id = completed.file_id
      left join divisions d on d.id = f.division_id
-     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), extraConditions)}
+     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
+       ...extraConditions,
+       `not ${fileClosedExpression()}`,
+     ])}
      group by milestone.name`,
     completedValues,
   );
@@ -1479,6 +1518,7 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
        ...extraConditions,
+       `not ${fileClosedExpression()}`,
        `f.current_milestone = any(${livePlaceholder}::text[])`,
        `not ${isCancelledExpression()}`,
      ])}
@@ -1628,7 +1668,7 @@ async function loadStatusCounts({
        )} as delivery_period_extended
      from files f
      left join divisions d on d.id = f.division_id
-     ${appendDashboardWhereClause(whereSql, extraConditions)}`,
+     ${appendDashboardWhereClause(whereSql, [...extraConditions, `not ${fileClosedExpression()}`])}`,
     queryValues,
   );
   const row = result.rows[0] ?? {};

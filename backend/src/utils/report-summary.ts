@@ -51,6 +51,7 @@ export type StatusSummaryTableGroup = {
 };
 
 const commonStatusColumns = ["Total", "In process", "Pending", "Completed"] as const;
+const fileClosedMilestone = "File Closed";
 
 const statusSummaryColumns = [
   "Total files",
@@ -176,65 +177,71 @@ export function buildReportsSummary({
   division,
   delayDays,
   delayMilestone,
+  expectedCashOutgoDays = 10,
 }: {
   files: FileRecord[];
   division: string;
   delayDays: number;
   delayMilestone: string;
+  expectedCashOutgoDays?: number;
 }) {
   const reportFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
-  const delayRows = getDelayStatusRows(reportFiles, delayDays, delayMilestone);
+  const activeStatusFiles = reportFiles.filter((file) => !isFileClosed(file));
+  const delayRows = getDelayStatusRows(activeStatusFiles, delayDays, delayMilestone);
 
   return {
     activeDivision: division,
     reportFileCount: reportFiles.length,
-    statusSummaryGroups: getStatusSummaryTableGroups(reportFiles),
-    expectedCashOutgoRows: getExpectedCashOutgoRows(reportFiles),
+    statusSummaryGroups: getStatusSummaryTableGroups(activeStatusFiles),
+    expectedCashOutgoDpRows: getExpectedCashOutgoByDpRows(reportFiles, expectedCashOutgoDays),
+    expectedCashOutgoReceiptRows: getExpectedCashOutgoByReceiptRows(
+      reportFiles,
+      expectedCashOutgoDays,
+    ),
     actualCashOutgoRows: getActualCashOutgoRows(reportFiles),
     delayRows,
     delaySummary: getDelayStatusSummary(delayRows),
   };
 }
 
-function getExpectedCashOutgoRows(files: FileRecord[]): CashOutgoRow[] {
+function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 10): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!hasSupplyOrderDate(order) || isYes(order.soCancelled)) return;
-      const baseDate = hasFilledString(order.materialReceiptDate)
-        ? order.materialReceiptDate
-        : order.dpDate;
-      const cashOutgoDate = addDays(baseDate, 10);
+      if (!hasFilledString(order.dpDate) || isYes(order.soCancelled)) return;
+      if (hasFilledString(order.materialReceiptDate)) return;
+      const cashOutgoDate = addDays(order.dpDate, offsetDays);
       if (!cashOutgoDate) return;
 
-      const monthKey = cashOutgoDate.slice(0, 7);
-      const current = totals.get(monthKey) ?? {
-        monthKey,
-        month: formatMonthLabel(cashOutgoDate),
-        capital: 0,
-        revenue: 0,
-        total: 0,
-      };
-      const capital = getInrAmount(order.soValueCapital, file) ?? 0;
-      const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
-      current.capital += capital;
-      current.revenue += revenue;
-      current.total += capital + revenue;
-      totals.set(monthKey, current);
+      addCashOutgoTotal(totals, cashOutgoDate, file, order);
     });
   });
 
-  return Array.from(totals.values())
-    .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
-    .map((row) => ({
-      ...row,
-      capital: Math.round(row.capital),
-      revenue: Math.round(row.revenue),
-      total: Math.round(row.total),
-    }));
+  return finalizeCashOutgoRows(totals);
+}
+
+function getExpectedCashOutgoByReceiptRows(
+  files: FileRecord[],
+  offsetDays = 10,
+): CashOutgoRow[] {
+  const totals = new Map<string, CashOutgoRow>();
+
+  files.forEach((file) => {
+    if (isCancelledFile(file)) return;
+    fileSupplyOrders(file).forEach((order) => {
+      if (!hasFilledString(order.materialReceiptDate)) return;
+      if (hasFilledString(order.paymentDate)) return;
+      const cashOutgoDate = addDays(order.materialReceiptDate, offsetDays);
+      if (!cashOutgoDate) return;
+
+      addCashOutgoTotal(totals, cashOutgoDate, file, order);
+    });
+  });
+
+  return finalizeCashOutgoRows(totals);
 }
 
 function getActualCashOutgoRows(files: FileRecord[]): CashOutgoRow[] {
@@ -243,28 +250,41 @@ function getActualCashOutgoRows(files: FileRecord[]): CashOutgoRow[] {
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!hasFilledString(order.billSentForPaymentDate) || isSoCancelledWithDate(order)) return;
+      if (!hasFilledString(order.paymentDate) || isSoCancelledWithDate(order)) return;
 
-      const billSentForPaymentDate = order.billSentForPaymentDate;
-      if (!billSentForPaymentDate) return;
+      const paymentDate = order.paymentDate;
+      if (!paymentDate) return;
 
-      const monthKey = billSentForPaymentDate.slice(0, 7);
-      const current = totals.get(monthKey) ?? {
-        monthKey,
-        month: formatMonthLabel(billSentForPaymentDate),
-        capital: 0,
-        revenue: 0,
-        total: 0,
-      };
-      const capital = getInrAmount(order.soValueCapital, file) ?? 0;
-      const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
-      current.capital += capital;
-      current.revenue += revenue;
-      current.total += capital + revenue;
-      totals.set(monthKey, current);
+      addCashOutgoTotal(totals, paymentDate, file, order);
     });
   });
 
+  return finalizeCashOutgoRows(totals);
+}
+
+function addCashOutgoTotal(
+  totals: Map<string, CashOutgoRow>,
+  cashOutgoDate: string,
+  file: FileRecord,
+  order: SupplyOrderDetail,
+) {
+  const monthKey = cashOutgoDate.slice(0, 7);
+  const current = totals.get(monthKey) ?? {
+    monthKey,
+    month: formatMonthLabel(cashOutgoDate),
+    capital: 0,
+    revenue: 0,
+    total: 0,
+  };
+  const capital = getInrAmount(order.soValueCapital, file) ?? 0;
+  const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
+  current.capital += capital;
+  current.revenue += revenue;
+  current.total += capital + revenue;
+  totals.set(monthKey, current);
+}
+
+function finalizeCashOutgoRows(totals: Map<string, CashOutgoRow>) {
   return Array.from(totals.values())
     .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
     .map((row) => ({
@@ -793,6 +813,14 @@ function isCancelledFile(file: FileRecord) {
     isYes(file.demandCancelled) ||
     isYes(file.soCancelled) ||
     fileSupplyOrders(file).some((order) => isYes(order.demandCancelled) || isYes(order.soCancelled))
+  );
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
   );
 }
 

@@ -413,6 +413,10 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     divisionFilter: readQueryString(query.divisionFilter),
     valueFrom: readQueryString(query.valueFrom),
     valueTo: readQueryString(query.valueTo),
+    soValueFrom: readQueryString(query.soValueFrom),
+    soValueTo: readQueryString(query.soValueTo),
+    soCapitalOnly: readQueryBoolean(query.soCapitalOnly),
+    soRevenueOnly: readQueryBoolean(query.soRevenueOnly),
     capitalOnly: readQueryBoolean(query.capitalOnly),
     revenueOnly: readQueryBoolean(query.revenueOnly),
     description: readQueryString(query.description),
@@ -468,6 +472,10 @@ function normalizedSql(expression: string) {
   return `regexp_replace(lower(coalesce(${expression}, '')), '[^a-z0-9]+', '', 'g')`;
 }
 
+function fileClosedSql() {
+  return completedMilestoneExists(`${normalizedSql("completed.milestone")} = 'fileclosed'`);
+}
+
 function sqlLike(query: string) {
   return `%${query.trim().toLowerCase()}%`;
 }
@@ -490,6 +498,48 @@ function addSqlValue(values: unknown[], value: unknown) {
 
 function supplyOrderExists(condition: string) {
   return `exists (select 1 from supply_orders so where so.file_id = f.id and ${condition})`;
+}
+
+function supplyOrderValueTotalSql(capitalOnly: boolean, revenueOnly: boolean) {
+  const includeCapital = !revenueOnly || capitalOnly;
+  const includeRevenue = !capitalOnly || revenueOnly;
+  const valueParts = [
+    includeCapital ? "coalesce(so.so_value_capital, 0)" : undefined,
+    includeRevenue ? "coalesce(so.so_value_revenue, 0)" : undefined,
+  ].filter(Boolean);
+  const legacyValueParts = [
+    includeCapital ? "coalesce(f.so_value_capital, 0)" : undefined,
+    includeRevenue ? "coalesce(f.so_value_revenue, 0)" : undefined,
+  ].filter(Boolean);
+  const orderValueSql = valueParts.join(" + ") || "0";
+  const legacyValueSql = legacyValueParts.join(" + ") || "0";
+  return `case
+    when exists (select 1 from supply_orders so where so.file_id = f.id) then coalesce((
+      select sum(${orderValueSql})
+      from supply_orders so
+      where so.file_id = f.id
+    ), 0)
+    else ${legacyValueSql}
+  end`;
+}
+
+function hasSupplyOrderValueSql(capitalOnly: boolean, revenueOnly: boolean) {
+  const includeCapital = !revenueOnly || capitalOnly;
+  const includeRevenue = !capitalOnly || revenueOnly;
+  const orderConditions = [
+    includeCapital ? "so.so_value_capital is not null" : undefined,
+    includeRevenue ? "so.so_value_revenue is not null" : undefined,
+  ].filter(Boolean);
+  const legacyConditions = [
+    includeCapital ? "f.so_value_capital is not null" : undefined,
+    includeRevenue ? "f.so_value_revenue is not null" : undefined,
+  ].filter(Boolean);
+  return `case
+    when exists (select 1 from supply_orders so where so.file_id = f.id) then ${supplyOrderExists(
+      orderConditions.join(" or ") || "false",
+    )}
+    else ${legacyConditions.join(" or ") || "false"}
+  end`;
 }
 
 function completedMilestoneExists(condition: string) {
@@ -766,7 +816,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   }
   if (filter.startsWith("manualMilestoneCurrent:")) {
     const placeholder = addSqlValue(values, filter.slice("manualMilestoneCurrent:".length));
-    return `not ${isCancelledFileSql()} and f.current_milestone = ${placeholder}`;
+    return `not ${isCancelledFileSql()} and not ${fileClosedSql()} and f.current_milestone = ${placeholder}`;
   }
   if (filter.startsWith("manualMilestoneCompleted:")) {
     const placeholder = addSqlValue(values, filter.slice("manualMilestoneCompleted:".length));
@@ -840,6 +890,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     )}`;
   if (filter === "paymentDue")
     return supplyOrderExists(`${hasTextSql("so.material_receipt_date")} and not ${hasTextSql("so.payment_date")}`);
+  if (filter === "miscFileClosed") return fileClosedSql();
   if (filter === "miscLd") return supplyOrderExists(isYesSql("so.ld"));
   if (filter === "miscDemandCancelled") return supplyOrderExists(isYesSql("so.demand_cancelled"));
   if (filter === "miscSoCancelled") return supplyOrderExists(isYesSql("so.so_cancelled"));
@@ -1003,6 +1054,31 @@ function buildSearchSql(
   if (maxValue !== undefined) {
     const placeholder = addSqlValue(values, maxValue);
     conditions.push(`${totalValue} <= ${placeholder}`);
+  }
+
+  const minSoValue = parseSearchAmount(params.soValueFrom);
+  const maxSoValue = parseSearchAmount(params.soValueTo);
+  if (
+    minSoValue !== undefined ||
+    maxSoValue !== undefined ||
+    params.soCapitalOnly ||
+    params.soRevenueOnly
+  ) {
+    const soValueTotal = supplyOrderValueTotalSql(
+      Boolean(params.soCapitalOnly),
+      Boolean(params.soRevenueOnly),
+    );
+    conditions.push(
+      hasSupplyOrderValueSql(Boolean(params.soCapitalOnly), Boolean(params.soRevenueOnly)),
+    );
+    if (minSoValue !== undefined) {
+      const placeholder = addSqlValue(values, minSoValue);
+      conditions.push(`${soValueTotal} >= ${placeholder}`);
+    }
+    if (maxSoValue !== undefined) {
+      const placeholder = addSqlValue(values, maxSoValue);
+      conditions.push(`${soValueTotal} <= ${placeholder}`);
+    }
   }
 
   if (isValidDate(params.dpFrom) || isValidDate(params.dpTo)) {

@@ -116,7 +116,9 @@ const defaultMilestones = [
   "Bank Guarantee",
   "Delivery",
   "Payment",
+  "File Closed",
 ];
+const fileClosedMilestone = "File Closed";
 const defaultNoKeys: FileKey[] = [
   "dpExtension",
   "gte",
@@ -407,6 +409,10 @@ function SearchPage() {
   const [divisionFilter, setDivisionFilter] = useState(search.division ?? "");
   const [valueFrom, setValueFrom] = useState("");
   const [valueTo, setValueTo] = useState("");
+  const [soValueFrom, setSoValueFrom] = useState("");
+  const [soValueTo, setSoValueTo] = useState("");
+  const [soCapitalOnly, setSoCapitalOnly] = useState(false);
+  const [soRevenueOnly, setSoRevenueOnly] = useState(false);
   const [capitalOnly, setCapitalOnly] = useState(false);
   const [revenueOnly, setRevenueOnly] = useState(false);
   const [description, setDescription] = useState("");
@@ -504,6 +510,10 @@ function SearchPage() {
     divisionFilter ||
     valueFrom ||
     valueTo ||
+    soValueFrom ||
+    soValueTo ||
+    soCapitalOnly ||
+    soRevenueOnly ||
     capitalOnly ||
     revenueOnly ||
     description ||
@@ -539,6 +549,10 @@ function SearchPage() {
     appendSearchParam(params, "divisionFilter", divisionFilter);
     appendSearchParam(params, "valueFrom", valueFrom);
     appendSearchParam(params, "valueTo", valueTo);
+    appendSearchParam(params, "soValueFrom", soValueFrom);
+    appendSearchParam(params, "soValueTo", soValueTo);
+    appendSearchBool(params, "soCapitalOnly", soCapitalOnly);
+    appendSearchBool(params, "soRevenueOnly", soRevenueOnly);
     appendSearchParam(params, "description", description);
     appendSearchParam(params, "firm", firm);
     appendSearchList(params, "selectedModes", selectedModes);
@@ -582,6 +596,10 @@ function SearchPage() {
     divisionFilter,
     valueFrom,
     valueTo,
+    soValueFrom,
+    soValueTo,
+    soCapitalOnly,
+    soRevenueOnly,
     capitalOnly,
     revenueOnly,
     description,
@@ -738,6 +756,10 @@ function SearchPage() {
     setDivisionFilter("");
     setValueFrom("");
     setValueTo("");
+    setSoValueFrom("");
+    setSoValueTo("");
+    setSoCapitalOnly(false);
+    setSoRevenueOnly(false);
     setCapitalOnly(false);
     setRevenueOnly(false);
     setDescription("");
@@ -891,6 +913,35 @@ function SearchPage() {
             <div className="grid grid-cols-2 gap-2">
               <CheckFilter label="Capital" checked={capitalOnly} onChange={setCapitalOnly} />
               <CheckFilter label="Revenue" checked={revenueOnly} onChange={setRevenueOnly} />
+            </div>
+          </FilterGroup>
+
+          <FilterGroup label="S.O. value">
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <FilterInput
+                value={soValueFrom}
+                onChange={setSoValueFrom}
+                placeholder="From"
+                decimalOnly
+              />
+              <FilterInput
+                value={soValueTo}
+                onChange={setSoValueTo}
+                placeholder="To"
+                decimalOnly
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <CheckFilter
+                label="Capital"
+                checked={soCapitalOnly}
+                onChange={setSoCapitalOnly}
+              />
+              <CheckFilter
+                label="Revenue"
+                checked={soRevenueOnly}
+                onChange={setSoRevenueOnly}
+              />
             </div>
           </FilterGroup>
 
@@ -2098,7 +2149,15 @@ const milestoneDefinitions = [
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
-  return values.length ? values : defaultMilestones;
+  const configured = values.length ? values : defaultMilestones;
+  return appendFileClosedMilestone(configured);
+}
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
 }
 
 function isPendingMilestone(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
@@ -2169,7 +2228,7 @@ function isManualActiveMilestone(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  if (isCancelledFile(file)) return false;
+  if (isCancelledFile(file) || isFileClosed(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneLabelAliases(milestone.key).some(
     (label) => current === normalizeMilestoneName(label),
@@ -2201,6 +2260,14 @@ function normalizeMilestoneName(value: string | undefined) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
+  );
 }
 
 function hasMilestoneDate(file: FileRecord, key: FileKey | SupplyOrderKey) {
@@ -2548,6 +2615,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled") {
     return fileSupplyOrders(file).some((order) => isYes(order.demandCancelled));

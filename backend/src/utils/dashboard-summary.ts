@@ -19,7 +19,9 @@ const defaultManualMilestones = [
   "Bank Guarantee",
   "Delivery",
   "Payment",
+  "File Closed",
 ];
+const fileClosedMilestone = "File Closed";
 
 const snapshotAttributeDefinitions = [
   { key: "tcec", label: "TCEC", yesLabel: "TCEC", noLabel: "Non TCEC" },
@@ -181,7 +183,7 @@ export function buildDashboardSummary({
       ? dashboardDivisions
       : divisions.filter((item) => item.name === activeAnalyticsDivision);
   const manualMilestoneFlow = getManualMilestoneFlow(
-    dashboardFiles,
+    dashboardFiles.filter((file) => !isFileClosed(file)),
     getConfiguredMilestones(settings.milestones),
   );
   const visibleLiveMilestoneNames =
@@ -201,11 +203,11 @@ export function buildDashboardSummary({
     manualMilestoneFlow,
     visibleLiveMilestoneNames,
     liveStatusRows: getLiveStatusDivisionRows(
-      dashboardFiles,
+      dashboardFiles.filter((file) => !isFileClosed(file)),
       dashboardDivisions,
       visibleLiveMilestoneNames,
     ),
-    statusFlow: getMilestoneFlow(dashboardFiles),
+    statusFlow: getMilestoneFlow(dashboardFiles.filter((file) => !isFileClosed(file))),
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
     analytics: getAnalyticsSummary(
       dashboardFiles,
@@ -331,6 +333,7 @@ function getAttributeSummaryStats(files: FileRecord[]) {
 
 function getMiscellaneousCounts(files: FileRecord[]) {
   return {
+    fileClosed: files.filter(isFileClosed).length,
     ld: files.filter((file) => fileSupplyOrders(file).some((order) => isYes(order.ld))).length,
     demandCancelled: files.filter((file) =>
       fileSupplyOrders(file).some((order) => isYes(order.demandCancelled)),
@@ -343,7 +346,10 @@ function getMiscellaneousCounts(files: FileRecord[]) {
 }
 
 function getManualMilestoneFlow(files: FileRecord[], milestones: string[]) {
-  const configured = milestones.map((name) => name.trim()).filter(Boolean);
+  const configured = milestones
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .filter((name) => normalizeMilestoneName(name) !== normalizeMilestoneName(fileClosedMilestone));
   const extras = files
     .map((file) => file.currentMilestone?.trim())
     .filter((name): name is string => Boolean(name))
@@ -358,7 +364,15 @@ function getManualMilestoneFlow(files: FileRecord[], milestones: string[]) {
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
-  return values.length ? values : defaultManualMilestones;
+  const configured = values.length ? values : defaultManualMilestones;
+  return appendFileClosedMilestone(configured);
+}
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
 }
 
 function getLiveStatusDivisionRows(
@@ -1190,6 +1204,14 @@ function isCancelledFile(file: FileRecord) {
     isYes(file.demandCancelled) ||
     isYes(file.soCancelled) ||
     fileSupplyOrders(file).some((order) => isYes(order.demandCancelled) || isYes(order.soCancelled))
+  );
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
   );
 }
 

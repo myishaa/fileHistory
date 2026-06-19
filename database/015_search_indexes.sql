@@ -50,6 +50,14 @@ create index if not exists supply_orders_file_so_date_idx
 on supply_orders(file_id, so_date)
 where so_date is not null;
 
+create index if not exists files_so_value_idx
+on files(so_value_capital, so_value_revenue)
+where so_value_capital is not null or so_value_revenue is not null;
+
+create index if not exists supply_orders_file_value_idx
+on supply_orders(file_id, so_value_capital, so_value_revenue)
+where so_value_capital is not null or so_value_revenue is not null;
+
 create index if not exists supply_orders_delivery_due_idx
 on supply_orders(file_id, so_date, revised_dp, dp_date)
 where so_date is not null and material_receipt_date is null;

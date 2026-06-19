@@ -43,7 +43,17 @@ const defaultMilestoneSequence = [
   "Bank Guarantee",
   "Delivery",
   "Payment",
+  "File Closed",
 ];
+const fileClosedMilestone = "File Closed";
+
+function appendFileClosedMilestone(milestones: string[]) {
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const withoutFileClosed = milestones.filter(
+    (milestone) => normalize(milestone) !== normalize(fileClosedMilestone),
+  );
+  return [...withoutFileClosed, fileClosedMilestone];
+}
 
 function SettingsPage() {
   const activeUser = useActiveUser();
@@ -658,10 +668,11 @@ function MilestoneSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
   const [name, setName] = useState("");
-  const milestones =
+  const milestones = appendFileClosedMilestone(
     settings.milestones && settings.milestones.length > 0
       ? settings.milestones
-      : defaultMilestoneSequence;
+      : defaultMilestoneSequence,
+  );
   const [position, setPosition] = useState(String(milestones.length + 1));
 
   if (activeUser && activeUser.role !== "admin") return null;

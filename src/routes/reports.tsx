@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { FileSpreadsheet, FileText } from "lucide-react";
 import {
   type FileRecord,
@@ -24,7 +24,8 @@ type ReportsSummaryPayload = {
   activeDivision: string;
   reportFileCount: number;
   statusSummaryGroups: StatusSummaryTableGroup[];
-  expectedCashOutgoRows: ExpectedCashOutgoRow[];
+  expectedCashOutgoDpRows: ExpectedCashOutgoRow[];
+  expectedCashOutgoReceiptRows: ExpectedCashOutgoRow[];
   actualCashOutgoRows: ExpectedCashOutgoRow[];
   delayRows: DelayStatusRow[];
   delaySummary: ReturnType<typeof getDelayStatusSummary>;
@@ -50,6 +51,7 @@ function ReportsPage() {
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [reportMode, setReportMode] = useState<ReportMode>("status");
   const [delayDays, setDelayDays] = useState("5");
+  const [expectedCashOutgoDays, setExpectedCashOutgoDays] = useState("10");
   const [delayMilestoneKey, setDelayMilestoneKey] = useState("all");
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [reportsLoading, setReportsLoading] = useState(false);
@@ -64,15 +66,27 @@ function ReportsPage() {
       activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
     [activeDivision, files],
   );
+  const activeReportStatusFiles = useMemo(
+    () => reportFiles.filter((file) => !isFileClosed(file)),
+    [reportFiles],
+  );
   const delayThresholdDays = getDelayThresholdDays(delayDays);
+  const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays) || 0;
   const reportsQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
     params.set("delayDays", String(delayThresholdDays));
+    params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
     return params.toString();
-  }, [activeDivision, delayThresholdDays, delayMilestoneKey, settings.selectedYear]);
+  }, [
+    activeDivision,
+    delayThresholdDays,
+    delayMilestoneKey,
+    expectedCashOutgoOffsetDays,
+    settings.selectedYear,
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -102,31 +116,57 @@ function ReportsPage() {
     };
   }, [reportsQuery]);
 
-  const localStatusSummaryGroups = getStatusSummaryTableGroups(reportFiles);
-  const localExpectedCashOutgoRows = getExpectedCashOutgoRows(reportFiles);
+  const localStatusSummaryGroups = getStatusSummaryTableGroups(activeReportStatusFiles);
+  const localExpectedCashOutgoDpRows = getExpectedCashOutgoByDpRows(
+    reportFiles,
+    expectedCashOutgoOffsetDays,
+  );
+  const localExpectedCashOutgoReceiptRows = getExpectedCashOutgoByReceiptRows(
+    reportFiles,
+    expectedCashOutgoOffsetDays,
+  );
   const localActualCashOutgoRows = getActualCashOutgoRows(reportFiles);
-  const localDelayRows = getDelayStatusRows(reportFiles, delayThresholdDays, delayMilestoneKey);
+  const localDelayRows = getDelayStatusRows(
+    activeReportStatusFiles,
+    delayThresholdDays,
+    delayMilestoneKey,
+  );
   const statusSummaryGroups = reportsSummary?.statusSummaryGroups ?? localStatusSummaryGroups;
-  const expectedCashOutgoRows = reportsSummary?.expectedCashOutgoRows ?? localExpectedCashOutgoRows;
+  const expectedCashOutgoDpRows =
+    reportsSummary?.expectedCashOutgoDpRows ?? localExpectedCashOutgoDpRows;
+  const expectedCashOutgoReceiptRows =
+    reportsSummary?.expectedCashOutgoReceiptRows ?? localExpectedCashOutgoReceiptRows;
   const actualCashOutgoRows = reportsSummary?.actualCashOutgoRows ?? localActualCashOutgoRows;
   const delayRows = reportsSummary?.delayRows ?? localDelayRows;
   const delaySummary = reportsSummary?.delaySummary ?? getDelayStatusSummary(localDelayRows);
   const selectedCashOutgoRows =
-    reportMode === "actualCashOutgo" ? actualCashOutgoRows : expectedCashOutgoRows;
+    reportMode === "actualCashOutgo"
+      ? actualCashOutgoRows
+      : reportMode === "expectedCashOutgoByReceipt"
+        ? expectedCashOutgoReceiptRows
+        : expectedCashOutgoDpRows;
   const statusReportTitle =
     activeDivision === "all"
       ? "Status summary - All divisions"
       : `Status summary - ${activeDivision}`;
-  const expectedCashOutgoReportTitle =
+  const expectedCashOutgoDpReportTitle =
     activeDivision === "all"
-      ? "Expected cash outgo monthly - All divisions"
-      : `Expected cash outgo monthly - ${activeDivision}`;
+      ? "Expected cash outgo by DP date - All divisions"
+      : `Expected cash outgo by DP date - ${activeDivision}`;
+  const expectedCashOutgoReceiptReportTitle =
+    activeDivision === "all"
+      ? "Expected cash outgo by receipt date - All divisions"
+      : `Expected cash outgo by receipt date - ${activeDivision}`;
   const actualCashOutgoReportTitle =
     activeDivision === "all"
       ? "Actual cash outgo monthly - All divisions"
       : `Actual cash outgo monthly - ${activeDivision}`;
   const cashOutgoReportTitle =
-    reportMode === "actualCashOutgo" ? actualCashOutgoReportTitle : expectedCashOutgoReportTitle;
+    reportMode === "actualCashOutgo"
+      ? actualCashOutgoReportTitle
+      : reportMode === "expectedCashOutgoByReceipt"
+        ? expectedCashOutgoReceiptReportTitle
+        : expectedCashOutgoDpReportTitle;
   const delayReportTitle =
     activeDivision === "all"
       ? `Delay status - More than ${delayThresholdDays} days`
@@ -186,7 +226,12 @@ function ReportsPage() {
                   ? printDelayStatusToPdf(delayRows, reportTitle)
                   : reportMode === "actualCashOutgo"
                     ? printActualCashOutgoToPdf(selectedCashOutgoRows, reportTitle)
-                    : printExpectedCashOutgoToPdf(selectedCashOutgoRows, reportTitle)
+                    : printExpectedCashOutgoToPdf(
+                        selectedCashOutgoRows,
+                        reportTitle,
+                        expectedCashOutgoOffsetDays,
+                        reportMode === "expectedCashOutgoByReceipt" ? "receipt" : "dp",
+                      )
             }
             className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
           >
@@ -259,21 +304,42 @@ function ReportsPage() {
         />
       ) : reportMode === "actualCashOutgo" ? (
         <ActualCashOutgoReport rows={actualCashOutgoRows} />
+      ) : reportMode === "expectedCashOutgoByReceipt" ? (
+        <ExpectedCashOutgoReport
+          rows={expectedCashOutgoReceiptRows}
+          base="receipt"
+          selectedDays={expectedCashOutgoDays}
+          offsetDays={expectedCashOutgoOffsetDays}
+          onDaysChange={setExpectedCashOutgoDays}
+        />
       ) : (
-        <ExpectedCashOutgoReport rows={expectedCashOutgoRows} />
+        <ExpectedCashOutgoReport
+          rows={expectedCashOutgoDpRows}
+          base="dp"
+          selectedDays={expectedCashOutgoDays}
+          offsetDays={expectedCashOutgoOffsetDays}
+          onDaysChange={setExpectedCashOutgoDays}
+        />
       )}
     </div>
   );
 }
 
-type ReportMode = "status" | "expectedCashOutgo" | "actualCashOutgo" | "delayStatus";
+type ReportMode =
+  | "status"
+  | "expectedCashOutgoByDp"
+  | "expectedCashOutgoByReceipt"
+  | "actualCashOutgo"
+  | "delayStatus";
 
 const reportModes = [
   { key: "status", label: "Status summary" },
-  { key: "expectedCashOutgo", label: "Expected cash outgo" },
+  { key: "expectedCashOutgoByDp", label: "Expected cash outgo by DP date" },
+  { key: "expectedCashOutgoByReceipt", label: "Expected cash outgo by receipt date" },
   { key: "actualCashOutgo", label: "Actual cash out go" },
   { key: "delayStatus", label: "Delay status" },
 ] satisfies Array<{ key: ReportMode; label: string }>;
+const fileClosedMilestone = "File Closed";
 
 function StatusSummaryReport({ groups }: { groups: StatusSummaryTableGroup[] }) {
   return (
@@ -333,13 +399,42 @@ function StatusSummaryReport({ groups }: { groups: StatusSummaryTableGroup[] }) 
   );
 }
 
-function ExpectedCashOutgoReport({ rows }: { rows: ExpectedCashOutgoRow[] }) {
+function ExpectedCashOutgoReport({
+  rows,
+  base,
+  selectedDays,
+  offsetDays,
+  onDaysChange,
+}: {
+  rows: ExpectedCashOutgoRow[];
+  base: "dp" | "receipt";
+  selectedDays: string;
+  offsetDays: number;
+  onDaysChange: (value: string) => void;
+}) {
+  const isReceipt = base === "receipt";
   return (
     <CashOutgoReport
       rows={rows}
-      title="Expected cash outgo monthly"
-      description="Uses material receipt date if filled, otherwise DP date, then adds 10 days."
+      title={isReceipt ? "Expected cash outgo by receipt date" : "Expected cash outgo by DP date"}
+      description={
+        isReceipt
+          ? `Uses material receipt date plus ${offsetDays} days, excluding rows with payment date filled.`
+          : `Uses DP date plus ${offsetDays} days, excluding S.O. cancelled rows and rows with material receipt date filled.`
+      }
       emptyMessage="No expected cash outgo rows found."
+      controls={
+        <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+          <span>Days after base date</span>
+          <input
+            type="number"
+            min="0"
+            value={selectedDays}
+            onChange={(event) => onDaysChange(event.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          />
+        </label>
+      }
     />
   );
 }
@@ -349,7 +444,7 @@ function ActualCashOutgoReport({ rows }: { rows: ExpectedCashOutgoRow[] }) {
     <CashOutgoReport
       rows={rows}
       title="Actual cash out go monthly"
-      description="Uses bill sent for payment date, excluding S.O. cancelled rows only when cancellation date is filled."
+      description="Uses payment date, excluding S.O. cancelled rows only when cancellation date is filled."
       emptyMessage="No actual cash out go rows found."
     />
   );
@@ -360,11 +455,13 @@ function CashOutgoReport({
   title,
   description,
   emptyMessage,
+  controls,
 }: {
   rows: ExpectedCashOutgoRow[];
   title: string;
   description: string;
   emptyMessage: string;
+  controls?: ReactNode;
 }) {
   const totals = getExpectedCashOutgoTotals(rows);
 
@@ -375,6 +472,7 @@ function CashOutgoReport({
           <h2 className="text-sm font-semibold">{title}</h2>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
+        {controls}
         <div className="grid grid-cols-3 gap-2 text-right text-xs">
           <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
             <div className="text-muted-foreground">Capital</div>
@@ -936,11 +1034,18 @@ function exportCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string, emp
   URL.revokeObjectURL(url);
 }
 
-function printExpectedCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) {
+function printExpectedCashOutgoToPdf(
+  rows: ExpectedCashOutgoRow[],
+  title: string,
+  offsetDays: number,
+  base: "dp" | "receipt",
+) {
   printCashOutgoToPdf(
     rows,
     title,
-    "Base date is material receipt date if available, otherwise DP date. Cash outgo month is base date plus 10 days.",
+    base === "receipt"
+      ? `Cash outgo month is material receipt date plus ${offsetDays} days. Rows with payment date filled are excluded.`
+      : `Cash outgo month is DP date plus ${offsetDays} days. S.O. cancelled rows and rows with material receipt date filled are excluded.`,
     "No expected cash outgo rows found.",
   );
 }
@@ -949,7 +1054,7 @@ function printActualCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) 
   printCashOutgoToPdf(
     rows,
     title,
-    "Cash outgo month is bill sent for payment date. Rows are excluded when S.O. cancelled is Yes and S.O. cancelled date is filled.",
+    "Cash outgo month is payment date. Rows are excluded when S.O. cancelled is Yes and S.O. cancelled date is filled.",
     "No actual cash out go rows found.",
   );
 }
@@ -1091,44 +1196,46 @@ const delayStatusColumns = [
   { key: "action", label: "Search", align: "left" },
 ] satisfies Array<{ key: DelayStatusColumnKey; label: string; align: "left" | "right" }>;
 
-function getExpectedCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
+function getExpectedCashOutgoByDpRows(
+  files: FileRecord[],
+  offsetDays = 10,
+): ExpectedCashOutgoRow[] {
   const totals = new Map<string, ExpectedCashOutgoRow>();
 
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!hasSupplyOrderDate(order) || isYes(order.soCancelled)) return;
-      const baseDate = hasFilledString(order.materialReceiptDate)
-        ? order.materialReceiptDate
-        : order.dpDate;
-      const cashOutgoDate = addDays(baseDate, 10);
+      if (!hasFilledString(order.dpDate) || isYes(order.soCancelled)) return;
+      if (hasFilledString(order.materialReceiptDate)) return;
+      const cashOutgoDate = addDays(order.dpDate, offsetDays);
       if (!cashOutgoDate) return;
 
-      const monthKey = cashOutgoDate.slice(0, 7);
-      const current = totals.get(monthKey) ?? {
-        monthKey,
-        month: formatMonthLabel(cashOutgoDate),
-        capital: 0,
-        revenue: 0,
-        total: 0,
-      };
-      const capital = getInrAmount(order.soValueCapital, file) ?? 0;
-      const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
-      current.capital += capital;
-      current.revenue += revenue;
-      current.total += capital + revenue;
-      totals.set(monthKey, current);
+      addCashOutgoTotal(totals, cashOutgoDate, file, order);
     });
   });
 
-  return Array.from(totals.values())
-    .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
-    .map((row) => ({
-      ...row,
-      capital: Math.round(row.capital),
-      revenue: Math.round(row.revenue),
-      total: Math.round(row.total),
-    }));
+  return finalizeCashOutgoRows(totals);
+}
+
+function getExpectedCashOutgoByReceiptRows(
+  files: FileRecord[],
+  offsetDays = 10,
+): ExpectedCashOutgoRow[] {
+  const totals = new Map<string, ExpectedCashOutgoRow>();
+
+  files.forEach((file) => {
+    if (isCancelledFile(file)) return;
+    fileSupplyOrders(file).forEach((order) => {
+      if (!hasFilledString(order.materialReceiptDate)) return;
+      if (hasFilledString(order.paymentDate)) return;
+      const cashOutgoDate = addDays(order.materialReceiptDate, offsetDays);
+      if (!cashOutgoDate) return;
+
+      addCashOutgoTotal(totals, cashOutgoDate, file, order);
+    });
+  });
+
+  return finalizeCashOutgoRows(totals);
 }
 
 function getActualCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
@@ -1137,25 +1244,38 @@ function getActualCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!hasFilledString(order.billSentForPaymentDate) || isSoCancelledWithDate(order)) return;
+      if (!hasFilledString(order.paymentDate) || isSoCancelledWithDate(order)) return;
 
-      const monthKey = order.billSentForPaymentDate.slice(0, 7);
-      const current = totals.get(monthKey) ?? {
-        monthKey,
-        month: formatMonthLabel(order.billSentForPaymentDate),
-        capital: 0,
-        revenue: 0,
-        total: 0,
-      };
-      const capital = getInrAmount(order.soValueCapital, file) ?? 0;
-      const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
-      current.capital += capital;
-      current.revenue += revenue;
-      current.total += capital + revenue;
-      totals.set(monthKey, current);
+      addCashOutgoTotal(totals, order.paymentDate, file, order);
     });
   });
 
+  return finalizeCashOutgoRows(totals);
+}
+
+function addCashOutgoTotal(
+  totals: Map<string, ExpectedCashOutgoRow>,
+  cashOutgoDate: string,
+  file: FileRecord,
+  order: SupplyOrderDetail,
+) {
+  const monthKey = cashOutgoDate.slice(0, 7);
+  const current = totals.get(monthKey) ?? {
+    monthKey,
+    month: formatMonthLabel(cashOutgoDate),
+    capital: 0,
+    revenue: 0,
+    total: 0,
+  };
+  const capital = getInrAmount(order.soValueCapital, file) ?? 0;
+  const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
+  current.capital += capital;
+  current.revenue += revenue;
+  current.total += capital + revenue;
+  totals.set(monthKey, current);
+}
+
+function finalizeCashOutgoRows(totals: Map<string, ExpectedCashOutgoRow>) {
   return Array.from(totals.values())
     .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
     .map((row) => ({
@@ -1810,10 +1930,18 @@ function isPendingMilestone(file: FileRecord, milestone: MilestoneDefinition) {
 }
 
 function isManualActiveMilestone(file: FileRecord, milestone: MilestoneDefinition) {
-  if (isCancelledFile(file)) return false;
+  if (isCancelledFile(file) || isFileClosed(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneNameAliases(milestone).some(
     (name) => current === normalizeMilestoneName(name),
+  );
+}
+
+function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
+  return Boolean(
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
   );
 }
 
