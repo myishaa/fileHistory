@@ -321,6 +321,18 @@ function setState(patch: Partial<StoreState>) {
   emit();
 }
 
+function upsertFile(files: FileRecord[], file: FileRecord) {
+  return files.some((current) => current.id === file.id)
+    ? files.map((current) => (current.id === file.id ? file : current))
+    : [file, ...files];
+}
+
+function upsertMessage(messages: FileMessage[], message: FileMessage) {
+  return messages.some((current) => current.id === message.id)
+    ? messages.map((current) => (current.id === message.id ? message : current))
+    : [message, ...messages];
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -396,18 +408,17 @@ async function loadAll(force = false) {
 
       const settings = await request<{ settings: AppSettings }>("/api/settings");
       const baseRequests = [
-        request<{ files: FileRecord[] }>(filesPath(settings.settings.selectedYear)),
         request<{ divisions: Division[] }>(divisionsPath(settings.settings.selectedYear)),
         request<{ messages: FileMessage[] }>("/api/messages"),
       ] as const;
-      const [files, divisions, messages] = await Promise.all(baseRequests);
+      const [divisions, messages] = await Promise.all(baseRequests);
       const users =
         auth.user.role === "admin"
           ? await request<{ users: AppUser[] }>("/api/users")
           : { users: [auth.user] };
 
       setState({
-        files: files.files,
+        files: [],
         messages: messages.messages,
         divisions: divisions.divisions,
         indentors: [],
@@ -541,54 +552,58 @@ export const store = {
     })();
   },
   addFile(f: Omit<FileRecord, "id" | "createdAt">) {
-    runMutation(() =>
-      request("/api/files", {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>("/api/files", {
         method: "POST",
         body: JSON.stringify(f),
-      }),
-    );
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      return result.file;
+    })();
   },
   updateFile(id: string, patch: Partial<FileRecord>) {
     setState({ files: state.files.map((f) => (f.id === id ? { ...f, ...patch } : f)) });
-    runMutation(() =>
-      request(`/api/files/${id}`, {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>(`/api/files/${id}`, {
         method: "PATCH",
         body: JSON.stringify(patch),
-      }),
-    );
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      return result.file;
+    })();
   },
   createMessage(fileId: string, section: string, text: string) {
     return (async () => {
-      await request<{ message: FileMessage }>("/api/messages", {
+      const result = await request<{ message: FileMessage }>("/api/messages", {
         method: "POST",
         body: JSON.stringify({ fileId, section, text }),
       });
-      await loadAll(true);
+      setState({ messages: upsertMessage(state.messages, result.message) });
     })();
   },
   replyToMessage(id: string, text: string) {
     return (async () => {
-      await request<{ message: FileMessage }>(`/api/messages/${id}/replies`, {
+      const result = await request<{ message: FileMessage }>(`/api/messages/${id}/replies`, {
         method: "POST",
         body: JSON.stringify({ text }),
       });
-      await loadAll(true);
+      setState({ messages: upsertMessage(state.messages, result.message) });
     })();
   },
   resolveMessage(id: string) {
     return (async () => {
-      await request<{ message: FileMessage }>(`/api/messages/${id}/resolve`, {
+      const result = await request<{ message: FileMessage }>(`/api/messages/${id}/resolve`, {
         method: "POST",
       });
-      await loadAll(true);
+      setState({ messages: upsertMessage(state.messages, result.message) });
     })();
   },
   markMessageViewed(id: string) {
     return (async () => {
-      await request<{ message: FileMessage }>(`/api/messages/${id}/view`, {
+      const result = await request<{ message: FileMessage }>(`/api/messages/${id}/view`, {
         method: "POST",
       });
-      await loadAll(true);
+      setState({ messages: upsertMessage(state.messages, result.message) });
     })();
   },
   deleteMessage(id: string) {
@@ -596,17 +611,15 @@ export const store = {
       await request<{ deleted: true }>(`/api/messages/${id}`, {
         method: "DELETE",
       });
-      await loadAll(true);
+      setState({ messages: state.messages.filter((message) => message.id !== id) });
     })();
   },
   deleteFile(id: string, deletionPassword: string) {
     setState({ files: state.files.filter((f) => f.id !== id) });
-    runMutation(() =>
-      request(`/api/files/${id}`, {
+    return request(`/api/files/${id}`, {
         method: "DELETE",
         body: JSON.stringify({ deletionPassword }),
-      }),
-    );
+      });
   },
   listArchivedFiles() {
     return request<{ files: FileRecord[] }>("/api/files/archive/list");
@@ -811,6 +824,33 @@ export function fetchIndentors({
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
   return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`);
+}
+
+export function fetchFile(id: string) {
+  return request<{ file: FileRecord }>(`/api/files/${id}`);
+}
+
+export function fetchFilesByUniqueCode(code: string) {
+  return request<{ files: FileRecord[] }>(`/api/files/by-unique-code/${encodeURIComponent(code)}`);
+}
+
+export function fetchFilesForYear(year: string) {
+  const params = new URLSearchParams();
+  if (year) params.set("year", year);
+  return request<{ files: FileRecord[] }>(`/api/files${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export function fetchNextUniqueCode({
+  financialYear,
+  division,
+}: {
+  financialYear: string;
+  division: string;
+}) {
+  const params = new URLSearchParams();
+  params.set("financialYear", financialYear);
+  params.set("division", division);
+  return request<{ uniqueCode: string }>(`/api/files/next-unique-code?${params.toString()}`);
 }
 
 export function useFiles() {

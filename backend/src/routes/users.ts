@@ -2,11 +2,35 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { AppUser, AppUserRole } from "../types.js";
 import { requireAdmin, type AuthRequest } from "../utils/auth.js";
-import { asyncHandler, HttpError, requireObjectBody, requireParam, requireString } from "../utils/http.js";
+import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
+import {
+  asyncHandler,
+  HttpError,
+  requireObjectBody,
+  requireParam,
+  requireString,
+} from "../utils/http.js";
 
 export const usersRouter = Router();
 
-const allowedRoles = new Set<AppUserRole>(["admin", "sub_admin", "division_user", "editor", "viewer"]);
+usersRouter.use((request, response, next) => {
+  if (request.method !== "GET") {
+    response.on("finish", () => {
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        clearUserCache();
+      }
+    });
+  }
+  next();
+});
+
+const allowedRoles = new Set<AppUserRole>([
+  "admin",
+  "sub_admin",
+  "division_user",
+  "editor",
+  "viewer",
+]);
 
 type UserRow = {
   id: string;
@@ -41,24 +65,31 @@ function readDivisionIds(value: unknown) {
   return value as string[];
 }
 
+function clearUserCache() {
+  clearCachePrefix("auth:");
+  clearCachePrefix("lookup:users");
+}
+
 async function listUsers() {
-  const result = await pool.query<UserRow>(
-    `select
-       u.id,
-       u.name,
-       u.username,
-       u.role,
-       coalesce(
-         array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
-         array[]::text[]
-       ) as division_ids
-     from app_users u
-     left join user_divisions ud on ud.user_id = u.id
-     left join divisions d on d.id = ud.division_id
-     group by u.id
-     order by u.name asc`,
-  );
-  return result.rows.map(mapUser);
+  return getCached("lookup:users", cacheTtl.lookupMs, async () => {
+    const result = await pool.query<UserRow>(
+      `select
+         u.id,
+         u.name,
+         u.username,
+         u.role,
+         coalesce(
+           array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
+           array[]::text[]
+         ) as division_ids
+       from app_users u
+       left join user_divisions ud on ud.user_id = u.id
+       left join divisions d on d.id = ud.division_id
+       group by u.id
+       order by u.name asc`,
+    );
+    return result.rows.map(mapUser);
+  });
 }
 
 async function getUser(id: string) {
@@ -118,6 +149,7 @@ usersRouter.post(
         );
       }
       await client.query("commit");
+      clearUserCache();
       response.status(201).json({ user: await getUser(userId) });
     } catch (error) {
       await client.query("rollback");
@@ -173,10 +205,7 @@ usersRouter.patch(
               : field,
           )
           .join(", ");
-        await client.query(
-          `update app_users set ${setSql} where id = $${values.length}`,
-          values,
-        );
+        await client.query(`update app_users set ${setSql} where id = $${values.length}`, values);
       }
       if (divisionIds) {
         await client.query("delete from user_divisions where user_id = $1", [id]);
@@ -191,6 +220,7 @@ usersRouter.patch(
       }
       if (!fields.length && !divisionIds) throw new HttpError(400, "No user fields provided.");
       await client.query("commit");
+      clearUserCache();
       response.json({ user: await getUser(id) });
     } catch (error) {
       await client.query("rollback");
@@ -211,6 +241,7 @@ usersRouter.delete(
     if (user.role === "admin") await ensureNotLastAdmin(id, "delete");
 
     await pool.query("delete from app_users where id = $1", [id]);
+    clearUserCache();
     response.json({ deleted: true, user });
   }),
 );

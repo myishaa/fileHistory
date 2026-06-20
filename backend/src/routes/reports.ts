@@ -5,6 +5,7 @@ import { loadFiles } from "./files.js";
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildReportsSummary } from "../utils/report-summary.js";
 import { getDivisionScopeCondition, requireAuth, type AuthRequest } from "../utils/auth.js";
+import { cacheTtl, getCached } from "../utils/cache.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 
 export const reportsRouter = Router();
@@ -81,9 +82,27 @@ const reportMilestoneDefinitions = [
     currentColumn: "f.pre_tcec_minutes_date",
     appliesColumn: "f.tcec",
   },
-  { key: "ad", label: "AD", totalLabel: "Total cases", currentColumn: "f.ad_vetting_date", appliesColumn: "f.ad" },
-  { key: "rqa", label: "R&QA", totalLabel: "Total cases", currentColumn: "f.rqa_approval_date", appliesColumn: "f.rqa" },
-  { key: "control", label: "Controlling", totalLabel: "Total files", currentColumn: "f.imms_date", aliases: ["Controlling", "Controlled"] },
+  {
+    key: "ad",
+    label: "AD",
+    totalLabel: "Total cases",
+    currentColumn: "f.ad_vetting_date",
+    appliesColumn: "f.ad",
+  },
+  {
+    key: "rqa",
+    label: "R&QA",
+    totalLabel: "Total cases",
+    currentColumn: "f.rqa_approval_date",
+    appliesColumn: "f.rqa",
+  },
+  {
+    key: "control",
+    label: "Controlling",
+    totalLabel: "Total files",
+    currentColumn: "f.imms_date",
+    aliases: ["Controlling", "Controlled"],
+  },
   {
     key: "ifa",
     label: "IFA",
@@ -92,8 +111,20 @@ const reportMilestoneDefinitions = [
     currentColumn: "f.ifa_final_date",
     appliesColumn: "f.ifa",
   },
-  { key: "cfa", label: "CFA", totalLabel: "Total files", reviewedColumn: "f.cfa_sent_date", currentColumn: "f.cfa_date" },
-  { key: "bidding", label: "Bidding", totalLabel: "Total files", currentColumn: "f.bidding_stage_over", yesComplete: true },
+  {
+    key: "cfa",
+    label: "CFA",
+    totalLabel: "Total files",
+    reviewedColumn: "f.cfa_sent_date",
+    currentColumn: "f.cfa_date",
+  },
+  {
+    key: "bidding",
+    label: "Bidding",
+    totalLabel: "Total files",
+    currentColumn: "f.bidding_stage_over",
+    yesComplete: true,
+  },
   {
     key: "postTcec",
     label: "Post-TCEC",
@@ -110,7 +141,13 @@ const reportMilestoneDefinitions = [
     currentColumn: "f.cnc_approval_date",
     appliesColumn: "f.tcec",
   },
-  { key: "supplyOrder", label: "Supply Order", completedLabel: "Placed", totalLabel: "Total files", supplyOrderDate: "so_date" },
+  {
+    key: "supplyOrder",
+    label: "Supply Order",
+    completedLabel: "Placed",
+    totalLabel: "Total files",
+    supplyOrderDate: "so_date",
+  },
   {
     key: "bankGuarantee",
     label: "Bank Guarantee",
@@ -153,14 +190,16 @@ function mapSettings(row: SettingsRow): AppSettings {
 }
 
 async function loadSettings() {
-  const result = await pool.query<SettingsRow>(
-    `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-            tcec_committees, milestones, table_field_presets, active_user_id
-     from app_settings
-     where id = true`,
-  );
-  if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
-  return mapSettings(result.rows[0]);
+  return getCached("settings:reports", cacheTtl.settingsMs, async () => {
+    const result = await pool.query<SettingsRow>(
+      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+              tcec_committees, milestones, table_field_presets, active_user_id
+       from app_settings
+       where id = true`,
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
+    return mapSettings(result.rows[0]);
+  });
 }
 
 function readString(value: unknown) {
@@ -328,7 +367,10 @@ function normalizeMilestoneExpression(column: string) {
 }
 
 function normalizeMilestoneName(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 function fileClosedExpression() {
@@ -348,7 +390,8 @@ function reportAppliesExpression(milestone: (typeof reportMilestoneDefinitions)[
 }
 
 function reportCompleteExpression(milestone: (typeof reportMilestoneDefinitions)[number]) {
-  if ("yesComplete" in milestone && milestone.yesComplete) return isYesExpression(milestone.currentColumn);
+  if ("yesComplete" in milestone && milestone.yesComplete)
+    return isYesExpression(milestone.currentColumn);
   if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
     return supplyOrderChildOrLegacyExpression(
       hasFilledExpression(`so.${milestone.supplyOrderDate}`),
@@ -489,7 +532,9 @@ function getStatusSummaryGroupTitle(columns: string[]) {
   return "Other milestones";
 }
 
-function buildStatusSummaryGroups(rows: Array<{ milestone: string; stage: string; count: number }>) {
+function buildStatusSummaryGroups(
+  rows: Array<{ milestone: string; stage: string; count: number }>,
+) {
   const byMilestone = new Map<string, StatusSummaryTableRow & { columns: string[] }>();
   rows.forEach((row) => {
     if (!isStatusSummaryColumn(row.stage)) return;
@@ -576,8 +621,16 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
     if (milestone.key === "bankGuarantee") {
       const eligible = bankGuaranteeEligibleExpression();
       addRow(milestone.label, "Received", `${eligible} and ${complete}`);
-      addRow(milestone.label, "Pending", `${eligible} and ${reportActiveExpression(milestone)} and not (${complete})`);
-      addRow(milestone.label, "At previous stage", `${process} and not (${supplyOrderPlacedExpression()})`);
+      addRow(
+        milestone.label,
+        "Pending",
+        `${eligible} and ${reportActiveExpression(milestone)} and not (${complete})`,
+      );
+      addRow(
+        milestone.label,
+        "At previous stage",
+        `${process} and not (${supplyOrderPlacedExpression()})`,
+      );
       return;
     }
     if (milestone.key === "payment") {
@@ -588,7 +641,11 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
     }
     if (milestone.key === "bidding") {
       addRow(milestone.label, "Completed", `${process} and ${complete}`);
-      addRow(milestone.label, "In process", `${active} and not ${isYesExpression("f.tender_live")}`);
+      addRow(
+        milestone.label,
+        "In process",
+        `${active} and not ${isYesExpression("f.tender_live")}`,
+      );
       addRow(
         milestone.label,
         "Opening overdue",
@@ -652,11 +709,19 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       `${hasFilledExpression("f.so_date")} and ${hasFilledExpression("f.revised_dp")} and ${effectiveDpDateExpression("f")} > current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
     )}`,
   );
-  addRow("Delivery", "Completed", `${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
-    `${hasFilledExpression("so.so_date")} and ${hasFilledExpression("so.material_receipt_date")}`,
-    `${hasFilledExpression("f.so_date")} and ${hasFilledExpression("f.material_receipt_date")}`,
-  )}`);
-  addRow("Delivery", "Pending", `not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${deliveryDueOrderExpression()}`);
+  addRow(
+    "Delivery",
+    "Completed",
+    `${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
+      `${hasFilledExpression("so.so_date")} and ${hasFilledExpression("so.material_receipt_date")}`,
+      `${hasFilledExpression("f.so_date")} and ${hasFilledExpression("f.material_receipt_date")}`,
+    )}`,
+  );
+  addRow(
+    "Delivery",
+    "Pending",
+    `not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${deliveryDueOrderExpression()}`,
+  );
 
   const result = await pool.query<{ milestone: string; stage: string; count: number }>(
     selects.join("\nunion all\n"),
@@ -762,12 +827,17 @@ function delayStageStartExpression(
   index: number,
 ) {
   const reviewed =
-    "reviewedColumn" in milestone && milestone.reviewedColumn ? milestone.reviewedColumn : undefined;
+    "reviewedColumn" in milestone && milestone.reviewedColumn
+      ? milestone.reviewedColumn
+      : undefined;
   const previous = reportMilestoneDefinitions.slice(0, index).reverse();
   const previousExpression = previous.length
     ? `case
         ${previous
-          .map((item) => `when ${reportAppliesExpression(item)} then ${reportDateValueExpression(item)}`)
+          .map(
+            (item) =>
+              `when ${reportAppliesExpression(item)} then ${reportDateValueExpression(item)}`,
+          )
           .join("\n        ")}
         else coalesce(f.received_date, f.file_date)
       end`

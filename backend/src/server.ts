@@ -4,6 +4,7 @@ import express, { type ErrorRequestHandler } from "express";
 import { authRouter } from "./routes/auth.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { divisionsRouter } from "./routes/divisions.js";
+import { exportsRouter } from "./routes/exports.js";
 import { filesRouter } from "./routes/files.js";
 import { healthRouter } from "./routes/health.js";
 import { indentorsRouter } from "./routes/indentors.js";
@@ -41,7 +42,7 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "15mb" }));
 app.use(attachAuthUser);
 
 app.get("/", (_request, response) => {
@@ -52,6 +53,7 @@ app.use("/api/health", healthRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/divisions", divisionsRouter);
+app.use("/api/exports", exportsRouter);
 app.use("/api/indentors", indentorsRouter);
 app.use("/api/live", liveRouter);
 app.use("/api/messages", messagesRouter);

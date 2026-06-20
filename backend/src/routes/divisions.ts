@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { Division } from "../types.js";
 import { requireAdmin, type AuthRequest } from "../utils/auth.js";
+import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { fromDbDate, fromDbText, toDbNumber, toDbText } from "../utils/db-values.js";
 import {
   asyncHandler,
@@ -12,6 +13,17 @@ import {
 } from "../utils/http.js";
 
 export const divisionsRouter = Router();
+
+divisionsRouter.use((request, response, next) => {
+  if (request.method !== "GET") {
+    response.on("finish", () => {
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        clearDivisionCache();
+      }
+    });
+  }
+  next();
+});
 
 type DivisionRow = {
   id: string;
@@ -26,10 +38,12 @@ type DivisionRow = {
 };
 
 async function getSelectedYear() {
-  const result = await pool.query<{ selected_year: string }>(
-    "select selected_year from app_settings where id = true",
-  );
-  return result.rows[0]?.selected_year;
+  return getCached("lookup:selected-year", cacheTtl.settingsMs, async () => {
+    const result = await pool.query<{ selected_year: string }>(
+      "select selected_year from app_settings where id = true",
+    );
+    return result.rows[0]?.selected_year;
+  });
 }
 
 async function readAllocationYear(value: unknown) {
@@ -119,32 +133,45 @@ async function getDivision(id: string, financialYear?: string) {
   return result.rows[0] ? mapDivision(result.rows[0]) : undefined;
 }
 
+function clearDivisionCache() {
+  clearCachePrefix("auth:");
+  clearCachePrefix("divisions:");
+  clearCachePrefix("lookup:selected-year");
+}
+
 divisionsRouter.get(
   "/",
   asyncHandler(async (request, response) => {
     const financialYear = await readAllocationYear(request.query.year);
     const includeInactive = request.query.includeInactive === "true";
     const includeArchived = request.query.includeArchived === "true";
-    const result = await pool.query<DivisionRow>(
-      `select
-         d.id,
-         d.name,
-         d.code,
-         coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
-         coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
-         d.ad,
-         d.messages_enabled,
-         coalesce(a.active, false) as active,
-         d.archived_at
-       from divisions d
-       left join division_year_allocations a
-         on a.division_id = d.id and a.financial_year = $1
-       where ($2::boolean or coalesce(a.active, false))
-         and ($3::boolean or d.archived_at is null)
-       order by d.name asc`,
-      [financialYear, includeInactive, includeArchived],
+    const divisions = await getCached(
+      `divisions:list:${financialYear}:${includeInactive}:${includeArchived}`,
+      cacheTtl.divisionsMs,
+      async () => {
+        const result = await pool.query<DivisionRow>(
+          `select
+             d.id,
+             d.name,
+             d.code,
+             coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
+             coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
+             d.ad,
+             d.messages_enabled,
+             coalesce(a.active, false) as active,
+             d.archived_at
+           from divisions d
+           left join division_year_allocations a
+             on a.division_id = d.id and a.financial_year = $1
+           where ($2::boolean or coalesce(a.active, false))
+             and ($3::boolean or d.archived_at is null)
+           order by d.name asc`,
+          [financialYear, includeInactive, includeArchived],
+        );
+        return result.rows.map(mapDivision);
+      },
     );
-    response.json({ divisions: result.rows.map(mapDivision) });
+    response.json({ divisions });
   }),
 );
 

@@ -16,6 +16,7 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import { cacheTtl, getCached } from "../utils/cache.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 
 export const dashboardRouter = Router();
@@ -202,70 +203,81 @@ function mapSettings(row: SettingsRow): AppSettings {
 }
 
 async function loadDivisions(user: ReturnType<typeof requireAuth>, financialYear: string) {
-  const values: unknown[] = [];
-  const conditions = ["coalesce(a.active, false)", "d.archived_at is null"];
-  if (!canUseAllDivisions(user)) {
-    if (user.divisionIds.length) {
-      values.push(user.divisionIds);
-      conditions.push(`d.id = any($${values.length}::uuid[])`);
-    } else {
-      conditions.push("false");
-    }
-  }
-  values.push(financialYear);
-  const yearParam = values.length;
-  const result = await pool.query<DivisionRow>(
-    `select
-       d.id,
-       d.name,
-       d.code,
-       coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
-       coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
-       d.ad
-     from divisions d
-     left join division_year_allocations a
-       on a.division_id = d.id and a.financial_year = $${yearParam}::text
-     where ${conditions.join(" and ")}
-     order by d.name asc`,
-    values,
+  const scopeKey = canUseAllDivisions(user) ? "all" : user.divisionIds.join(",");
+  return getCached(
+    `divisions:dashboard:${financialYear}:${scopeKey}`,
+    cacheTtl.divisionsMs,
+    async () => {
+      const values: unknown[] = [];
+      const conditions = ["coalesce(a.active, false)", "d.archived_at is null"];
+      if (!canUseAllDivisions(user)) {
+        if (user.divisionIds.length) {
+          values.push(user.divisionIds);
+          conditions.push(`d.id = any($${values.length}::uuid[])`);
+        } else {
+          conditions.push("false");
+        }
+      }
+      values.push(financialYear);
+      const yearParam = values.length;
+      const result = await pool.query<DivisionRow>(
+        `select
+           d.id,
+           d.name,
+           d.code,
+           coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
+           coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
+           d.ad
+         from divisions d
+         left join division_year_allocations a
+           on a.division_id = d.id and a.financial_year = $${yearParam}::text
+         where ${conditions.join(" and ")}
+         order by d.name asc`,
+        values,
+      );
+      return result.rows.map(mapDivision);
+    },
   );
-  return result.rows.map(mapDivision);
 }
 
 async function loadSettings() {
-  const result = await pool.query<SettingsRow>(
-    `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-            tcec_committees, milestones, table_field_presets, active_user_id
-     from app_settings
-     where id = true`,
-  );
-  if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
-  return mapSettings(result.rows[0]);
+  return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
+    const result = await pool.query<SettingsRow>(
+      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+              tcec_committees, milestones, table_field_presets, active_user_id
+       from app_settings
+       where id = true`,
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
+    return mapSettings(result.rows[0]);
+  });
 }
 
 async function loadValueThresholdLevels(financialYear: string): Promise<ValueThresholdLevel[]> {
-  const result = await pool.query<{
-    id: string;
-    level_number: number;
-    label: string;
-    min_value: string | null;
-    max_value: string | null;
-    applies_to: ValueThresholdLevel["appliesTo"];
-  }>(
-    `select id, level_number, label, min_value, max_value, applies_to
-     from value_threshold_levels
-     where financial_year = $1::text
-     order by level_number asc`,
-    [financialYear],
-  );
-  return result.rows.map((row) => ({
-    id: row.id,
-    label: row.label,
-    levelNumber: row.level_number,
-    minValue: fromDbText(row.min_value) || undefined,
-    maxValue: fromDbText(row.max_value) || undefined,
-    appliesTo: row.applies_to,
-  }));
+  return getCached(`lookup:value-thresholds:${financialYear}`, cacheTtl.lookupMs, async () => {
+    const result = await pool.query<{
+      id: string;
+      level_number: number;
+      label: string;
+      min_value: string | null;
+      max_value: string | null;
+      applies_to: ValueThresholdLevel["appliesTo"];
+    }>(
+      `select id, level_number, label, min_value, max_value, applies_to
+       from value_threshold_levels
+       where financial_year = $1::text
+       order by level_number asc`,
+      [financialYear],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      levelNumber: row.level_number,
+      minValue: fromDbText(row.min_value) || undefined,
+      maxValue: fromDbText(row.max_value) || undefined,
+      appliesTo: row.applies_to,
+    }));
+  });
 }
 
 function readString(value: unknown) {

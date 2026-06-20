@@ -2,12 +2,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { GitMerge, Landmark, Plus, RotateCw, Save } from "lucide-react";
 import {
+  fetchFilesForYear,
   fetchIndentors,
   store,
   type Division,
+  type FileRecord,
   type Indentor,
   useActiveUser,
-  useFiles,
   useSettings,
 } from "@/lib/files-store";
 import { isAllActiveFilesYear, isFileVisibleForYear } from "@/lib/year-filter";
@@ -36,7 +37,7 @@ function YearSetupPage() {
 export function YearSetupPanel() {
   const activeUser = useActiveUser();
   const settings = useSettings();
-  const files = useFiles();
+  const [files, setFiles] = useState<FileRecord[]>([]);
   const [currentDivisions, setCurrentDivisions] = useState<Division[]>([]);
   const [drafts, setDrafts] = useState<Record<string, DraftAllocation>>({});
   const [savingId, setSavingId] = useState<string | undefined>();
@@ -85,26 +86,28 @@ export function YearSetupPanel() {
             settings.financialYear,
             setupYear,
             ...settings.financialYears,
-            ...files.map((file) => file.year),
-            ...files.flatMap((file) => file.activeYears ?? []),
           ]
             .map((year) => year?.trim())
             .filter((year): year is string => Boolean(year) && !isAllActiveFilesYear(year)),
         ),
       ).sort((a, b) => b.localeCompare(a)),
-    [files, settings.financialYear, settings.financialYears, setupYear],
+    [settings.financialYear, settings.financialYears, setupYear],
   );
 
   useEffect(() => {
     let cancelled = false;
-    store
-      .getDivisionsForYear(setupYear, true)
-      .then((payload) => {
-        if (!cancelled) setCurrentDivisions(payload.divisions);
+    Promise.all([store.getDivisionsForYear(setupYear, true), fetchFilesForYear(setupYear)])
+      .then(([divisionPayload, filePayload]) => {
+        if (cancelled) return;
+        setCurrentDivisions(divisionPayload.divisions);
+        setFiles(filePayload.files);
       })
       .catch((error) => {
         console.error(error);
-        if (!cancelled) setCurrentDivisions([]);
+        if (!cancelled) {
+          setCurrentDivisions([]);
+          setFiles([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -1016,7 +1019,7 @@ function BalanceSummary({
   );
 }
 
-function getYearFileCounts(files: ReturnType<typeof useFiles>, year: string) {
+function getYearFileCounts(files: FileRecord[], year: string) {
   const counts = new Map<string, number>();
   if (!year) return counts;
   files.forEach((file) => {

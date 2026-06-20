@@ -2,11 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
 import {
+  fetchFilesForYear,
   fetchIndentors,
   store,
   useActiveUser,
   useDivisions,
-  useFiles,
   useSettings,
   useUsers,
   type AppUserRole,
@@ -20,7 +20,7 @@ import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSetupPanel } from "@/routes/year-setup";
-import { isAllActiveFilesYear, isFileVisibleForYear } from "@/lib/year-filter";
+import { isAllActiveFilesYear } from "@/lib/year-filter";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -328,7 +328,7 @@ function MmgLiveSettings() {
 
 function WorkspaceSettings() {
   const settings = useSettings();
-  const files = useFiles();
+  const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
   const selectedFinancialYear = isAllActiveFilesYear(settings.selectedYear)
     ? settings.financialYear
@@ -340,9 +340,20 @@ function WorkspaceSettings() {
         .filter((year) => !isAllActiveFilesYear(year)),
     ),
   ).sort((a, b) => b.localeCompare(a));
-  const selectedYearFileCount = files.filter((file) =>
-    isFileVisibleForYear(file, selectedFinancialYear),
-  ).length;
+  useEffect(() => {
+    let cancelled = false;
+    fetchFilesForYear(selectedFinancialYear)
+      .then((payload) => {
+        if (!cancelled) setSelectedYearFileCount(payload.files.length);
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!cancelled) setSelectedYearFileCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFinancialYear]);
   const canDeleteSelectedYear =
     selectedFinancialYear !== settings.financialYear &&
     selectedYearFileCount === 0 &&

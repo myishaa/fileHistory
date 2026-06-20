@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import { loadFiles } from "./files.js";
 import type { AppSettings, Division } from "../types.js";
+import { cacheTtl, getCached } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
@@ -69,33 +70,37 @@ function mapDivision(row: DivisionRow): Division {
 }
 
 async function loadSettings() {
-  const result = await pool.query<SettingsRow>(
-    `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-            tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options, active_user_id
-     from app_settings
-     where id = true`,
-  );
-  if (!result.rows[0]) throw new HttpError(404, "Settings row not found.");
-  return mapSettings(result.rows[0]);
+  return getCached("settings:live", cacheTtl.settingsMs, async () => {
+    const result = await pool.query<SettingsRow>(
+      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+              tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options, active_user_id
+       from app_settings
+       where id = true`,
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Settings row not found.");
+    return mapSettings(result.rows[0]);
+  });
 }
 
 async function loadActiveDivisions(financialYear: string) {
-  const result = await pool.query<DivisionRow>(
-    `select
-       d.id,
-       d.name,
-       d.code,
-       coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
-       coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
-       d.ad
-     from divisions d
-     left join division_year_allocations a
-       on a.division_id = d.id and a.financial_year = $1
-     where coalesce(a.active, false) and d.archived_at is null
-     order by d.name asc`,
-    [financialYear],
-  );
-  return result.rows.map(mapDivision);
+  return getCached(`divisions:live:${financialYear}`, cacheTtl.divisionsMs, async () => {
+    const result = await pool.query<DivisionRow>(
+      `select
+         d.id,
+         d.name,
+         d.code,
+         coalesce(a.allocated_capital, d.allocated_capital) as allocated_capital,
+         coalesce(a.allocated_revenue, d.allocated_revenue) as allocated_revenue,
+         d.ad
+       from divisions d
+       left join division_year_allocations a
+         on a.division_id = d.id and a.financial_year = $1
+       where coalesce(a.active, false) and d.archived_at is null
+       order by d.name asc`,
+      [financialYear],
+    );
+    return result.rows.map(mapDivision);
+  });
 }
 
 function getSelectedYearWhere(selectedYear: string) {

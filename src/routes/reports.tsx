@@ -5,9 +5,9 @@ import {
   type FileRecord,
   type SupplyOrderDetail,
   useAccessibleDivisions,
-  useAccessibleFiles,
   useSettings,
 } from "@/lib/files-store";
+import { downloadBackendExport } from "@/lib/export-download";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
 import { isCancelledFile } from "@/lib/year-filter";
 
@@ -44,7 +44,6 @@ async function fetchReportsSummary(query: string, signal: AbortSignal) {
 }
 
 function ReportsPage() {
-  const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
   const navigate = useNavigate();
@@ -61,15 +60,6 @@ function ReportsPage() {
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
   const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
-  const reportFiles = useMemo(
-    () =>
-      activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
-    [activeDivision, files],
-  );
-  const activeReportStatusFiles = useMemo(
-    () => reportFiles.filter((file) => !isFileClosed(file)),
-    [reportFiles],
-  );
   const delayThresholdDays = getDelayThresholdDays(delayDays);
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays) || 0;
   const reportsQuery = useMemo(() => {
@@ -116,27 +106,12 @@ function ReportsPage() {
     };
   }, [reportsQuery]);
 
-  const localExpectedCashOutgoDpRows = getExpectedCashOutgoByDpRows(
-    reportFiles,
-    expectedCashOutgoOffsetDays,
-  );
-  const localExpectedCashOutgoReceiptRows = getExpectedCashOutgoByReceiptRows(
-    reportFiles,
-    expectedCashOutgoOffsetDays,
-  );
-  const localActualCashOutgoRows = getActualCashOutgoRows(reportFiles);
-  const localDelayRows = getDelayStatusRows(
-    activeReportStatusFiles,
-    delayThresholdDays,
-    delayMilestoneKey,
-  );
-  const expectedCashOutgoDpRows =
-    reportsSummary?.expectedCashOutgoDpRows ?? localExpectedCashOutgoDpRows;
+  const expectedCashOutgoDpRows = reportsSummary?.expectedCashOutgoDpRows ?? [];
   const expectedCashOutgoReceiptRows =
-    reportsSummary?.expectedCashOutgoReceiptRows ?? localExpectedCashOutgoReceiptRows;
-  const actualCashOutgoRows = reportsSummary?.actualCashOutgoRows ?? localActualCashOutgoRows;
-  const delayRows = reportsSummary?.delayRows ?? localDelayRows;
-  const delaySummary = reportsSummary?.delaySummary ?? getDelayStatusSummary(localDelayRows);
+    reportsSummary?.expectedCashOutgoReceiptRows ?? [];
+  const actualCashOutgoRows = reportsSummary?.actualCashOutgoRows ?? [];
+  const delayRows = reportsSummary?.delayRows ?? [];
+  const delaySummary = reportsSummary?.delaySummary ?? getDelayStatusSummary([]);
   const selectedCashOutgoRows =
     reportMode === "actualCashOutgo"
       ? actualCashOutgoRows
@@ -868,68 +843,32 @@ function getPaginationPages(currentPage: number, totalPages: number) {
 }
 
 function exportDelayStatusToExcel(rows: DelayStatusRow[], title: string) {
-  const worksheet = `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; }
-          th, td { border: 1px solid #999; padding: 6px; text-align: left; }
-          th { font-weight: 700; background: #f3f4f6; }
-          td:nth-child(1), td:nth-child(8), th:nth-child(1), th:nth-child(8) { text-align: right; }
-        </style>
-      </head>
-      <body>
-        <h1>${escapeHtml(title)}</h1>
-        ${getDelayStatusTableHtml(rows)}
-      </body>
-    </html>
-  `;
-  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${getExportFileName(title)}.xls`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  void downloadDelayStatus(rows, title, "excel");
 }
 
 function printDelayStatusToPdf(rows: DelayStatusRow[], title: string) {
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) {
-    window.alert("Please allow pop-ups to generate the PDF report.");
-    return;
-  }
+  void downloadDelayStatus(rows, title, "pdf");
+}
 
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>${escapeHtml(title)}</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
-          h1 { font-size: 18px; margin: 0 0 4px; }
-          p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
-          table { width: 100%; border-collapse: collapse; font-size: 11px; }
-          th, td { border: 1px solid #d1d5db; padding: 6px; text-align: left; vertical-align: top; }
-          th { background: #f3f4f6; font-weight: 700; }
-          td:nth-child(1), td:nth-child(8), th:nth-child(1), th:nth-child(8) { text-align: right; }
-          @media print { body { margin: 12mm; } }
-        </style>
-      </head>
-      <body>
-        <h1>${escapeHtml(title)}</h1>
-        <p>Files whose current milestone has remained open beyond the selected threshold.</p>
-        ${getDelayStatusTableHtml(rows)}
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
-  printWindow.focus();
-  printWindow.print();
+async function downloadDelayStatus(
+  rows: DelayStatusRow[],
+  title: string,
+  format: "excel" | "pdf",
+) {
+  const exportColumns = delayStatusColumns.filter((column) => column.key !== "action");
+  await downloadBackendExport({
+    format,
+    title,
+    description: "Files whose current milestone has remained open beyond the selected threshold.",
+    tables: [
+      {
+        headers: exportColumns.map((column) => column.label),
+        rows: rows.map((row, index) =>
+          exportColumns.map((column) => getDelayStatusDisplayValue(row, column.key, index)),
+        ),
+      },
+    ],
+  });
 }
 
 function getDelayStatusTableHtml(rows: DelayStatusRow[]) {
@@ -982,32 +921,7 @@ function exportActualCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: strin
 }
 
 function exportCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string, emptyMessage: string) {
-  const worksheet = `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; }
-          th, td { border: 1px solid #999; padding: 6px; text-align: left; }
-          th { font-weight: 700; background: #f3f4f6; }
-          td:nth-child(1), td:nth-child(n+3), th:nth-child(1), th:nth-child(n+3) { text-align: right; }
-        </style>
-      </head>
-      <body>
-        <h1>${escapeHtml(title)}</h1>
-        ${getCashOutgoTableHtml(rows, emptyMessage)}
-      </body>
-    </html>
-  `;
-  const blob = new Blob([worksheet], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${getExportFileName(title)}.xls`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  void downloadCashOutgo(rows, title, emptyMessage, undefined, "excel");
 }
 
 function printExpectedCashOutgoToPdf(
@@ -1041,39 +955,31 @@ function printCashOutgoToPdf(
   description: string,
   emptyMessage: string,
 ) {
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) {
-    window.alert("Please allow pop-ups to generate the PDF report.");
-    return;
-  }
+  void downloadCashOutgo(rows, title, emptyMessage, description, "pdf");
+}
 
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>${escapeHtml(title)}</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
-          h1 { font-size: 18px; margin: 0 0 4px; }
-          p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
-          table { width: 100%; border-collapse: collapse; font-size: 12px; }
-          th, td { border: 1px solid #d1d5db; padding: 7px; text-align: left; vertical-align: top; }
-          th { background: #f3f4f6; font-weight: 700; }
-          td:nth-child(1), td:nth-child(n+3), th:nth-child(1), th:nth-child(n+3) { text-align: right; }
-          @media print { body { margin: 12mm; } }
-        </style>
-      </head>
-      <body>
-        <h1>${escapeHtml(title)}</h1>
-        <p>${escapeHtml(description)}</p>
-        ${getCashOutgoTableHtml(rows, emptyMessage)}
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
-  printWindow.focus();
-  printWindow.print();
+async function downloadCashOutgo(
+  rows: ExpectedCashOutgoRow[],
+  title: string,
+  emptyMessage: string,
+  description: string | undefined,
+  format: "excel" | "pdf",
+) {
+  await downloadBackendExport({
+    format,
+    title,
+    description,
+    tables: [
+      {
+        headers: cashOutgoColumns.map((column) => column.label),
+        rows: rows.length
+          ? rows.map((row, index) =>
+              cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+            )
+          : [[emptyMessage]],
+      },
+    ],
+  });
 }
 
 function getCashOutgoTableHtml(rows: ExpectedCashOutgoRow[], emptyMessage: string) {

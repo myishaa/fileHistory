@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ArrowRight, ScanLine } from "lucide-react";
-import { type FileRecord, useAccessibleFiles, useActiveUser } from "@/lib/files-store";
+import { fetchFilesByUniqueCode, type FileRecord, useActiveUser } from "@/lib/files-store";
 
 export const Route = createFileRoute("/quick-entry")({
   component: QuickEntryPage,
@@ -55,30 +55,28 @@ function QuickEntryPage() {
 }
 
 function QuickEntryEditor() {
-  const files = useAccessibleFiles();
   const navigate = useNavigate();
   const [uniqueCode, setUniqueCode] = useState("");
   const [message, setMessage] = useState<QuickEntryError | null>(null);
   const [milestoneFileId, setMilestoneFileId] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const filesByUniqueCode = useMemo(() => {
-    const map = new Map<string, FileRecord[]>();
-    files.forEach((file) => {
-      const code = normalizeQuickEntryCode(file.uniqueCode);
-      if (!code) return;
-      map.set(code, [...(map.get(code) ?? []), file]);
-    });
-    return map;
-  }, [files]);
-
-  const findFile = () => {
+  const findFile = async () => {
     const code = normalizeQuickEntryCode(uniqueCode);
     if (!code) {
       setMessage({ tone: "error", text: "Scan or enter the Unique code first." });
       return undefined;
     }
 
-    const matches = filesByUniqueCode.get(code) ?? [];
+    setLoading(true);
+    const matches = await fetchFilesByUniqueCode(code)
+      .then((result) => result.files)
+      .catch((error) => {
+        console.error(error);
+        setMessage({ tone: "error", text: "File lookup failed. Please try again." });
+        return [];
+      })
+      .finally(() => setLoading(false));
     if (matches.length === 0) {
       setMessage({
         tone: "error",
@@ -96,8 +94,8 @@ function QuickEntryEditor() {
     return matches[0];
   };
 
-  const continueToCurrentStage = () => {
-    const file = findFile();
+  const continueToCurrentStage = async () => {
+    const file = await findFile();
     if (!file) return;
 
     const stage = getQuickEntryStageForCurrentMilestone(file);
@@ -148,7 +146,7 @@ function QuickEntryEditor() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  continueToCurrentStage();
+                  void continueToCurrentStage();
                 }
               }}
               autoFocus
@@ -158,10 +156,11 @@ function QuickEntryEditor() {
           </label>
           <button
             type="button"
-            onClick={() => continueToCurrentStage()}
+            onClick={() => void continueToCurrentStage()}
+            disabled={loading}
             className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Open current stage <ArrowRight className="size-4" />
+            {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
           </button>
         </div>
 

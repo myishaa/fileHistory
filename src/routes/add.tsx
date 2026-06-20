@@ -1,6 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
+  fetchFile,
+  fetchNextUniqueCode,
   fetchIndentors,
   store,
   type Division,
@@ -11,15 +13,14 @@ import {
   type SupplyOrderDetail,
   type ValueThresholdLevel,
   useAccessibleDivisions,
-  useAccessibleFiles,
   useActiveUser,
   useDivisions,
-  useFiles,
   useMessages,
   useSettings,
 } from "@/lib/files-store";
 import { MessageSquare, Save, Eraser, Lock, Plus, Printer, Trash2, Unlock } from "lucide-react";
 import { promptDeletionPassword } from "@/lib/delete-password";
+import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
 import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
 
 export const Route = createFileRoute("/add")({
@@ -470,16 +471,18 @@ function AddFilePage() {
 }
 
 function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
-  const allDivisions = useDivisions();
   const divisions = useAccessibleDivisions();
-  const files = useAccessibleFiles();
-  const allFiles = useFiles();
   const messages = useMessages();
   const activeUser = useActiveUser();
   const settings = useSettings();
   const { fileId, section, quickFocus } = Route.useSearch();
   const navigate = useNavigate();
-  const editingFile = files.find((file) => file.id === fileId);
+  const [loadedFile, setLoadedFile] = useState<FileRecord | undefined>();
+  const [fileLoadStatus, setFileLoadStatus] = useState<"idle" | "loading" | "loaded" | "error">(
+    fileId ? "loading" : "idle",
+  );
+  const [serverUniqueCode, setServerUniqueCode] = useState("");
+  const editingFile = loadedFile;
   const isEditing = Boolean(fileId && editingFile);
   const [form, setForm] = useState(() =>
     applyConditionalRules(
@@ -514,6 +517,32 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
   const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const quickFocusAppliedRef = useRef("");
+  useEffect(() => {
+    if (!fileId) {
+      setLoadedFile(undefined);
+      setFileLoadStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setFileLoadStatus("loading");
+    fetchFile(fileId)
+      .then(({ file }) => {
+        if (cancelled) return;
+        setLoadedFile(file);
+        setFileLoadStatus("loaded");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        setLoadedFile(undefined);
+        setFileLoadStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId]);
   const savedFormForLocks = useMemo(
     () =>
       editingFile
@@ -569,14 +598,33 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     setActiveBoardSection(section ?? "File details");
   }, [section, editingFile?.id]);
 
+  useEffect(() => {
+    if (isEditing) return;
+    const financialYear = activeYears[0] || settings.financialYear;
+    const division = form.division.trim();
+    if (!financialYear || !division) {
+      setServerUniqueCode("");
+      return;
+    }
+
+    let cancelled = false;
+    fetchNextUniqueCode({ financialYear, division })
+      .then(({ uniqueCode }) => {
+        if (!cancelled) setServerUniqueCode(uniqueCode);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        setServerUniqueCode("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeYears, form.division, isEditing, settings.financialYear]);
+
   const generatedUniqueCode = isEditing
     ? form.uniqueCode
-    : generateUniqueCode(
-        activeYears[0] || settings.financialYear,
-        form.division,
-        allDivisions,
-        allFiles,
-      );
+    : serverUniqueCode;
   const originYear = isEditing
     ? form.year || editingFile?.year || settings.financialYear
     : activeYears[0] || settings.financialYear;
@@ -1019,7 +1067,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     </div>
   );
 
-  const save = (options?: { returnToQuickEntry?: boolean }) => {
+  const save = async (options?: { returnToQuickEntry?: boolean }) => {
     if (readOnlyMode) return;
     const supplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
     const cleanedSupplyOrders = cleanSupplyOrderRows(
@@ -1069,7 +1117,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return;
     }
     if (editingFile) {
-      store.updateFile(editingFile.id, payload);
+      const updatedFile = await store.updateFile(editingFile.id, payload);
+      setLoadedFile(updatedFile);
       setUnlockedSections(new Set());
       setSaved(true);
       if (options?.returnToQuickEntry) {
@@ -1082,7 +1131,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       setTimeout(() => setSaved(false), 1200);
       return;
     } else {
-      store.addFile(payload);
+      await store.addFile(payload);
     }
     setSaved(true);
     setTimeout(() => {
@@ -1130,6 +1179,19 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     store.deleteFile(editingFile.id, deletionPassword);
     navigate({ to: "/search", search: { dashboardFilter: undefined, division: undefined } });
   };
+
+  if (fileId && fileLoadStatus === "loading") {
+    return (
+      <div className="w-full">
+        <div className="bg-card border border-border rounded-md p-6 shadow-[var(--shadow-card)]">
+          <h2 className="text-base font-semibold">Loading file...</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Fetching this file from the backend.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (fileId && !editingFile) {
     return (
@@ -2581,159 +2643,47 @@ function getRemarkTime(value: string) {
 }
 
 function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
-  const printWindow = window.open("", "_blank", "width=900,height=720");
-  if (!printWindow) {
-    alert("Allow pop-ups to print this timeline.");
-    return;
-  }
-
   const details = [
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
     { label: "Description", value: form.demandDescription },
     { label: "Indentor", value: form.indentor },
   ];
-  const detailRows = details
-    .map(
-      (detail, index) => `
-        <tr>
-          <td class="sno">${index + 1}</td>
-          <th>${escapeHtml(detail.label)}</th>
-          <td>${escapeHtml(detail.value || "Not set")}</td>
-        </tr>
-      `,
-    )
-    .join("");
-  const timelineRows = filledItems
-    .map((item, index) => {
+  const timelineRows = filledItems.map((item, index) => {
       const firstItem = filledItems[0];
       const previousItem = filledItems[index - 1];
       const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
       const cumulativeDays = firstItem ? getTimelineDayGap(firstItem.date, item.date) : undefined;
 
-      return `
-        <tr>
-          <td class="sno">${index + 1}</td>
-          <td>${escapeHtml(item.label)}</td>
-          <td>${escapeHtml(formatTimelineDate(item.date))}</td>
-          <td>${escapeHtml(formatDayCount(gapDays))}</td>
-          <td>${escapeHtml(formatDayCount(cumulativeDays))}</td>
-        </tr>
-      `;
-    })
-    .join("");
+      return [
+        index + 1,
+        item.label,
+        formatTimelineDate(item.date),
+        formatDayCount(gapDays),
+        formatDayCount(cumulativeDays),
+      ];
+    });
 
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <title>${escapeHtml(form.imms || form.uniqueCode || "Timeline")}</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            font-family: Arial, sans-serif;
-            color: #111;
-            margin: 22px;
-          }
-          header {
-            border-bottom: 2px solid #111;
-            margin-bottom: 16px;
-            padding-bottom: 10px;
-          }
-          h1 {
-            font-size: 18px;
-            margin: 0 0 5px;
-          }
-          h2 {
-            font-size: 14px;
-            margin: 18px 0 8px;
-          }
-          .subtle {
-            color: #555;
-            font-size: 12px;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-          }
-          th, td {
-            border: 1px solid #bbb;
-            padding: 7px 8px;
-            text-align: left;
-            vertical-align: top;
-          }
-          th {
-            background: #f3f3f3;
-            font-weight: 600;
-          }
-          .detail-table th {
-            width: 28%;
-          }
-          .sno {
-            width: 44px;
-            text-align: right;
-          }
-          .timeline-table th:nth-child(2) {
-            width: 42%;
-          }
-          .timeline-table th:nth-child(3) {
-            width: 18%;
-          }
-          .timeline-table th:nth-child(4),
-          .timeline-table th:nth-child(5) {
-            width: 20%;
-          }
-          @media print {
-            body { margin: 10mm; }
-            tr { break-inside: avoid; }
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>File Timeline</h1>
-          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
-        </header>
-        <h2>File details</h2>
-        <table class="detail-table">
-          <tbody>${detailRows}</tbody>
-        </table>
-        <h2>Timeline</h2>
-        ${
-          filledItems.length
-            ? `<table class="timeline-table">
-                <thead>
-                  <tr>
-                    <th>S.No.</th>
-                    <th>Field</th>
-                    <th>Date</th>
-                    <th>Time gap</th>
-                    <th>Cumulative time</th>
-                  </tr>
-                </thead>
-                <tbody>${timelineRows}</tbody>
-              </table>`
-            : `<p class="subtle">No timeline fields are filled.</p>`
-        }
-        <script>
-          window.onload = () => {
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  void downloadBackendExport({
+    format: "pdf",
+    title: "File Timeline",
+    fileName: `${getExportFileName(form.imms || form.uniqueCode || "timeline")}.pdf`,
+    tables: [
+      {
+        title: "File details",
+        headers: ["S.No.", "Field", "Value"],
+        rows: details.map((detail, index) => [index + 1, detail.label, detail.value || "Not set"]),
+      },
+      {
+        title: "Timeline",
+        headers: ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
+        rows: timelineRows.length ? timelineRows : [["No timeline fields are filled."]],
+      },
+    ],
+  });
 }
 
 function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter: string) {
-  const printWindow = window.open("", "_blank", "width=900,height=720");
-  if (!printWindow) {
-    alert("Allow pop-ups to export remarks.");
-    return;
-  }
-
   const details = [
     { label: "Unique code", value: form.uniqueCode },
     { label: "Control number", value: form.imms },
@@ -2741,128 +2691,31 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
     { label: "Indentor", value: form.indentor },
     { label: "Description", value: form.demandDescription },
   ];
-  const detailRows = details
-    .map(
-      (detail, index) => `
-        <tr>
-          <td class="sno">${index + 1}</td>
-          <th>${escapeHtml(detail.label)}</th>
-          <td>${escapeHtml(detail.value || "Not set")}</td>
-        </tr>
-      `,
-    )
-    .join("");
-  const remarkRows = remarks
-    .map(
-      (remark, index) => `
-        <tr>
-          <td class="sno">${index + 1}</td>
-          <td>${escapeHtml(formatRemarkDate(remark.createdAt))}</td>
-          <td>${escapeHtml(remark.section)}</td>
-          <td>${escapeHtml(remark.text).replace(/\n/g, "<br />")}</td>
-        </tr>
-      `,
-    )
-    .join("");
-
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <title>${escapeHtml(form.imms || form.uniqueCode || "Remarks Summary")}</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            font-family: Arial, sans-serif;
-            color: #111;
-            margin: 22px;
-          }
-          header {
-            border-bottom: 2px solid #111;
-            margin-bottom: 16px;
-            padding-bottom: 10px;
-          }
-          h1 {
-            font-size: 18px;
-            margin: 0 0 5px;
-          }
-          h2 {
-            font-size: 14px;
-            margin: 18px 0 8px;
-          }
-          .subtle {
-            color: #555;
-            font-size: 12px;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-          }
-          th, td {
-            border: 1px solid #bbb;
-            padding: 7px 8px;
-            text-align: left;
-            vertical-align: top;
-          }
-          th {
-            background: #f3f3f3;
-            font-weight: 600;
-          }
-          .detail-table th {
-            width: 28%;
-          }
-          .sno {
-            width: 44px;
-            text-align: right;
-          }
-          .remarks-table th:nth-child(2) {
-            width: 18%;
-          }
-          .remarks-table th:nth-child(3) {
-            width: 24%;
-          }
-          @media print {
-            body { margin: 10mm; }
-            tr { break-inside: avoid; }
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>Remarks Summary</h1>
-          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
-          <div class="subtle">Stage: ${escapeHtml(stageFilter)}</div>
-        </header>
-        <h2>File details</h2>
-        <table class="detail-table">
-          <tbody>${detailRows}</tbody>
-        </table>
-        <h2>Remarks</h2>
-        ${
-          remarks.length
-            ? `<table class="remarks-table">
-                <thead>
-                  <tr>
-                    <th>S.No.</th>
-                    <th>Date</th>
-                    <th>Stage</th>
-                    <th>Remark</th>
-                  </tr>
-                </thead>
-                <tbody>${remarkRows}</tbody>
-              </table>`
-            : `<p class="subtle">No remarks are available for the selected filter.</p>`
-        }
-        <script>
-          window.onload = () => {
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  void downloadBackendExport({
+    format: "pdf",
+    title: "Remarks Summary",
+    subtitle: `Stage: ${stageFilter}`,
+    fileName: `${getExportFileName(form.imms || form.uniqueCode || "remarks-summary")}.pdf`,
+    tables: [
+      {
+        title: "File details",
+        headers: ["S.No.", "Field", "Value"],
+        rows: details.map((detail, index) => [index + 1, detail.label, detail.value || "Not set"]),
+      },
+      {
+        title: "Remarks",
+        headers: ["S.No.", "Date", "Stage", "Remark"],
+        rows: remarks.length
+          ? remarks.map((remark, index) => [
+              index + 1,
+              formatRemarkDate(remark.createdAt),
+              remark.section,
+              remark.text,
+            ])
+          : [["No remarks are available for the selected filter."]],
+      },
+    ],
+  });
 }
 
 function escapeHtml(value: string) {

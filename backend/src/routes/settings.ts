@@ -8,6 +8,7 @@ import type {
   ValueThresholdLevel,
 } from "../types.js";
 import { requireAuth, type AuthRequest } from "../utils/auth.js";
+import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
 import {
   asyncHandler,
@@ -62,47 +63,53 @@ function normalizeYearLabel(value: unknown, field = "financialYear") {
 }
 
 async function loadFinancialYears() {
-  const result = await pool.query<{ label: string }>(
-    "select label from financial_years order by label desc",
-  );
-  return result.rows.map((row) => row.label);
+  return getCached("lookup:financial-years", cacheTtl.lookupMs, async () => {
+    const result = await pool.query<{ label: string }>(
+      "select label from financial_years order by label desc",
+    );
+    return result.rows.map((row) => row.label);
+  });
 }
 
 async function loadTcecCommittees(financialYear: string, fallback: unknown) {
-  const result = await pool.query<{ name: string }>(
-    `select name
-     from tcec_committees
-     where financial_year = $1
-     order by sort_order asc, name asc`,
-    [financialYear],
-  );
-  if (result.rows.length) return result.rows.map((row) => row.name);
-  return fromDbJsonArray(fallback) as string[];
+  return getCached(`lookup:tcec-committees:${financialYear}`, cacheTtl.lookupMs, async () => {
+    const result = await pool.query<{ name: string }>(
+      `select name
+       from tcec_committees
+       where financial_year = $1
+       order by sort_order asc, name asc`,
+      [financialYear],
+    );
+    if (result.rows.length) return result.rows.map((row) => row.name);
+    return fromDbJsonArray(fallback) as string[];
+  });
 }
 
 async function loadValueThresholdLevels(financialYear: string): Promise<ValueThresholdLevel[]> {
-  const result = await pool.query<{
-    id: string;
-    level_number: number;
-    label: string;
-    min_value: string | null;
-    max_value: string | null;
-    applies_to: ValueThresholdAppliesTo;
-  }>(
-    `select id, level_number, label, min_value, max_value, applies_to
-     from value_threshold_levels
-     where financial_year = $1
-     order by level_number asc`,
-    [financialYear],
-  );
-  return result.rows.map((row) => ({
-    id: row.id,
-    label: row.label,
-    levelNumber: row.level_number,
-    minValue: fromDbText(row.min_value) || undefined,
-    maxValue: fromDbText(row.max_value) || undefined,
-    appliesTo: row.applies_to,
-  }));
+  return getCached(`lookup:value-thresholds:${financialYear}`, cacheTtl.lookupMs, async () => {
+    const result = await pool.query<{
+      id: string;
+      level_number: number;
+      label: string;
+      min_value: string | null;
+      max_value: string | null;
+      applies_to: ValueThresholdAppliesTo;
+    }>(
+      `select id, level_number, label, min_value, max_value, applies_to
+       from value_threshold_levels
+       where financial_year = $1
+       order by level_number asc`,
+      [financialYear],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      levelNumber: row.level_number,
+      minValue: fromDbText(row.min_value) || undefined,
+      maxValue: fromDbText(row.max_value) || undefined,
+      appliesTo: row.applies_to,
+    }));
+  });
 }
 
 async function ensureFinancialYear(label: string) {
@@ -113,11 +120,13 @@ async function ensureFinancialYear(label: string) {
 }
 
 async function loadUserTableFieldPresets(ownerKey: string) {
-  const result = await pool.query<{ presets: unknown }>(
-    "select presets from user_table_field_presets where owner_key = $1",
-    [ownerKey],
-  );
-  return result.rows[0]?.presets ?? [];
+  return getCached(`settings:user-presets:${ownerKey}`, cacheTtl.settingsMs, async () => {
+    const result = await pool.query<{ presets: unknown }>(
+      "select presets from user_table_field_presets where owner_key = $1",
+      [ownerKey],
+    );
+    return result.rows[0]?.presets ?? [];
+  });
 }
 
 async function ensureUserLiveStatusPreferencesTable() {
@@ -132,14 +141,16 @@ async function ensureUserLiveStatusPreferencesTable() {
 
 async function loadUserLiveStatusFields(ownerKey: string) {
   await ensureUserLiveStatusPreferencesTable();
-  const result = await pool.query<{ field_keys: unknown }>(
-    "select field_keys from user_live_status_preferences where owner_key = $1",
-    [ownerKey],
-  );
-  if (!result.rows[0]) return undefined;
-  return fromDbJsonArray(result.rows[0].field_keys).filter(
-    (key): key is string => typeof key === "string",
-  );
+  return getCached(`settings:live-status-fields:${ownerKey}`, cacheTtl.settingsMs, async () => {
+    const result = await pool.query<{ field_keys: unknown }>(
+      "select field_keys from user_live_status_preferences where owner_key = $1",
+      [ownerKey],
+    );
+    if (!result.rows[0]) return undefined;
+    return fromDbJsonArray(result.rows[0].field_keys).filter(
+      (key): key is string => typeof key === "string",
+    );
+  });
 }
 
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
@@ -252,14 +263,26 @@ async function replaceValueThresholdLevels(financialYear: string, levels: unknow
 }
 
 async function getSettings(user?: AuthRequest["authUser"]) {
-  const result = await pool.query<SettingsRow>(
-    `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-            tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options, active_user_id
-     from app_settings
-     where id = true`,
-  );
-  if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
-  return mapSettings(result.rows[0], user);
+  const key = `settings:app:${user?.id ?? "anonymous"}:${user?.role ?? "none"}`;
+  return getCached(key, cacheTtl.settingsMs, async () => {
+    const result = await pool.query<SettingsRow>(
+      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+              tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options, active_user_id
+       from app_settings
+       where id = true`,
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
+    return mapSettings(result.rows[0], user);
+  });
+}
+
+function clearSettingsCache() {
+  clearCachePrefix("settings:");
+  clearCachePrefix("divisions:");
+  clearCachePrefix("lookup:financial-years");
+  clearCachePrefix("lookup:selected-year");
+  clearCachePrefix("lookup:tcec-committees:");
+  clearCachePrefix("lookup:value-thresholds:");
 }
 
 function readTheme(value: unknown) {
@@ -464,6 +487,7 @@ settingsRouter.patch(
     if (fields.length) {
       await pool.query(`update app_settings set ${fields.join(", ")} where id = true`, values);
     }
+    clearSettingsCache();
     response.json({ settings: await getSettings(user) });
   }),
 );
@@ -482,6 +506,7 @@ settingsRouter.post(
       await pool.query("update app_settings set selected_year = $1 where id = true", [label]);
     }
 
+    clearSettingsCache();
     response.status(201).json({ settings: await getSettings(user) });
   }),
 );
@@ -520,6 +545,7 @@ settingsRouter.delete(
       await pool.query("update app_settings set selected_year = financial_year where id = true");
     }
 
+    clearSettingsCache();
     response.json({ settings: await getSettings(user) });
   }),
 );

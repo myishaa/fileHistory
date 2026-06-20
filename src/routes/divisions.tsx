@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { store, useDivisions, useFiles } from "@/lib/files-store";
+import { useEffect, useState } from "react";
+import { fetchFilesForYear, store, type FileRecord, useDivisions, useSettings } from "@/lib/files-store";
 import { Building2, Pencil, Trash2, Plus, X, Check } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 
@@ -10,7 +10,8 @@ export const Route = createFileRoute("/divisions")({
 
 function DivisionsPage() {
   const divisions = useDivisions();
-  const files = useFiles();
+  const settings = useSettings();
+  const [files, setFiles] = useState<FileRecord[]>([]);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -23,6 +24,21 @@ function DivisionsPage() {
     setName("");
     setCode("");
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchFilesForYear(settings.selectedYear)
+      .then((payload) => {
+        if (!cancelled) setFiles(payload.files);
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!cancelled) setFiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.selectedYear]);
 
   return (
     <div className="space-y-6">

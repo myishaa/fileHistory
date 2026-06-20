@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { pool } from "../db/pool.js";
 import type { AppUserRole, AuthUser } from "../types.js";
+import { cacheTtl, deleteCached, getCached } from "./cache.js";
 import { HttpError } from "./http.js";
 
 const sessionCookieName = "recordkeeper_session";
@@ -94,12 +95,21 @@ export async function saveViewerSession(divisionId: string) {
 
 export async function deleteSession(token: string | undefined) {
   if (!token) return;
-  await pool.query("delete from auth_sessions where token_hash = $1", [hashToken(token)]);
+  const tokenHash = hashToken(token);
+  await pool.query("delete from auth_sessions where token_hash = $1", [tokenHash]);
+  deleteCached(`auth:${tokenHash}`);
 }
 
 export async function loadAuthUser(request: Request): Promise<AuthUser | undefined> {
   const token = getSessionToken(request);
   if (!token) return undefined;
+  const tokenHash = hashToken(token);
+  return getCached(`auth:${tokenHash}`, cacheTtl.authSessionMs, async () =>
+    loadAuthUserByHash(tokenHash),
+  );
+}
+
+async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefined> {
   const result = await pool.query<SessionRow>(
     `select
        s.user_id,
@@ -119,7 +129,7 @@ export async function loadAuthUser(request: Request): Promise<AuthUser | undefin
      left join divisions vd on vd.id = s.viewer_division_id
      where s.token_hash = $1 and s.expires_at > now()
      group by s.id, u.id, vd.id`,
-    [hashToken(token)],
+    [tokenHash],
   );
   const row = result.rows[0];
   if (!row) return undefined;

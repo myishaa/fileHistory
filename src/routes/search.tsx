@@ -6,7 +6,6 @@ import {
   type FirmDetail,
   type SupplyOrderDetail,
   useAccessibleDivisions,
-  useAccessibleFiles,
   useSettings,
 } from "@/lib/files-store";
 import {
@@ -20,6 +19,11 @@ import {
   X,
 } from "lucide-react";
 import { promptDeletionPassword } from "@/lib/delete-password";
+import {
+  downloadBackendExport,
+  downloadBackendFileSearchExport,
+  getExportFileName,
+} from "@/lib/export-download";
 import { formatThousandsAndLakhs, getInrAmount, parseAmount } from "@/lib/money";
 import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
 import type { TableFieldPreset } from "@/lib/table-field-presets";
@@ -393,15 +397,14 @@ async function fetchBackendSearchResults(query: string, signal: AbortSignal) {
 }
 
 function SearchPage() {
-  const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
   const navigate = useNavigate();
   const search = Route.useSearch();
   const divisionOptions = divisions.map((division) => division.name);
   const years = useMemo(
-    () => Array.from(new Set(files.map((file) => file.year).filter(Boolean))).sort() as string[],
-    [files],
+    () => Array.from(new Set(settings.financialYears.filter(Boolean))).sort(),
+    [settings.financialYears],
   );
 
   const [yearFilter, setYearFilter] = useState("");
@@ -681,7 +684,6 @@ function SearchPage() {
   const lastResultNumber = Math.min(searchTotal, (currentPage - 1) * pageSize + results.length);
 
   const valueTotals = useMemo(() => getValueTotals(results), [results]);
-  const allValueTotals = useMemo(() => getValueTotals(files), [files]);
   const selectedResultFiles = results.filter((file) => selectedFileIds.includes(file.id));
   const allVisibleRowsSelected =
     results.length > 0 && results.every((file) => selectedFileIds.includes(file.id));
@@ -817,12 +819,12 @@ function SearchPage() {
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span className="rounded-md border border-border bg-secondary/50 px-3 py-2">
-              <span className="font-medium text-foreground">{files.length}</span> records
+              <span className="font-medium text-foreground">{searchTotal}</span> records
             </span>
             <span className="rounded-md border border-border bg-secondary/50 px-3 py-2">
               Total INR value:{" "}
               <span className="font-medium text-foreground">
-                {formatCurrency(allValueTotals.total)}
+                {formatCurrency(valueTotals.total)}
               </span>
             </span>
           </div>
@@ -924,24 +926,11 @@ function SearchPage() {
                 placeholder="From"
                 decimalOnly
               />
-              <FilterInput
-                value={soValueTo}
-                onChange={setSoValueTo}
-                placeholder="To"
-                decimalOnly
-              />
+              <FilterInput value={soValueTo} onChange={setSoValueTo} placeholder="To" decimalOnly />
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <CheckFilter
-                label="Capital"
-                checked={soCapitalOnly}
-                onChange={setSoCapitalOnly}
-              />
-              <CheckFilter
-                label="Revenue"
-                checked={soRevenueOnly}
-                onChange={setSoRevenueOnly}
-              />
+              <CheckFilter label="Capital" checked={soCapitalOnly} onChange={setSoCapitalOnly} />
+              <CheckFilter label="Revenue" checked={soRevenueOnly} onChange={setSoRevenueOnly} />
             </div>
           </FilterGroup>
 
@@ -1122,6 +1111,7 @@ function SearchPage() {
                   printSearchList(
                     selectedResultFiles.length ? selectedResultFiles : results,
                     selectedTableColumns,
+                    selectedResultFiles.length ? undefined : searchFilterQuery,
                   )
                 }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
@@ -1131,7 +1121,7 @@ function SearchPage() {
               </button>
               <button
                 type="button"
-                onClick={() => exportSearchList(results, selectedTableColumns)}
+                onClick={() => exportSearchList(results, selectedTableColumns, searchFilterQuery)}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
               >
                 <FileSpreadsheet className="size-3.5" /> Export Excel
@@ -2155,7 +2145,8 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
 
 function appendFileClosedMilestone(milestones: string[]) {
   const withoutFileClosed = milestones.filter(
-    (milestone) => normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
+    (milestone) =>
+      normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
 }
@@ -2265,7 +2256,8 @@ function normalizeMilestoneName(value: string | undefined) {
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
   return Boolean(
     file.completedMilestones?.some(
-      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+      (milestone) =>
+        normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
     ),
   );
 }
@@ -2323,9 +2315,7 @@ function isBgToBeReturned(file: FileRecord) {
 }
 
 function isDpExpired(file: FileRecord) {
-  return fileSupplyOrders(file).some(
-    (order) => isDateBeforeToday(getDeliveryPeriodDate(order)),
-  );
+  return fileSupplyOrders(file).some((order) => isDateBeforeToday(getDeliveryPeriodDate(order)));
 }
 
 function isDeliveryOverdue(file: FileRecord) {
@@ -2885,117 +2875,21 @@ function formatRemarkDate(value: string) {
 }
 
 function printFile(file: FileRecord) {
-  const printWindow = window.open("", "_blank", "width=960,height=720");
-  if (!printWindow) {
-    alert("Allow pop-ups to print this file.");
-    return;
-  }
-
   const title = file.uniqueCode || file.imms || "File record";
-  const sections = fieldSections
-    .map(
-      (section) => `
-        <section>
-          <h2>${escapeHtml(section.title)}</h2>
-          <table>
-            <tbody>
-              ${section.fields
-                .map((field, index) => {
-                  const value = printColumns
-                    .find((column) => column.key === field.key)
-                    ?.getValue(file);
-                  return `
-                    <tr>
-                      <td class="sno">${index + 1}</td>
-                      <th>${escapeHtml(field.label)}</th>
-                      <td>${escapeHtml(value || "Not set")}</td>
-                    </tr>
-                  `;
-                })
-                .join("")}
-            </tbody>
-          </table>
-        </section>
-      `,
-    )
-    .join("");
-
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <title>${escapeHtml(title)}</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            font-family: Arial, sans-serif;
-            color: #111;
-            margin: 24px;
-          }
-          header {
-            border-bottom: 2px solid #111;
-            margin-bottom: 18px;
-            padding-bottom: 10px;
-          }
-          h1 {
-            font-size: 20px;
-            margin: 0 0 4px;
-          }
-          .subtle {
-            color: #555;
-            font-size: 12px;
-          }
-          section {
-            break-inside: avoid;
-            margin: 18px 0;
-          }
-          h2 {
-            font-size: 14px;
-            margin: 0 0 8px;
-            padding-bottom: 4px;
-            border-bottom: 1px solid #bbb;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-          }
-          th, td {
-            border: 1px solid #ccc;
-            padding: 7px 8px;
-            text-align: left;
-            vertical-align: top;
-          }
-          th {
-            width: 34%;
-            background: #f3f3f3;
-            font-weight: 600;
-          }
-          .sno {
-            width: 44px;
-            text-align: right;
-          }
-          @media print {
-            body { margin: 12mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>FileHistory File Record</h1>
-          <div class="subtle">Unique code: ${escapeHtml(file.uniqueCode || "Not set")}</div>
-          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
-        </header>
-        ${sections}
-        <script>
-          window.onload = () => {
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  void downloadBackendExport({
+    format: "pdf",
+    title: "FileHistory File Record",
+    subtitle: `Unique code: ${file.uniqueCode || "Not set"}`,
+    fileName: `${getExportFileName(title)}.pdf`,
+    tables: fieldSections.map((section) => ({
+      title: section.title,
+      headers: ["S.No.", "Field", "Value"],
+      rows: section.fields.map((field, index) => {
+        const value = printColumns.find((column) => column.key === field.key)?.getValue(file);
+        return [index + 1, field.label, value || "Not set"];
+      }),
+    })),
+  });
 }
 
 function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
@@ -3004,99 +2898,26 @@ function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
     return;
   }
 
-  const printWindow = window.open("", "_blank", "width=960,height=720");
-  if (!printWindow) {
-    alert("Allow pop-ups to print this file.");
-    return;
-  }
-
   const title = file.uniqueCode || file.imms || "File record";
-  const rows = columns
-    .map(
-      (column, index) => `
-        <tr>
-          <td class="sno">${index + 1}</td>
-          <th>${escapeHtml(column.label)}</th>
-          <td>${escapeHtml(column.getValue(file) || "Not set")}</td>
-        </tr>
-      `,
-    )
-    .join("");
-
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <title>${escapeHtml(title)}</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            font-family: Arial, sans-serif;
-            color: #111;
-            margin: 20px;
-          }
-          header {
-            border-bottom: 2px solid #111;
-            margin-bottom: 14px;
-            padding-bottom: 10px;
-          }
-          h1 {
-            font-size: 18px;
-            margin: 0 0 5px;
-          }
-          .subtle {
-            color: #555;
-            font-size: 12px;
-            line-height: 1.5;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11px;
-          }
-          th, td {
-            border: 1px solid #bbb;
-            padding: 6px 7px;
-            text-align: left;
-            vertical-align: top;
-          }
-          th {
-            width: 34%;
-            background: #f3f3f3;
-            font-weight: 600;
-          }
-          .sno {
-            width: 44px;
-            text-align: right;
-          }
-          @media print {
-            body { margin: 10mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>FileHistory File Record</h1>
-          <div class="subtle">Unique code: ${escapeHtml(file.uniqueCode || "Not set")}</div>
-          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
-        </header>
-        <table>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-        <script>
-          window.onload = () => {
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  void downloadBackendExport({
+    format: "pdf",
+    title: "FileHistory File Record",
+    subtitle: `Unique code: ${file.uniqueCode || "Not set"}`,
+    fileName: `${getExportFileName(title)}.pdf`,
+    tables: [
+      {
+        headers: ["S.No.", "Field", "Value"],
+        rows: columns.map((column, index) => [
+          index + 1,
+          column.label,
+          column.getValue(file) || "Not set",
+        ]),
+      },
+    ],
+  });
 }
 
-function printSearchList(files: FileRecord[], columns: PrintColumn[]) {
+function printSearchList(files: FileRecord[], columns: PrintColumn[], searchFilterQuery?: string) {
   if (files.length === 0) {
     alert("No searched files to print.");
     return;
@@ -3107,102 +2928,15 @@ function printSearchList(files: FileRecord[], columns: PrintColumn[]) {
     return;
   }
 
-  const printWindow = window.open("", "_blank", "width=1100,height=760");
-  if (!printWindow) {
-    alert("Allow pop-ups to print this list.");
+  if (searchFilterQuery) {
+    void downloadFilteredSearchList(searchFilterQuery, columns, "pdf");
     return;
   }
 
-  const headerCells = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("");
-  const rows = files
-    .map(
-      (file, index) => `
-        <tr>
-          <td>${index + 1}</td>
-          ${columns
-            .map((column) => `<td>${escapeHtml(column.getValue(file) || "Not set")}</td>`)
-            .join("")}
-        </tr>
-      `,
-    )
-    .join("");
-  printWindow.document.write(`
-    <!doctype html>
-    <html>
-      <head>
-        <title>Search files list</title>
-        <style>
-          * { box-sizing: border-box; }
-          body {
-            font-family: Arial, sans-serif;
-            color: #111;
-            margin: 20px;
-          }
-          header {
-            border-bottom: 2px solid #111;
-            margin-bottom: 14px;
-            padding-bottom: 10px;
-          }
-          h1 {
-            font-size: 18px;
-            margin: 0 0 5px;
-          }
-          .subtle {
-            color: #555;
-            font-size: 12px;
-            line-height: 1.5;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11px;
-          }
-          th, td {
-            border: 1px solid #bbb;
-            padding: 6px 7px;
-            text-align: left;
-            vertical-align: top;
-          }
-          th {
-            background: #f3f3f3;
-            font-weight: 600;
-          }
-          @media print {
-            body { margin: 10mm; }
-            thead { display: table-header-group; }
-            tr { break-inside: avoid; }
-          }
-        </style>
-      </head>
-      <body>
-        <header>
-          <h1>FileHistory Search Results</h1>
-          <div class="subtle">Files: ${files.length}</div>
-          <div class="subtle">Printed: ${escapeHtml(new Date().toLocaleString())}</div>
-        </header>
-        <table>
-          <thead>
-            <tr>
-              <th>S.No.</th>
-              ${headerCells}
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-        <script>
-          window.onload = () => {
-            window.print();
-          };
-        </script>
-      </body>
-    </html>
-  `);
-  printWindow.document.close();
+  void downloadSearchList(files, columns, "pdf");
 }
 
-function exportSearchList(files: FileRecord[], columns: PrintColumn[]) {
+function exportSearchList(files: FileRecord[], columns: PrintColumn[], searchFilterQuery: string) {
   if (files.length === 0) {
     alert("No searched files to export.");
     return;
@@ -3213,54 +2947,43 @@ function exportSearchList(files: FileRecord[], columns: PrintColumn[]) {
     return;
   }
 
-  const headerCells = columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("");
-  const rows = files
-    .map(
-      (file, index) => `
-        <tr>
-          <td>${index + 1}</td>
-          ${columns
-            .map((column) => `<td>${escapeHtml(column.getValue(file) || "Not set")}</td>`)
-            .join("")}
-        </tr>
-      `,
-    )
-    .join("");
-  const workbook = `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; }
-          th, td { border: 1px solid #999; padding: 6px; text-align: left; }
-          th { font-weight: 700; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <thead>
-            <tr>
-              <th>S.No.</th>
-              ${headerCells}
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-      </body>
-    </html>
-  `;
-  const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `filehistory-search-results-${new Date().toISOString().slice(0, 10)}.xls`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  void downloadFilteredSearchList(searchFilterQuery, columns, "excel");
+}
+
+async function downloadSearchList(
+  files: FileRecord[],
+  columns: PrintColumn[],
+  format: "excel" | "pdf",
+) {
+  await downloadBackendExport({
+    format,
+    title: "FileHistory Search Results",
+    description: `Files: ${files.length}`,
+    fileName: `filehistory-search-results-${new Date().toISOString().slice(0, 10)}.${format === "excel" ? "xls" : "pdf"}`,
+    tables: [
+      {
+        headers: ["S.No.", ...columns.map((column) => column.label)],
+        rows: files.map((file, index) => [
+          index + 1,
+          ...columns.map((column) => column.getValue(file) || "Not set"),
+        ]),
+      },
+    ],
+  });
+}
+
+async function downloadFilteredSearchList(
+  searchFilterQuery: string,
+  columns: PrintColumn[],
+  format: "excel" | "pdf",
+) {
+  const query = Object.fromEntries(new URLSearchParams(searchFilterQuery));
+  await downloadBackendFileSearchExport({
+    format,
+    title: "FileHistory Search Results",
+    columns: columns.map((column) => ({ key: column.key, label: column.label })),
+    query,
+  });
 }
 
 function escapeHtml(value: string) {

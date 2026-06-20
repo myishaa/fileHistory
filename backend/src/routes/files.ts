@@ -9,6 +9,11 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import {
+  getExportFileName,
+  renderExcelDocument,
+  renderPdfDocument,
+} from "../utils/export-files.js";
 import { type FileSearchParams, searchFiles } from "../utils/file-search.js";
 import {
   fromDbDate,
@@ -222,6 +227,11 @@ type SearchSql = {
   offset: number;
   page: number;
   pageSize: number;
+};
+
+type ExportColumn = {
+  key: string;
+  label: string;
 };
 
 const supplyOrderFields = {
@@ -471,6 +481,106 @@ async function loadSearchFiles(searchSql: SearchSql) {
     files: result.rows.map((row) => mapFile(row, children)),
     total: Number(countResult.rows[0]?.total ?? 0),
   };
+}
+
+const fileExportDateFields = [
+  ["receivedDate", "Received"],
+  ["scrutinyDate", "Scrutiny"],
+  ["scrutinyResponseDate", "Scrutiny response"],
+  ["scrutinyCompletionDate", "Scrutiny completion"],
+  ["immsDate", "Controlled"],
+  ["highValueMeetingDate", "High Value meeting"],
+  ["highValueMinutesDate", "High Value minutes"],
+  ["preTcecDate", "Pre-TCEC"],
+  ["preTcecMinutesDate", "Pre-TCEC minutes"],
+  ["adVettingDate", "AD vetting"],
+  ["rqaApprovalDate", "R&QA approval"],
+  ["ifaSentDate", "IFA sent"],
+  ["ifaFinalDate", "IFA final"],
+  ["cfaSentDate", "CFA sent"],
+  ["cfaDate", "CFA approval"],
+  ["bidDate", "Bid date"],
+  ["bidOpeningDate", "Bid opening"],
+  ["postTcecDate", "Post-TCEC"],
+  ["postTcecMinutesDate", "Post-TCEC minutes"],
+  ["cncDate", "CNC"],
+  ["cncApprovalDate", "CNC approval"],
+] as const;
+
+const supplyOrderExportDateFields = [
+  ["soDate", "S.O. date"],
+  ["dpDate", "DP date"],
+  ["bgValidityDate", "BG validity"],
+  ["revisedDp", "Revised DP"],
+  ["materialReceiptDate", "Material receipt"],
+  ["billSentForPaymentDate", "Bill sent for payment"],
+  ["paymentDate", "Payment"],
+  ["bgReturnDate", "BG return"],
+  ["soCancelledDate", "S.O. cancelled date"],
+] as const;
+
+function readDateTime(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+  const time = new Date(text).getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+function getLastFilledDate(file: FileRecord) {
+  const fileDates = fileExportDateFields.flatMap(([key, label]) => {
+    const value = String((file as Record<string, unknown>)[key] ?? "").trim();
+    const time = readDateTime(value);
+    return time === undefined ? [] : [{ label, value, time }];
+  });
+  const orders = file.supplyOrders ?? [];
+  const supplyOrderDates = orders.flatMap((order, index) =>
+    supplyOrderExportDateFields.flatMap(([key, label]) => {
+      const value = String((order as Record<string, unknown>)[key] ?? "").trim();
+      const time = readDateTime(value);
+      if (time === undefined) return [];
+      return [
+        {
+          label: `${label}${orders.length > 1 ? ` (S.O. ${index + 1})` : ""}`,
+          value,
+          time,
+        },
+      ];
+    }),
+  );
+  return [...fileDates, ...supplyOrderDates].sort((a, b) => b.time - a.time)[0];
+}
+
+function getFileExportValue(file: FileRecord, key: string) {
+  if (key === "lastDateDescription") return getLastFilledDate(file)?.label ?? "";
+  if (key === "lastDate") return getLastFilledDate(file)?.value ?? "";
+  if (key === "invitedFirms") return String(getFirmCount(file.invitedFirms));
+  if (key === "bidderFirms") return String(getFirmCount(file.bidderFirms));
+  if (key === "noOfSo") return String(file.supplyOrders?.length || file.noOfSo || "");
+  if (key in supplyOrderFields) {
+    return (file.supplyOrders ?? [])
+      .map((order) => String((order as Record<string, unknown>)[key] ?? "").trim())
+      .filter(Boolean)
+      .join("; ");
+  }
+  return String((file as Record<string, unknown>)[key] ?? "");
+}
+
+function getFirmCount(rows: FirmDetail[] | undefined) {
+  return (rows ?? []).filter((row) =>
+    [row.firmName, row.city, row.emailId].some((value) => String(value ?? "").trim()),
+  ).length;
+}
+
+function readExportColumns(value: unknown): ExportColumn[] {
+  if (!Array.isArray(value)) throw new HttpError(400, "columns must be an array.");
+  return value
+    .map((column) => {
+      if (!column || typeof column !== "object") return undefined;
+      const record = column as Record<string, unknown>;
+      if (typeof record.key !== "string" || typeof record.label !== "string") return undefined;
+      return { key: record.key, label: record.label };
+    })
+    .filter((column): column is ExportColumn => Boolean(column));
 }
 
 function readQueryString(value: unknown) {
@@ -949,17 +1059,102 @@ function statusActiveSql(milestone: (typeof statusSummaryMilestones)[number]) {
     and ${normalizedSql("f.current_milestone")} in (${normalizedAliases})`;
 }
 
+function milestoneByKey(key: string) {
+  return statusSummaryMilestones.find((item) => item.key === key);
+}
+
+function milestoneAppliesSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  return milestone.key === "bankGuarantee"
+    ? bankGuaranteeEligibleSql()
+    : statusAppliesSql(milestone);
+}
+
+function milestoneCompleteSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
+    return supplyOrderChildOrLegacySql(
+      hasTextSql(`so.${milestone.supplyOrderDate}`),
+      hasTextSql(`f.${milestone.supplyOrderDate}`),
+    );
+  }
+  return statusCompleteSql(milestone);
+}
+
 function previousStatusCompleteSql(index: number) {
   const previous = statusSummaryMilestones.slice(0, index).reverse();
   if (!previous.length) return hasTextSql("f.received_date");
   return `case
     ${previous
       .map(
-        (milestone) => `when ${statusAppliesSql(milestone)} then ${statusCompleteSql(milestone)}`,
+        (milestone) =>
+          `when ${statusAppliesSql(milestone)} then ${milestoneCompleteSql(milestone)}`,
       )
       .join("\n    ")}
     else ${hasTextSql("f.received_date")}
   end`;
+}
+
+function milestoneEligibleSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  const index = statusSummaryMilestones.findIndex((item) => item.key === milestone.key);
+  const previousComplete =
+    milestone.key === "bankGuarantee" ? supplyOrderPlacedSql() : previousStatusCompleteSql(index);
+  return `not ${isCancelledFileSql()} and ${milestoneAppliesSql(milestone)} and ${previousComplete}`;
+}
+
+function milestonePendingSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  const complete = milestoneCompleteSql(milestone);
+  const active = statusActiveSql(milestone);
+  if ("reviewedColumn" in milestone && milestone.reviewedColumn) {
+    return `${active} and not ${hasTextSql(milestone.reviewedColumn)} and not (${complete})`;
+  }
+  return `${active} and not (${complete})`;
+}
+
+function legacyMilestoneFilterSql(filter: string) {
+  const readKey = (prefix: string) => filter.slice(prefix.length);
+  const resolve = (prefix: string) => milestoneByKey(readKey(prefix));
+
+  if (filter.startsWith("milestoneTotal:")) {
+    const milestone = resolve("milestoneTotal:");
+    return milestone ? milestoneAppliesSql(milestone) : "true";
+  }
+  if (filter.startsWith("milestoneUnderProcess:")) {
+    const milestone = resolve("milestoneUnderProcess:");
+    return milestone
+      ? `${milestoneAppliesSql(milestone)} and not (${milestoneEligibleSql(milestone)})`
+      : "true";
+  }
+  if (filter.startsWith("milestoneActive:")) {
+    const milestone = resolve("milestoneActive:");
+    if (!milestone) return "true";
+    if (milestone.key === "bidding")
+      return `${statusActiveSql(milestone)} and not ${isYesSql("f.tender_live")}`;
+    return statusActiveSql(milestone);
+  }
+  if (filter.startsWith("milestoneReviewed:")) {
+    const milestone = resolve("milestoneReviewed:");
+    return milestone && "reviewedColumn" in milestone && milestone.reviewedColumn
+      ? `${statusActiveSql(milestone)} and ${hasTextSql(milestone.reviewedColumn)} and not (${milestoneCompleteSql(milestone)})`
+      : "false";
+  }
+  if (filter.startsWith("milestonePending:")) {
+    const milestone = resolve("milestonePending:");
+    return milestone ? milestonePendingSql(milestone) : "true";
+  }
+  if (filter.startsWith("milestone:")) {
+    const milestone = resolve("milestone:");
+    return milestone ? milestonePendingSql(milestone) : "true";
+  }
+  if (filter.startsWith("milestoneCleared:")) {
+    const milestone = resolve("milestoneCleared:");
+    return milestone
+      ? `${milestoneAppliesSql(milestone)} and ${milestoneCompleteSql(milestone)}`
+      : "true";
+  }
+  if (filter.startsWith("milestoneEligible:")) {
+    const milestone = resolve("milestoneEligible:");
+    return milestone ? milestoneEligibleSql(milestone) : "true";
+  }
+  return undefined;
 }
 
 function statusSupplyOrderPlacedSql() {
@@ -986,6 +1181,60 @@ function bankGuaranteeEligibleSql() {
       `${hasTextSql("so.so_date")} and not ${isYesSql("so.so_cancelled")}`,
       `${hasTextSql("f.so_date")} and not ${isYesSql("f.so_cancelled")}`,
     )}`;
+}
+
+function milestoneDateExpression(milestone: (typeof statusSummaryMilestones)[number]) {
+  if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
+    return `coalesce((
+      select min(so.${milestone.supplyOrderDate})
+      from supply_orders so
+      where so.file_id = f.id and so.${milestone.supplyOrderDate} is not null
+    ), f.${milestone.supplyOrderDate})`;
+  }
+  if ("currentColumn" in milestone && milestone.currentColumn) return milestone.currentColumn;
+  return "null::date";
+}
+
+function milestoneStageStartSql(
+  milestone: (typeof statusSummaryMilestones)[number],
+  milestoneIndex: number,
+) {
+  const reviewed =
+    "reviewedColumn" in milestone && milestone.reviewedColumn
+      ? `when ${hasTextSql(milestone.reviewedColumn)} then ${milestone.reviewedColumn}`
+      : "";
+  const previousCases = statusSummaryMilestones
+    .slice(0, milestoneIndex)
+    .reverse()
+    .map(
+      (previous) =>
+        `when ${statusAppliesSql(previous)} and ${milestoneDateExpression(previous)} is not null then ${milestoneDateExpression(previous)}`,
+    )
+    .join("\n    ");
+  return `(case
+    ${reviewed}
+    ${previousCases}
+    else coalesce(f.received_date, f.file_date)
+  end)`;
+}
+
+function delayStatusFilterSql(filter: string, values: unknown[]) {
+  const [, rawDays, rawMilestoneKey] = filter.split(":");
+  const thresholdDays = Number.parseInt(rawDays ?? "0", 10);
+  const milestoneKey = rawMilestoneKey || "all";
+  if (!Number.isFinite(thresholdDays) || thresholdDays < 0) return "false";
+  const thresholdPlaceholder = addSqlValue(values, thresholdDays);
+  const clauses = statusSummaryMilestones
+    .map((milestone, index) => ({ milestone, index }))
+    .filter(({ milestone }) => milestoneKey === "all" || milestone.key === milestoneKey)
+    .map(({ milestone, index }) => {
+      const startDate = milestoneStageStartSql(milestone, index);
+      return `(${statusActiveSql(milestone)}
+        and not (${milestoneCompleteSql(milestone)})
+        and ${startDate} is not null
+        and (current_date - ${startDate}::date) > ${thresholdPlaceholder}::integer)`;
+    });
+  return clauses.length ? `(${clauses.join(" or ")})` : "false";
 }
 
 function decodeStatusFilterPart(value: string | undefined) {
@@ -1159,6 +1408,9 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
 
 function dashboardFilterSql(filter: string, values: unknown[]) {
   const today = "current_date";
+  if (filter.startsWith("delayStatus:")) return delayStatusFilterSql(filter, values);
+  const legacyMilestoneSql = legacyMilestoneFilterSql(filter);
+  if (legacyMilestoneSql) return legacyMilestoneSql;
   if (filter.startsWith("cashOutgo:")) return cashOutgoFilterSql(filter, values);
   if (filter.startsWith("statusSummary:")) return statusSummaryFilterSql(filter);
   if (filter.startsWith("delayFile:")) {
@@ -1213,8 +1465,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
       )}`,
     );
   if (filter === "dpExtension") return isYesSql("f.dp_extension");
-  if (filter === "dpExpired")
-    return supplyOrderExists(`${effectiveDpDateSql("so")} < ${today}`);
+  if (filter === "dpExpired") return supplyOrderExists(`${effectiveDpDateSql("so")} < ${today}`);
   if (filter === "deliveryOverdue")
     return `${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
       `${effectiveDpDateSql("so")} < current_date`,
@@ -1256,7 +1507,9 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
       )}`,
     )}`;
   if (filter === "paymentDue")
-    return supplyOrderExists(`${hasTextSql("so.material_receipt_date")} and not ${hasTextSql("so.payment_date")}`);
+    return supplyOrderExists(
+      `${hasTextSql("so.material_receipt_date")} and not ${hasTextSql("so.payment_date")}`,
+    );
   if (filter === "miscFileClosed") return fileClosedSql();
   if (filter === "miscLd") return supplyOrderExists(isYesSql("so.ld"));
   if (filter === "miscDemandCancelled") return supplyOrderExists(isYesSql("so.demand_cancelled"));
@@ -1300,7 +1553,8 @@ function getSortSql(sortColumnKey: string | undefined, direction: "asc" | "desc"
       "ff.firm_name",
     )} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.email_id")})) ${dir}`;
   }
-  const supplyColumn = supplyOrderSearchColumns[sortColumnKey as keyof typeof supplyOrderSearchColumns];
+  const supplyColumn =
+    supplyOrderSearchColumns[sortColumnKey as keyof typeof supplyOrderSearchColumns];
   if (supplyColumn) return `lower(coalesce(${supplyOrderTextExpression(supplyColumn)}, '')) ${dir}`;
   const column = fileSearchColumns[sortColumnKey as keyof typeof fileSearchColumns];
   if (!column) return "";
@@ -1329,14 +1583,22 @@ function buildSearchSql(
   if (params.dashboardFilter?.trim()) {
     conditions.push(`(${dashboardFilterSql(params.dashboardFilter.trim(), values)})`);
   }
-  const analyticsNames = (params.analyticsNames ?? []).map((item) => item.trim().toLowerCase()).filter(Boolean);
+  const analyticsNames = (params.analyticsNames ?? [])
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
   if (analyticsNames.length && params.analyticsType === "indentor") {
     const placeholder = addSqlValue(values, analyticsNames);
-    conditions.push(`lower(coalesce(nullif(trim(f.indentor), ''), 'Unassigned indentor')) = any(${placeholder}::text[])`);
+    conditions.push(
+      `lower(coalesce(nullif(trim(f.indentor), ''), 'Unassigned indentor')) = any(${placeholder}::text[])`,
+    );
   }
   if (analyticsNames.length && params.analyticsType === "firm") {
     const placeholder = addSqlValue(values, analyticsNames);
-    conditions.push(supplyOrderExists(`lower(coalesce(nullif(trim(so.firm), ''), 'Unassigned firm')) = any(${placeholder}::text[])`));
+    conditions.push(
+      supplyOrderExists(
+        `lower(coalesce(nullif(trim(so.firm), ''), 'Unassigned firm')) = any(${placeholder}::text[])`,
+      ),
+    );
   }
   if (params.indentor?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.indentor));
@@ -1352,14 +1614,22 @@ function buildSearchSql(
   }
   if (params.firm?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firm));
-    conditions.push(`(${supplyOrderExists(`lower(coalesce(so.firm, '')) like ${placeholder}`)} or lower(coalesce(f.firm, '')) like ${placeholder})`);
+    conditions.push(
+      `(${supplyOrderExists(`lower(coalesce(so.firm, '')) like ${placeholder}`)} or lower(coalesce(f.firm, '')) like ${placeholder})`,
+    );
   }
   if (selectedModes.length) {
-    const placeholder = addSqlValue(values, selectedModes.map((mode) => mode.trim().toUpperCase()));
+    const placeholder = addSqlValue(
+      values,
+      selectedModes.map((mode) => mode.trim().toUpperCase()),
+    );
     conditions.push(`upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
   }
   if (selectedFileTypes.length) {
-    const placeholder = addSqlValue(values, selectedFileTypes.map((fileType) => fileType.trim()));
+    const placeholder = addSqlValue(
+      values,
+      selectedFileTypes.map((fileType) => fileType.trim()),
+    );
     conditions.push(`trim(coalesce(f.file_type, '')) = any(${placeholder}::text[])`);
   }
 
@@ -1394,9 +1664,13 @@ function buildSearchSql(
   }
   if (params.rstFilter) conditions.push(isYesSql("f.rst"));
   if (params.demandCancelledFilter)
-    conditions.push(`(${supplyOrderExists(isYesSql("so.demand_cancelled"))} or ${isYesSql("f.demand_cancelled")})`);
+    conditions.push(
+      `(${supplyOrderExists(isYesSql("so.demand_cancelled"))} or ${isYesSql("f.demand_cancelled")})`,
+    );
   if (params.soCancelledFilter)
-    conditions.push(`(${supplyOrderExists(isYesSql("so.so_cancelled"))} or ${isYesSql("f.so_cancelled")})`);
+    conditions.push(
+      `(${supplyOrderExists(isYesSql("so.so_cancelled"))} or ${isYesSql("f.so_cancelled")})`,
+    );
 
   if (params.capitalOnly && params.revenueOnly) {
     conditions.push("(coalesce(f.value_capital, 0) <> 0 or coalesce(f.value_revenue, 0) <> 0)");
@@ -1464,7 +1738,10 @@ function buildSearchSql(
 
   if (params.freeText?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.freeText));
-    const normalizedQuery = params.freeText.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const normalizedQuery = params.freeText
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
     const freeSearchText = freeSearchTextExpression();
     const freeSearchConditions = [`lower(${freeSearchText}) like ${placeholder}`];
     if (normalizedQuery) {
@@ -1476,12 +1753,21 @@ function buildSearchSql(
 
   if (isValidDate(params.freeDate)) {
     const placeholder = addSqlValue(values, params.freeDate);
-    conditions.push(`(${dateSearchColumns.map((column) => `${column} = ${placeholder}::date`).join(" or ")} or ${supplyOrderExists(
-      Object.values(supplyOrderSearchColumns)
-        .filter((column) => column.includes("date") || column === "revised_dp" || column === "dp_date" || column === "bg_validity_date" || column === "bg_return_date")
-        .map((column) => `so.${column} = ${placeholder}::date`)
-        .join(" or "),
-    )})`);
+    conditions.push(
+      `(${dateSearchColumns.map((column) => `${column} = ${placeholder}::date`).join(" or ")} or ${supplyOrderExists(
+        Object.values(supplyOrderSearchColumns)
+          .filter(
+            (column) =>
+              column.includes("date") ||
+              column === "revised_dp" ||
+              column === "dp_date" ||
+              column === "bg_validity_date" ||
+              column === "bg_return_date",
+          )
+          .map((column) => `so.${column} = ${placeholder}::date`)
+          .join(" or "),
+      )})`,
+    );
   }
 
   const orderParts: string[] = [];
@@ -1825,25 +2111,190 @@ filesRouter.get(
       );
     }
     const searchParams = readSearchParams(request.query);
-    if (usesLegacyDashboardFilter(searchParams.dashboardFilter)) {
-      const results = await loadLegacyFilteredSearch(
+
+    const searchSql = buildSearchSql(conditions, values, searchParams, request.query);
+    const results = await loadSearchFiles(searchSql);
+    if (
+      process.env.FILES_SQL_COMPARE_LEGACY === "true" &&
+      usesLegacyDashboardFilter(searchParams.dashboardFilter)
+    ) {
+      const legacyResults = await loadLegacyFilteredSearch(
         conditions.length ? `where ${conditions.join(" and ")}` : "",
         values,
         searchParams,
         request.query,
       );
-      response.json(results);
-      return;
+      const sqlIds = results.files.map((file) => file.id);
+      const legacyIds = legacyResults.files.map((file) => file.id);
+      if (
+        results.total !== legacyResults.total ||
+        JSON.stringify(sqlIds) !== JSON.stringify(legacyIds)
+      ) {
+        console.warn("Legacy file search differs from SQL search.", {
+          filter: searchParams.dashboardFilter,
+          sqlTotal: results.total,
+          legacyTotal: legacyResults.total,
+          sqlIds,
+          legacyIds,
+        });
+      }
     }
-
-    const searchSql = buildSearchSql(conditions, values, searchParams, request.query);
-    const results = await loadSearchFiles(searchSql);
     response.json({
       files: results.files,
       total: results.total,
       page: searchSql.page,
       pageSize: searchSql.pageSize,
     });
+  }),
+);
+
+filesRouter.post(
+  "/export/search",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const body = requireObjectBody(request.body);
+    const format = body.format === "pdf" ? "pdf" : "excel";
+    const title =
+      typeof body.title === "string" && body.title.trim()
+        ? body.title.trim()
+        : "FileHistory Search Results";
+    const columns = readExportColumns(body.columns);
+    if (!columns.length) throw new HttpError(400, "Select at least one export column.");
+    const query =
+      body.query && typeof body.query === "object" && !Array.isArray(body.query)
+        ? (body.query as Record<string, unknown>)
+        : {};
+
+    const scope = getDivisionScopeCondition(user);
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    if (scope.sql) {
+      conditions.push(scope.sql);
+      values.push(...scope.values);
+    }
+    const selectedYear = readQueryString(query.selectedYear)?.trim();
+    if (selectedYear === allActiveFilesYear) {
+      conditions.push(
+        `(not exists (
+            select 1 from file_completed_milestones completed
+            where completed.file_id = f.id and lower(completed.milestone) = 'payment'
+          )
+          and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+          and lower(coalesce(f.so_cancelled, '')) <> 'yes'
+          and not exists (
+            select 1 from supply_orders so
+            where so.file_id = f.id
+              and (
+                lower(coalesce(so.demand_cancelled, '')) = 'yes'
+                or lower(coalesce(so.so_cancelled, '')) = 'yes'
+              )
+          ))`,
+      );
+    } else if (selectedYear) {
+      values.push(selectedYear);
+      conditions.push(
+        `(f.year = $${values.length} or exists (
+          select 1 from file_year_activity a
+          where a.file_id = f.id and a.financial_year = $${values.length} and a.status = 'active'
+        ))`,
+      );
+    }
+
+    const searchSql = buildSearchSql(conditions, values, readSearchParams(query), {
+      ...query,
+      page: "1",
+      pageSize: "500",
+    });
+    const exportLimit = 5000;
+    const results = await loadSearchFiles({
+      ...searchSql,
+      limit: exportLimit,
+      offset: 0,
+      page: 1,
+      pageSize: exportLimit,
+    });
+    const document = {
+      title,
+      description: `Files: ${results.total}${results.total > results.files.length ? ` (exported first ${results.files.length})` : ""}`,
+      tables: [
+        {
+          headers: ["S.No.", ...columns.map((column) => column.label)],
+          rows: results.files.map((file, index) => [
+            String(index + 1),
+            ...columns.map((column) => getFileExportValue(file, column.key)),
+          ]),
+        },
+      ],
+    };
+    const extension = format === "pdf" ? "pdf" : "xls";
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${getExportFileName(title, extension)}"`,
+    );
+    if (format === "pdf") {
+      response.setHeader("Content-Type", "application/pdf");
+      response.send(renderPdfDocument(document));
+      return;
+    }
+    response.setHeader("Content-Type", "application/vnd.ms-excel; charset=utf-8");
+    response.send(renderExcelDocument(document));
+  }),
+);
+
+filesRouter.get(
+  "/next-unique-code",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const financialYear = readQueryString(request.query.financialYear)?.trim() ?? "";
+    const divisionName = readQueryString(request.query.division)?.trim() ?? "";
+    const yearCode = financialYear.replace(/\D/g, "").slice(-2);
+    if (!yearCode || !divisionName) {
+      response.json({ uniqueCode: "" });
+      return;
+    }
+
+    const divisionResult = await pool.query<{ id: string; code: string | null }>(
+      "select id, code from divisions where lower(name) = lower($1) and archived_at is null",
+      [divisionName],
+    );
+    const division = divisionResult.rows[0];
+    if (!division) throw new HttpError(404, "Division not found.");
+    if (!canAccessDivision(user, division.id)) {
+      throw new HttpError(403, "You cannot access this division.");
+    }
+
+    const divisionCode = (division.code ?? "").replace(/\s+/g, "");
+    const prefix = `${yearCode}${divisionCode}`;
+    if (!divisionCode) {
+      response.json({ uniqueCode: "" });
+      return;
+    }
+
+    const result = await pool.query<{ max_serial: string | null }>(
+      `select max(nullif(regexp_replace(substr(unique_code, $2), '\\D', '', 'g'), '')::integer)::text as max_serial
+       from files
+       where unique_code like $1 and archived_at is null`,
+      [`${prefix}%`, prefix.length + 1],
+    );
+    const nextSerial = Number(result.rows[0]?.max_serial ?? 0) + 1;
+    response.json({ uniqueCode: `${prefix}${String(nextSerial).padStart(3, "0")}` });
+  }),
+);
+
+filesRouter.get(
+  "/by-unique-code/:code",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const code = requireParam(request.params.code, "code").trim();
+    const scope = getDivisionScopeCondition(user);
+    const values: unknown[] = [code];
+    const conditions = ["lower(f.unique_code) = lower($1)"];
+    if (scope.sql) {
+      conditions.push(scope.sql.replace("$1", `$${values.length + 1}`));
+      values.push(...scope.values);
+    }
+    const files = await loadFiles(`where ${conditions.join(" and ")}`, values);
+    response.json({ files });
   }),
 );
 

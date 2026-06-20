@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { store, useActiveUser, useFiles, useMessages, useSettings } from "@/lib/files-store";
+import { store, useActiveUser, useMessages, useSettings } from "@/lib/files-store";
 import { ALL_ACTIVE_FILES_YEAR } from "@/lib/year-filter";
 
 const nav = [
@@ -32,7 +32,6 @@ export function TopBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const settings = useSettings();
-  const files = useFiles();
   const messages = useMessages();
   const activeUser = useActiveUser();
   const isDark = settings.theme === "dark";
@@ -71,8 +70,6 @@ export function TopBar() {
         settings.financialYear,
         settings.selectedYear,
         ...settings.financialYears,
-        ...files.map((file) => file.year),
-        ...files.flatMap((file) => file.activeYears ?? []),
       ]
         .map((year) => year?.trim())
         .filter((year): year is string => Boolean(year) && year !== ALL_ACTIVE_FILES_YEAR),
