@@ -61,9 +61,6 @@ export type FileRecord = {
   postTcecCommitteeNumber?: string;
   refloatBiddingDate?: string;
   refloatBidOpeningDate?: string;
-  refloatPostTcecDate?: string;
-  refloatPostTcecMinutesDate?: string;
-  refloatPostTcecCommitteeNo?: string;
   rst?: string;
   biddingStageOver?: string;
   cncDate?: string;
@@ -82,6 +79,9 @@ export type FileRecord = {
   ld?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  irPreparationDate?: string;
+  irReceiptDate?: string;
+  billPreparationDate?: string;
   billSentForPaymentDate?: string;
   paymentDate?: string;
   paymentMode?: string;
@@ -148,6 +148,9 @@ export type SupplyOrderDetail = {
   ld?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  irPreparationDate?: string;
+  irReceiptDate?: string;
+  billPreparationDate?: string;
   billSentForPaymentDate?: string;
   paymentDate?: string;
   paymentMode?: string;

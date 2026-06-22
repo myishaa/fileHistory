@@ -423,7 +423,6 @@ function reportActiveExpression(milestone: (typeof reportMilestoneDefinitions)[n
     "aliases" in milestone && milestone.aliases ? milestone.aliases : [milestone.label];
   const normalizedAliases = aliases.map((alias) => `'${normalizeMilestoneName(alias)}'`).join(", ");
   return `not ${isCancelledExpression()}
-    and not ${fileClosedExpression()}
     and ${normalizeMilestoneExpression("f.current_milestone")} in (${normalizedAliases})`;
 }
 
@@ -612,7 +611,7 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       `select '${milestone}' as milestone, '${stage}' as stage, ${countFilter(condition)} as count
        from files f
        left join divisions d on d.id = f.division_id
-       ${appendReportWhereClause(whereSql, [`not ${fileClosedExpression()}`])}`,
+       ${appendReportWhereClause(whereSql)}`,
     );
   };
   reportMilestoneDefinitions.forEach((milestone, index) => {
@@ -886,8 +885,6 @@ function lastFilledDateExpression() {
     (f.refloat_bid_opening_date),
     (f.post_tcec_date),
     (f.post_tcec_minutes_date),
-    (f.refloat_post_tcec_date),
-    (f.refloat_post_tcec_minutes_date),
     (f.cnc_date),
     (f.cnc_approval_date),
     (${earliestSupplyOrderDateExpression("so_date")}),
@@ -895,6 +892,9 @@ function lastFilledDateExpression() {
     (${earliestSupplyOrderDateExpression("bg_validity_date")}),
     (${earliestSupplyOrderDateExpression("revised_dp")}),
     (${earliestSupplyOrderDateExpression("material_receipt_date")}),
+    (${earliestSupplyOrderDateExpression("ir_preparation_date")}),
+    (${earliestSupplyOrderDateExpression("ir_receipt_date")}),
+    (${earliestSupplyOrderDateExpression("bill_preparation_date")}),
     (${earliestSupplyOrderDateExpression("bill_sent_for_payment_date")}),
     (${earliestSupplyOrderDateExpression("payment_date")}),
     (${earliestSupplyOrderDateExpression("bg_return_date")}),
@@ -931,7 +931,6 @@ async function loadDelayRows(
         from files f
         left join divisions d on d.id = f.division_id
         ${appendReportWhereClause(whereSql, [
-          `not ${fileClosedExpression()}`,
           active,
           `not (${complete})`,
           `(${startDate}) is not null`,

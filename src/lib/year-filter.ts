@@ -6,6 +6,24 @@ export function isAllActiveFilesYear(year: string | undefined) {
   return year === ALL_ACTIVE_FILES_YEAR;
 }
 
+export function displayFinancialYearLabel(year: string | undefined) {
+  const label = year?.trim() ?? "";
+  if (!label) return "";
+  if (isAllActiveFilesYear(label)) return "All active files";
+
+  const fullYearMatch = label.match(/^(\d{4})-(\d{4})$/);
+  if (fullYearMatch) {
+    return `${fullYearMatch[1]}-${fullYearMatch[2].slice(-2)}`;
+  }
+
+  const startYearMatch = label.match(/^(\d{4})$/);
+  if (!startYearMatch) return label;
+
+  const startYear = Number(startYearMatch[1]);
+  const endYear = String((startYear + 1) % 100).padStart(2, "0");
+  return `${startYear}-${endYear}`;
+}
+
 export function normalizeMilestoneName(value: string | undefined) {
   return (value ?? "").trim().toLowerCase();
 }

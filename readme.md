@@ -266,7 +266,7 @@ Search supports:
 - free text search
 - year with typeable suggestions
 - division with typeable suggestions
-- IMMS
+- Control number
 - indentor
 - value range
 - description
@@ -281,7 +281,7 @@ Clicking a search result opens that file in the Add/Edit page.
 
 Search results show:
 
-- IMMS
+- Control number
 - Division
 - Indentor
 - Description

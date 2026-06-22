@@ -741,6 +741,9 @@ function legacySupplyOrderHasDataExpression() {
     "f.dp_extension",
     "f.revised_dp",
     "f.material_receipt_date",
+    "f.ir_preparation_date",
+    "f.ir_receipt_date",
+    "f.bill_preparation_date",
     "f.bill_sent_for_payment_date",
     "f.payment_date",
     "f.bg_return_date",
@@ -806,7 +809,6 @@ function statusActiveExpression(milestone: (typeof statusMilestoneDefinitions)[n
     "aliases" in milestone && milestone.aliases ? milestone.aliases : [milestone.label];
   const normalizedAliases = aliases.map((alias) => `'${normalizeMilestoneName(alias)}'`).join(", ");
   return `not ${isCancelledExpression()}
-    and not ${fileClosedExpression()}
     and ${normalizeMilestoneExpression("f.current_milestone")} in (${normalizedAliases})`;
 }
 
@@ -1643,7 +1645,6 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
        ...extraConditions,
-       `not ${fileClosedExpression()}`,
        "trim(coalesce(f.current_milestone, '')) <> ''",
        `not (trim(f.current_milestone) = any(${configuredPlaceholder}::text[]))`,
      ])}
@@ -1663,7 +1664,6 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
        ...extraConditions,
-       `not ${fileClosedExpression()}`,
        `not ${isCancelledExpression()}`,
      ])}
      group by milestone.name`,
@@ -1679,7 +1679,6 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
        ...extraConditions,
-       `not ${fileClosedExpression()}`,
      ])}
      group by milestone.name`,
     completedValues,
@@ -1710,7 +1709,6 @@ async function loadManualMilestoneSqlSlice({
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
        ...extraConditions,
-       `not ${fileClosedExpression()}`,
        `f.current_milestone = any(${livePlaceholder}::text[])`,
        `not ${isCancelledExpression()}`,
      ])}
@@ -1765,10 +1763,7 @@ async function loadStatusCounts({
   }
   const cancelled = isCancelledExpression();
   const supplyOrderPlaced = supplyOrderPlacedExpression();
-  const statusWhereSql = appendDashboardWhereClause(whereSql, [
-    ...extraConditions,
-    `not ${fileClosedExpression()}`,
-  ]);
+  const statusWhereSql = appendDashboardWhereClause(whereSql, extraConditions);
   const bidOverdue = `${isNoExpression("f.bid_opened")}
           and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
@@ -1843,7 +1838,6 @@ async function loadStatusCounts({
        left join divisions d on d.id = f.division_id
        ${appendDashboardWhereClause(whereSql, [
          ...extraConditions,
-         `not ${fileClosedExpression()}`,
          `not ${supplyOrderRowExists()}`,
          legacySupplyOrderHasDataExpression(),
        ])}

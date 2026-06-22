@@ -188,9 +188,6 @@ const fileFields = {
   postTcecCommitteeNumber: ["post_tcec_committee_number", "text"],
   refloatBiddingDate: ["refloat_bidding_date", "date"],
   refloatBidOpeningDate: ["refloat_bid_opening_date", "date"],
-  refloatPostTcecDate: ["refloat_post_tcec_date", "date"],
-  refloatPostTcecMinutesDate: ["refloat_post_tcec_minutes_date", "date"],
-  refloatPostTcecCommitteeNo: ["refloat_post_tcec_committee_no", "text"],
   rst: ["rst", "text"],
   biddingStageOver: ["bidding_stage_over", "text"],
   cncDate: ["cnc_date", "date"],
@@ -209,6 +206,9 @@ const fileFields = {
   ld: ["ld", "text"],
   revisedDp: ["revised_dp", "date"],
   materialReceiptDate: ["material_receipt_date", "date"],
+  irPreparationDate: ["ir_preparation_date", "date"],
+  irReceiptDate: ["ir_receipt_date", "date"],
+  billPreparationDate: ["bill_preparation_date", "date"],
   billSentForPaymentDate: ["bill_sent_for_payment_date", "date"],
   paymentDate: ["payment_date", "date"],
   paymentMode: ["payment_mode", "text"],
@@ -248,6 +248,9 @@ const supplyOrderFields = {
   ld: ["ld", "text"],
   revisedDp: ["revised_dp", "date"],
   materialReceiptDate: ["material_receipt_date", "date"],
+  irPreparationDate: ["ir_preparation_date", "date"],
+  irReceiptDate: ["ir_receipt_date", "date"],
+  billPreparationDate: ["bill_preparation_date", "date"],
   billSentForPaymentDate: ["bill_sent_for_payment_date", "date"],
   paymentDate: ["payment_date", "date"],
   paymentMode: ["payment_mode", "text"],
@@ -513,6 +516,9 @@ const supplyOrderExportDateFields = [
   ["bgValidityDate", "BG validity"],
   ["revisedDp", "Revised DP"],
   ["materialReceiptDate", "Material receipt"],
+  ["irPreparationDate", "IR Preparation"],
+  ["irReceiptDate", "IR Receipt"],
+  ["billPreparationDate", "Bill preparation"],
   ["billSentForPaymentDate", "Bill sent for payment"],
   ["paymentDate", "Payment"],
   ["bgReturnDate", "BG return"],
@@ -893,9 +899,6 @@ const fileSearchColumns = {
   postTcecCommitteeNumber: "f.post_tcec_committee_number",
   refloatBiddingDate: "f.refloat_bidding_date",
   refloatBidOpeningDate: "f.refloat_bid_opening_date",
-  refloatPostTcecDate: "f.refloat_post_tcec_date",
-  refloatPostTcecMinutesDate: "f.refloat_post_tcec_minutes_date",
-  refloatPostTcecCommitteeNo: "f.refloat_post_tcec_committee_no",
   rst: "f.rst",
   biddingStageOver: "f.bidding_stage_over",
   cncDate: "f.cnc_date",
@@ -914,6 +917,9 @@ const fileSearchColumns = {
   ld: "f.ld",
   revisedDp: "f.revised_dp",
   materialReceiptDate: "f.material_receipt_date",
+  irPreparationDate: "f.ir_preparation_date",
+  irReceiptDate: "f.ir_receipt_date",
+  billPreparationDate: "f.bill_preparation_date",
   billSentForPaymentDate: "f.bill_sent_for_payment_date",
   paymentDate: "f.payment_date",
   paymentMode: "f.payment_mode",
@@ -938,6 +944,9 @@ const supplyOrderSearchColumns = {
   ld: "ld",
   revisedDp: "revised_dp",
   materialReceiptDate: "material_receipt_date",
+  irPreparationDate: "ir_preparation_date",
+  irReceiptDate: "ir_receipt_date",
+  billPreparationDate: "bill_preparation_date",
   billSentForPaymentDate: "bill_sent_for_payment_date",
   paymentDate: "payment_date",
   paymentMode: "payment_mode",
@@ -973,8 +982,6 @@ const dateSearchColumns = [
   "f.post_tcec_minutes_date",
   "f.refloat_bidding_date",
   "f.refloat_bid_opening_date",
-  "f.refloat_post_tcec_date",
-  "f.refloat_post_tcec_minutes_date",
   "f.cnc_date",
   "f.cnc_approval_date",
   "f.so_date",
@@ -982,6 +989,9 @@ const dateSearchColumns = [
   "f.bg_validity_date",
   "f.revised_dp",
   "f.material_receipt_date",
+  "f.ir_preparation_date",
+  "f.ir_receipt_date",
+  "f.bill_preparation_date",
   "f.bill_sent_for_payment_date",
   "f.payment_date",
   "f.bg_return_date",
@@ -1057,7 +1067,6 @@ function statusActiveSql(milestone: (typeof statusSummaryMilestones)[number]) {
     "aliases" in milestone && milestone.aliases ? milestone.aliases : [milestone.label];
   const normalizedAliases = aliases.map((alias) => `'${normalizeMilestoneName(alias)}'`).join(", ");
   return `not ${isCancelledFileSql()}
-    and not ${fileClosedSql()}
     and ${normalizedSql("f.current_milestone")} in (${normalizedAliases})`;
 }
 
@@ -1252,7 +1261,7 @@ function statusSummaryFilterSql(filter: string) {
   const [, rawMilestone, rawStage] = filter.split(":");
   const milestoneName = decodeStatusFilterPart(rawMilestone);
   const stage = decodeStatusFilterPart(rawStage);
-  const base = `not ${fileClosedSql()}`;
+  const base = "true";
 
   if (milestoneName === "Delivery Period") {
     const soEffectiveDp = effectiveDpDateSql("so");
@@ -1433,7 +1442,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   }
   if (filter.startsWith("manualMilestoneCurrent:")) {
     const placeholder = addSqlValue(values, filter.slice("manualMilestoneCurrent:".length));
-    return `not ${isCancelledFileSql()} and not ${fileClosedSql()} and f.current_milestone = ${placeholder}`;
+    return `not ${isCancelledFileSql()} and f.current_milestone = ${placeholder}`;
   }
   if (filter.startsWith("manualMilestoneCompleted:")) {
     const placeholder = addSqlValue(values, filter.slice("manualMilestoneCompleted:".length));
@@ -1635,8 +1644,6 @@ function buildSearchSql(
       `(${isYesSql("f.refloat")} or ${fileHasAny([
         "refloatBiddingDate",
         "refloatBidOpeningDate",
-        "refloatPostTcecDate",
-        "refloatPostTcecCommitteeNo",
       ])})`,
     );
   }

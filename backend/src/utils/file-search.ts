@@ -73,6 +73,9 @@ const supplyOrderKeys = [
   "ld",
   "revisedDp",
   "materialReceiptDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "paymentMode",
@@ -139,9 +142,6 @@ const searchableFileKeys = [
   "postTcecCommitteeNumber",
   "refloatBiddingDate",
   "refloatBidOpeningDate",
-  "refloatPostTcecDate",
-  "refloatPostTcecMinutesDate",
-  "refloatPostTcecCommitteeNo",
   "rst",
   "biddingStageOver",
   "cncDate",
@@ -163,6 +163,9 @@ const dateFileKeys = searchableFileKeys.filter(
 const supplyOrderDateKeys = new Set<SupplyOrderKey>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
@@ -303,8 +306,6 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       !hasAny(file, [
         "refloatBiddingDate",
         "refloatBidOpeningDate",
-        "refloatPostTcecDate",
-        "refloatPostTcecCommitteeNo",
       ])
     ) {
       return false;
@@ -441,6 +442,9 @@ function fileSupplyOrders(file: FileRecord) {
     ld: file.ld,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     paymentMode: file.paymentMode,
@@ -978,7 +982,7 @@ function isManualActiveMilestone(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  if (isCancelledFile(file) || isFileClosed(file)) return false;
+  if (isCancelledFile(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneLabelAliases(milestone.key).some(
     (label) => current === normalizeMilestoneName(label),

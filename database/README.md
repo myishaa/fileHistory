@@ -25,6 +25,9 @@ psql "$DATABASE_URL" -f database/017_file_messages.sql
 psql "$DATABASE_URL" -f database/018_message_workflow_controls.sql
 psql "$DATABASE_URL" -f database/019_mmg_live_settings.sql
 psql "$DATABASE_URL" -f database/020_drop_file_type.sql
+psql "$DATABASE_URL" -f database/021_ir_milestone_dates.sql
+psql "$DATABASE_URL" -f database/022_bill_preparation_date.sql
+psql "$DATABASE_URL" -f database/023_drop_refloat_post_tcec_fields.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.

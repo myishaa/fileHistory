@@ -22,6 +22,7 @@ import { MessageSquare, Save, Eraser, Lock, Plus, Printer, Trash2, Unlock } from
 import { promptDeletionPassword } from "@/lib/delete-password";
 import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
 import { validateMilestoneCompletionConsistency } from "@/lib/milestone-validation";
+import { displayFinancialYearLabel } from "@/lib/year-filter";
 
 export const Route = createFileRoute("/add")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -90,9 +91,6 @@ const empty = {
   postTcecCommitteeNumber: "",
   refloatBiddingDate: "",
   refloatBidOpeningDate: "",
-  refloatPostTcecDate: "",
-  refloatPostTcecMinutesDate: "",
-  refloatPostTcecCommitteeNo: "",
   rst: "No",
   biddingStageOver: "No",
   cncDate: "",
@@ -111,6 +109,9 @@ const empty = {
   ld: "No",
   revisedDp: "",
   materialReceiptDate: "",
+  irPreparationDate: "",
+  irReceiptDate: "",
+  billPreparationDate: "",
   billSentForPaymentDate: "",
   paymentDate: "",
   paymentMode: "",
@@ -261,9 +262,6 @@ const tcecDisabledKeys: FieldKey[] = [
   "postTcecDate",
   "postTcecMinutesDate",
   "postTcecCommitteeNumber",
-  "refloatPostTcecDate",
-  "refloatPostTcecMinutesDate",
-  "refloatPostTcecCommitteeNo",
   "cncDate",
   "cncApprovalDate",
 ];
@@ -279,7 +277,6 @@ const supplyOrderBgDisabledKeys: SupplyOrderKey[] = ["bgValidityDate", "bgReturn
 const tcecCommitteeKeys: FieldKey[] = [
   "preTcecCommitteeNo",
   "postTcecCommitteeNumber",
-  "refloatPostTcecCommitteeNo",
 ];
 
 const yesNo = ["Yes", "No"];
@@ -306,6 +303,9 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   ld: "No",
   revisedDp: "",
   materialReceiptDate: "",
+  irPreparationDate: "",
+  irReceiptDate: "",
+  billPreparationDate: "",
   billSentForPaymentDate: "",
   paymentDate: "",
   paymentMode: "",
@@ -327,6 +327,9 @@ const supplyOrderFields: ExtraField[] = [
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
   { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
+  { key: "irPreparationDate", label: "IR Preparation", type: "date" },
+  { key: "irReceiptDate", label: "IR Receipt", type: "date" },
+  { key: "billPreparationDate", label: "Bill preparation", type: "date" },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
@@ -337,25 +340,20 @@ const supplyOrderFields: ExtraField[] = [
 ];
 
 const supplyOrderSubviewFields = {
-  supplyOrder: ["soNo", "gemSoNo", "soDate", "soValueCapital", "dpDate", "firm"],
+  supplyOrder: ["soNo", "gemSoNo", "soDate", "soValueCapital", "firm"],
   bg: ["bgValidityDate", "bgReturnDate"],
-  deliveryPayment: [
-    "dpExtension",
-    "dpExtensionCount",
-    "ld",
-    "revisedDp",
-    "materialReceiptDate",
-    "billSentForPaymentDate",
-    "paymentDate",
-    "paymentMode",
-  ],
+  dp: ["dpDate", "dpExtension", "dpExtensionCount", "ld", "revisedDp"],
+  delivery: ["materialReceiptDate", "irPreparationDate", "irReceiptDate"],
+  payment: ["billPreparationDate", "billSentForPaymentDate", "paymentDate", "paymentMode"],
   miscellaneous: ["demandCancelled", "soCancelled", "soCancelledDate"],
 } satisfies Record<string, SupplyOrderKey[]>;
 
 const supplyOrderSubviewTabs = [
   { key: "supplyOrder", label: "Supply order" },
   { key: "bg", label: "BG" },
-  { key: "deliveryPayment", label: "Delivery & Payment" },
+  { key: "dp", label: "D.P." },
+  { key: "delivery", label: "Delivery & Inspection" },
+  { key: "payment", label: "Payment" },
   { key: "miscellaneous", label: "Miscellaneous" },
 ] as const;
 
@@ -406,13 +404,6 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "postTcecCommitteeNumber", label: "Post-TCEC committee" },
       { key: "postTcecDate", label: "Post-TCEC date", type: "date" },
       { key: "postTcecMinutesDate", label: "Post-TCEC minutes date", type: "date" },
-      { key: "refloatPostTcecCommitteeNo", label: "Refloat Post-TCEC committee number" },
-      { key: "refloatPostTcecDate", label: "Refloat Post-TCEC date", type: "date" },
-      {
-        key: "refloatPostTcecMinutesDate",
-        label: "Refloat Post-TCEC minutes date",
-        type: "date",
-      },
     ],
   },
   {
@@ -536,6 +527,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
   const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const quickFocusAppliedRef = useRef("");
+  const skipMilestonePruneRef = useRef(false);
   useEffect(() => {
     if (!fileId) {
       setLoadedFile(undefined);
@@ -583,6 +575,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   );
 
   useEffect(() => {
+    skipMilestonePruneRef.current = true;
     setForm(
       applyConditionalRules(
         editingFile
@@ -726,6 +719,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   }, [activeYearOptions, settings.financialYear, settings.yearSelectionLocked]);
 
   useEffect(() => {
+    if (skipMilestonePruneRef.current) {
+      skipMilestonePruneRef.current = false;
+      return;
+    }
     setCurrentMilestone((current) =>
       current && !applicableMilestones.has(current) ? "" : current,
     );
@@ -1789,7 +1786,7 @@ function ActiveYearsField({
               onChange={() => toggleYear(year)}
               className="size-4 rounded border-input"
             />
-            <span>{year}</span>
+            <span>{displayFinancialYearLabel(year)}</span>
           </label>
         ))}
       </div>
@@ -2153,64 +2150,72 @@ function SupplyOrdersBlock({
         />
       ) : null}
 
-      {orders.map((order, index) => (
-        <div key={index} className="rounded-md border border-border bg-secondary/20 p-4">
-          <div className="mb-4 border-b border-border pb-2 text-sm font-semibold">
-            Supply Order {index + 1}
-          </div>
-          <div className="grid grid-cols-1 gap-4">
-            {activeSubviewFields.map((field) => {
-              const key = field.key as SupplyOrderKey;
-              const lockedOrder = lockedOrders[index];
-
-              if (field.key === "soValueCapital") {
-                return (
-                  <SoValueField
-                    key={field.key}
-                    capitalSelected={form.valueCapitalSelected === "Yes"}
-                    revenueSelected={form.valueRevenueSelected === "Yes"}
-                    capitalValue={order.soValueCapital ?? ""}
-                    revenueValue={order.soValueRevenue ?? ""}
-                    disabled={disabled}
-                    lockFilledFields={lockFilledFields}
-                    lockedValueFilled={
-                      hasFilledValue(lockedOrder?.soValueCapital) ||
-                      hasFilledValue(lockedOrder?.soValueRevenue)
-                    }
-                    onChange={(patch) => {
-                      if ("soValueCapital" in patch) {
-                        onOrderChange(index, "soValueCapital", patch.soValueCapital);
-                      }
-                      if ("soValueRevenue" in patch) {
-                        onOrderChange(index, "soValueRevenue", patch.soValueRevenue);
-                      }
-                    }}
-                  />
-                );
-              }
-
-              return (
-                <DynamicField
-                  key={field.key}
-                  field={field}
-                  value={String(order[key] ?? "")}
-                  radioName={`supplyOrder-${index}-${field.key}`}
-                  disabled={
-                    disabled ||
-                    (lockFilledFields && hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
-                    (gemDisabled && key === "gemSoNo") ||
-                    (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
-                  }
-                  onChange={(value) => onOrderChange(index, key, value)}
-                  inputRef={(element) => {
-                    orderFieldRefs.current[`${index}:${key}`] = element;
-                  }}
-                />
-              );
-            })}
-          </div>
+      {!activeSubviewFields.length ? (
+        <div className="rounded-md border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
+          No fields in this tab.
         </div>
-      ))}
+      ) : null}
+
+      {activeSubviewFields.length
+        ? orders.map((order, index) => (
+            <div key={index} className="rounded-md border border-border bg-secondary/20 p-4">
+              <div className="mb-4 border-b border-border pb-2 text-sm font-semibold">
+                Supply Order {index + 1}
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                {activeSubviewFields.map((field) => {
+                  const key = field.key as SupplyOrderKey;
+                  const lockedOrder = lockedOrders[index];
+
+                  if (field.key === "soValueCapital") {
+                    return (
+                      <SoValueField
+                        key={field.key}
+                        capitalSelected={form.valueCapitalSelected === "Yes"}
+                        revenueSelected={form.valueRevenueSelected === "Yes"}
+                        capitalValue={order.soValueCapital ?? ""}
+                        revenueValue={order.soValueRevenue ?? ""}
+                        disabled={disabled}
+                        lockFilledFields={lockFilledFields}
+                        lockedValueFilled={
+                          hasFilledValue(lockedOrder?.soValueCapital) ||
+                          hasFilledValue(lockedOrder?.soValueRevenue)
+                        }
+                        onChange={(patch) => {
+                          if ("soValueCapital" in patch) {
+                            onOrderChange(index, "soValueCapital", patch.soValueCapital);
+                          }
+                          if ("soValueRevenue" in patch) {
+                            onOrderChange(index, "soValueRevenue", patch.soValueRevenue);
+                          }
+                        }}
+                      />
+                    );
+                  }
+
+                  return (
+                    <DynamicField
+                      key={field.key}
+                      field={field}
+                      value={String(order[key] ?? "")}
+                      radioName={`supplyOrder-${index}-${field.key}`}
+                      disabled={
+                        disabled ||
+                        (lockFilledFields && hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
+                        (gemDisabled && key === "gemSoNo") ||
+                        (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
+                      }
+                      onChange={(value) => onOrderChange(index, key, value)}
+                      inputRef={(element) => {
+                        orderFieldRefs.current[`${index}:${key}`] = element;
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          ))
+        : null}
     </div>
   );
 }
@@ -2940,6 +2945,9 @@ function cleanSupplyOrderRows(rows: SupplyOrderDetail[]) {
     ld: row.ld || undefined,
     revisedDp: row.revisedDp || undefined,
     materialReceiptDate: row.materialReceiptDate || undefined,
+    irPreparationDate: row.irPreparationDate || undefined,
+    irReceiptDate: row.irReceiptDate || undefined,
+    billPreparationDate: row.billPreparationDate || undefined,
     billSentForPaymentDate: row.billSentForPaymentDate || undefined,
     paymentDate: row.paymentDate || undefined,
     paymentMode: row.paymentMode || undefined,
@@ -2973,6 +2981,9 @@ function normalizeSupplyOrderRows(file: FileRecord | undefined) {
       ld: file.ld ?? "",
       revisedDp: file.revisedDp ?? "",
       materialReceiptDate: file.materialReceiptDate ?? "",
+      irPreparationDate: file.irPreparationDate ?? "",
+      irReceiptDate: file.irReceiptDate ?? "",
+      billPreparationDate: file.billPreparationDate ?? "",
       billSentForPaymentDate: file.billSentForPaymentDate ?? "",
       paymentDate: file.paymentDate ?? "",
       paymentMode: file.paymentMode ?? "",
@@ -3002,6 +3013,9 @@ function legacySupplyOrderPatch(rows: SupplyOrderDetail[]) {
     ld: first.ld || undefined,
     revisedDp: first.revisedDp || undefined,
     materialReceiptDate: first.materialReceiptDate || undefined,
+    irPreparationDate: first.irPreparationDate || undefined,
+    irReceiptDate: first.irReceiptDate || undefined,
+    billPreparationDate: first.billPreparationDate || undefined,
     billSentForPaymentDate: first.billSentForPaymentDate || undefined,
     paymentDate: first.paymentDate || undefined,
     paymentMode: first.paymentMode || undefined,
@@ -3068,9 +3082,6 @@ function applyConditionalRules(form: FormState) {
       postTcecDate: "",
       postTcecMinutesDate: "",
       postTcecCommitteeNumber: "",
-      refloatPostTcecDate: "",
-      refloatPostTcecMinutesDate: "",
-      refloatPostTcecCommitteeNo: "",
       cncDate: "",
       cncApprovalDate: "",
     };

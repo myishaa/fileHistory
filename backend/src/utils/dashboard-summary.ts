@@ -144,6 +144,9 @@ const milestoneDefinitions = [
 const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
@@ -183,7 +186,7 @@ export function buildDashboardSummary({
       ? dashboardDivisions
       : divisions.filter((item) => item.name === activeAnalyticsDivision);
   const manualMilestoneFlow = getManualMilestoneFlow(
-    dashboardFiles.filter((file) => !isFileClosed(file)),
+    dashboardFiles,
     getConfiguredMilestones(settings.milestones),
   );
   const visibleLiveMilestoneNames =
@@ -201,12 +204,12 @@ export function buildDashboardSummary({
     topSummaryStats: getAttributeSummaryStats(dashboardFiles),
     manualMilestoneFlow,
     visibleLiveMilestoneNames,
-    liveStatusRows: getLiveStatusDivisionRows(
-      dashboardFiles.filter((file) => !isFileClosed(file)),
+  liveStatusRows: getLiveStatusDivisionRows(
+      dashboardFiles,
       dashboardDivisions,
       visibleLiveMilestoneNames,
     ),
-    statusFlow: getMilestoneFlow(dashboardFiles.filter((file) => !isFileClosed(file))),
+    statusFlow: getMilestoneFlow(dashboardFiles),
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
     analytics: getAnalyticsSummary(
       dashboardFiles,
@@ -925,6 +928,9 @@ function fileSupplyOrders(file: FileRecord) {
     dpExtension: file.dpExtension,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     bgReturnDate: file.bgReturnDate,

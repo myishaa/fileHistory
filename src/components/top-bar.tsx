@@ -16,7 +16,7 @@ import {
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { store, useActiveUser, useMessages, useSettings } from "@/lib/files-store";
-import { ALL_ACTIVE_FILES_YEAR } from "@/lib/year-filter";
+import { ALL_ACTIVE_FILES_YEAR, displayFinancialYearLabel } from "@/lib/year-filter";
 
 const nav = [
   { to: "/add", label: "Add File", icon: FilePlus2 },
@@ -149,7 +149,7 @@ export function TopBar() {
               <option value={ALL_ACTIVE_FILES_YEAR}>All active files</option>
               {yearOptions.map((year) => (
                 <option key={year} value={year}>
-                  {year}
+                  {displayFinancialYearLabel(year)}
                 </option>
               ))}
             </select>

@@ -89,6 +89,30 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
       fileSupplyOrders(file).some((order) => hasFilledString(order.materialReceiptDate)),
   },
   {
+    aliases: ["IR Preparation"],
+    completionLabel: "IR Preparation",
+    isComplete: (file) =>
+      fileSupplyOrders(file).some((order) => hasFilledString(order.irPreparationDate)),
+  },
+  {
+    aliases: ["IR Receipt"],
+    completionLabel: "IR Receipt",
+    isComplete: (file) =>
+      fileSupplyOrders(file).some((order) => hasFilledString(order.irReceiptDate)),
+  },
+  {
+    aliases: ["Bill preparation"],
+    completionLabel: "Bill preparation",
+    isComplete: (file) =>
+      fileSupplyOrders(file).some((order) => hasFilledString(order.billPreparationDate)),
+  },
+  {
+    aliases: ["Bill sent for payment"],
+    completionLabel: "Bill sent for payment",
+    isComplete: (file) =>
+      fileSupplyOrders(file).some((order) => hasFilledString(order.billSentForPaymentDate)),
+  },
+  {
     aliases: ["Payment"],
     completionLabel: "Payment date",
     isComplete: (file) =>
@@ -159,6 +183,9 @@ function fileSupplyOrders(file: Partial<FileRecord>) {
     soDate: file.soDate,
     bgValidityDate: file.bgValidityDate,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     soCancelledDate: file.soCancelledDate,

@@ -167,6 +167,9 @@ const delayMilestoneOptions = milestoneDefinitions;
 const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
@@ -187,7 +190,7 @@ export function buildReportsSummary({
 }) {
   const reportFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
-  const activeStatusFiles = reportFiles.filter((file) => !isFileClosed(file));
+  const activeStatusFiles = reportFiles;
   const delayRows = getDelayStatusRows(activeStatusFiles, delayDays, delayMilestone);
 
   return {
@@ -412,8 +415,6 @@ function getLastFilledDateValue(file: FileRecord) {
     file.refloatBidOpeningDate,
     file.postTcecDate,
     file.postTcecMinutesDate,
-    file.refloatPostTcecDate,
-    file.refloatPostTcecMinutesDate,
     file.cncDate,
     file.cncApprovalDate,
     ...fileSupplyOrders(file).flatMap((order) => [
@@ -422,6 +423,9 @@ function getLastFilledDateValue(file: FileRecord) {
       order.bgValidityDate,
       order.revisedDp,
       order.materialReceiptDate,
+      order.irPreparationDate,
+      order.irReceiptDate,
+      order.billPreparationDate,
       order.billSentForPaymentDate,
       order.paymentDate,
       order.bgReturnDate,
@@ -787,6 +791,9 @@ function fileSupplyOrders(file: FileRecord) {
     ld: file.ld,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     paymentMode: file.paymentMode,

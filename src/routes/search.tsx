@@ -78,9 +78,6 @@ const tcecDisabledKeys: FileKey[] = [
   "postTcecDate",
   "postTcecMinutesDate",
   "postTcecCommitteeNumber",
-  "refloatPostTcecDate",
-  "refloatPostTcecMinutesDate",
-  "refloatPostTcecCommitteeNo",
   "cncDate",
   "cncApprovalDate",
 ];
@@ -95,7 +92,6 @@ const refloatDisabledKeys: FileKey[] = ["refloatBiddingDate", "refloatBidOpening
 const tcecCommitteeKeys: FileKey[] = [
   "preTcecCommitteeNo",
   "postTcecCommitteeNumber",
-  "refloatPostTcecCommitteeNo",
 ];
 
 const yesNo = ["Yes", "No"];
@@ -149,6 +145,9 @@ const supplyOrderKeys: FileKey[] = [
   "ld",
   "revisedDp",
   "materialReceiptDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "paymentMode",
@@ -199,13 +198,6 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "postTcecDate", label: "Post-TCEC date", type: "date" },
       { key: "postTcecMinutesDate", label: "Post-TCEC minutes date", type: "date" },
       { key: "postTcecCommitteeNumber", label: "Post-TCEC committee" },
-      { key: "refloatPostTcecDate", label: "Refloat Post-TCEC date", type: "date" },
-      {
-        key: "refloatPostTcecMinutesDate",
-        label: "Refloat Post-TCEC minutes date",
-        type: "date",
-      },
-      { key: "refloatPostTcecCommitteeNo", label: "Refloat Post-TCEC Committee no" },
     ],
   },
   {
@@ -259,6 +251,9 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "ld", label: "LD", options: yesNo },
       { key: "revisedDp", label: "Revised D.P.", type: "date" },
       { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
+      { key: "irPreparationDate", label: "IR Preparation", type: "date" },
+      { key: "irReceiptDate", label: "IR Receipt", type: "date" },
+      { key: "billPreparationDate", label: "Bill preparation", type: "date" },
       { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
       { key: "paymentDate", label: "Payment Date", type: "date" },
       { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
@@ -1799,9 +1794,6 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       postTcecDate: "",
       postTcecMinutesDate: "",
       postTcecCommitteeNumber: "",
-      refloatPostTcecDate: "",
-      refloatPostTcecMinutesDate: "",
-      refloatPostTcecCommitteeNo: "",
       cncDate: "",
       cncApprovalDate: "",
     };
@@ -2015,6 +2007,9 @@ function fileSupplyOrders(file: FileRecord) {
     ld: file.ld,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     paymentMode: file.paymentMode,
@@ -2218,7 +2213,7 @@ function isManualActiveMilestone(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  if (isCancelledFile(file) || isFileClosed(file)) return false;
+  if (isCancelledFile(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneLabelAliases(milestone.key).some(
     (label) => current === normalizeMilestoneName(label),
@@ -2270,6 +2265,9 @@ function hasMilestoneDate(file: FileRecord, key: FileKey | SupplyOrderKey) {
 const supplyOrderDateKeys = new Set<SupplyOrderKey>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",

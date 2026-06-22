@@ -20,7 +20,7 @@ import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSetupPanel } from "@/routes/year-setup";
-import { isAllActiveFilesYear } from "@/lib/year-filter";
+import { displayFinancialYearLabel, isAllActiveFilesYear } from "@/lib/year-filter";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -62,6 +62,25 @@ function appendFileClosedMilestone(milestones: string[]) {
 
 function normalizeConfiguredMilestoneLabel(milestone: string) {
   return milestone.trim().toLowerCase() === "controlled" ? "Controlling" : milestone;
+}
+
+function readFinancialYearStart(label: string) {
+  const match = label.match(/\b(20\d{2}|19\d{2})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function formatFinancialYear(startYear: number) {
+  const endYear = String((startYear + 1) % 100).padStart(2, "0");
+  return `${startYear}-${endYear}`;
+}
+
+function getNextFinancialYearLabel(years: string[]) {
+  const latestStartYear = years.reduce<number | null>((latest, year) => {
+    const startYear = readFinancialYearStart(year);
+    if (startYear === null) return latest;
+    return latest === null || startYear > latest ? startYear : latest;
+  }, null);
+  return formatFinancialYear((latestStartYear ?? new Date().getFullYear()) + 1);
 }
 
 function SettingsPage() {
@@ -345,6 +364,7 @@ function WorkspaceSettings() {
         .filter((year) => !isAllActiveFilesYear(year)),
     ),
   ).sort((a, b) => b.localeCompare(a));
+  const suggestedFinancialYear = getNextFinancialYearLabel(financialYears);
   useEffect(() => {
     let cancelled = false;
     fetchFilesForYear(selectedFinancialYear)
@@ -365,7 +385,7 @@ function WorkspaceSettings() {
     financialYears.length > 1;
 
   const addFinancialYear = () => {
-    const label = newFinancialYear.trim();
+    const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
     store.addFinancialYear(label, true);
     setNewFinancialYear("");
@@ -406,7 +426,7 @@ function WorkspaceSettings() {
               </p>
             </div>
             <span className="rounded bg-background px-2 py-1 text-xs text-muted-foreground">
-              Current: {settings.financialYear}
+              Current: {displayFinancialYearLabel(settings.financialYear)}
             </span>
           </div>
 
@@ -420,7 +440,7 @@ function WorkspaceSettings() {
               >
                 {financialYears.map((year) => (
                   <option key={year} value={year}>
-                    {year}
+                    {displayFinancialYearLabel(year)}
                   </option>
                 ))}
               </select>
@@ -429,12 +449,12 @@ function WorkspaceSettings() {
             <label className="block">
               <div className="text-xs font-medium mb-1.5">Add year</div>
               <input
-                value={newFinancialYear}
+                value={newFinancialYear || suggestedFinancialYear}
                 onChange={(event) => setNewFinancialYear(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") addFinancialYear();
                 }}
-                placeholder="2026-2027"
+                placeholder={suggestedFinancialYear}
                 className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>

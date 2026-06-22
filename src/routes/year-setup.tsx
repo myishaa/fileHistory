@@ -11,7 +11,11 @@ import {
   useActiveUser,
   useSettings,
 } from "@/lib/files-store";
-import { isAllActiveFilesYear, isFileVisibleForYear } from "@/lib/year-filter";
+import {
+  displayFinancialYearLabel,
+  isAllActiveFilesYear,
+  isFileVisibleForYear,
+} from "@/lib/year-filter";
 import { formatThousandsAndLakhs, parseAmount } from "@/lib/money";
 
 export const Route = createFileRoute("/year-setup")({
@@ -73,6 +77,7 @@ export function YearSetupPanel() {
   const setupYear = isAllActiveFilesYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
+  const setupYearLabel = displayFinancialYearLabel(setupYear);
 
   const yearOptions = useMemo(
     () =>
@@ -395,7 +400,7 @@ export function YearSetupPanel() {
           >
             {yearOptions.map((year) => (
               <option key={year} value={year}>
-                {year}
+                {displayFinancialYearLabel(year)}
               </option>
             ))}
           </select>
@@ -429,7 +434,7 @@ export function YearSetupPanel() {
           <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold">Add a division for {setupYear}</h2>
+                <h2 className="text-sm font-semibold">Add a division for {setupYearLabel}</h2>
                 <p className="text-xs text-muted-foreground">
                   Use this when the year has a new office, section, or budget head.
                 </p>
@@ -559,7 +564,7 @@ export function YearSetupPanel() {
       <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-sm font-semibold">Merge divisions for {setupYear}</h2>
+            <h2 className="text-sm font-semibold">Merge divisions for {setupYearLabel}</h2>
             <p className="text-xs text-muted-foreground">
               Active files from selected divisions will continue under the merged division.
             </p>
@@ -683,7 +688,9 @@ export function YearSetupPanel() {
         <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-semibold">Split / transfer division for {setupYear}</h2>
+              <h2 className="text-sm font-semibold">
+                Split / transfer division for {setupYearLabel}
+              </h2>
               <p className="text-xs text-muted-foreground">
                 Transfer selected indentors, their active files, and manual funds to another
                 division.

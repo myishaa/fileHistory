@@ -127,8 +127,8 @@ function ReportsPage() {
       : `Expected cash outgo by DP date - ${activeDivision}`;
   const expectedCashOutgoReceiptReportTitle =
     activeDivision === "all"
-      ? "Expected cash outgo by receipt date - All divisions"
-      : `Expected cash outgo by receipt date - ${activeDivision}`;
+      ? "Expected cash outgo by material receipt date - All divisions"
+      : `Expected cash outgo by material receipt date - ${activeDivision}`;
   const actualCashOutgoReportTitle =
     activeDivision === "all"
       ? "Actual cash outgo monthly - All divisions"
@@ -342,7 +342,7 @@ type CashOutgoFilterMode = "expectedDp" | "expectedReceipt" | "actual";
 
 const reportModes = [
   { key: "expectedCashOutgoByDp", label: "Expected cash outgo by DP date" },
-  { key: "expectedCashOutgoByReceipt", label: "Expected cash outgo by receipt date" },
+  { key: "expectedCashOutgoByReceipt", label: "Expected cash outgo by material receipt date" },
   { key: "currentMonthLiability", label: "Current month liability" },
   { key: "actualCashOutgo", label: "Actual cash out go" },
   { key: "delayStatus", label: "Delay status" },
@@ -369,7 +369,7 @@ function ExpectedCashOutgoReport({
   return (
     <CashOutgoReport
       rows={rows}
-      title={isReceipt ? "Expected cash outgo by receipt date" : "Expected cash outgo by DP date"}
+      title={isReceipt ? "Expected cash outgo by material receipt date" : "Expected cash outgo by DP date"}
       description={
         isReceipt
           ? `Uses material receipt date plus ${offsetDays} days, excluding rows with payment date filled.`
@@ -1026,44 +1026,22 @@ function exportCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string, emp
 function printExpectedCashOutgoToPdf(
   rows: ExpectedCashOutgoRow[],
   title: string,
-  offsetDays: number,
-  base: "dp" | "receipt",
+  _offsetDays: number,
+  _base: "dp" | "receipt",
 ) {
-  printCashOutgoToPdf(
-    rows,
-    title,
-    base === "receipt"
-      ? `Cash outgo month is material receipt date plus ${offsetDays} days. Rows with payment date filled are excluded.`
-      : `Cash outgo month is revised DP date when filled, otherwise DP date, plus ${offsetDays} days. S.O. cancelled rows and rows with material receipt date or payment date filled are excluded.`,
-    "No expected cash outgo rows found.",
-  );
+  printCashOutgoToPdf(rows, title, "No expected cash outgo rows found.");
 }
 
 function printActualCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) {
-  printCashOutgoToPdf(
-    rows,
-    title,
-    "Cash outgo month is payment date. Rows are excluded when S.O. cancelled is Yes and S.O. cancelled date is filled.",
-    "No actual cash out go rows found.",
-  );
+  printCashOutgoToPdf(rows, title, "No actual cash out go rows found.");
 }
 
 function printCurrentLiabilityToPdf(rows: ExpectedCashOutgoRow[], title: string) {
-  printCashOutgoToPdf(
-    rows,
-    title,
-    "Shows unpaid liability up to the current month, carrying forward unpaid amounts from previous months.",
-    "No unpaid liability found for the current month.",
-  );
+  printCashOutgoToPdf(rows, title, "No unpaid liability found for the current month.");
 }
 
-function printCashOutgoToPdf(
-  rows: ExpectedCashOutgoRow[],
-  title: string,
-  description: string,
-  emptyMessage: string,
-) {
-  void downloadCashOutgo(rows, title, emptyMessage, description, "pdf");
+function printCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string, emptyMessage: string) {
+  void downloadCashOutgo(rows, title, emptyMessage, undefined, "pdf");
 }
 
 async function downloadCashOutgo(
@@ -1438,8 +1416,6 @@ function getLastFilledDateValue(file: FileRecord) {
     file.refloatBidOpeningDate,
     file.postTcecDate,
     file.postTcecMinutesDate,
-    file.refloatPostTcecDate,
-    file.refloatPostTcecMinutesDate,
     file.cncDate,
     file.cncApprovalDate,
     ...fileSupplyOrders(file).flatMap((order) => [
@@ -1448,6 +1424,9 @@ function getLastFilledDateValue(file: FileRecord) {
       order.bgValidityDate,
       order.revisedDp,
       order.materialReceiptDate,
+      order.irPreparationDate,
+      order.irReceiptDate,
+      order.billPreparationDate,
       order.billSentForPaymentDate,
       order.paymentDate,
       order.bgReturnDate,
@@ -1982,7 +1961,7 @@ function isPendingMilestone(file: FileRecord, milestone: MilestoneDefinition) {
 }
 
 function isManualActiveMilestone(file: FileRecord, milestone: MilestoneDefinition) {
-  if (isCancelledFile(file) || isFileClosed(file)) return false;
+  if (isCancelledFile(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneNameAliases(milestone).some(
     (name) => current === normalizeMilestoneName(name),
@@ -2012,6 +1991,9 @@ function normalizeMilestoneName(value: string | undefined) {
 const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
@@ -2050,6 +2032,9 @@ function fileSupplyOrders(file: FileRecord) {
     ld: file.ld,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     paymentMode: file.paymentMode,

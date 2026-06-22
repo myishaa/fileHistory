@@ -296,7 +296,7 @@ export function Dashboard() {
     [activeDivision, files],
   );
   const activeDashboardStatusFiles = useMemo(
-    () => dashboardFiles.filter((file) => !isFileClosed(file)),
+    () => dashboardFiles,
     [dashboardFiles],
   );
   const dashboardDivisions = useMemo(
@@ -4806,6 +4806,9 @@ function hasMilestoneDate(file: FileRecord, key: keyof FileRecord | keyof Supply
 const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "soDate",
   "bgValidityDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
@@ -4826,6 +4829,9 @@ function fileSupplyOrders(file: FileRecord) {
     dpExtension: file.dpExtension,
     revisedDp: file.revisedDp,
     materialReceiptDate: file.materialReceiptDate,
+    irPreparationDate: file.irPreparationDate,
+    irReceiptDate: file.irReceiptDate,
+    billPreparationDate: file.billPreparationDate,
     billSentForPaymentDate: file.billSentForPaymentDate,
     paymentDate: file.paymentDate,
     bgReturnDate: file.bgReturnDate,
