@@ -153,7 +153,6 @@ const fileFields = {
   currency: ["currency", "text"],
   exchangeRate: ["exchange_rate", "number"],
   gte: ["gte", "text"],
-  fileType: ["file_type", "text"],
   tcec: ["tcec", "text"],
   mode: ["mode", "text"],
   gem: ["gem", "text"],
@@ -489,7 +488,7 @@ const fileExportDateFields = [
   ["scrutinyDate", "Scrutiny"],
   ["scrutinyResponseDate", "Scrutiny response"],
   ["scrutinyCompletionDate", "Scrutiny completion"],
-  ["immsDate", "Controlled"],
+  ["immsDate", "Controlling"],
   ["highValueMeetingDate", "High Value meeting"],
   ["highValueMinutesDate", "High Value minutes"],
   ["preTcecDate", "Pre-TCEC"],
@@ -635,7 +634,6 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     description: readQueryString(query.description),
     firm: readQueryString(query.firm),
     selectedModes: readQueryList(query.selectedModes),
-    selectedFileTypes: readQueryList(query.selectedFileTypes),
     highValue: readQueryBoolean(query.highValue),
     gte: readQueryBoolean(query.gte),
     ad: readQueryBoolean(query.ad),
@@ -679,6 +677,10 @@ function isNoSql(expression: string) {
 
 function hasTextSql(expression: string) {
   return `coalesce(${expression}::text, '') <> ''`;
+}
+
+function bidOpeningOverdueSql(today = "current_date") {
+  return `${isNoSql("f.bid_opened")} and (f.bid_opening_date < ${today} or f.refloat_bid_opening_date < ${today})`;
 }
 
 function normalizedSql(expression: string) {
@@ -856,7 +858,6 @@ const fileSearchColumns = {
   currency: "f.currency",
   exchangeRate: "f.exchange_rate",
   gte: "f.gte",
-  fileType: "f.file_type",
   tcec: "f.tcec",
   mode: "f.mode",
   gem: "f.gem",
@@ -1128,7 +1129,7 @@ function legacyMilestoneFilterSql(filter: string) {
     const milestone = resolve("milestoneActive:");
     if (!milestone) return "true";
     if (milestone.key === "bidding")
-      return `${statusActiveSql(milestone)} and not ${isYesSql("f.tender_live")}`;
+      return `${statusActiveSql(milestone)} and not ${isYesSql("f.tender_live")} and not (${bidOpeningOverdueSql()})`;
     return statusActiveSql(milestone);
   }
   if (filter.startsWith("milestoneReviewed:")) {
@@ -1313,13 +1314,13 @@ function statusSummaryFilterSql(filter: string) {
   if (stage === "Pending") return `${base} and ${pending}`;
   if (stage === "In process") {
     if (milestone.key === "bidding") {
-      return `${base} and ${active} and not ${isYesSql("f.tender_live")}`;
+      return `${base} and ${active} and not ${isYesSql("f.tender_live")} and not (${bidOpeningOverdueSql()})`;
     }
     return `${base} and ${active}`;
   }
   if (stage === "Reviewed") return `${base} and ${active} and ${reviewed} and not (${complete})`;
   if (stage === "Opening overdue") {
-    return `${base} and ${applies} and ${isNoSql("f.bid_opened")} and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
+    return `${base} and ${applies} and ${bidOpeningOverdueSql()}`;
   }
   if (stage === "Live") {
     if (milestone.key === "bidding")
@@ -1430,10 +1431,6 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     const placeholder = addSqlValue(values, filter.slice(5).trim().toUpperCase());
     return `upper(trim(coalesce(f.mode, ''))) = ${placeholder}`;
   }
-  if (filter.startsWith("fileType:")) {
-    const placeholder = addSqlValue(values, filter.slice(9).trim());
-    return `trim(coalesce(f.file_type, '')) = ${placeholder}`;
-  }
   if (filter.startsWith("manualMilestoneCurrent:")) {
     const placeholder = addSqlValue(values, filter.slice("manualMilestoneCurrent:".length));
     return `not ${isCancelledFileSql()} and not ${fileClosedSql()} and f.current_milestone = ${placeholder}`;
@@ -1451,8 +1448,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   if (filter === "rqaVetting") return isYesSql("f.rqa");
   if (filter === "ifaConcurrence") return isYesSql("f.ifa");
   if (filter === "liveBids") return isYesSql("f.tender_live");
-  if (filter === "bidOverdue")
-    return `${isNoSql("f.bid_opened")} and (f.bid_opening_date < ${today} or f.refloat_bid_opening_date < ${today})`;
+  if (filter === "bidOverdue") return bidOpeningOverdueSql(today);
   if (filter === "supplyOrders") return supplyOrderPlacedSql();
   if (filter === "liveSupplyOrders") return deliveryDueOrderSql();
   if (filter === "bgToBeReceived")
@@ -1511,6 +1507,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     return supplyOrderExists(
       `${hasTextSql("so.material_receipt_date")} and not ${hasTextSql("so.payment_date")}`,
     );
+  if (filter === "miscLiveFiles") return `not ${fileClosedSql()} and not ${isCancelledFileSql()}`;
   if (filter === "miscFileClosed") return fileClosedSql();
   if (filter === "miscLd") return supplyOrderExists(isYesSql("so.ld"));
   if (filter === "miscDemandCancelled") return supplyOrderExists(isYesSql("so.demand_cancelled"));
@@ -1571,7 +1568,6 @@ function buildSearchSql(
   const conditions = [...baseConditions];
   const values = [...baseValues];
   const selectedModes = params.selectedModes ?? [];
-  const selectedFileTypes = params.selectedFileTypes ?? [];
   const page = readPositiveInteger(query.page, 1, 1_000_000);
   const pageSize = readPositiveInteger(query.pageSize, 100, 500);
   const limit = pageSize;
@@ -1626,14 +1622,6 @@ function buildSearchSql(
     );
     conditions.push(`upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
   }
-  if (selectedFileTypes.length) {
-    const placeholder = addSqlValue(
-      values,
-      selectedFileTypes.map((fileType) => fileType.trim()),
-    );
-    conditions.push(`trim(coalesce(f.file_type, '')) = any(${placeholder}::text[])`);
-  }
-
   if (params.highValue) conditions.push(isYesSql("f.high_value"));
   if (params.gte) conditions.push(isYesSql("f.gte"));
   if (params.ad) conditions.push(isYesSql("f.ad"));

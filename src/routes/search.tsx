@@ -101,7 +101,6 @@ const tcecCommitteeKeys: FileKey[] = [
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
-const fileTypeOptions = ["General", "AMC", "MPC"];
 const paymentModeOptions = ["Online", "Offline"];
 const defaultMilestones = [
   "Scrutiny",
@@ -109,7 +108,7 @@ const defaultMilestones = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -181,7 +180,6 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "exchangeRate", label: "Exchange rate", type: "number" },
       { key: "gte", label: "GTE", options: yesNo },
       { key: "mode", label: "Mode", options: modeOptions },
-      { key: "fileType", label: "File type", options: fileTypeOptions },
       { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
       { key: "gem", label: "GeM (Yes/No)", options: yesNo },
       { key: "highValue", label: "High value (Yes/No)", options: yesNo },
@@ -421,7 +419,6 @@ function SearchPage() {
   const [description, setDescription] = useState("");
   const [firm, setFirm] = useState("");
   const [selectedModes, setSelectedModes] = useState<string[]>([]);
-  const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([]);
   const [highValue, setHighValue] = useState(false);
   const [gte, setGte] = useState(false);
   const [ad, setAd] = useState(false);
@@ -522,7 +519,6 @@ function SearchPage() {
     description ||
     firm ||
     selectedModes.length > 0 ||
-    selectedFileTypes.length > 0 ||
     highValue ||
     gte ||
     ad ||
@@ -559,7 +555,6 @@ function SearchPage() {
     appendSearchParam(params, "description", description);
     appendSearchParam(params, "firm", firm);
     appendSearchList(params, "selectedModes", selectedModes);
-    appendSearchList(params, "selectedFileTypes", selectedFileTypes);
     appendSearchBool(params, "capitalOnly", capitalOnly);
     appendSearchBool(params, "revenueOnly", revenueOnly);
     appendSearchBool(params, "highValue", highValue);
@@ -608,7 +603,6 @@ function SearchPage() {
     description,
     firm,
     selectedModes,
-    selectedFileTypes,
     highValue,
     gte,
     ad,
@@ -721,13 +715,6 @@ function SearchPage() {
       checked ? Array.from(new Set([...current, mode])) : current.filter((item) => item !== mode),
     );
   };
-  const toggleFileTypeFilter = (fileType: string, checked: boolean) => {
-    setSelectedFileTypes((current) =>
-      checked
-        ? Array.from(new Set([...current, fileType]))
-        : current.filter((item) => item !== fileType),
-    );
-  };
   const saveTableDefaultFields = () => {
     if (selectedTableColumnKeys.length === 0) {
       alert("Select at least one table field to save as default.");
@@ -767,7 +754,6 @@ function SearchPage() {
     setDescription("");
     setFirm("");
     setSelectedModes([]);
-    setSelectedFileTypes([]);
     setHighValue(false);
     setGte(false);
     setAd(false);
@@ -954,19 +940,6 @@ function SearchPage() {
                   label={mode}
                   checked={selectedModes.includes(mode)}
                   onChange={(checked) => toggleModeFilter(mode, checked)}
-                />
-              ))}
-            </div>
-          </FilterGroup>
-
-          <FilterGroup label="File type">
-            <div className="grid grid-cols-2 gap-2">
-              {fileTypeOptions.map((fileType) => (
-                <CheckFilter
-                  key={fileType}
-                  label={fileType}
-                  checked={selectedFileTypes.includes(fileType)}
-                  onChange={(checked) => toggleFileTypeFilter(fileType, checked)}
                 />
               ))}
             </div>
@@ -1394,9 +1367,16 @@ function FilterInput({
       list={listId}
       value={value}
       onChange={(event) =>
-        onChange(decimalOnly ? formatDecimalInput(event.target.value) : event.target.value)
+        onChange(
+          decimalOnly
+            ? formatDecimalInput(event.target.value)
+            : type === "date"
+              ? clampDateYearInput(event.target.value)
+              : event.target.value,
+        )
       }
       placeholder={placeholder}
+      max={type === "date" ? "9999-12-31" : undefined}
       className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm"
     />
   );
@@ -1408,6 +1388,12 @@ function formatDecimalInput(value: string) {
   const decimalPart = rest.join("");
   const formattedInteger = formatInputThousandsAndLakhs(first);
   return rest.length > 0 ? `${formattedInteger}.${decimalPart}` : formattedInteger;
+}
+
+function clampDateYearInput(value: string) {
+  const [year = "", ...rest] = value.split("-");
+  if (year.length <= 4) return value;
+  return [year.slice(0, 4), ...rest].join("-");
 }
 
 function formatInputThousandsAndLakhs(integerPart: string) {
@@ -1737,9 +1723,16 @@ function EditField({
         type={amountField ? "text" : (field.type ?? "text")}
         value={value}
         onChange={(event) =>
-          onChange(amountField ? formatDecimalInput(event.target.value) : event.target.value)
+          onChange(
+            amountField
+              ? formatDecimalInput(event.target.value)
+              : field.type === "date"
+                ? clampDateYearInput(event.target.value)
+                : event.target.value,
+          )
         }
         disabled={disabled}
+        max={field.type === "date" ? "9999-12-31" : undefined}
         min={field.type === "number" ? 0 : undefined}
         step={field.type === "number" ? 1 : undefined}
         inputMode={amountField ? "decimal" : undefined}
@@ -2138,7 +2131,9 @@ const milestoneDefinitions = [
 }>;
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
-  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  const values = (milestones ?? [])
+    .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
+    .filter(Boolean);
   const configured = values.length ? values : defaultMilestones;
   return appendFileClosedMilestone(configured);
 }
@@ -2149,6 +2144,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
 
 function isPendingMilestone(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
@@ -2578,7 +2577,6 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (value === "no") return isNo(fieldValue);
   }
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
-  if (filter.startsWith("fileType:")) return (file.fileType ?? "").trim() === filter.slice(9);
   if (filter.startsWith("manualMilestoneCurrent:")) {
     return (
       !isCancelledFile(file) &&
@@ -2616,6 +2614,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled") {
@@ -2658,7 +2657,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(16));
     if (!milestone) return true;
     if (milestone.key === "bidding") {
-      return isManualActiveMilestone(file, milestone) && !isFileTenderLive(file);
+      return (
+        isManualActiveMilestone(file, milestone) && !isFileTenderLive(file) && !isBidOverdue(file)
+      );
     }
     return isManualActiveMilestone(file, milestone);
   }

@@ -1,5 +1,5 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Division,
   type FileRecord,
@@ -25,6 +25,7 @@ export const Route = createFileRoute("/")({
 type DashboardTab = "snapshot" | "status" | "liveStatus" | "status3" | "analytics" | "finance";
 type StatusActionMode = "pdf" | "excel" | "search";
 type DivisionValueSortMode = "value" | "percent";
+type DivisionValueDisplayMode = "value" | "percent" | "both";
 type AnalyticsResultLimitKey = "5" | "10" | "20" | "50" | "all";
 type AnalyticsSortDirection = "desc" | "asc";
 type DivisionValueSortKey =
@@ -50,11 +51,9 @@ type AnalyticsPanelKey =
   | "topFirms"
   | "indentorsByFiles"
   | "indentorsByValue"
-  | "milestoneClearing"
   | "monthlyInflow"
   | "biddingMode"
   | "fileValueThresholds"
-  | "riskLoad"
   | "paymentPending"
   | "milestoneClearingTable";
 type AnalyticsTableColumn = {
@@ -70,6 +69,7 @@ type AnalyticsPanel = {
   title: string;
   subtitle: string;
   exportNote?: string;
+  divisionValueDisplayMode?: DivisionValueDisplayMode;
   columns: AnalyticsTableColumn[];
   rows: Array<Record<string, number | string>>;
 };
@@ -100,7 +100,6 @@ type DashboardSummaryPayload = {
   dashboardFileCount: number;
   dashboardDivisions: Division[];
   modeCounts: ReturnType<typeof getModeCounts>;
-  fileTypeCounts: ReturnType<typeof getFileTypeCounts>;
   topSummaryStats: SummaryStat[];
   manualMilestoneFlow: ReturnType<typeof getManualMilestoneFlow>;
   visibleLiveMilestoneNames: string[];
@@ -194,11 +193,9 @@ const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
   "topFirms",
   "indentorsByFiles",
   "indentorsByValue",
-  "milestoneClearing",
   "monthlyInflow",
   "biddingMode",
   "fileValueThresholds",
-  "riskLoad",
   "paymentPending",
   "milestoneClearingTable",
 ];
@@ -228,6 +225,8 @@ export function Dashboard() {
     useState<AnalyticsPanelKey>("divisionFiles");
   const [divisionValueSortMode, setDivisionValueSortMode] =
     useState<DivisionValueSortMode>("value");
+  const [divisionValueDisplayMode, setDivisionValueDisplayMode] =
+    useState<DivisionValueDisplayMode>("both");
   const [divisionValueSortKey, setDivisionValueSortKey] =
     useState<DivisionValueSortKey>("allocatedCapital");
   const [visibleDivisionValueMetrics, setVisibleDivisionValueMetrics] = useState<
@@ -235,8 +234,13 @@ export function Dashboard() {
   >(["allocated", "intended", "booked", "committed"]);
   const [divisionTotalValueSortMode, setDivisionTotalValueSortMode] =
     useState<DivisionValueSortMode>("value");
+  const [divisionTotalValueDisplayMode, setDivisionTotalValueDisplayMode] =
+    useState<DivisionValueDisplayMode>("both");
   const [divisionTotalValueSortKey, setDivisionTotalValueSortKey] =
     useState<DivisionTotalValueSortKey>("allocatedTotal");
+  const [visibleDivisionTotalValueMetrics, setVisibleDivisionTotalValueMetrics] = useState<
+    DivisionValueMetricKey[]
+  >(["allocated", "intended", "booked", "committed"]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
   const [indentorsByValueLimit, setIndentorsByValueLimit] = useState<AnalyticsResultLimitKey>("10");
@@ -266,6 +270,14 @@ export function Dashboard() {
       setDivisionValueSortKey(visibleSortKeys[0] ?? "allocatedCapital");
     }
   }, [divisionValueSortKey, visibleDivisionValueMetrics]);
+  useEffect(() => {
+    const visibleSortKeys = visibleDivisionTotalValueMetrics.map(
+      (metric) => divisionTotalValueMetricSortKeys[metric],
+    );
+    if (!visibleSortKeys.includes(divisionTotalValueSortKey)) {
+      setDivisionTotalValueSortKey(visibleSortKeys[0] ?? "allocatedTotal");
+    }
+  }, [divisionTotalValueSortKey, visibleDivisionTotalValueMetrics]);
   useEffect(() => {
     setSelectedLiveMilestones(settings.liveStatusLockedFields);
   }, [settings.liveStatusLockedFields, activeUser?.id]);
@@ -478,9 +490,6 @@ export function Dashboard() {
   const dashboardFileCount = dashboardSummary?.dashboardFileCount ?? dashboardFiles.length;
   const dashboardDivisionsForView = dashboardSummary?.dashboardDivisions ?? dashboardDivisions;
   const modeCounts = dashboardSummary?.modeCounts ?? localModeCounts ?? [];
-  const fileTypeCounts =
-    dashboardSummary?.fileTypeCounts ??
-    (needsLocalDashboardFallback ? getFileTypeCounts(dashboardFiles) : []);
   const topSummaryStats =
     dashboardSummary?.topSummaryStats ??
     (needsLocalDashboardFallback ? getAttributeSummaryStats(dashboardFiles) : []);
@@ -498,6 +507,7 @@ export function Dashboard() {
   const statusFlow = dashboardSummary?.statusFlow ?? localStatusFlow ?? [];
   const miscellaneousCounts = dashboardSummary?.miscellaneousCounts ??
     localMiscellaneousCounts ?? {
+      liveFiles: 0,
       fileClosed: 0,
       ld: 0,
       demandCancelled: 0,
@@ -570,15 +580,6 @@ export function Dashboard() {
       searchFilter: `mode:${mode.name}`,
     })),
     hint: "Files grouped by bidding type",
-  };
-  const fileTypeSummaryStat: SummaryStat = {
-    label: "File type",
-    value: fileTypeCounts.map((fileType) => ({
-      label: fileType.name,
-      value: fileType.count,
-      searchFilter: `fileType:${fileType.name}`,
-    })),
-    hint: "Files grouped by file type",
   };
 
   const compactSummaryStats: SummaryStat[] = [];
@@ -706,7 +707,7 @@ export function Dashboard() {
       title: "Division ranking by value",
       subtitle: "",
       columns: withRankAnalyticsColumns(
-        getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics),
+        getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics, divisionValueDisplayMode),
       ),
       rows: analytics.divisionValueRanking,
     },
@@ -714,7 +715,12 @@ export function Dashboard() {
       key: "divisionTotalValue",
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
-      columns: withRankAnalyticsColumns(getDivisionTotalValueAnalyticsColumns()),
+      columns: withRankAnalyticsColumns(
+        getDivisionTotalValueAnalyticsColumns(
+          visibleDivisionTotalValueMetrics,
+          divisionTotalValueDisplayMode,
+        ),
+      ),
       rows: analytics.divisionValueRanking,
     },
     {
@@ -751,18 +757,6 @@ export function Dashboard() {
       rows: indentorsByValuePagination.rows,
     },
     {
-      key: "milestoneClearing",
-      title: "Milestones by clearing time",
-      subtitle: "Average clearing time in days",
-      columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Milestone")),
-      rows: withAnalyticsRanks(
-        sortAnalyticsRows(
-          divisionFilteredAnalytics.milestoneClearingRanking,
-          getAnalyticsSortDirection("milestoneClearing"),
-        ),
-      ),
-    },
-    {
       key: "monthlyInflow",
       title: "Monthly file inflow",
       subtitle: "Files received by month",
@@ -782,21 +776,6 @@ export function Dashboard() {
       subtitle: "Files grouped by admin configured threshold levels",
       columns: getFileValueThresholdColumns(),
       rows: divisionFilteredAnalytics.fileValueThresholds,
-    },
-    {
-      key: "riskLoad",
-      title: "Risk load by division",
-      subtitle: "Delivery pending, expired DP, LD, or cancelled S.O.",
-      columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
-      rows: withAnalyticsRanks(
-        sortAnalyticsRows(
-          withAssignedDivisionRows(
-            divisionFilteredAnalytics.divisionRiskRanking,
-            assignedDivisionNames,
-          ),
-          getAnalyticsSortDirection("riskLoad"),
-        ),
-      ),
     },
     {
       key: "paymentPending",
@@ -832,6 +811,7 @@ export function Dashboard() {
     selectedAnalyticsPanel.key === "divisionValue"
       ? {
           ...selectedAnalyticsPanel,
+          divisionValueDisplayMode,
           exportNote: getDivisionValueRankingCriteria(divisionValueSortKey, divisionValueSortMode),
           rows: withAnalyticsRanks(
             sortDivisionValueRows(
@@ -845,6 +825,7 @@ export function Dashboard() {
       : selectedAnalyticsPanel.key === "divisionTotalValue"
         ? {
             ...selectedAnalyticsPanel,
+            divisionValueDisplayMode: divisionTotalValueDisplayMode,
             rows: withAnalyticsRanks(
               sortDivisionTotalValueRows(
                 withAssignedDivisionRows(selectedAnalyticsPanel.rows, assignedDivisionNames),
@@ -953,6 +934,14 @@ export function Dashboard() {
       return [...current, metric];
     });
   };
+  const toggleDivisionTotalValueMetric = (metric: DivisionValueMetricKey) => {
+    setVisibleDivisionTotalValueMetrics((current) => {
+      if (current.includes(metric)) {
+        return current.length === 1 ? current : current.filter((item) => item !== metric);
+      }
+      return [...current, metric];
+    });
+  };
   const handleStatusFilter = async (dashboardFilter: string) => {
     if (statusActionMode === "search") {
       openSearchFilter(dashboardFilter);
@@ -1052,10 +1041,6 @@ export function Dashboard() {
               })}
               <SummaryMetric
                 {...biddingTypeSummaryStat}
-                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
-              />
-              <SummaryMetric
-                {...fileTypeSummaryStat}
                 onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
               />
               <div className="grid grid-cols-2 gap-2">
@@ -1205,6 +1190,11 @@ export function Dashboard() {
                 title="Miscellaneous"
                 isLast
                 items={[
+                  {
+                    label: "Live files",
+                    count: miscellaneousCounts.liveFiles,
+                    onClick: () => handleStatusFilter("miscLiveFiles"),
+                  },
                   {
                     label: "File closed",
                     count: miscellaneousCounts.fileClosed,
@@ -1385,9 +1375,11 @@ export function Dashboard() {
                 {displayedAnalyticsPanel.key === "divisionValue" ? (
                   <DivisionValueSortControls
                     mode={divisionValueSortMode}
+                    displayMode={divisionValueDisplayMode}
                     sortKey={divisionValueSortKey}
                     visibleMetrics={visibleDivisionValueMetrics}
                     onModeChange={setDivisionValueSortMode}
+                    onDisplayModeChange={setDivisionValueDisplayMode}
                     onSortKeyChange={setDivisionValueSortKey}
                     onToggleMetric={toggleDivisionValueMetric}
                   />
@@ -1395,9 +1387,13 @@ export function Dashboard() {
                 {displayedAnalyticsPanel.key === "divisionTotalValue" ? (
                   <DivisionTotalValueSortControls
                     mode={divisionTotalValueSortMode}
+                    displayMode={divisionTotalValueDisplayMode}
                     sortKey={divisionTotalValueSortKey}
+                    visibleMetrics={visibleDivisionTotalValueMetrics}
                     onModeChange={setDivisionTotalValueSortMode}
+                    onDisplayModeChange={setDivisionTotalValueDisplayMode}
                     onSortKeyChange={setDivisionTotalValueSortKey}
+                    onToggleMetric={toggleDivisionTotalValueMetric}
                   />
                 ) : null}
                 <AnalyticsRankingTable
@@ -1842,6 +1838,12 @@ function DashboardStatusSummarySection({
   error?: string;
   onOpenStatus: (milestone: string, stage: string) => void;
 }) {
+  const status3Presentation = useMemo(
+    () => getStatus3Presentation(hideStatus3PendingColumn(groups)),
+    [groups],
+  );
+  const { groups: visibleGroups, deliveryPeriodGroup, exportGroups } = status3Presentation;
+
   return (
     <section className="space-y-4">
       <div>
@@ -1858,8 +1860,8 @@ function DashboardStatusSummarySection({
           <div className="flex rounded-md border border-border bg-secondary/40 p-1">
             <button
               type="button"
-              onClick={() => printStatusSummaryGroupsToPdf(groups, "Status-3")}
-              disabled={!groups.length}
+              onClick={() => printStatusSummaryGroupsToPdf(exportGroups, "Status-3")}
+              disabled={!exportGroups.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileText className="size-3.5" />
@@ -1867,8 +1869,8 @@ function DashboardStatusSummarySection({
             </button>
             <button
               type="button"
-              onClick={() => exportStatusSummaryGroupsToExcel(groups, "Status-3")}
-              disabled={!groups.length}
+              onClick={() => exportStatusSummaryGroupsToExcel(exportGroups, "Status-3")}
+              disabled={!exportGroups.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileSpreadsheet className="size-3.5" />
@@ -1886,55 +1888,16 @@ function DashboardStatusSummarySection({
           </div>
         ) : (
           <div className="space-y-4">
-            {groups.map((group) => (
-              <div key={group.key} className="overflow-hidden rounded-lg border border-border">
-                <div className="overflow-x-auto">
-                  <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
-                        <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">
-                          Milestone
-                        </th>
-                        {group.columns.map((column) => (
-                          <th key={column} className="px-3 py-2.5 text-right font-semibold">
-                            {column}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.rows.map((row, rowIndex) => (
-                        <tr
-                          key={row.milestone}
-                          className={
-                            "border-b border-border/60 last:border-0 " +
-                            (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
-                          }
-                        >
-                          <td
-                            className={
-                              "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
-                              (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15")
-                            }
-                          >
-                            {row.milestone}
-                          </td>
-                          {group.columns.map((column) => (
-                            <td key={column} className="px-3 py-2.5 text-right tabular-nums">
-                              <DashboardStatusSummaryValue
-                                value={row.counts[column]}
-                                onClick={() => onOpenStatus(row.milestone, column)}
-                              />
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            {visibleGroups.map((group) => (
+              <Fragment key={group.key}>
+                <Status3TableSection group={group} onOpenStatus={onOpenStatus} />
+                {group.rows.some((row) => row.milestone === "Supply Order") &&
+                deliveryPeriodGroup ? (
+                  <Status3TableSection group={deliveryPeriodGroup} onOpenStatus={onOpenStatus} />
+                ) : null}
+              </Fragment>
             ))}
-            {!groups.length ? (
+            {!visibleGroups.length ? (
               <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">
                 No status summary rows found.
               </div>
@@ -1943,6 +1906,57 @@ function DashboardStatusSummarySection({
         )}
       </div>
     </section>
+  );
+}
+
+function Status3TableSection({
+  group,
+  onOpenStatus,
+}: {
+  group: StatusSummaryTableGroup;
+  onOpenStatus: (milestone: string, stage: string) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-x-auto">
+        <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
+              <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">Milestone</th>
+              {group.columns.map((column) => (
+                <th key={column} className="px-3 py-2.5 text-right font-semibold">
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {group.rows.map((row, rowIndex) => {
+              const rowClass =
+                "border-b border-border/60 last:border-0 " +
+                (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15");
+              const cellClass =
+                "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
+                (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15");
+
+              return (
+                <tr key={row.milestone} className={rowClass}>
+                  <td className={cellClass}>{row.milestone}</td>
+                  {group.columns.map((column) => (
+                    <td key={column} className="px-3 py-2.5 text-right tabular-nums">
+                      <DashboardStatusSummaryValue
+                        value={row.counts[column]}
+                        onClick={() => onOpenStatus(row.milestone, column)}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1971,6 +1985,77 @@ function DashboardStatusSummaryValue({
       {value}
     </button>
   );
+}
+
+function hideStatus3PendingColumn(groups: StatusSummaryTableGroup[]) {
+  return groups.map((group) => ({
+    ...group,
+    columns: group.columns.filter((column) => column !== "Pending"),
+  }));
+}
+
+function getStatus3Presentation(groups: StatusSummaryTableGroup[]) {
+  const { groups: withoutDeliveryPeriod, deliveryPeriodGroup } =
+    extractStatus3DeliveryPeriodGroup(groups);
+  const visibleGroups = withoutDeliveryPeriod.map((group) => {
+    const rows = [...group.rows];
+    swapStatus3Rows(rows, "Delivery", "Payment");
+    return { ...group, rows };
+  });
+
+  return {
+    groups: visibleGroups,
+    deliveryPeriodGroup,
+    exportGroups: insertStatus3GroupAfterCommon(visibleGroups, deliveryPeriodGroup),
+  };
+}
+
+function extractStatus3DeliveryPeriodGroup(groups: StatusSummaryTableGroup[]) {
+  let deliveryPeriodGroup: StatusSummaryTableGroup | undefined;
+  const remainingGroups = groups
+    .map((group) => {
+      const deliveryPeriodRows = group.rows.filter((row) => row.milestone === "Delivery Period");
+      if (deliveryPeriodRows.length) {
+        deliveryPeriodGroup = {
+          ...group,
+          key: "delivery-period-mini-section",
+          title: "Delivery Period",
+          rows: deliveryPeriodRows,
+        };
+      }
+      return {
+        ...group,
+        rows: group.rows.filter((row) => row.milestone !== "Delivery Period"),
+      };
+    })
+    .filter((group) => group.rows.length);
+
+  return { groups: remainingGroups, deliveryPeriodGroup };
+}
+
+function insertStatus3GroupAfterCommon(
+  groups: StatusSummaryTableGroup[],
+  deliveryPeriodGroup: StatusSummaryTableGroup | undefined,
+) {
+  if (!deliveryPeriodGroup) return groups;
+  const commonIndex = groups.findIndex((group) => group.key === "common");
+  if (commonIndex === -1) return [deliveryPeriodGroup, ...groups];
+  return [
+    ...groups.slice(0, commonIndex + 1),
+    deliveryPeriodGroup,
+    ...groups.slice(commonIndex + 1),
+  ];
+}
+
+function swapStatus3Rows(
+  rows: StatusSummaryTableRow[],
+  firstMilestone: string,
+  secondMilestone: string,
+) {
+  const firstIndex = rows.findIndex((row) => row.milestone === firstMilestone);
+  const secondIndex = rows.findIndex((row) => row.milestone === secondMilestone);
+  if (firstIndex === -1 || secondIndex === -1) return;
+  [rows[firstIndex], rows[secondIndex]] = [rows[secondIndex], rows[firstIndex]];
 }
 
 type LiveStatusDivisionRow = {
@@ -2269,6 +2354,13 @@ const divisionTotalValueSortOptions = [
   { key: "committedTotal", label: "Committed" },
 ] satisfies Array<{ key: DivisionTotalValueSortKey; label: string }>;
 
+const divisionTotalValueMetricSortKeys = {
+  allocated: "allocatedTotal",
+  intended: "intendedTotal",
+  booked: "bookedTotal",
+  committed: "committedTotal",
+} satisfies Record<DivisionValueMetricKey, DivisionTotalValueSortKey>;
+
 function AnalyticsSortDirectionControl({
   value,
   onChange,
@@ -2302,16 +2394,20 @@ function AnalyticsSortDirectionControl({
 
 function DivisionValueSortControls({
   mode,
+  displayMode,
   sortKey,
   visibleMetrics,
   onModeChange,
+  onDisplayModeChange,
   onSortKeyChange,
   onToggleMetric,
 }: {
   mode: DivisionValueSortMode;
+  displayMode: DivisionValueDisplayMode;
   sortKey: DivisionValueSortKey;
   visibleMetrics: DivisionValueMetricKey[];
   onModeChange: (mode: DivisionValueSortMode) => void;
+  onDisplayModeChange: (mode: DivisionValueDisplayMode) => void;
   onSortKeyChange: (key: DivisionValueSortKey) => void;
   onToggleMetric: (key: DivisionValueMetricKey) => void;
 }) {
@@ -2342,6 +2438,34 @@ function DivisionValueSortControls({
                 className="size-3 accent-primary"
               />
               {option.label}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Display as</span>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+          {[
+            { key: "value", label: "Value" },
+            { key: "percent", label: "%" },
+            { key: "both", label: "Both" },
+          ].map((item) => (
+            <label
+              key={item.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
+                (displayMode === item.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={displayMode === item.key}
+                onChange={() => onDisplayModeChange(item.key as DivisionValueDisplayMode)}
+                className="size-3 accent-current"
+              />
+              {item.label}
             </label>
           ))}
         </div>
@@ -2411,61 +2535,131 @@ function getDivisionValueRankingCriteria(
 
 function DivisionTotalValueSortControls({
   mode,
+  displayMode,
   sortKey,
+  visibleMetrics,
   onModeChange,
+  onDisplayModeChange,
   onSortKeyChange,
+  onToggleMetric,
 }: {
   mode: DivisionValueSortMode;
+  displayMode: DivisionValueDisplayMode;
   sortKey: DivisionTotalValueSortKey;
+  visibleMetrics: DivisionValueMetricKey[];
   onModeChange: (mode: DivisionValueSortMode) => void;
+  onDisplayModeChange: (mode: DivisionValueDisplayMode) => void;
   onSortKeyChange: (key: DivisionTotalValueSortKey) => void;
+  onToggleMetric: (key: DivisionValueMetricKey) => void;
 }) {
+  const visibleSortKeys = new Set(
+    visibleMetrics.map((metric) => divisionTotalValueMetricSortKeys[metric]),
+  );
+  const sortOptions = divisionTotalValueSortOptions.filter((option) =>
+    visibleSortKeys.has(option.key),
+  );
+
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-secondary/25 px-2.5 py-2 text-xs">
-      <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
-        {[
-          { key: "value", label: "Value" },
-          { key: "percent", label: "%" },
-        ].map((item) => (
-          <label
-            key={item.key}
-            className={
-              "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
-              (mode === item.key
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            <input
-              type="checkbox"
-              checked={mode === item.key}
-              onChange={() => onModeChange(item.key as DivisionValueSortMode)}
-              className="size-3 accent-current"
-            />
-            {item.label}
-          </label>
-        ))}
+    <div className="mb-3 space-y-2 rounded-md border border-border bg-secondary/25 px-2.5 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Fields to display</span>
+        <div className="flex flex-wrap items-center gap-1">
+          {divisionValueMetricOptions.map((option) => (
+            <label
+              key={option.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
+                (visibleMetrics.includes(option.key)
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={visibleMetrics.includes(option.key)}
+                onChange={() => onToggleMetric(option.key)}
+                className="size-3 accent-primary"
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1">
-        {divisionTotalValueSortOptions.map((option) => (
-          <label
-            key={option.key}
-            className={
-              "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
-              (sortKey === option.key
-                ? "border-primary bg-primary/10 text-foreground"
-                : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            <input
-              type="checkbox"
-              checked={sortKey === option.key}
-              onChange={() => onSortKeyChange(option.key)}
-              className="size-3 accent-primary"
-            />
-            {option.label}
-          </label>
-        ))}
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Display as</span>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+          {[
+            { key: "value", label: "Value" },
+            { key: "percent", label: "%" },
+            { key: "both", label: "Both" },
+          ].map((item) => (
+            <label
+              key={item.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
+                (displayMode === item.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={displayMode === item.key}
+                onChange={() => onDisplayModeChange(item.key as DivisionValueDisplayMode)}
+                className="size-3 accent-current"
+              />
+              {item.label}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-2">
+        <span className="min-w-24 font-semibold text-muted-foreground">Sort according to</span>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+          {[
+            { key: "value", label: "Value" },
+            { key: "percent", label: "%" },
+          ].map((item) => (
+            <label
+              key={item.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 font-medium transition " +
+                (mode === item.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={mode === item.key}
+                onChange={() => onModeChange(item.key as DivisionValueSortMode)}
+                className="size-3 accent-current"
+              />
+              {item.label}
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          {sortOptions.map((option) => (
+            <label
+              key={option.key}
+              className={
+                "flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 font-medium transition " +
+                (sortKey === option.key
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              <input
+                type="checkbox"
+                checked={sortKey === option.key}
+                onChange={() => onSortKeyChange(option.key)}
+                className="size-3 accent-primary"
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2526,7 +2720,13 @@ function getFileValueThresholdColumns(): AnalyticsTableColumn[] {
 
 function getDivisionValueAnalyticsColumns(
   visibleMetrics: DivisionValueMetricKey[],
+  displayMode: DivisionValueDisplayMode,
 ): AnalyticsTableColumn[] {
+  const groupedLabel = (label: string, forceValueOnly = false) => {
+    if (forceValueOnly || displayMode === "value") return `${label} (Lakhs)`;
+    if (displayMode === "percent") return `${label} (%)`;
+    return `${label} (Lakhs / %)`;
+  };
   const currencyColumn = (
     key: string,
     group: string,
@@ -2539,61 +2739,95 @@ function getDivisionValueAnalyticsColumns(
     label,
     format: (value, row) =>
       showPercent
-        ? formatLakhsValueWithPercent(Number(value), Number(row[allocationKey]))
+        ? formatDivisionValueDisplay(Number(value), Number(row[allocationKey]), displayMode)
         : formatLakhsValue(Number(value)),
     render: (value, row) =>
       showPercent
-        ? renderLakhsValueWithPercent(Number(value), Number(row[allocationKey]))
+        ? renderDivisionValueDisplay(Number(value), Number(row[allocationKey]), displayMode)
         : formatLakhsValue(Number(value)),
   });
   const columns: AnalyticsTableColumn[] = [{ key: "name", label: "Division", align: "left" }];
   if (visibleMetrics.includes("allocated")) {
     columns.push(
-      currencyColumn("allocatedCapital", "Allocated (Lakhs)", "Capital", "allocatedCapital", false),
-      currencyColumn("allocatedRevenue", "Allocated (Lakhs)", "Revenue", "allocatedRevenue", false),
+      currencyColumn(
+        "allocatedCapital",
+        groupedLabel("Allocated", true),
+        "Capital",
+        "allocatedCapital",
+        false,
+      ),
+      currencyColumn(
+        "allocatedRevenue",
+        groupedLabel("Allocated", true),
+        "Revenue",
+        "allocatedRevenue",
+        false,
+      ),
     );
   }
   if (visibleMetrics.includes("intended")) {
     columns.push(
-      currencyColumn("intendedCapital", "Intended (Lakhs)", "Capital", "allocatedCapital"),
-      currencyColumn("intendedRevenue", "Intended (Lakhs)", "Revenue", "allocatedRevenue"),
+      currencyColumn("intendedCapital", groupedLabel("Intended"), "Capital", "allocatedCapital"),
+      currencyColumn("intendedRevenue", groupedLabel("Intended"), "Revenue", "allocatedRevenue"),
     );
   }
   if (visibleMetrics.includes("booked")) {
     columns.push(
-      currencyColumn("bookedCapital", "Booked (Lakhs)", "Capital", "allocatedCapital"),
-      currencyColumn("bookedRevenue", "Booked (Lakhs)", "Revenue", "allocatedRevenue"),
+      currencyColumn("bookedCapital", groupedLabel("Booked"), "Capital", "allocatedCapital"),
+      currencyColumn("bookedRevenue", groupedLabel("Booked"), "Revenue", "allocatedRevenue"),
     );
   }
   if (visibleMetrics.includes("committed")) {
     columns.push(
-      currencyColumn("committedCapital", "Committed (Lakhs)", "Capital", "allocatedCapital"),
-      currencyColumn("committedRevenue", "Committed (Lakhs)", "Revenue", "allocatedRevenue"),
+      currencyColumn("committedCapital", groupedLabel("Committed"), "Capital", "allocatedCapital"),
+      currencyColumn("committedRevenue", groupedLabel("Committed"), "Revenue", "allocatedRevenue"),
     );
   }
   return columns;
 }
 
-function getDivisionTotalValueAnalyticsColumns(): AnalyticsTableColumn[] {
+function getDivisionTotalValueAnalyticsColumns(
+  visibleMetrics: DivisionValueMetricKey[],
+  displayMode: DivisionValueDisplayMode,
+): AnalyticsTableColumn[] {
   const totalColumn = (key: string, label: string, showPercent = true): AnalyticsTableColumn => ({
     key,
     label,
     format: (value, row) =>
       showPercent
-        ? formatLakhsValueWithPercent(Number(value), Number(row.allocatedTotal))
+        ? formatDivisionValueDisplay(Number(value), Number(row.allocatedTotal), displayMode)
         : formatLakhsValue(Number(value)),
     render: (value, row) =>
       showPercent
-        ? renderLakhsValueWithPercent(Number(value), Number(row.allocatedTotal))
+        ? renderDivisionValueDisplay(Number(value), Number(row.allocatedTotal), displayMode)
         : formatLakhsValue(Number(value)),
   });
-  return [
-    { key: "name", label: "Division", align: "left" },
-    totalColumn("allocatedTotal", "Allocated total", false),
-    totalColumn("intendedTotal", "Intended total"),
-    totalColumn("bookedTotal", "Booked total"),
-    totalColumn("committedTotal", "Committed total"),
-  ];
+  const columns: AnalyticsTableColumn[] = [{ key: "name", label: "Division", align: "left" }];
+  if (visibleMetrics.includes("allocated")) {
+    columns.push(totalColumn("allocatedTotal", "Allocated total", false));
+  }
+  if (visibleMetrics.includes("intended")) {
+    columns.push(
+      totalColumn("intendedTotal", getDivisionTotalValueColumnLabel("Intended", displayMode)),
+    );
+  }
+  if (visibleMetrics.includes("booked")) {
+    columns.push(
+      totalColumn("bookedTotal", getDivisionTotalValueColumnLabel("Booked", displayMode)),
+    );
+  }
+  if (visibleMetrics.includes("committed")) {
+    columns.push(
+      totalColumn("committedTotal", getDivisionTotalValueColumnLabel("Committed", displayMode)),
+    );
+  }
+  return columns;
+}
+
+function getDivisionTotalValueColumnLabel(label: string, displayMode: DivisionValueDisplayMode) {
+  if (displayMode === "value") return `${label} total`;
+  if (displayMode === "percent") return `${label} total %`;
+  return `${label} total (Lakhs / %)`;
 }
 
 function sortDivisionValueRows(
@@ -3600,18 +3834,6 @@ function getModeCounts(files: ReturnType<typeof useAccessibleFiles>) {
   return modes.map((name) => ({ name, count: counts[name] ?? 0 }));
 }
 
-function getFileTypeCounts(files: ReturnType<typeof useAccessibleFiles>) {
-  const fileTypes = ["General", "AMC", "MPC"];
-  const counts = files.reduce<Record<string, number>>((current, file) => {
-    const fileType = file.fileType?.trim();
-    if (!fileType || !fileTypes.includes(fileType)) return current;
-    current[fileType] = (current[fileType] ?? 0) + 1;
-    return current;
-  }, {});
-
-  return fileTypes.map((name) => ({ name, count: counts[name] ?? 0 }));
-}
-
 const snapshotAttributeDefinitions = [
   { key: "tcec", label: "TCEC", yesLabel: "TCEC", noLabel: "Non TCEC" },
   { key: "gte", label: "GTE", yesLabel: "GTE", noLabel: "Non GTE" },
@@ -3658,6 +3880,7 @@ function getAttributeSummaryStats(files: ReturnType<typeof useAccessibleFiles>):
 
 function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
   return {
+    liveFiles: files.filter(isLiveFile).length,
     fileClosed: files.filter(isFileClosed).length,
     ld: countLdOrders(files),
     demandCancelled: files.filter((file) =>
@@ -3668,6 +3891,10 @@ function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
     ).length,
     multipleSupplyOrders: files.filter((file) => fileSupplyOrders(file).length > 1).length,
   };
+}
+
+function isLiveFile(file: FileRecord) {
+  return !isFileClosed(file) && !isCancelledFile(file);
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
@@ -4056,11 +4283,6 @@ const milestoneClearingDefinitions = [
     getEndDate: getFirstSoDate,
   },
   {
-    name: "Bank Guarantee",
-    getStartDate: getFirstSoDate,
-    getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "bgValidityDate"),
-  },
-  {
     name: "Delivery",
     getStartDate: getFirstSoDate,
     getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "materialReceiptDate"),
@@ -4296,7 +4518,7 @@ const defaultManualMilestones = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -4311,7 +4533,9 @@ const defaultManualMilestones = [
 ];
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
-  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  const values = (milestones ?? [])
+    .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
+    .filter(Boolean);
   const configured = values.length ? values : defaultManualMilestones;
   return appendFileClosedMilestone(configured);
 }
@@ -4322,6 +4546,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
 
 function getManualMilestoneFlow(
@@ -4441,7 +4669,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         milestone.key === "bidding" ? processFiles.filter(isBidOverdue).length : undefined,
       inProcessBids:
         milestone.key === "bidding"
-          ? activeFiles.filter((file) => !isFileTenderLive(file)).length
+          ? activeFiles.filter((file) => !isFileTenderLive(file) && !isBidOverdue(file)).length
           : undefined,
     };
   });
@@ -4701,7 +4929,9 @@ function countBgApplicableOrders(files: FileRecord[]) {
 function countBgReceivedOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
     ({ file, order }) =>
-      isYes(file.bg) && hasFilledString(order.bgValidityDate) && !isSupplyOrderCancelled(file, order),
+      isYes(file.bg) &&
+      hasFilledString(order.bgValidityDate) &&
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -4941,6 +5171,7 @@ const dashboardFilterTitles: Record<string, string> = {
   liveBids: "Bidding - Live",
   bidOverdue: "Bidding - Opening overdue",
   liveSupplyOrders: "Supply Order - Live",
+  miscLiveFiles: "Miscellaneous - Live files",
   miscFileClosed: "Miscellaneous - File closed",
   miscLd: "Miscellaneous - LD",
   miscDemandCancelled: "Miscellaneous - Demand cancelled",
@@ -4960,7 +5191,6 @@ function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
-  if (filter.startsWith("fileType:")) return (file.fileType ?? "").trim() === filter.slice(9);
   if (filter.startsWith("manualMilestoneCurrent:")) {
     return file.currentMilestone === filter.slice("manualMilestoneCurrent:".length);
   }
@@ -4992,6 +5222,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscLiveFiles") return isLiveFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled") {
@@ -5034,7 +5265,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(16));
     if (!milestone) return true;
     if (milestone.key === "bidding") {
-      return isManualActiveMilestone(file, milestone) && !isFileTenderLive(file);
+      return (
+        isManualActiveMilestone(file, milestone) && !isFileTenderLive(file) && !isBidOverdue(file)
+      );
     }
     return isManualActiveMilestone(file, milestone);
   }
@@ -5115,6 +5348,7 @@ function getStatusPageExportRows(
   });
 
   rows.push(
+    { section: "Miscellaneous", metric: "Live files", count: miscellaneousCounts.liveFiles },
     { section: "Miscellaneous", metric: "File closed", count: miscellaneousCounts.fileClosed },
     { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
     {
@@ -5340,21 +5574,45 @@ function getAnalyticsExportCellHtml(
   if (panel.key === "divisionValue" && column.group) {
     const value = Number(row[column.key] ?? 0);
     const allocatedKey = column.key.endsWith("Revenue") ? "allocatedRevenue" : "allocatedCapital";
-    const showPercent = !column.key.startsWith("allocated");
-    if (showPercent) {
-      const percent = getPercent(value, Number(row[allocatedKey] ?? 0));
-      return `
-        <td class="value-cell">
-          <table class="split-value">
-            <tr>
-              <td class="amount">${escapeHtml(formatLakhsValue(value))}</td>
-              <td class="percent">${escapeHtml(percent === undefined ? "-" : `(${formatPercent(percent)})`)}</td>
-            </tr>
-          </table>
-        </td>
-      `;
+    const displayMode = panel.divisionValueDisplayMode ?? "both";
+    if (column.key.startsWith("allocated") || displayMode === "value") {
+      return `<td class="value-cell">${escapeHtml(formatLakhsValue(value))}</td>`;
     }
-    return `<td class="value-cell">${escapeHtml(formatLakhsValue(value))}</td>`;
+    const percent = formatDivisionValuePercent(value, Number(row[allocatedKey] ?? 0));
+    if (displayMode === "percent") {
+      return `<td class="value-cell">${escapeHtml(percent)}</td>`;
+    }
+    return `
+      <td class="value-cell">
+        <table class="split-value">
+          <tr>
+            <td class="amount">${escapeHtml(formatLakhsValue(value))}</td>
+            <td class="percent">${escapeHtml(percent === "-" ? "-" : `(${percent})`)}</td>
+          </tr>
+        </table>
+      </td>
+    `;
+  }
+  if (panel.key === "divisionTotalValue" && column.key.endsWith("Total")) {
+    const value = Number(row[column.key] ?? 0);
+    const displayMode = panel.divisionValueDisplayMode ?? "both";
+    if (column.key === "allocatedTotal" || displayMode === "value") {
+      return `<td class="value-cell">${escapeHtml(formatLakhsValue(value))}</td>`;
+    }
+    const percent = formatDivisionValuePercent(value, Number(row.allocatedTotal ?? 0));
+    if (displayMode === "percent") {
+      return `<td class="value-cell">${escapeHtml(percent)}</td>`;
+    }
+    return `
+      <td class="value-cell">
+        <table class="split-value">
+          <tr>
+            <td class="amount">${escapeHtml(formatLakhsValue(value))}</td>
+            <td class="percent">${escapeHtml(percent === "-" ? "-" : `(${percent})`)}</td>
+          </tr>
+        </table>
+      </td>
+    `;
   }
 
   return `<td>${escapeHtml(getAnalyticsCellValue(row, column)).replace(/\n/g, "<br />")}</td>`;
@@ -5526,6 +5784,40 @@ function formatCurrency(value: number) {
 
 function formatLakhsValue(value: number) {
   return formatThousandsAndLakhs(value / 100_000, 2);
+}
+
+function formatDivisionValuePercent(value: number, allocatedValue: number) {
+  const percent = getPercent(value, allocatedValue);
+  return percent === undefined ? "-" : formatPercent(percent);
+}
+
+function formatDivisionValueDisplay(
+  value: number,
+  allocatedValue: number,
+  displayMode: DivisionValueDisplayMode,
+) {
+  if (displayMode === "value") return formatLakhsValue(value);
+  const percent = formatDivisionValuePercent(value, allocatedValue);
+  if (displayMode === "percent") return percent;
+  return `${formatLakhsValue(value)}\n${percent === "-" ? "-" : `(${percent})`}`;
+}
+
+function renderDivisionValueDisplay(
+  value: number,
+  allocatedValue: number,
+  displayMode: DivisionValueDisplayMode,
+) {
+  if (displayMode === "value") return formatLakhsValue(value);
+  const percent = formatDivisionValuePercent(value, allocatedValue);
+  if (displayMode === "percent") return percent;
+  return (
+    <span className="inline-flex w-full items-baseline justify-center gap-2 whitespace-nowrap">
+      <span>{formatLakhsValue(value)}</span>
+      <span className="text-xs text-muted-foreground">
+        {percent === "-" ? "-" : `(${percent})`}
+      </span>
+    </span>
+  );
 }
 
 function formatLakhsValueWithPercent(value: number, allocatedValue: number) {

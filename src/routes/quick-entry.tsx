@@ -10,7 +10,7 @@ export const Route = createFileRoute("/quick-entry")({
 const quickEntryStageSections = [
   {
     title: "Scrutiny and control",
-    milestones: ["Scrutiny", "Controlled", "Control", "Controlling"],
+    milestones: ["Scrutiny", "Controlling", "Control", "Controlled"],
   },
   {
     title: "TCEC block",

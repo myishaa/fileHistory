@@ -327,6 +327,10 @@ function isNoExpression(column: string) {
   return `lower(coalesce(${column}, '')) = 'no'`;
 }
 
+function bidOpeningOverdueExpression() {
+  return `${isNoExpression("f.bid_opened")} and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
+}
+
 function hasFilledExpression(column: string) {
   return `coalesce(${column}::text, '') <> ''`;
 }
@@ -645,17 +649,14 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       return;
     }
     if (milestone.key === "bidding") {
+      const bidOverdue = bidOpeningOverdueExpression();
       addRow(milestone.label, "Completed", `${process} and ${complete}`);
       addRow(
         milestone.label,
         "In process",
-        `${active} and not ${isYesExpression("f.tender_live")}`,
+        `${active} and not ${isYesExpression("f.tender_live")} and not (${bidOverdue})`,
       );
-      addRow(
-        milestone.label,
-        "Opening overdue",
-        `${applies} and ${isNoExpression("f.bid_opened")} and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`,
-      );
+      addRow(milestone.label, "Opening overdue", `${applies} and ${bidOverdue}`);
       addRow(milestone.label, "Live", `${applies} and ${isYesExpression("f.tender_live")}`);
       addRow(milestone.label, "At previous stages", `${applies} and not (${reached})`);
       return;
@@ -739,7 +740,7 @@ async function loadCashOutgoRows(
   whereSql: string,
   values: unknown[],
   mode: "expectedDp" | "expectedReceipt" | "actual",
-  expectedCashOutgoDays = 10,
+  expectedCashOutgoDays = 0,
 ): Promise<CashOutgoRow[]> {
   const queryValues = [...values];
   const expectedDaysPlaceholder =
@@ -1020,7 +1021,7 @@ reportsRouter.get(
     const division = readString(request.query.division) ?? "all";
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
-    const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 10);
+    const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 0);
     const reportWhere = getReportWhereSql({
       scopeSql: scope.sql,
       scopeValues: scope.values,

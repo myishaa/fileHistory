@@ -8,7 +8,7 @@ const defaultManualMilestones = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -198,7 +198,6 @@ export function buildDashboardSummary({
     dashboardFileCount: dashboardFiles.length,
     dashboardDivisions,
     modeCounts: getModeCounts(dashboardFiles),
-    fileTypeCounts: getFileTypeCounts(dashboardFiles),
     topSummaryStats: getAttributeSummaryStats(dashboardFiles),
     manualMilestoneFlow,
     visibleLiveMilestoneNames,
@@ -301,17 +300,6 @@ function getModeCounts(files: FileRecord[]) {
   return modes.map((name) => ({ name, count: counts[name] ?? 0 }));
 }
 
-function getFileTypeCounts(files: FileRecord[]) {
-  const fileTypes = ["General", "AMC", "MPC"];
-  const counts = files.reduce<Record<string, number>>((current, file) => {
-    const fileType = file.fileType?.trim();
-    if (!fileType || !fileTypes.includes(fileType)) return current;
-    current[fileType] = (current[fileType] ?? 0) + 1;
-    return current;
-  }, {});
-  return fileTypes.map((name) => ({ name, count: counts[name] ?? 0 }));
-}
-
 function getAttributeSummaryStats(files: FileRecord[]) {
   return snapshotAttributeDefinitions.map((attribute) => ({
     label: attribute.label,
@@ -333,6 +321,7 @@ function getAttributeSummaryStats(files: FileRecord[]) {
 
 function getMiscellaneousCounts(files: FileRecord[]) {
   return {
+    liveFiles: files.filter((file) => !isFileClosed(file) && !isCancelledFile(file)).length,
     fileClosed: files.filter(isFileClosed).length,
     ld: countLdOrders(files),
     demandCancelled: files.filter((file) =>
@@ -363,7 +352,9 @@ function getManualMilestoneFlow(files: FileRecord[], milestones: string[]) {
 }
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
-  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  const values = (milestones ?? [])
+    .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
+    .filter(Boolean);
   const configured = values.length ? values : defaultManualMilestones;
   return appendFileClosedMilestone(configured);
 }
@@ -374,6 +365,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
 
 function getLiveStatusDivisionRows(
@@ -501,7 +496,7 @@ function getMilestoneFlow(files: FileRecord[]) {
         milestone.key === "bidding" ? applicableFiles.filter(isBidOverdue).length : undefined,
       inProcessBids:
         milestone.key === "bidding"
-          ? activeFiles.filter((file) => !isFileTenderLive(file)).length
+          ? activeFiles.filter((file) => !isFileTenderLive(file) && !isBidOverdue(file)).length
           : undefined,
     };
   });
@@ -903,11 +898,6 @@ const milestoneClearingDefinitions = [
     name: "Supply Order",
     getStartDate: (file: FileRecord) => file.cfaDate,
     getEndDate: getFirstSoDate,
-  },
-  {
-    name: "Bank Guarantee",
-    getStartDate: getFirstSoDate,
-    getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "bgValidityDate"),
   },
   {
     name: "Delivery",

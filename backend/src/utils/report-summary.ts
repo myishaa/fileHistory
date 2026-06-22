@@ -177,7 +177,7 @@ export function buildReportsSummary({
   division,
   delayDays,
   delayMilestone,
-  expectedCashOutgoDays = 10,
+  expectedCashOutgoDays = 0,
 }: {
   files: FileRecord[];
   division: string;
@@ -205,7 +205,7 @@ export function buildReportsSummary({
   };
 }
 
-function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 10): CashOutgoRow[] {
+function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
@@ -227,7 +227,7 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 10): Cas
 
 function getExpectedCashOutgoByReceiptRows(
   files: FileRecord[],
-  offsetDays = 10,
+  offsetDays = 0,
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
@@ -636,7 +636,10 @@ function getMilestoneStatusRows(
   if (milestone.key === "bidding") {
     return [
       base("Completed", clearedFiles.length),
-      base("In process", activeFiles.filter((file) => !isFileTenderLive(file)).length),
+      base(
+        "In process",
+        activeFiles.filter((file) => !isFileTenderLive(file) && !isBidOverdue(file)).length,
+      ),
       base("Opening overdue", applicableFiles.filter(isBidOverdue).length),
       base("Live", applicableFiles.filter(isFileTenderLive).length),
       base("At previous stages", Math.max(0, applicableFiles.length - reachedFiles.length)),

@@ -53,7 +53,6 @@ const empty = {
   currency: "INR",
   exchangeRate: "1",
   gte: "No",
-  fileType: "",
   valueCapitalSelected: "",
   valueRevenueSelected: "",
   tcec: "",
@@ -127,7 +126,7 @@ const defaultMilestones = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -220,11 +219,8 @@ function getCompletedMilestonesForSave(
   form: FormState,
 ) {
   const autoCompleted = getAutoCompletedMilestones(milestones, applicableMilestones, form);
-  return milestones.filter(
-    (milestone) =>
-      applicableMilestones.has(milestone) &&
-      (completedMilestones.includes(milestone) || autoCompleted.includes(milestone)),
-  );
+  const completedSet = new Set([...completedMilestones, ...autoCompleted]);
+  return milestones.filter((milestone) => completedSet.has(milestone));
 }
 
 function createSupplyOrdersFromFile(file: FileRecord | undefined): SupplyOrderDetail[] {
@@ -261,7 +257,6 @@ const tcecDisabledKeys: FieldKey[] = [
   "preTcecDate",
   "preTcecMinutesDate",
   "preTcecCommitteeNo",
-  "ad",
   "adVettingDate",
   "postTcecDate",
   "postTcecMinutesDate",
@@ -290,7 +285,6 @@ const tcecCommitteeKeys: FieldKey[] = [
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
 const modeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
-const fileTypeOptions = ["General", "AMC", "MPC"];
 const paymentModeOptions = ["Online", "Offline"];
 type FirmDetailsState = {
   invitedFirms: FirmDetail[];
@@ -343,10 +337,9 @@ const supplyOrderFields: ExtraField[] = [
 ];
 
 const supplyOrderSubviewFields = {
-  supplyOrder: ["soNo", "gemSoNo", "soDate", "soValueCapital", "firm"],
+  supplyOrder: ["soNo", "gemSoNo", "soDate", "soValueCapital", "dpDate", "firm"],
   bg: ["bgValidityDate", "bgReturnDate"],
   deliveryPayment: [
-    "dpDate",
     "dpExtension",
     "dpExtensionCount",
     "ld",
@@ -382,10 +375,10 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "gte", label: "GTE", options: yesNo },
       { key: "receivedDate", label: "Received date", type: "date" },
       { key: "mode", label: "Mode (OBM/PBM/SBM/LBM/LPC)", options: modeOptions },
-      { key: "fileType", label: "File type" },
       { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
       { key: "gem", label: "GeM (Yes/No)", options: yesNo },
       { key: "highValue", label: "High value (Yes/No)", options: yesNo },
+      { key: "ad", label: "AD (Yes/No)", options: yesNo },
       { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
       { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
       { key: "psb", label: "PSB (Yes/No)", options: yesNo },
@@ -433,6 +426,8 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "ifaFinalDate", label: "IFA final date", type: "date" },
       { key: "cfaSentDate", label: "CFA sent date", type: "date" },
       { key: "cfaDate", label: "CFA approval date", type: "date" },
+      { key: "cncDate", label: "CNC date", type: "date" },
+      { key: "cncApprovalDate", label: "CNC approval date", type: "date" },
     ],
   },
   {
@@ -451,8 +446,6 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
       { key: "rst", label: "RST (Yes/No)", options: yesNo },
       { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
-      { key: "cncDate", label: "CNC date", type: "date" },
-      { key: "cncApprovalDate", label: "CNC approval date", type: "date" },
     ],
   },
   {
@@ -737,10 +730,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       current && !applicableMilestones.has(current) ? "" : current,
     );
     setCompletedMilestones((current) => {
-      const next = current.filter((item) => applicableMilestones.has(item));
+      const next = current.filter((item) => milestoneOptions.includes(item));
       return next.length === current.length ? current : next;
     });
-  }, [applicableMilestones]);
+  }, [applicableMilestones, milestoneOptions]);
 
   const activeSection = extraSections.find((section) => section.title === activeBoardSection);
   const activeSectionIndex = extraSections.findIndex(
@@ -1045,23 +1038,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           );
         }
 
-        if (field.key === "fileType") {
-          return (
-            <FileTypeField
-              key={field.key}
-              value={formWithLockedYear.fileType}
-              disabled={
-                fieldReadOnly ||
-                (lockFilledFields && hasFileValueForLock(savedFormForLocks, "fileType"))
-              }
-              onChange={(value) => update("fileType", value)}
-              inputRef={(element) => {
-                quickFieldRefs.current[field.key] = element;
-              }}
-            />
-          );
-        }
-
         return (
           <DynamicField
             key={field.key}
@@ -1117,9 +1093,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       invitedFirms: cleanFirmRows(firmDetails.invitedFirms),
       bidderFirms: cleanFirmRows(firmDetails.bidderFirms),
       currentMilestone: currentMilestone || undefined,
-      completedMilestones: completedMilestonesForSave.length
-        ? completedMilestonesForSave
-        : undefined,
+      completedMilestones: completedMilestonesForSave,
     };
     const milestoneErrors = validateMilestoneCompletionConsistency(payload, milestoneOptions);
     if (milestoneErrors.length) {
@@ -1506,8 +1480,11 @@ function SectionRemarks({
                   <input
                     type="date"
                     value={getRemarkDateInputValue(remark.createdAt)}
-                    onChange={(event) => onDateChange(remark.id, event.target.value)}
+                    onChange={(event) =>
+                      onDateChange(remark.id, clampDateYearInput(event.target.value))
+                    }
                     disabled={disabled}
+                    max="9999-12-31"
                     className={
                       "h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40" +
                       disabledCls(disabled)
@@ -2498,6 +2475,9 @@ function MilestonesBlock({
     applicableMilestones.has(milestone),
   );
   const applicableCount = applicableMilestoneList.length;
+  const applicableCompletedCount = applicableMilestoneList.filter((milestone) =>
+    completedSet.has(milestone),
+  ).length;
 
   const toggleCurrent = (milestone: string) => {
     if (disabled) return;
@@ -2547,7 +2527,7 @@ function MilestonesBlock({
             </p>
           </div>
           <span className="rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs tabular-nums text-muted-foreground">
-            {completedSet.size}/{applicableCount}
+            {applicableCompletedCount}/{applicableCount}
           </span>
         </div>
         <div className="overflow-hidden rounded-md border border-border bg-background">
@@ -2890,7 +2870,9 @@ function getTcecCommitteeOptions(committees: string[] | undefined, currentValue:
 }
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
-  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  const values = (milestones ?? [])
+    .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
+    .filter(Boolean);
   const configured = values.length ? values : defaultMilestones;
   return appendFileClosedMilestone(configured);
 }
@@ -2901,6 +2883,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
 
 function getApplicableMilestones(
@@ -3078,7 +3064,6 @@ function applyConditionalRules(form: FormState) {
       preTcecDate: "",
       preTcecMinutesDate: "",
       preTcecCommitteeNo: "",
-      ad: "No",
       adVettingDate: "",
       postTcecDate: "",
       postTcecMinutesDate: "",
@@ -3557,41 +3542,6 @@ function SoValueField({
   );
 }
 
-function FileTypeField({
-  value,
-  disabled,
-  onChange,
-  inputRef,
-}: {
-  value: string;
-  disabled: boolean;
-  onChange: (value: string) => void;
-  inputRef?: (element: HTMLInputElement | null) => void;
-}) {
-  return (
-    <Field label="File type">
-      <div className={`grid max-w-md grid-cols-1 gap-2 sm:grid-cols-3 ${disabledCls(disabled)}`}>
-        {fileTypeOptions.map((option) => (
-          <label
-            key={option}
-            className="flex h-10 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
-          >
-            <input
-              ref={option === fileTypeOptions[0] ? inputRef : undefined}
-              type="checkbox"
-              checked={value === option}
-              disabled={disabled}
-              onChange={(event) => onChange(event.target.checked ? option : "")}
-              className="size-4 rounded border-input"
-            />
-            {option}
-          </label>
-        ))}
-      </div>
-    </Field>
-  );
-}
-
 function DynamicField({
   field,
   value,
@@ -3687,10 +3637,15 @@ function DynamicField({
         value={value}
         onChange={(e) =>
           onChange(
-            field.key === "exchangeRate" ? formatDecimalInput(e.target.value) : e.target.value,
+            field.key === "exchangeRate"
+              ? formatDecimalInput(e.target.value)
+              : field.type === "date"
+                ? clampDateYearInput(e.target.value)
+                : e.target.value,
           )
         }
         disabled={disabled}
+        max={field.type === "date" ? "9999-12-31" : undefined}
         min={field.type === "number" ? 0 : undefined}
         step={field.key === "exchangeRate" ? "any" : field.type === "number" ? 1 : undefined}
         inputMode={field.key === "exchangeRate" ? "decimal" : undefined}
@@ -3734,6 +3689,12 @@ function formatDecimalInput(value: string) {
   const decimalPart = rest.join("");
   const formattedInteger = formatThousandsAndLakhs(first);
   return rest.length > 0 ? `${formattedInteger}.${decimalPart}` : formattedInteger;
+}
+
+function clampDateYearInput(value: string) {
+  const [year = "", ...rest] = value.split("-");
+  if (year.length <= 4) return value;
+  return [year.slice(0, 4), ...rest].join("-");
 }
 
 function formatThousandsAndLakhs(integerPart: string) {

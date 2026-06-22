@@ -45,7 +45,6 @@ type SettingsRow = {
 };
 
 const modeNames = ["OBM", "PBM", "SBM", "LBM", "LPC"];
-const fileTypeNames = ["General", "AMC", "MPC"];
 const snapshotAttributeDefinitions = [
   { key: "tcec", column: "f.tcec", label: "TCEC", yesLabel: "TCEC", noLabel: "Non TCEC" },
   { key: "gte", column: "f.gte", label: "GTE", yesLabel: "GTE", noLabel: "Non GTE" },
@@ -162,7 +161,7 @@ const defaultManualMilestones = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -427,7 +426,6 @@ function isNoExpression(column: string) {
 type SimpleDashboardCounts = {
   dashboardFileCount: number;
   modeCounts: Array<{ name: string; count: number }>;
-  fileTypeCounts: Array<{ name: string; count: number }>;
   topSummaryStats: Array<{
     label: string;
     value: Array<{ label: string; value: number; searchFilter: string }>;
@@ -447,6 +445,7 @@ type FinanceTotals = {
 };
 
 type MiscellaneousCounts = {
+  liveFiles: number;
   fileClosed: number;
   ld: number;
   demandCancelled: number;
@@ -549,10 +548,6 @@ async function loadSimpleDashboardCounts({
     (mode) =>
       `${countFilter(`upper(trim(coalesce(f.mode, ''))) = '${mode}'`)} as mode_${mode.toLowerCase()}`,
   );
-  const fileTypeSelects = fileTypeNames.map(
-    (fileType, index) =>
-      `${countFilter(`trim(coalesce(f.file_type, '')) = '${fileType}'`)} as file_type_${index}`,
-  );
   const attributeSelects = snapshotAttributeDefinitions.flatMap((attribute, index) => [
     `${countFilter(isYesExpression(attribute.column))} as attribute_${index}_yes`,
     `${countFilter(isNoExpression(attribute.column))} as attribute_${index}_no`,
@@ -560,7 +555,7 @@ async function loadSimpleDashboardCounts({
   const result = await pool.query<Record<string, number | string>>(
     `select
        count(*)::integer as dashboard_file_count,
-       ${[...modeSelects, ...fileTypeSelects, ...attributeSelects].join(",\n       ")}
+       ${[...modeSelects, ...attributeSelects].join(",\n       ")}
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, extraConditions)}`,
@@ -572,10 +567,6 @@ async function loadSimpleDashboardCounts({
   return {
     dashboardFileCount: readCount("dashboard_file_count"),
     modeCounts: modeNames.map((name) => ({ name, count: readCount(`mode_${name.toLowerCase()}`) })),
-    fileTypeCounts: fileTypeNames.map((name, index) => ({
-      name,
-      count: readCount(`file_type_${index}`),
-    })),
     topSummaryStats: snapshotAttributeDefinitions.map((attribute, index) => ({
       label: attribute.label,
       value: [
@@ -1146,11 +1137,6 @@ async function loadAnalyticsSqlSlice({
     { name: "CNC", start: "f.cnc_date", end: "f.cnc_approval_date" },
     { name: "Supply Order", start: "f.cfa_date", end: firstSoDate },
     {
-      name: "Bank Guarantee",
-      start: firstSoDate,
-      end: earliestSupplyOrderDateExpression("bg_validity_date"),
-    },
-    {
       name: "Delivery",
       start: firstSoDate,
       end: earliestSupplyOrderDateExpression("material_receipt_date"),
@@ -1562,6 +1548,9 @@ async function loadMiscellaneousCounts({
      )
      select
        count(*) filter (
+         where not ${fileClosedExpression()} and not ${isCancelledExpression()}
+       )::integer as live_files,
+       count(*) filter (
          where ${fileClosedExpression()}
        )::integer as file_closed,
        (select count(*) from effective_supply_orders eso where ${isYesExpression("eso.ld")} and not ${isYesExpression("eso.so_cancelled")})::integer as ld,
@@ -1592,6 +1581,7 @@ async function loadMiscellaneousCounts({
   const row = result.rows[0] ?? {};
   const readCount = (key: string) => Number(row[key] ?? 0);
   return {
+    liveFiles: readCount("live_files"),
     fileClosed: readCount("file_closed"),
     ld: readCount("ld"),
     demandCancelled: readCount("demand_cancelled"),
@@ -1601,7 +1591,9 @@ async function loadMiscellaneousCounts({
 }
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
-  const values = (milestones ?? []).map((item) => item.trim()).filter(Boolean);
+  const values = (milestones ?? [])
+    .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
+    .filter(Boolean);
   const configured = values.length ? values : defaultManualMilestones;
   return appendFileClosedMilestone(configured);
 }
@@ -1612,6 +1604,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
 
 async function loadManualMilestoneSqlSlice({
@@ -1773,6 +1769,8 @@ async function loadStatusCounts({
     ...extraConditions,
     `not ${fileClosedExpression()}`,
   ]);
+  const bidOverdue = `${isNoExpression("f.bid_opened")}
+          and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
     const prefix = `milestone_${index}`;
     const applies = statusAppliesExpression(milestone);
@@ -1852,15 +1850,13 @@ async function loadStatusCounts({
      )
      select
        ${milestoneSelects.join(",\n       ")},
-       ${countFilter(isYesExpression("f.tender_live"))} as live_bids,
-       ${countFilter(
-         `${isNoExpression("f.bid_opened")}
-          and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`,
-       )} as overdue_bids,
-       ${countFilter(
+      ${countFilter(isYesExpression("f.tender_live"))} as live_bids,
+      ${countFilter(bidOverdue)} as overdue_bids,
+      ${countFilter(
          `not ${cancelled}
           and regexp_replace(lower(coalesce(f.current_milestone, '')), '[^a-z0-9]+', '', 'g') = 'bidding'
-          and not ${isYesExpression("f.tender_live")}`,
+          and not ${isYesExpression("f.tender_live")}
+          and not (${bidOverdue})`,
        )} as in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
        ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
@@ -2327,7 +2323,6 @@ dashboardRouter.get(
           {
             dashboardFileCount: legacySummary.dashboardFileCount,
             modeCounts: legacySummary.modeCounts,
-            fileTypeCounts: legacySummary.fileTypeCounts,
             topSummaryStats: legacySummary.topSummaryStats,
           },
           sqlSimpleCounts,

@@ -15,7 +15,6 @@ export type FileSearchParams = {
   description?: string;
   firm?: string;
   selectedModes?: string[];
-  selectedFileTypes?: string[];
   highValue?: boolean;
   gte?: boolean;
   ad?: boolean;
@@ -105,7 +104,6 @@ const searchableFileKeys = [
   "currency",
   "exchangeRate",
   "gte",
-  "fileType",
   "tcec",
   "mode",
   "gem",
@@ -249,7 +247,6 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
   const minSoValue = parseAmount(params.soValueFrom);
   const maxSoValue = parseAmount(params.soValueTo);
   const selectedModes = params.selectedModes ?? [];
-  const selectedFileTypes = params.selectedFileTypes ?? [];
   const analyticsNameSet = new Set((params.analyticsNames ?? []).map(normalizeAnalyticsName));
 
   const filtered = files.filter((file) => {
@@ -290,9 +287,6 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       selectedModes.length > 0 &&
       !selectedModes.includes((file.mode ?? "").trim().toUpperCase())
     ) {
-      return false;
-    }
-    if (selectedFileTypes.length > 0 && !selectedFileTypes.includes((file.fileType ?? "").trim())) {
       return false;
     }
     if (params.highValue && !isYes(file.highValue)) return false;
@@ -1055,7 +1049,6 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (value === "no") return isNo(fieldValue);
   }
   if (filter.startsWith("mode:")) return (file.mode ?? "").trim().toUpperCase() === filter.slice(5);
-  if (filter.startsWith("fileType:")) return (file.fileType ?? "").trim() === filter.slice(9);
   if (filter.startsWith("manualMilestoneCurrent:"))
     return (
       !isCancelledFile(file) &&
@@ -1091,6 +1084,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
   if (filter === "miscDemandCancelled")
@@ -1131,7 +1125,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(16));
     if (!milestone) return true;
     if (milestone.key === "bidding")
-      return isManualActiveMilestone(file, milestone) && !isFileTenderLive(file);
+      return (
+        isManualActiveMilestone(file, milestone) && !isFileTenderLive(file) && !isBidOverdue(file)
+      );
     return isManualActiveMilestone(file, milestone);
   }
   if (filter.startsWith("milestone:")) {

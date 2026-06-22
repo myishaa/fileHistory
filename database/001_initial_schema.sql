@@ -65,7 +65,6 @@ create table files (
   currency text default 'INR',
   exchange_rate numeric(14, 6) default 1,
   gte text,
-  file_type text,
   tcec text,
   mode text,
   gem text,
@@ -218,7 +217,6 @@ where unique_code is not null and unique_code <> '';
 create index files_created_at_idx on files(created_at desc);
 create index files_current_milestone_idx on files(current_milestone);
 create index files_mode_idx on files(mode);
-create index files_file_type_idx on files(file_type);
 create index files_payment_pending_idx on files(bill_sent_for_payment_date, payment_date);
 create index files_delivery_pending_idx on files(dp_date, material_receipt_date);
 create index files_title_trgm_idx on files using gin (title gin_trgm_ops);

@@ -32,7 +32,7 @@ const defaultMilestoneSequence = [
   "Pre-TCEC",
   "AD",
   "R&QA",
-  "Controlled",
+  "Controlling",
   "IFA",
   "CFA",
   "Bidding",
@@ -53,10 +53,15 @@ function appendFileClosedMilestone(milestones: string[]) {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "");
-  const withoutFileClosed = milestones.filter(
+  const normalizedMilestones = milestones.map(normalizeConfiguredMilestoneLabel);
+  const withoutFileClosed = normalizedMilestones.filter(
     (milestone) => normalize(milestone) !== normalize(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function normalizeConfiguredMilestoneLabel(milestone: string) {
+  return milestone.trim().toLowerCase() === "controlled" ? "Controlling" : milestone;
 }
 
 function SettingsPage() {
@@ -129,7 +134,7 @@ function SettingsPage() {
     { key: "thresholds", label: "Value thresholds", content: <ValueThresholdSettings /> },
     { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
     { key: "presets", label: "Preset table fields", content: <TableFieldPresetSettings /> },
-    { key: "users", label: "Users", content: <UserSettings /> },
+    { key: "users", label: "Authorised users", content: <UserSettings /> },
     { key: "archive", label: "Archive", content: <ArchiveSettings /> },
   ];
   const selectedAdminSection =
@@ -608,11 +613,13 @@ function ValueThresholdSettings() {
   const selectedYear = isAllActiveFilesYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
-  const [levels, setLevels] = useState<ValueThresholdLevel[]>(settings.valueThresholdLevels ?? []);
+  const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>
+    formatThresholdLevels(settings.valueThresholdLevels ?? []),
+  );
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    setLevels(settings.valueThresholdLevels ?? []);
+    setLevels(formatThresholdLevels(settings.valueThresholdLevels ?? []));
     setMessage("");
   }, [settings.selectedYear, settings.valueThresholdLevels]);
 
@@ -624,8 +631,8 @@ function ValueThresholdSettings() {
       ...level,
       label: level.label.trim() || `Level ${index + 1}`,
       levelNumber: index + 1,
-      minValue: level.minValue?.trim() || "",
-      maxValue: level.maxValue?.trim() || "",
+      minValue: formatThresholdAmountInput(level.minValue) || "",
+      maxValue: formatThresholdAmountInput(level.maxValue) || "",
       appliesTo: level.appliesTo || defaultThresholdAppliesTo,
     }));
     const invalid = normalized.find((level) => {
@@ -732,7 +739,11 @@ function ValueThresholdSettings() {
                   <td className="px-3 py-2">
                     <input
                       value={level.minValue ?? ""}
-                      onChange={(event) => updateLevel(index, { minValue: event.target.value })}
+                      onChange={(event) =>
+                        updateLevel(index, {
+                          minValue: formatThresholdAmountInput(event.target.value),
+                        })
+                      }
                       inputMode="decimal"
                       placeholder="No minimum"
                       className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -741,7 +752,11 @@ function ValueThresholdSettings() {
                   <td className="px-3 py-2">
                     <input
                       value={level.maxValue ?? ""}
-                      onChange={(event) => updateLevel(index, { maxValue: event.target.value })}
+                      onChange={(event) =>
+                        updateLevel(index, {
+                          maxValue: formatThresholdAmountInput(event.target.value),
+                        })
+                      }
                       inputMode="decimal"
                       placeholder="No maximum"
                       className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -776,6 +791,34 @@ function parseOptionalPositiveNumber(value: string | undefined) {
     value: Number.isFinite(parsed) ? parsed : undefined,
     invalid: !Number.isFinite(parsed) || parsed < 0,
   };
+}
+
+function formatThresholdLevels(levels: ValueThresholdLevel[]) {
+  return levels.map((level) => ({
+    ...level,
+    minValue: formatThresholdAmountInput(level.minValue),
+    maxValue: formatThresholdAmountInput(level.maxValue),
+  }));
+}
+
+function formatThresholdAmountInput(value: string | undefined) {
+  const raw = String(value ?? "").replace(/,/g, "");
+  const sanitized = raw.replace(/[^\d.]/g, "");
+  const [integerPart, ...decimalParts] = sanitized.split(".");
+  const decimalPart = decimalParts.join("");
+  const formattedInteger = formatIndianIntegerInput(integerPart);
+  if (sanitized.includes(".")) return `${formattedInteger}.${decimalPart}`;
+  return formattedInteger;
+}
+
+function formatIndianIntegerInput(integerPart: string) {
+  const trimmed = integerPart.replace(/^0+(?=\d)/, "");
+  const lastThree = trimmed.slice(-3);
+  const beforeThousands = trimmed.slice(0, -3);
+  if (!beforeThousands) return trimmed;
+  const lastTwoBeforeThousands = beforeThousands.slice(-2);
+  const lakhPart = beforeThousands.slice(0, -2);
+  return [lakhPart, lastTwoBeforeThousands, lastThree].filter(Boolean).join(",");
 }
 
 function MilestoneSettings() {
@@ -1784,7 +1827,7 @@ function UserSettings() {
 
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <h2 className="text-sm font-semibold mb-1">Users</h2>
+      <h2 className="text-sm font-semibold mb-1">Authorised users</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Add users and assign the divisions they should be allowed to work with.
       </p>

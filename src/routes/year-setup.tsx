@@ -48,8 +48,6 @@ export function YearSetupPanel() {
   const [reloadKey, setReloadKey] = useState(0);
   const [mergeSourceIds, setMergeSourceIds] = useState<string[]>([]);
   const [mergeTargetId, setMergeTargetId] = useState("");
-  const [mergeTargetName, setMergeTargetName] = useState("");
-  const [mergeTargetCode, setMergeTargetCode] = useState("");
   const [mergeEffectiveDate, setMergeEffectiveDate] = useState(todayIsoDate);
   const [mergeNotes, setMergeNotes] = useState("");
   const [moveActiveFiles, setMoveActiveFiles] = useState(true);
@@ -64,8 +62,6 @@ export function YearSetupPanel() {
   const [selectedSplitIndentorNames, setSelectedSplitIndentorNames] = useState<Record<string, string>>({});
   const [splitIndentorIds, setSplitIndentorIds] = useState<string[]>([]);
   const [splitTargetId, setSplitTargetId] = useState("");
-  const [splitTargetName, setSplitTargetName] = useState("");
-  const [splitTargetCode, setSplitTargetCode] = useState("");
   const [splitCapital, setSplitCapital] = useState("");
   const [splitRevenue, setSplitRevenue] = useState("");
   const [splitEffectiveDate, setSplitEffectiveDate] = useState(todayIsoDate);
@@ -282,9 +278,8 @@ export function YearSetupPanel() {
       setMergeMessage("Select at least two source divisions.");
       return;
     }
-    const targetName = mergeTargetName.trim();
-    if (!targetName && !mergeTargetId) {
-      setMergeMessage("Choose a target division or enter a new merged division name.");
+    if (!mergeTargetId) {
+      setMergeMessage("Choose an existing target division.");
       return;
     }
 
@@ -293,9 +288,7 @@ export function YearSetupPanel() {
       await store.mergeDivisions({
         financialYear: setupYear,
         sourceDivisionIds: mergeSourceIds,
-        targetDivisionId: targetName ? undefined : mergeTargetId,
-        targetDivisionName: targetName || undefined,
-        targetDivisionCode: targetName ? mergeTargetCode.trim() || undefined : undefined,
+        targetDivisionId: mergeTargetId,
         effectiveDate: mergeEffectiveDate || undefined,
         notes: mergeNotes.trim() || undefined,
         moveActiveFiles,
@@ -303,8 +296,6 @@ export function YearSetupPanel() {
       });
       setMergeSourceIds([]);
       setMergeTargetId("");
-      setMergeTargetName("");
-      setMergeTargetCode("");
       setMergeNotes("");
       setReloadKey((value) => value + 1);
       setMergeMessage("Division merge saved.");
@@ -342,9 +333,8 @@ export function YearSetupPanel() {
       setSplitMessage("Select at least one indentor.");
       return;
     }
-    const targetName = splitTargetName.trim();
-    if (!targetName && !splitTargetId) {
-      setSplitMessage("Choose a target division or enter a new division name.");
+    if (!splitTargetId) {
+      setSplitMessage("Choose an existing target division.");
       return;
     }
     if (splitTargetId === splitSourceDivisionId) {
@@ -358,9 +348,7 @@ export function YearSetupPanel() {
         financialYear: setupYear,
         sourceDivisionId: splitSourceDivisionId,
         indentorIds: splitIndentorIds,
-        targetDivisionId: targetName ? undefined : splitTargetId,
-        targetDivisionName: targetName || undefined,
-        targetDivisionCode: targetName ? splitTargetCode.trim() || undefined : undefined,
+        targetDivisionId: splitTargetId,
         allocatedCapital: splitCapital.trim() || "0",
         allocatedRevenue: splitRevenue.trim() || "0",
         effectiveDate: splitEffectiveDate || undefined,
@@ -370,8 +358,6 @@ export function YearSetupPanel() {
 	      setSplitIndentorIds([]);
 	      setSelectedSplitIndentorNames({});
 	      setSplitTargetId("");
-      setSplitTargetName("");
-      setSplitTargetCode("");
       setSplitCapital("");
       setSplitRevenue("");
       setSplitNotes("");
@@ -621,12 +607,8 @@ export function YearSetupPanel() {
                 </div>
                 <select
                   value={mergeTargetId}
-                  onChange={(event) => {
-                    setMergeTargetId(event.target.value);
-                    if (event.target.value) setMergeTargetName("");
-                  }}
-                  disabled={Boolean(mergeTargetName.trim())}
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+                  onChange={(event) => setMergeTargetId(event.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 >
                   <option value="">Select target</option>
                   {targetOptions.map((division) => (
@@ -647,22 +629,6 @@ export function YearSetupPanel() {
                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 />
               </label>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_0.45fr]">
-              <AllocationInput
-                value={mergeTargetName}
-                onChange={(value) => {
-                  setMergeTargetName(value);
-                  if (value.trim()) setMergeTargetId("");
-                }}
-                placeholder="New merged division name"
-              />
-              <AllocationInput
-                value={mergeTargetCode}
-                onChange={setMergeTargetCode}
-                placeholder="Code"
-              />
             </div>
 
             <textarea
@@ -848,12 +814,8 @@ export function YearSetupPanel() {
                   </div>
                   <select
                     value={splitTargetId}
-                    onChange={(event) => {
-                      setSplitTargetId(event.target.value);
-                      if (event.target.value) setSplitTargetName("");
-                    }}
-                    disabled={Boolean(splitTargetName.trim())}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+                    onChange={(event) => setSplitTargetId(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   >
                     <option value="">Select target</option>
                     {splitTargetOptions.map((division) => (
@@ -874,22 +836,6 @@ export function YearSetupPanel() {
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   />
                 </label>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_0.45fr]">
-                <AllocationInput
-                  value={splitTargetName}
-                  onChange={(value) => {
-                    setSplitTargetName(value);
-                    if (value.trim()) setSplitTargetId("");
-                  }}
-                  placeholder="New target division name"
-                />
-                <AllocationInput
-                  value={splitTargetCode}
-                  onChange={setSplitTargetCode}
-                  placeholder="Code"
-                />
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -50,7 +50,7 @@ function ReportsPage() {
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [reportMode, setReportMode] = useState<ReportMode>("delayStatus");
   const [delayDays, setDelayDays] = useState("5");
-  const [expectedCashOutgoDays, setExpectedCashOutgoDays] = useState("10");
+  const [expectedCashOutgoDays, setExpectedCashOutgoDays] = useState("0");
   const [delayMilestoneKey, setDelayMilestoneKey] = useState("all");
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [reportsLoading, setReportsLoading] = useState(false);
@@ -110,10 +110,13 @@ function ReportsPage() {
   const expectedCashOutgoReceiptRows =
     reportsSummary?.expectedCashOutgoReceiptRows ?? [];
   const actualCashOutgoRows = reportsSummary?.actualCashOutgoRows ?? [];
+  const currentLiabilityRows = getCurrentMonthLiabilityRows(expectedCashOutgoReceiptRows);
   const delayRows = reportsSummary?.delayRows ?? [];
   const delaySummary = reportsSummary?.delaySummary ?? getDelayStatusSummary([]);
   const selectedCashOutgoRows =
-    reportMode === "actualCashOutgo"
+    reportMode === "currentMonthLiability"
+      ? currentLiabilityRows
+      : reportMode === "actualCashOutgo"
       ? actualCashOutgoRows
       : reportMode === "expectedCashOutgoByReceipt"
         ? expectedCashOutgoReceiptRows
@@ -130,8 +133,14 @@ function ReportsPage() {
     activeDivision === "all"
       ? "Actual cash outgo monthly - All divisions"
       : `Actual cash outgo monthly - ${activeDivision}`;
+  const currentLiabilityReportTitle =
+    activeDivision === "all"
+      ? "Current month liability - All divisions"
+      : `Current month liability - ${activeDivision}`;
   const cashOutgoReportTitle =
-    reportMode === "actualCashOutgo"
+    reportMode === "currentMonthLiability"
+      ? currentLiabilityReportTitle
+      : reportMode === "actualCashOutgo"
       ? actualCashOutgoReportTitle
       : reportMode === "expectedCashOutgoByReceipt"
         ? expectedCashOutgoReceiptReportTitle
@@ -141,6 +150,8 @@ function ReportsPage() {
       ? `Delay status - More than ${delayThresholdDays} days`
       : `Delay status - More than ${delayThresholdDays} days - ${activeDivision}`;
   const reportTitle = reportMode === "delayStatus" ? delayReportTitle : cashOutgoReportTitle;
+  const selectedReportMode =
+    reportModes.find((mode) => mode.key === reportMode) ?? reportModes[0];
   const openDelaySearch = (milestoneKey = delayMilestoneKey) => {
     navigate({
       to: "/search",
@@ -171,128 +182,152 @@ function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-card p-0.5">
-            {reportModes.map((mode) => (
-              <button
-                key={mode.key}
-                type="button"
-                onClick={() => setReportMode(mode.key)}
-                className={
-                  "h-8 rounded px-3 text-sm font-medium transition-colors " +
-                  (reportMode === mode.key
-                    ? "bg-secondary text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                }
-              >
-                {mode.label}
-              </button>
-            ))}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+          <div className="space-y-1">
+            {reportModes.map((mode) => {
+              const selected = reportMode === mode.key;
+              return (
+                <button
+                  key={mode.key}
+                  type="button"
+                  onClick={() => setReportMode(mode.key)}
+                  className={
+                    "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                    (selected
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  {mode.label}
+                </button>
+              );
+            })}
           </div>
-          <button
-            type="button"
-            onClick={() =>
-              reportMode === "delayStatus"
-                ? printDelayStatusToPdf(delayRows, reportTitle)
-                : reportMode === "actualCashOutgo"
-                  ? printActualCashOutgoToPdf(selectedCashOutgoRows, reportTitle)
-                  : printExpectedCashOutgoToPdf(
-                      selectedCashOutgoRows,
-                      reportTitle,
-                      expectedCashOutgoOffsetDays,
-                      reportMode === "expectedCashOutgoByReceipt" ? "receipt" : "dp",
-                    )
-            }
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
-          >
-            <FileText className="size-4" />
-            PDF
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              reportMode === "delayStatus"
-                ? exportDelayStatusToExcel(delayRows, reportTitle)
-                : reportMode === "actualCashOutgo"
-                  ? exportActualCashOutgoToExcel(selectedCashOutgoRows, reportTitle)
-                  : exportExpectedCashOutgoToExcel(selectedCashOutgoRows, reportTitle)
-            }
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
-          >
-            <FileSpreadsheet className="size-4" />
-            Excel
-          </button>
+        </aside>
+        <div className="min-w-0 space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">{selectedReportMode.label}</h2>
+              <p className="text-xs text-muted-foreground">{reportTitle}</p>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
+                <span>Division</span>
+                <select
+                  value={activeDivision}
+                  onChange={(event) => setSelectedDivision(event.target.value)}
+                  className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                >
+                  <option value="all">All accessible divisions</option>
+                  {divisions.map((division) => (
+                    <option key={division.id} value={division.name}>
+                      {division.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  reportMode === "delayStatus"
+                    ? printDelayStatusToPdf(delayRows, reportTitle)
+                    : reportMode === "currentMonthLiability"
+                      ? printCurrentLiabilityToPdf(selectedCashOutgoRows, reportTitle)
+                      : reportMode === "actualCashOutgo"
+                      ? printActualCashOutgoToPdf(selectedCashOutgoRows, reportTitle)
+                      : printExpectedCashOutgoToPdf(
+                          selectedCashOutgoRows,
+                          reportTitle,
+                          expectedCashOutgoOffsetDays,
+                          reportMode === "expectedCashOutgoByReceipt" ? "receipt" : "dp",
+                        )
+                }
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+              >
+                <FileText className="size-4" />
+                PDF
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  reportMode === "delayStatus"
+                    ? exportDelayStatusToExcel(delayRows, reportTitle)
+                    : reportMode === "currentMonthLiability"
+                      ? exportCurrentLiabilityToExcel(selectedCashOutgoRows, reportTitle)
+                      : reportMode === "actualCashOutgo"
+                      ? exportActualCashOutgoToExcel(selectedCashOutgoRows, reportTitle)
+                      : exportExpectedCashOutgoToExcel(selectedCashOutgoRows, reportTitle)
+                }
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+              >
+                <FileSpreadsheet className="size-4" />
+                Excel
+              </button>
+            </div>
+          </div>
+
+          {reportsError || (reportsLoading && !hasLoadedReports) ? (
+            <div
+              className={
+                "rounded-md border px-3 py-2 text-xs " +
+                (reportsError
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-border bg-secondary/30 text-muted-foreground")
+              }
+            >
+              {reportsError
+                ? `Reports API unavailable, showing local fallback: ${reportsError}`
+                : "Updating reports..."}
+            </div>
+          ) : null}
+
+          {reportMode === "delayStatus" ? (
+            <DelayStatusReport
+              rows={delayRows}
+              thresholdDays={delayThresholdDays}
+              selectedDays={delayDays}
+              selectedMilestoneKey={delayMilestoneKey}
+              summary={delaySummary}
+              onDaysChange={setDelayDays}
+              onMilestoneChange={setDelayMilestoneKey}
+              onOpenFile={openDelayFile}
+              onOpenSearch={() => openDelaySearch()}
+              onOpenMilestone={(milestoneKey) => openDelaySearch(milestoneKey)}
+            />
+          ) : reportMode === "currentMonthLiability" ? (
+            <CurrentMonthLiabilityReport
+              rows={currentLiabilityRows}
+              selectedDays={expectedCashOutgoDays}
+              offsetDays={expectedCashOutgoOffsetDays}
+              onDaysChange={setExpectedCashOutgoDays}
+            />
+          ) : reportMode === "actualCashOutgo" ? (
+            <ActualCashOutgoReport
+              rows={actualCashOutgoRows}
+              onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
+            />
+          ) : reportMode === "expectedCashOutgoByReceipt" ? (
+            <ExpectedCashOutgoReport
+              rows={expectedCashOutgoReceiptRows}
+              base="receipt"
+              selectedDays={expectedCashOutgoDays}
+              offsetDays={expectedCashOutgoOffsetDays}
+              onDaysChange={setExpectedCashOutgoDays}
+              onOpenMonth={(monthKey) => openCashOutgoSearch("expectedReceipt", monthKey)}
+            />
+          ) : (
+            <ExpectedCashOutgoReport
+              rows={expectedCashOutgoDpRows}
+              base="dp"
+              selectedDays={expectedCashOutgoDays}
+              offsetDays={expectedCashOutgoOffsetDays}
+              onDaysChange={setExpectedCashOutgoDays}
+              onOpenMonth={(monthKey) => openCashOutgoSearch("expectedDp", monthKey)}
+            />
+          )}
         </div>
-        <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
-          <span>Division</span>
-          <select
-            value={activeDivision}
-            onChange={(event) => setSelectedDivision(event.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-          >
-            <option value="all">All accessible divisions</option>
-            {divisions.map((division) => (
-              <option key={division.id} value={division.name}>
-                {division.name}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
-
-      {reportsError || (reportsLoading && !hasLoadedReports) ? (
-        <div
-          className={
-            "rounded-md border px-3 py-2 text-xs " +
-            (reportsError
-              ? "border-destructive/30 bg-destructive/10 text-destructive"
-              : "border-border bg-secondary/30 text-muted-foreground")
-          }
-        >
-          {reportsError
-            ? `Reports API unavailable, showing local fallback: ${reportsError}`
-            : "Updating reports..."}
-        </div>
-      ) : null}
-
-      {reportMode === "delayStatus" ? (
-        <DelayStatusReport
-          rows={delayRows}
-          thresholdDays={delayThresholdDays}
-          selectedDays={delayDays}
-          selectedMilestoneKey={delayMilestoneKey}
-          summary={delaySummary}
-          onDaysChange={setDelayDays}
-          onMilestoneChange={setDelayMilestoneKey}
-          onOpenFile={openDelayFile}
-          onOpenSearch={() => openDelaySearch()}
-          onOpenMilestone={(milestoneKey) => openDelaySearch(milestoneKey)}
-        />
-      ) : reportMode === "actualCashOutgo" ? (
-        <ActualCashOutgoReport
-          rows={actualCashOutgoRows}
-          onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
-        />
-      ) : reportMode === "expectedCashOutgoByReceipt" ? (
-        <ExpectedCashOutgoReport
-          rows={expectedCashOutgoReceiptRows}
-          base="receipt"
-          selectedDays={expectedCashOutgoDays}
-          offsetDays={expectedCashOutgoOffsetDays}
-          onDaysChange={setExpectedCashOutgoDays}
-          onOpenMonth={(monthKey) => openCashOutgoSearch("expectedReceipt", monthKey)}
-        />
-      ) : (
-        <ExpectedCashOutgoReport
-          rows={expectedCashOutgoDpRows}
-          base="dp"
-          selectedDays={expectedCashOutgoDays}
-          offsetDays={expectedCashOutgoOffsetDays}
-          onDaysChange={setExpectedCashOutgoDays}
-          onOpenMonth={(monthKey) => openCashOutgoSearch("expectedDp", monthKey)}
-        />
-      )}
     </div>
   );
 }
@@ -300,6 +335,7 @@ function ReportsPage() {
 type ReportMode =
   | "expectedCashOutgoByDp"
   | "expectedCashOutgoByReceipt"
+  | "currentMonthLiability"
   | "actualCashOutgo"
   | "delayStatus";
 type CashOutgoFilterMode = "expectedDp" | "expectedReceipt" | "actual";
@@ -307,6 +343,7 @@ type CashOutgoFilterMode = "expectedDp" | "expectedReceipt" | "actual";
 const reportModes = [
   { key: "expectedCashOutgoByDp", label: "Expected cash outgo by DP date" },
   { key: "expectedCashOutgoByReceipt", label: "Expected cash outgo by receipt date" },
+  { key: "currentMonthLiability", label: "Current month liability" },
   { key: "actualCashOutgo", label: "Actual cash out go" },
   { key: "delayStatus", label: "Delay status" },
 ] satisfies Array<{ key: ReportMode; label: string }>;
@@ -374,6 +411,39 @@ function ActualCashOutgoReport({
   );
 }
 
+function CurrentMonthLiabilityReport({
+  rows,
+  selectedDays,
+  offsetDays,
+  onDaysChange,
+}: {
+  rows: ExpectedCashOutgoRow[];
+  selectedDays: string;
+  offsetDays: number;
+  onDaysChange: (value: string) => void;
+}) {
+  return (
+    <CashOutgoReport
+      rows={rows}
+      title="Current month liability"
+      description={`Uses material receipt date plus ${offsetDays} days, carrying forward unpaid amounts from previous months into the current month.`}
+      emptyMessage="No unpaid liability found for the current month."
+      controls={
+        <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+          <span>Days after base date</span>
+          <input
+            type="number"
+            min="0"
+            value={selectedDays}
+            onChange={(event) => onDaysChange(event.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          />
+        </label>
+      }
+    />
+  );
+}
+
 function CashOutgoReport({
   rows,
   title,
@@ -387,7 +457,7 @@ function CashOutgoReport({
   description: string;
   emptyMessage: string;
   controls?: ReactNode;
-  onOpenMonth: (monthKey: string) => void;
+  onOpenMonth?: (monthKey: string) => void;
 }) {
   const totals = getExpectedCashOutgoTotals(rows);
 
@@ -399,18 +469,14 @@ function CashOutgoReport({
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         {controls}
-        <div className="grid grid-cols-3 gap-2 text-right text-xs">
+        <div className="grid grid-cols-2 gap-2 text-right text-xs">
           <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
-            <div className="text-muted-foreground">Capital</div>
+            <div className="text-muted-foreground">Total Capital</div>
             <div className="font-semibold tabular-nums">{formatCurrency(totals.capital)}</div>
           </div>
           <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
-            <div className="text-muted-foreground">Revenue</div>
+            <div className="text-muted-foreground">Total Revenue</div>
             <div className="font-semibold tabular-nums">{formatCurrency(totals.revenue)}</div>
-          </div>
-          <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
-            <div className="text-muted-foreground">Total</div>
-            <div className="font-semibold tabular-nums">{formatCurrency(totals.total)}</div>
           </div>
         </div>
       </div>
@@ -452,13 +518,19 @@ function CashOutgoReport({
                         }
                       >
                         {column.key === "month" ? (
-                          <button
-                            type="button"
-                            onClick={() => onOpenMonth(row.monthKey)}
-                            className="font-medium text-primary underline-offset-2 hover:underline"
-                          >
-                            {getCashOutgoDisplayValue(row, column.key, index)}
-                          </button>
+                          onOpenMonth ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenMonth(row.monthKey)}
+                              className="font-medium text-primary underline-offset-2 hover:underline"
+                            >
+                              {getCashOutgoDisplayValue(row, column.key, index)}
+                            </button>
+                          ) : (
+                            <span className="font-medium">
+                              {getCashOutgoDisplayValue(row, column.key, index)}
+                            </span>
+                          )
                         ) : (
                           getCashOutgoDisplayValue(row, column.key, index)
                         )}
@@ -477,6 +549,11 @@ function CashOutgoReport({
                 </tr>
               )}
             </tbody>
+            {rows.length ? (
+              <tfoot>
+                <CashOutgoTotalsRow totals={totals} />
+              </tfoot>
+            ) : null}
           </table>
         </div>
       </div>
@@ -491,6 +568,8 @@ function CashOutgoTable({
   rows: ExpectedCashOutgoRow[];
   emptyMessage: string;
 }) {
+  const totals = getExpectedCashOutgoTotals(rows);
+
   return (
     <div className="overflow-hidden rounded-lg border border-border">
       <div className="overflow-x-auto">
@@ -544,9 +623,25 @@ function CashOutgoTable({
               </tr>
             )}
           </tbody>
+          {rows.length ? (
+            <tfoot>
+              <CashOutgoTotalsRow totals={totals} />
+            </tfoot>
+          ) : null}
         </table>
       </div>
     </div>
+  );
+}
+
+function CashOutgoTotalsRow({ totals }: { totals: Pick<ExpectedCashOutgoRow, "capital" | "revenue"> }) {
+  return (
+    <tr className="border-t border-border bg-muted/40 font-semibold">
+      <td className="px-3 py-2.5 text-right tabular-nums" />
+      <td className="px-3 py-2.5 text-left">Total</td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(totals.capital)}</td>
+      <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(totals.revenue)}</td>
+    </tr>
   );
 }
 
@@ -920,6 +1015,10 @@ function exportActualCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: strin
   exportCashOutgoToExcel(rows, title, "No actual cash out go rows found.");
 }
 
+function exportCurrentLiabilityToExcel(rows: ExpectedCashOutgoRow[], title: string) {
+  exportCashOutgoToExcel(rows, title, "No unpaid liability found for the current month.");
+}
+
 function exportCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string, emptyMessage: string) {
   void downloadCashOutgo(rows, title, emptyMessage, undefined, "excel");
 }
@@ -949,6 +1048,15 @@ function printActualCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) 
   );
 }
 
+function printCurrentLiabilityToPdf(rows: ExpectedCashOutgoRow[], title: string) {
+  printCashOutgoToPdf(
+    rows,
+    title,
+    "Shows unpaid liability up to the current month, carrying forward unpaid amounts from previous months.",
+    "No unpaid liability found for the current month.",
+  );
+}
+
 function printCashOutgoToPdf(
   rows: ExpectedCashOutgoRow[],
   title: string,
@@ -973,9 +1081,12 @@ async function downloadCashOutgo(
       {
         headers: cashOutgoColumns.map((column) => column.label),
         rows: rows.length
-          ? rows.map((row, index) =>
-              cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
-            )
+          ? [
+              ...rows.map((row, index) =>
+                cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+              ),
+              getCashOutgoTotalsExportRow(rows),
+            ]
           : [[emptyMessage]],
       },
     ],
@@ -983,6 +1094,8 @@ async function downloadCashOutgo(
 }
 
 function getCashOutgoTableHtml(rows: ExpectedCashOutgoRow[], emptyMessage: string) {
+  const totals = getExpectedCashOutgoTotals(rows);
+
   return `
     <table>
       <thead>
@@ -1010,6 +1123,18 @@ function getCashOutgoTableHtml(rows: ExpectedCashOutgoRow[], emptyMessage: strin
             : `<tr><td colspan="${cashOutgoColumns.length}">${escapeHtml(emptyMessage)}</td></tr>`
         }
       </tbody>
+      ${
+        rows.length
+          ? `<tfoot>
+              <tr>
+                <td></td>
+                <td>Total</td>
+                <td>${escapeHtml(formatCurrency(totals.capital))}</td>
+                <td>${escapeHtml(formatCurrency(totals.revenue))}</td>
+              </tr>
+            </tfoot>`
+          : ""
+      }
     </table>
   `;
 }
@@ -1044,7 +1169,7 @@ type DelayStatusRow = {
   lastFilledDate: string;
 };
 
-type CashOutgoColumnKey = "serial" | "month" | "capital" | "revenue" | "total";
+type CashOutgoColumnKey = "serial" | "month" | "capital" | "revenue";
 type DelayStatusColumnKey =
   | "serial"
   | "fileRef"
@@ -1062,7 +1187,6 @@ const cashOutgoColumns = [
   { key: "month", label: "Month", align: "left" },
   { key: "capital", label: "Capital", align: "right" },
   { key: "revenue", label: "Revenue", align: "right" },
-  { key: "total", label: "Total", align: "right" },
 ] satisfies Array<{ key: CashOutgoColumnKey; label: string; align: "left" | "right" }>;
 
 const delayStatusColumns = [
@@ -1080,7 +1204,7 @@ const delayStatusColumns = [
 
 function getExpectedCashOutgoByDpRows(
   files: FileRecord[],
-  offsetDays = 10,
+  offsetDays = 0,
 ): ExpectedCashOutgoRow[] {
   const totals = new Map<string, ExpectedCashOutgoRow>();
 
@@ -1103,7 +1227,7 @@ function getExpectedCashOutgoByDpRows(
 
 function getExpectedCashOutgoByReceiptRows(
   files: FileRecord[],
-  offsetDays = 10,
+  offsetDays = 0,
 ): ExpectedCashOutgoRow[] {
   const totals = new Map<string, ExpectedCashOutgoRow>();
 
@@ -1135,6 +1259,35 @@ function getActualCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
   });
 
   return finalizeCashOutgoRows(totals);
+}
+
+function getCurrentMonthLiabilityRows(rows: ExpectedCashOutgoRow[]) {
+  const currentMonthKey = getCurrentMonthKey();
+  const totals = rows
+    .filter((row) => row.monthKey <= currentMonthKey)
+    .reduce(
+      (sum, row) => ({
+        capital: sum.capital + row.capital,
+        revenue: sum.revenue + row.revenue,
+      }),
+      { capital: 0, revenue: 0 },
+    );
+
+  if (totals.capital === 0 && totals.revenue === 0) return [];
+
+  return [
+    {
+      monthKey: currentMonthKey,
+      month: formatMonthLabel(`${currentMonthKey}-01`),
+      capital: Math.round(totals.capital),
+      revenue: Math.round(totals.revenue),
+      total: Math.round(totals.capital + totals.revenue),
+    },
+  ];
+}
+
+function getCurrentMonthKey() {
+  return formatLocalDate(new Date()).slice(0, 7);
 }
 
 function addCashOutgoTotal(
@@ -1358,10 +1511,14 @@ function getExpectedCashOutgoTotals(rows: ExpectedCashOutgoRow[]) {
     (totals, row) => ({
       capital: totals.capital + row.capital,
       revenue: totals.revenue + row.revenue,
-      total: totals.total + row.total,
     }),
-    { capital: 0, revenue: 0, total: 0 },
+    { capital: 0, revenue: 0 },
   );
+}
+
+function getCashOutgoTotalsExportRow(rows: ExpectedCashOutgoRow[]) {
+  const totals = getExpectedCashOutgoTotals(rows);
+  return ["", "Total", formatCurrency(totals.capital), formatCurrency(totals.revenue)];
 }
 
 function getCashOutgoDisplayValue(
@@ -1725,7 +1882,10 @@ function getMilestoneStatusRows(
   if (milestone.key === "bidding") {
     return [
       base("Completed", clearedFiles.length),
-      base("In process", activeFiles.filter((file) => !isFileTenderLive(file)).length),
+      base(
+        "In process",
+        activeFiles.filter((file) => !isFileTenderLive(file) && !isBidOverdue(file)).length,
+      ),
       base("Opening overdue", applicableFiles.filter(isBidOverdue).length),
       base("Live", applicableFiles.filter(isFileTenderLive).length),
       base("At previous stages", Math.max(0, applicableFiles.length - reachedFiles.length)),

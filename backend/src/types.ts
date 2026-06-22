@@ -134,7 +134,6 @@ export type FileRecord = {
   currency?: string;
   exchangeRate?: string;
   gte?: string;
-  fileType?: string;
   tcec?: string;
   mode?: string;
   gem?: string;

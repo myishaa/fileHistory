@@ -11,9 +11,6 @@ where archived_at is null;
 create index if not exists files_mode_upper_idx
 on files(upper(trim(coalesce(mode, ''))));
 
-create index if not exists files_file_type_trim_idx
-on files(trim(coalesce(file_type, '')));
-
 create index if not exists files_indentor_lower_trgm_idx
 on files using gin (lower(coalesce(indentor, '')) gin_trgm_ops);
 
