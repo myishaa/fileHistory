@@ -24,6 +24,7 @@ psql "$DATABASE_URL" -f database/016_user_live_status_preferences.sql
 psql "$DATABASE_URL" -f database/017_file_messages.sql
 psql "$DATABASE_URL" -f database/018_message_workflow_controls.sql
 psql "$DATABASE_URL" -f database/019_mmg_live_settings.sql
+psql "$DATABASE_URL" -f database/020_drop_file_type.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -96,7 +97,7 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `value_threshold_levels`: year-wise admin-defined file value thresholds.
 - `app_users`: temporary app users and future login users.
 - `user_divisions`: division access for non-admin users.
-- `app_settings`: workspace settings currently stored in localStorage.
+- `app_settings`: workspace settings used by the frontend and backend.
 - `financial_years`: saved financial years shown in year dropdowns.
 - `file_firms`: invited and bidder firm rows.
 - `supply_orders`: multiple supply order rows for a file.
