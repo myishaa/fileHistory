@@ -2,6 +2,7 @@ type ExportTable = {
   title?: string;
   headers: string[];
   rows: string[][];
+  columnWidths?: number[];
 };
 
 type ExportDocument = {
@@ -153,7 +154,7 @@ function renderPdfPages(document: ExportDocument) {
 
   document.tables.forEach((table) => {
     const columns = normalizeColumns(table.headers.length);
-    const columnWidths = getColumnWidths(columns);
+    const columnWidths = getColumnWidths(columns, table.columnWidths);
     const rows = table.rows.length ? table.rows : [["No rows found."]];
 
     const ensureSpace = (height: number) => {
@@ -256,7 +257,14 @@ function normalizeColumns(count: number) {
   return Array.from({ length: Math.max(1, count) }, (_, index) => index);
 }
 
-function getColumnWidths(columns: number[]) {
+function getColumnWidths(columns: number[], requestedWidths?: number[]) {
+  if (
+    requestedWidths?.length === columns.length &&
+    requestedWidths.every((width) => Number.isFinite(width) && width > 0)
+  ) {
+    const total = requestedWidths.reduce((sum, width) => sum + width, 0);
+    return requestedWidths.map((width) => (width / total) * pdfContentWidth);
+  }
   if (columns.length === 1) return [pdfContentWidth];
   const serialWidth = columns.length > 2 ? 42 : 70;
   const remainingWidth = pdfContentWidth - serialWidth;

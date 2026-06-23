@@ -9,6 +9,7 @@ export type ExportTable = {
   title?: string;
   headers: string[];
   rows: Array<Array<string | number | undefined>>;
+  columnWidths?: number[];
 };
 
 export type ExportPayload = {

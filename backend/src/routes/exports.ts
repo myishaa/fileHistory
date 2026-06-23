@@ -67,6 +67,7 @@ function requireTables(value: unknown) {
     return {
       title: optionalString(record.title),
       headers: record.headers.map((header) => String(header ?? "")),
+      columnWidths: optionalColumnWidths(record.columnWidths, record.headers.length),
       rows: record.rows.map((row, rowIndex) => {
         if (!Array.isArray(row)) {
           throw new HttpError(400, `tables[${index}].rows[${rowIndex}] must be an array.`);
@@ -75,6 +76,18 @@ function requireTables(value: unknown) {
       }),
     };
   });
+}
+
+function optionalColumnWidths(value: unknown, expectedCount: number) {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length !== expectedCount) {
+    throw new HttpError(400, "columnWidths must match the number of table headers.");
+  }
+  const widths = value.map((item) => Number(item));
+  if (widths.some((width) => !Number.isFinite(width) || width <= 0)) {
+    throw new HttpError(400, "columnWidths must contain positive numbers.");
+  }
+  return widths;
 }
 
 function optionalString(value: unknown) {

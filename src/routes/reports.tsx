@@ -1318,6 +1318,7 @@ function exportMmgSummary(rows: MmgSummaryRow[], title: string, format: "excel" 
     tables: [
       {
         headers: ["Field", "Value"],
+        columnWidths: [260, 510],
         rows: rows.length
           ? rows.map((row) => [row.label, row.value])
           : [["No MMG Summary fields selected."]],
