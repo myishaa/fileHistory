@@ -12,4 +12,10 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
+  vite: {
+    server: {
+      host: "localhost",
+      allowedHosts: ["mmgbuildup.asl.net"],
+    },
+  },
 });
