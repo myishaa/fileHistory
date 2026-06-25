@@ -226,6 +226,7 @@ function ReportsPage() {
     expectedCashOutgoReceiptRows,
     selectedCashOutgoMonth,
   );
+  const billsPaidInMonthRows = combineRowsForMonth(selectedCashOutgoMonth, [actualCashOutgoRows]);
   const cashOutgoForMonthRows = combineRowsForMonth(selectedCashOutgoMonth, [
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
@@ -241,6 +242,7 @@ function ReportsPage() {
     billSentForPaymentRows,
     expectedCashOutgoFyRows,
     spentTillDateFyRows,
+    billsPaidInMonthRows,
     currentLiabilityRows,
     cashOutgoForMonthRows,
     expectedExpenditureTillMonthRows,
@@ -271,14 +273,28 @@ function ReportsPage() {
     monthKey: isMonthSelectionReport(reportMode) ? selectedCashOutgoMonth : currentMonthKey,
     financialYear: effectiveFinancialYear,
   });
+  const cashOutgoEmptyMessage =
+    reportMode === "billsPaidInMonth"
+      ? "No bills paid found for the selected month."
+      : "No expected cash outgo rows found.";
   const exportCashOutgoPdf = () =>
     reportMode === "currentMonthLiability"
       ? printCurrentLiabilityToPdf(selectedCashOutgoRows, selectedReportTitle, reportLogic)
-      : printExpectedCashOutgoToPdf(selectedCashOutgoRows, selectedReportTitle, reportLogic);
+      : printExpectedCashOutgoToPdf(
+          selectedCashOutgoRows,
+          selectedReportTitle,
+          reportLogic,
+          cashOutgoEmptyMessage,
+        );
   const exportCashOutgoExcel = () =>
     reportMode === "currentMonthLiability"
       ? exportCurrentLiabilityToExcel(selectedCashOutgoRows, selectedReportTitle, reportLogic)
-      : exportExpectedCashOutgoToExcel(selectedCashOutgoRows, selectedReportTitle, reportLogic);
+      : exportExpectedCashOutgoToExcel(
+          selectedCashOutgoRows,
+          selectedReportTitle,
+          reportLogic,
+          cashOutgoEmptyMessage,
+        );
   const exportMmgSummaryPdf = () => exportMmgSummary(mmgSummaryRows, selectedReportTitle, "pdf");
   const exportMmgSummaryExcel = () =>
     exportMmgSummary(mmgSummaryRows, selectedReportTitle, "excel");
@@ -513,6 +529,24 @@ function ReportsPage() {
               dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
             />
+          ) : reportMode === "billsPaidInMonth" ? (
+            <ExpectedCashOutgoReport
+              rows={billsPaidInMonthRows}
+              title={reportTitle}
+              description={reportLogic}
+              actions={
+                <ReportHeaderActions
+                  divisions={divisions}
+                  activeDivision={activeDivision}
+                  onDivisionChange={setSelectedDivision}
+                  onPdf={exportCashOutgoPdf}
+                  onExcel={exportCashOutgoExcel}
+                />
+              }
+              monthSelection={monthSelectionControls}
+              emptyMessage={cashOutgoEmptyMessage}
+              onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
+            />
           ) : reportMode === "cashOutgoForMonth" ? (
             <ExpectedCashOutgoReport
               rows={cashOutgoForMonthRows}
@@ -559,6 +593,7 @@ type ReportMode =
   | "billsSubmitted"
   | "expectedCashOutgoFy"
   | "spentTillDateFy"
+  | "billsPaidInMonth"
   | "currentMonthLiability"
   | "cashOutgoForMonth"
   | "expectedExpenditureTillMonth"
@@ -578,6 +613,7 @@ const reportModes = [
   { key: "billsSubmitted", label: "Bills submitted" },
   { key: "expectedCashOutgoFy", label: "Expected cash outgo for FY" },
   { key: "spentTillDateFy", label: "Spent till date" },
+  { key: "billsPaidInMonth", label: "Bills paid in month" },
   { key: "cashOutgoForMonth", label: "Cash outgo for month" },
   { key: "expectedExpenditureTillMonth", label: "Expected expenditure till month" },
   { key: "currentMonthLiability", label: "Current month's liability" },
@@ -593,6 +629,7 @@ function getRowsForReportMode(
     billSentForPaymentRows: ExpectedCashOutgoRow[];
     expectedCashOutgoFyRows: ExpectedCashOutgoRow[];
     spentTillDateFyRows: ExpectedCashOutgoRow[];
+    billsPaidInMonthRows: ExpectedCashOutgoRow[];
     currentLiabilityRows: ExpectedCashOutgoRow[];
     cashOutgoForMonthRows: ExpectedCashOutgoRow[];
     expectedExpenditureTillMonthRows: ExpectedCashOutgoRow[];
@@ -603,6 +640,7 @@ function getRowsForReportMode(
   if (mode === "billsSubmitted") return rows.billSentForPaymentRows;
   if (mode === "expectedCashOutgoFy") return rows.expectedCashOutgoFyRows;
   if (mode === "spentTillDateFy") return rows.spentTillDateFyRows;
+  if (mode === "billsPaidInMonth") return rows.billsPaidInMonthRows;
   if (mode === "currentMonthLiability") return rows.currentLiabilityRows;
   if (mode === "cashOutgoForMonth") return rows.cashOutgoForMonthRows;
   if (mode === "expectedExpenditureTillMonth") return rows.expectedExpenditureTillMonthRows;
@@ -621,6 +659,7 @@ function isHistoricalDateRangeReport(mode: ReportMode) {
 function isMonthSelectionReport(mode: ReportMode) {
   return (
     mode === "currentMonthLiability" ||
+    mode === "billsPaidInMonth" ||
     mode === "cashOutgoForMonth" ||
     mode === "expectedExpenditureTillMonth"
   );
@@ -644,6 +683,7 @@ function getEightReportTitle(
   if (mode === "spentTillDateFy") {
     return `Spent till as on ${asOnDate} for FY ${fyLabel}`;
   }
+  if (mode === "billsPaidInMonth") return `Bills paid in ${monthLabel}`;
   if (mode === "currentMonthLiability") return `Liability till ${monthLabel}`;
   if (mode === "cashOutgoForMonth") return `Cash outgo for ${monthLabel}`;
   if (mode === "expectedExpenditureTillMonth") {
@@ -671,6 +711,9 @@ function getCashOutgoReportLogic(
   if (mode === "spentTillDateFy") {
     return "Actual payment made monthwise";
   }
+  if (mode === "billsPaidInMonth") {
+    return "Bills paid by payment date";
+  }
   if (mode === "currentMonthLiability") {
     return "Unpaid delivered items so far";
   }
@@ -692,6 +735,7 @@ function ExpectedCashOutgoReport({
   onDaysChange,
   dateRange,
   monthSelection,
+  emptyMessage = "No expected cash outgo rows found.",
   onOpenMonth,
 }: {
   rows: ExpectedCashOutgoRow[];
@@ -702,6 +746,7 @@ function ExpectedCashOutgoReport({
   onDaysChange?: (value: string) => void;
   dateRange?: HistoricalDateRangeControlsProps;
   monthSelection?: MonthSelectionControlsProps;
+  emptyMessage?: string;
   onOpenMonth?: (monthKey: string) => void;
 }) {
   return (
@@ -709,7 +754,7 @@ function ExpectedCashOutgoReport({
       rows={rows}
       title={title}
       description={description}
-      emptyMessage="No expected cash outgo rows found."
+      emptyMessage={emptyMessage}
       actions={actions}
       onOpenMonth={onOpenMonth}
       controls={
@@ -1560,8 +1605,9 @@ function exportExpectedCashOutgoToExcel(
   rows: ExpectedCashOutgoRow[],
   title: string,
   description?: string,
+  emptyMessage = "No expected cash outgo rows found.",
 ) {
-  exportCashOutgoToExcel(rows, title, "No expected cash outgo rows found.", description);
+  exportCashOutgoToExcel(rows, title, emptyMessage, description);
 }
 
 function exportActualCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string) {
@@ -1594,8 +1640,9 @@ function printExpectedCashOutgoToPdf(
   rows: ExpectedCashOutgoRow[],
   title: string,
   description?: string,
+  emptyMessage = "No expected cash outgo rows found.",
 ) {
-  printCashOutgoToPdf(rows, title, "No expected cash outgo rows found.", description);
+  printCashOutgoToPdf(rows, title, emptyMessage, description);
 }
 
 function printActualCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) {
