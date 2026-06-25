@@ -255,6 +255,30 @@ function readNonNegativeInteger(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function readDateString(value: unknown) {
+  const text = readString(value);
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined;
+}
+
+function readMonthString(value: unknown) {
+  const text = readString(value);
+  return text && /^\d{4}-\d{2}$/.test(text) ? text : undefined;
+}
+
+function getMonthEndDate(monthKey: string) {
+  const [yearText, monthText] = monthKey.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return undefined;
+  }
+  const end = new Date(year, month, 0);
+  const endYear = end.getFullYear();
+  const endMonth = String(end.getMonth() + 1).padStart(2, "0");
+  const endDay = String(end.getDate()).padStart(2, "0");
+  return `${endYear}-${endMonth}-${endDay}`;
+}
+
 function addValue(values: unknown[], value: unknown) {
   values.push(value);
   return `$${values.length}`;
@@ -749,6 +773,8 @@ async function loadCashOutgoRows(
     | "billSent"
     | "actual",
   expectedCashOutgoDays = 0,
+  dateRange?: { fromDate: string; toDate: string },
+  asOfDate?: string,
 ): Promise<CashOutgoRow[]> {
   const queryValues = [...values];
   const usesExpectedOffset =
@@ -767,24 +793,74 @@ async function loadCashOutgoRows(
     if (mode === "billSent") return "effective.bill_sent_for_payment_date";
     return "effective.payment_date";
   })();
+  const fromDatePlaceholder = dateRange ? addValue(queryValues, dateRange.fromDate) : undefined;
+  const toDatePlaceholder = dateRange ? addValue(queryValues, dateRange.toDate) : undefined;
+  const asOfDatePlaceholder = asOfDate ? addValue(queryValues, asOfDate) : undefined;
   const extraCondition = (() => {
     if (mode === "expectedDp") {
+      if (asOfDatePlaceholder) {
+        return `coalesce(effective.revised_dp, effective.dp_date) is not null
+          and not effective.so_cancelled_yes
+          and (effective.material_receipt_date is null or effective.material_receipt_date > ${asOfDatePlaceholder}::date)
+          and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)`;
+      }
       return "coalesce(effective.revised_dp, effective.dp_date) is not null and not effective.so_cancelled_yes and effective.material_receipt_date is null and effective.payment_date is null";
     }
     if (mode === "expectedReceipt") {
+      if (asOfDatePlaceholder) {
+        return `effective.material_receipt_date is not null
+          and effective.material_receipt_date <= ${asOfDatePlaceholder}::date
+          and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)`;
+      }
       return "effective.material_receipt_date is not null and effective.payment_date is null";
     }
     if (mode === "expectedReceiptPendingBill") {
+      if (toDatePlaceholder) {
+        return `effective.material_receipt_date is not null
+          and effective.material_receipt_date <= ${toDatePlaceholder}::date
+          and (effective.bill_preparation_date is null or effective.bill_preparation_date > ${toDatePlaceholder}::date)
+          and (effective.payment_date is null or effective.payment_date > ${toDatePlaceholder}::date)`;
+      }
       return "effective.material_receipt_date is not null and effective.bill_preparation_date is null and effective.payment_date is null";
     }
     if (mode === "billPreparation") {
-      return "effective.material_receipt_date is not null and effective.bill_preparation_date is not null and effective.payment_date is null";
+      if (asOfDatePlaceholder) {
+        return `effective.material_receipt_date is not null
+          and effective.material_receipt_date <= ${asOfDatePlaceholder}::date
+          and effective.bill_preparation_date is not null
+          and effective.bill_preparation_date <= ${asOfDatePlaceholder}::date
+          and (effective.bill_sent_for_payment_date is null or effective.bill_sent_for_payment_date > ${asOfDatePlaceholder}::date)
+          and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)`;
+      }
+      if (toDatePlaceholder) {
+        return `effective.material_receipt_date is not null
+          and effective.material_receipt_date <= ${toDatePlaceholder}::date
+          and effective.bill_preparation_date is not null
+          and effective.bill_preparation_date <= ${toDatePlaceholder}::date
+          and (effective.bill_sent_for_payment_date is null or effective.bill_sent_for_payment_date > ${toDatePlaceholder}::date)
+          and (effective.payment_date is null or effective.payment_date > ${toDatePlaceholder}::date)`;
+      }
+      return "effective.material_receipt_date is not null and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is null and effective.payment_date is null";
     }
     if (mode === "billSent") {
+      if (asOfDatePlaceholder) {
+        return `effective.bill_sent_for_payment_date is not null
+          and effective.bill_sent_for_payment_date <= ${asOfDatePlaceholder}::date
+          and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)`;
+      }
+      if (toDatePlaceholder) {
+        return `effective.bill_sent_for_payment_date is not null
+          and effective.bill_sent_for_payment_date <= ${toDatePlaceholder}::date
+          and (effective.payment_date is null or effective.payment_date > ${toDatePlaceholder}::date)`;
+      }
       return "effective.bill_sent_for_payment_date is not null and effective.payment_date is null";
     }
     return "effective.payment_date is not null and not (effective.so_cancelled_yes and effective.so_cancelled_date is not null)";
   })();
+  const dateRangeCondition =
+    fromDatePlaceholder && toDatePlaceholder
+      ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
+      : "";
   const result = await pool.query<{
     month_key: string;
     month: string;
@@ -838,7 +914,7 @@ async function loadCashOutgoRows(
        round(coalesce(sum(revenue), 0))::integer as revenue,
        round(coalesce(sum(capital + revenue), 0))::integer as total
      from effective
-     where ${extraCondition}
+     where ${extraCondition}${dateRangeCondition}
      group by 1, 2
      order by 1 asc`,
     queryValues,
@@ -1000,6 +1076,9 @@ async function buildReportsSummarySql({
   delayDays,
   delayMilestone,
   expectedCashOutgoDays,
+  historicalFromDate,
+  historicalToDate,
+  cashOutgoAsOfDate,
 }: {
   whereSql: string;
   values: unknown[];
@@ -1007,7 +1086,14 @@ async function buildReportsSummarySql({
   delayDays: number;
   delayMilestone: string;
   expectedCashOutgoDays: number;
+  historicalFromDate?: string;
+  historicalToDate?: string;
+  cashOutgoAsOfDate?: string;
 }): Promise<ReportsSummaryPayload> {
+  const historicalRange =
+    historicalFromDate && historicalToDate && historicalFromDate <= historicalToDate
+      ? { fromDate: historicalFromDate, toDate: historicalToDate }
+      : undefined;
   const [
     reportFileCount,
     statusSummaryGroups,
@@ -1021,12 +1107,46 @@ async function buildReportsSummarySql({
   ] = await Promise.all([
     loadReportFileCount(whereSql, [...values]),
     loadStatusSummaryGroups(whereSql, [...values]),
-    loadCashOutgoRows(whereSql, [...values], "expectedDp", expectedCashOutgoDays),
-    loadCashOutgoRows(whereSql, [...values], "expectedReceipt", expectedCashOutgoDays),
-    loadCashOutgoRows(whereSql, [...values], "expectedReceiptPendingBill", expectedCashOutgoDays),
-    loadCashOutgoRows(whereSql, [...values], "billPreparation"),
-    loadCashOutgoRows(whereSql, [...values], "billSent"),
-    loadCashOutgoRows(whereSql, [...values], "actual"),
+    loadCashOutgoRows(
+      whereSql,
+      [...values],
+      "expectedDp",
+      expectedCashOutgoDays,
+      undefined,
+      cashOutgoAsOfDate,
+    ),
+    loadCashOutgoRows(
+      whereSql,
+      [...values],
+      "expectedReceipt",
+      expectedCashOutgoDays,
+      undefined,
+      cashOutgoAsOfDate,
+    ),
+    loadCashOutgoRows(
+      whereSql,
+      [...values],
+      "expectedReceiptPendingBill",
+      expectedCashOutgoDays,
+      historicalRange,
+    ),
+    loadCashOutgoRows(
+      whereSql,
+      [...values],
+      "billPreparation",
+      0,
+      historicalRange,
+      cashOutgoAsOfDate,
+    ),
+    loadCashOutgoRows(
+      whereSql,
+      [...values],
+      "billSent",
+      0,
+      historicalRange,
+      cashOutgoAsOfDate,
+    ),
+    loadCashOutgoRows(whereSql, [...values], "actual", 0, historicalRange),
     loadDelayRows(whereSql, [...values], delayDays, delayMilestone),
   ]);
   return {
@@ -1055,6 +1175,10 @@ reportsRouter.get(
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
     const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 0);
+    const historicalFromDate = readDateString(request.query.historicalFromDate);
+    const historicalToDate = readDateString(request.query.historicalToDate);
+    const cashOutgoMonth = readMonthString(request.query.cashOutgoMonth);
+    const cashOutgoAsOfDate = cashOutgoMonth ? getMonthEndDate(cashOutgoMonth) : undefined;
     const reportWhere = getReportWhereSql({
       scopeSql: scope.sql,
       scopeValues: scope.values,
@@ -1068,6 +1192,9 @@ reportsRouter.get(
       delayDays,
       delayMilestone,
       expectedCashOutgoDays,
+      historicalFromDate,
+      historicalToDate,
+      cashOutgoAsOfDate,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.reportsSummaryMs, async () => {
       const sqlSummary = await buildReportsSummarySql({
@@ -1077,6 +1204,9 @@ reportsRouter.get(
         delayDays,
         delayMilestone,
         expectedCashOutgoDays,
+        historicalFromDate,
+        historicalToDate,
+        cashOutgoAsOfDate,
       });
 
       if (process.env.REPORTS_SQL_COMPARE === "true") {
@@ -1093,6 +1223,9 @@ reportsRouter.get(
           delayDays,
           delayMilestone,
           expectedCashOutgoDays,
+          historicalFromDate,
+          historicalToDate,
+          cashOutgoAsOfDate,
         });
         if (JSON.stringify(legacySummary) !== JSON.stringify(sqlSummary)) {
           console.warn("Reports SQL summary differs from TypeScript summary.", {

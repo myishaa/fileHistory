@@ -181,40 +181,68 @@ export function buildReportsSummary({
   delayDays,
   delayMilestone,
   expectedCashOutgoDays = 0,
+  historicalFromDate,
+  historicalToDate,
+  cashOutgoAsOfDate,
 }: {
   files: FileRecord[];
   division: string;
   delayDays: number;
   delayMilestone: string;
   expectedCashOutgoDays?: number;
+  historicalFromDate?: string;
+  historicalToDate?: string;
+  cashOutgoAsOfDate?: string;
 }) {
   const reportFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
   const activeStatusFiles = reportFiles;
   const delayRows = getDelayStatusRows(activeStatusFiles, delayDays, delayMilestone);
+  const historicalRange =
+    historicalFromDate && historicalToDate && historicalFromDate <= historicalToDate
+      ? { fromDate: historicalFromDate, toDate: historicalToDate }
+      : undefined;
 
   return {
     activeDivision: division,
     reportFileCount: reportFiles.length,
     statusSummaryGroups: getStatusSummaryTableGroups(activeStatusFiles),
-    expectedCashOutgoDpRows: getExpectedCashOutgoByDpRows(reportFiles, expectedCashOutgoDays),
+    expectedCashOutgoDpRows: getExpectedCashOutgoByDpRows(
+      reportFiles,
+      expectedCashOutgoDays,
+      cashOutgoAsOfDate,
+    ),
     expectedCashOutgoReceiptRows: getExpectedCashOutgoByReceiptRows(
       reportFiles,
       expectedCashOutgoDays,
+      cashOutgoAsOfDate,
     ),
     expectedCashOutgoReceiptPendingBillRows: getExpectedCashOutgoByReceiptPendingBillRows(
       reportFiles,
       expectedCashOutgoDays,
+      historicalRange,
     ),
-    expectedCashOutgoBillPreparationRows: getExpectedCashOutgoByBillPreparationRows(reportFiles),
-    billSentForPaymentRows: getBillSentForPaymentRows(reportFiles),
-    actualCashOutgoRows: getActualCashOutgoRows(reportFiles),
+    expectedCashOutgoBillPreparationRows: getExpectedCashOutgoByBillPreparationRows(
+      reportFiles,
+      historicalRange,
+      cashOutgoAsOfDate,
+    ),
+    billSentForPaymentRows: getBillSentForPaymentRows(
+      reportFiles,
+      historicalRange,
+      cashOutgoAsOfDate,
+    ),
+    actualCashOutgoRows: getActualCashOutgoRows(reportFiles, historicalRange),
     delayRows,
     delaySummary: getDelayStatusSummary(delayRows),
   };
 }
 
-function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): CashOutgoRow[] {
+function getExpectedCashOutgoByDpRows(
+  files: FileRecord[],
+  offsetDays = 0,
+  asOfDate?: string,
+): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
@@ -222,8 +250,13 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): Cash
     fileSupplyOrders(file).forEach((order) => {
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
       if (!hasFilledString(deliveryPeriodDate) || isYes(order.soCancelled)) return;
-      if (hasFilledString(order.materialReceiptDate)) return;
-      if (hasFilledString(order.paymentDate)) return;
+      if (asOfDate) {
+        if (!isMissingOrAfter(order.materialReceiptDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else {
+        if (hasFilledString(order.materialReceiptDate)) return;
+        if (hasFilledString(order.paymentDate)) return;
+      }
       const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays);
       if (!cashOutgoDate) return;
 
@@ -234,14 +267,23 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): Cash
   return finalizeCashOutgoRows(totals);
 }
 
-function getExpectedCashOutgoByReceiptRows(files: FileRecord[], offsetDays = 0): CashOutgoRow[] {
+function getExpectedCashOutgoByReceiptRows(
+  files: FileRecord[],
+  offsetDays = 0,
+  asOfDate?: string,
+): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
       if (!hasFilledString(order.materialReceiptDate)) return;
-      if (hasFilledString(order.paymentDate)) return;
+      if (asOfDate) {
+        if (!isOnOrBefore(order.materialReceiptDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else if (hasFilledString(order.paymentDate)) {
+        return;
+      }
       const cashOutgoDate = addDays(order.materialReceiptDate, offsetDays);
       if (!cashOutgoDate) return;
 
@@ -255,6 +297,7 @@ function getExpectedCashOutgoByReceiptRows(files: FileRecord[], offsetDays = 0):
 function getExpectedCashOutgoByReceiptPendingBillRows(
   files: FileRecord[],
   offsetDays = 0,
+  dateRange?: { fromDate: string; toDate: string },
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
@@ -262,10 +305,17 @@ function getExpectedCashOutgoByReceiptPendingBillRows(
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
       if (!hasFilledString(order.materialReceiptDate)) return;
-      if (hasFilledString(order.billPreparationDate)) return;
-      if (hasFilledString(order.paymentDate)) return;
+      if (dateRange) {
+        if (!isOnOrBefore(order.materialReceiptDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.billPreparationDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
+      } else {
+        if (hasFilledString(order.billPreparationDate)) return;
+        if (hasFilledString(order.paymentDate)) return;
+      }
       const cashOutgoDate = addDays(order.materialReceiptDate, offsetDays);
       if (!cashOutgoDate) return;
+      if (dateRange && !isWithinDateRange(cashOutgoDate, dateRange)) return;
 
       addCashOutgoTotal(totals, cashOutgoDate, file, order);
     });
@@ -274,7 +324,11 @@ function getExpectedCashOutgoByReceiptPendingBillRows(
   return finalizeCashOutgoRows(totals);
 }
 
-function getExpectedCashOutgoByBillPreparationRows(files: FileRecord[]): CashOutgoRow[] {
+function getExpectedCashOutgoByBillPreparationRows(
+  files: FileRecord[],
+  dateRange?: { fromDate: string; toDate: string },
+  asOfDate?: string,
+): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
@@ -282,9 +336,24 @@ function getExpectedCashOutgoByBillPreparationRows(files: FileRecord[]): CashOut
     fileSupplyOrders(file).forEach((order) => {
       if (!hasFilledString(order.materialReceiptDate)) return;
       if (!hasFilledString(order.billPreparationDate)) return;
-      if (hasFilledString(order.paymentDate)) return;
+      if (asOfDate) {
+        if (!isOnOrBefore(order.materialReceiptDate, asOfDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.billSentForPaymentDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else if (dateRange) {
+        if (!isOnOrBefore(order.materialReceiptDate, dateRange.toDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.billSentForPaymentDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
+      } else if (hasFilledString(order.paymentDate)) {
+        return;
+      } else if (hasFilledString(order.billSentForPaymentDate)) {
+        return;
+      }
       const billPreparationDate = order.billPreparationDate;
       if (!billPreparationDate) return;
+      if (dateRange && !isWithinDateRange(billPreparationDate, dateRange)) return;
 
       addCashOutgoTotal(totals, billPreparationDate, file, order);
     });
@@ -293,16 +362,29 @@ function getExpectedCashOutgoByBillPreparationRows(files: FileRecord[]): CashOut
   return finalizeCashOutgoRows(totals);
 }
 
-function getBillSentForPaymentRows(files: FileRecord[]): CashOutgoRow[] {
+function getBillSentForPaymentRows(
+  files: FileRecord[],
+  dateRange?: { fromDate: string; toDate: string },
+  asOfDate?: string,
+): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isCancelledFile(file)) return;
     fileSupplyOrders(file).forEach((order) => {
       if (!hasFilledString(order.billSentForPaymentDate)) return;
-      if (hasFilledString(order.paymentDate)) return;
+      if (asOfDate) {
+        if (!isOnOrBefore(order.billSentForPaymentDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else if (dateRange) {
+        if (!isOnOrBefore(order.billSentForPaymentDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
+      } else if (hasFilledString(order.paymentDate)) {
+        return;
+      }
       const billSentForPaymentDate = order.billSentForPaymentDate;
       if (!billSentForPaymentDate) return;
+      if (dateRange && !isWithinDateRange(billSentForPaymentDate, dateRange)) return;
 
       addCashOutgoTotal(totals, billSentForPaymentDate, file, order);
     });
@@ -311,7 +393,10 @@ function getBillSentForPaymentRows(files: FileRecord[]): CashOutgoRow[] {
   return finalizeCashOutgoRows(totals);
 }
 
-function getActualCashOutgoRows(files: FileRecord[]): CashOutgoRow[] {
+function getActualCashOutgoRows(
+  files: FileRecord[],
+  dateRange?: { fromDate: string; toDate: string },
+): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
@@ -321,6 +406,7 @@ function getActualCashOutgoRows(files: FileRecord[]): CashOutgoRow[] {
 
       const paymentDate = order.paymentDate;
       if (!paymentDate) return;
+      if (dateRange && !isWithinDateRange(paymentDate, dateRange)) return;
 
       addCashOutgoTotal(totals, paymentDate, file, order);
     });
@@ -364,6 +450,18 @@ function finalizeCashOutgoRows(totals: Map<string, CashOutgoRow>) {
 
 function isSoCancelledWithDate(order: SupplyOrderDetail) {
   return isYes(order.soCancelled) && hasFilledString(order.soCancelledDate);
+}
+
+function isWithinDateRange(date: string, range: { fromDate: string; toDate: string }) {
+  return date >= range.fromDate && date <= range.toDate;
+}
+
+function isOnOrBefore(date: string | undefined, toDate: string) {
+  return hasFilledString(date) && date! <= toDate;
+}
+
+function isMissingOrAfter(date: string | undefined, toDate: string) {
+  return !hasFilledString(date) || date! > toDate;
 }
 
 function getDelayStatusRows(

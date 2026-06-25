@@ -511,6 +511,13 @@ function getMilestoneFlow(files: FileRecord[]) {
     due: countLiveSupplyOrders(files),
     overdue: countDeliveryOverdueOrders(files),
   };
+  const ir = {
+    key: "ir",
+    label: "IR",
+    irPreparationPending: countIrPreparationPendingOrders(files),
+    irReceiptPending: countIrReceiptPendingOrders(files),
+    irCompleted: countIrCompletedOrders(files),
+  };
   const deliveryPeriod = {
     key: "deliveryPeriod",
     label: "Delivery Period",
@@ -526,14 +533,13 @@ function getMilestoneFlow(files: FileRecord[]) {
           deliveryPeriod,
           ...flow.slice(supplyOrderIndex + 1),
         ];
-  const bankGuaranteeIndex = withDeliveryPeriod.findIndex(
-    (milestone) => milestone.key === "bankGuarantee",
-  );
-  if (bankGuaranteeIndex === -1) return [...withDeliveryPeriod, delivery];
+  const paymentIndex = withDeliveryPeriod.findIndex((milestone) => milestone.key === "payment");
+  if (paymentIndex === -1) return [...withDeliveryPeriod, delivery, ir];
   return [
-    ...withDeliveryPeriod.slice(0, bankGuaranteeIndex + 1),
+    ...withDeliveryPeriod.slice(0, paymentIndex),
     delivery,
-    ...withDeliveryPeriod.slice(bankGuaranteeIndex + 1),
+    ir,
+    ...withDeliveryPeriod.slice(paymentIndex),
   ];
 }
 
@@ -1045,6 +1051,34 @@ function countBgPendingOrders(files: FileRecord[]) {
       hasSupplyOrderDate(order) &&
       !hasFilledString(order.bgValidityDate) &&
       !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countIrPreparationPendingOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) &&
+      hasSupplyOrderDate(order) &&
+      hasFilledString(order.materialReceiptDate) &&
+      !hasFilledString(order.irPreparationDate) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countIrReceiptPendingOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) &&
+      hasFilledString(order.irPreparationDate) &&
+      !hasFilledString(order.irReceiptDate) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countIrCompletedOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) && hasFilledString(order.irReceiptDate) && !isSupplyOrderCancelled(file, order),
   ).length;
 }
 

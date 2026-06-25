@@ -91,12 +91,14 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   {
     aliases: ["IR Preparation"],
     completionLabel: "IR Preparation",
+    isApplicable: (file) => isYes(file.ir),
     isComplete: (file) =>
       fileSupplyOrders(file).some((order) => hasFilledString(order.irPreparationDate)),
   },
   {
     aliases: ["IR Receipt"],
     completionLabel: "IR Receipt",
+    isApplicable: (file) => isYes(file.ir),
     isComplete: (file) =>
       fileSupplyOrders(file).some((order) => hasFilledString(order.irReceiptDate)),
   },

@@ -36,6 +36,7 @@ export type FileRecord = {
   ifa?: string;
   psb?: string;
   bg?: string;
+  ir?: string;
   rfpVetting?: string;
   highValueMeetingDate?: string;
   highValueMinutesDate?: string;

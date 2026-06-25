@@ -66,6 +66,13 @@ function ReportsPage() {
   const [delayDays, setDelayDays] = useState("5");
   const [expectedCashOutgoDays, setExpectedCashOutgoDays] = useState("0");
   const [delayMilestoneKey, setDelayMilestoneKey] = useState("all");
+  const [historicalReportFromDate, setHistoricalReportFromDate] = useState(() =>
+    getFinancialYearStartDate(settings.selectedYear || settings.financialYear),
+  );
+  const [historicalReportToDate, setHistoricalReportToDate] = useState(() =>
+    formatLocalDate(new Date()),
+  );
+  const [selectedCashOutgoMonth, setSelectedCashOutgoMonth] = useState(() => getCurrentMonthKey());
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
   const [mmgPreviousFiles, setMmgPreviousFiles] = useState<FileRecord[]>([]);
@@ -87,12 +94,23 @@ function ReportsPage() {
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
+    if (isHistoricalDateRangeReport(reportMode)) {
+      params.set("historicalFromDate", historicalReportFromDate);
+      params.set("historicalToDate", historicalReportToDate);
+    }
+    if (isMonthSelectionReport(reportMode)) {
+      params.set("cashOutgoMonth", selectedCashOutgoMonth);
+    }
     return params.toString();
   }, [
     activeDivision,
     delayThresholdDays,
     delayMilestoneKey,
     expectedCashOutgoOffsetDays,
+    historicalReportFromDate,
+    historicalReportToDate,
+    reportMode,
+    selectedCashOutgoMonth,
     settings.selectedYear,
   ]);
 
@@ -155,7 +173,6 @@ function ReportsPage() {
     reportsSummary?.expectedCashOutgoBillPreparationRows ?? [];
   const billSentForPaymentRows = reportsSummary?.billSentForPaymentRows ?? [];
   const actualCashOutgoRows = reportsSummary?.actualCashOutgoRows ?? [];
-  const currentLiabilityRows = getCurrentMonthLiabilityRows(expectedCashOutgoReceiptRows);
   const delayRows = reportsSummary?.delayRows ?? [];
   const delaySummary = reportsSummary?.delaySummary ?? getDelayStatusSummary([]);
   const today = formatLocalDate(new Date());
@@ -163,6 +180,10 @@ function ReportsPage() {
   const effectiveFinancialYear = isAllActiveFilesYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear || settings.financialYear;
+  useEffect(() => {
+    setHistoricalReportFromDate(getFinancialYearStartDate(effectiveFinancialYear));
+    setHistoricalReportToDate(formatLocalDate(new Date()));
+  }, [effectiveFinancialYear]);
   const mmgFilteredFiles = filterMmgFilesByDivision(mmgFiles, activeDivision);
   const mmgPreviousFilteredFiles = filterMmgFilesByDivision(
     mmgPreviousFiles.filter((file) => isPreviousFinancialYearFile(file, effectiveFinancialYear)),
@@ -177,6 +198,15 @@ function ReportsPage() {
     financialYear: effectiveFinancialYear,
   });
   const fyRange = getFinancialYearRange(effectiveFinancialYear);
+  const cashOutgoMonthOptions = useMemo(
+    () => getFinancialYearMonthOptions(effectiveFinancialYear, currentMonthKey),
+    [effectiveFinancialYear, currentMonthKey],
+  );
+  useEffect(() => {
+    if (!cashOutgoMonthOptions.length) return;
+    if (cashOutgoMonthOptions.some((option) => option.value === selectedCashOutgoMonth)) return;
+    setSelectedCashOutgoMonth(cashOutgoMonthOptions[cashOutgoMonthOptions.length - 1].value);
+  }, [cashOutgoMonthOptions, selectedCashOutgoMonth]);
   const expectedCashOutgoFyRows = filterRowsByMonthRange(
     expectedCashOutgoDpRows,
     fyRange.startMonthKey,
@@ -187,13 +217,22 @@ function ReportsPage() {
     fyRange.startMonthKey,
     currentMonthKey,
   );
-  const cashOutgoForMonthRows = combineRowsForMonth(currentMonthKey, [
+  const spentTillSelectedMonthRows = filterRowsByMonthRange(
+    actualCashOutgoRows,
+    fyRange.startMonthKey,
+    selectedCashOutgoMonth,
+  );
+  const currentLiabilityRows = getCurrentMonthLiabilityRows(
+    expectedCashOutgoReceiptRows,
+    selectedCashOutgoMonth,
+  );
+  const cashOutgoForMonthRows = combineRowsForMonth(selectedCashOutgoMonth, [
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
     expectedCashOutgoFyRows,
   ]);
-  const expectedExpenditureTillMonthRows = combineRowsAsSingleMonth(currentMonthKey, [
-    spentTillDateFyRows,
+  const expectedExpenditureTillMonthRows = combineRowsAsSingleMonth(selectedCashOutgoMonth, [
+    spentTillSelectedMonthRows,
     cashOutgoForMonthRows,
   ]);
   const selectedCashOutgoRows = getRowsForReportMode(reportMode, {
@@ -207,8 +246,8 @@ function ReportsPage() {
     expectedExpenditureTillMonthRows,
   });
   const reportTitle = getEightReportTitle(reportMode, {
-    today,
-    monthKey: currentMonthKey,
+    today: isHistoricalDateRangeReport(reportMode) ? historicalReportToDate : today,
+    monthKey: isMonthSelectionReport(reportMode) ? selectedCashOutgoMonth : currentMonthKey,
     financialYear: effectiveFinancialYear,
   });
   const reportTitleWithDivision =
@@ -229,7 +268,7 @@ function ReportsPage() {
         : reportTitleWithDivision;
   const reportLogic = getCashOutgoReportLogic(reportMode, {
     today,
-    monthKey: currentMonthKey,
+    monthKey: isMonthSelectionReport(reportMode) ? selectedCashOutgoMonth : currentMonthKey,
     financialYear: effectiveFinancialYear,
   });
   const exportCashOutgoPdf = () =>
@@ -244,6 +283,21 @@ function ReportsPage() {
   const exportMmgSummaryExcel = () =>
     exportMmgSummary(mmgSummaryRows, selectedReportTitle, "excel");
   const selectedReportMode = reportModes.find((mode) => mode.key === reportMode) ?? reportModes[0];
+  const historicalDateRangeControls = isHistoricalDateRangeReport(reportMode)
+    ? {
+        fromDate: historicalReportFromDate,
+        toDate: historicalReportToDate,
+        onFromDateChange: setHistoricalReportFromDate,
+        onToDateChange: setHistoricalReportToDate,
+      }
+    : undefined;
+  const monthSelectionControls = isMonthSelectionReport(reportMode)
+    ? {
+        month: selectedCashOutgoMonth,
+        options: cashOutgoMonthOptions,
+        onMonthChange: setSelectedCashOutgoMonth,
+      }
+    : undefined;
   const openDelaySearch = (milestoneKey = delayMilestoneKey) => {
     navigate({
       to: "/search",
@@ -263,10 +317,20 @@ function ReportsPage() {
     });
   };
   const openCashOutgoSearch = (mode: CashOutgoFilterMode, monthKey: string) => {
+    const dateContext = isHistoricalDateRangeReport(reportMode)
+      ? { fromDate: historicalReportFromDate, toDate: historicalReportToDate }
+      : isMonthSelectionReport(reportMode)
+        ? { asOfDate: getMonthEndDate(selectedCashOutgoMonth) }
+        : undefined;
     navigate({
       to: "/search",
       search: {
-        dashboardFilter: getCashOutgoDashboardFilter(mode, monthKey, expectedCashOutgoOffsetDays),
+        dashboardFilter: getCashOutgoDashboardFilter(
+          mode,
+          monthKey,
+          expectedCashOutgoOffsetDays,
+          dateContext,
+        ),
         division: activeDivision === "all" ? undefined : activeDivision,
       },
     });
@@ -357,6 +421,7 @@ function ReportsPage() {
               }
               selectedDays={expectedCashOutgoDays}
               onDaysChange={setExpectedCashOutgoDays}
+              dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) =>
                 openCashOutgoSearch("expectedReceiptPendingBill", monthKey)
               }
@@ -377,6 +442,7 @@ function ReportsPage() {
               }
               selectedDays={expectedCashOutgoDays}
               onDaysChange={setExpectedCashOutgoDays}
+              monthSelection={monthSelectionControls}
             />
           ) : reportMode === "itemsDeliveredBillsPrepared" ? (
             <ExpectedCashOutgoReport
@@ -392,6 +458,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
+              dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) => openCashOutgoSearch("billPreparation", monthKey)}
             />
           ) : reportMode === "billsSubmitted" ? (
@@ -408,6 +475,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
+              dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) => openCashOutgoSearch("billSent", monthKey)}
             />
           ) : reportMode === "expectedCashOutgoFy" ? (
@@ -442,6 +510,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
+              dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
             />
           ) : reportMode === "cashOutgoForMonth" ? (
@@ -458,6 +527,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
+              monthSelection={monthSelectionControls}
             />
           ) : (
             <ExpectedCashOutgoReport
@@ -473,6 +543,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
+              monthSelection={monthSelectionControls}
             />
           )}
         </div>
@@ -538,6 +609,23 @@ function getRowsForReportMode(
   return [];
 }
 
+function isHistoricalDateRangeReport(mode: ReportMode) {
+  return (
+    mode === "itemsDeliveredBillsPending" ||
+    mode === "itemsDeliveredBillsPrepared" ||
+    mode === "billsSubmitted" ||
+    mode === "spentTillDateFy"
+  );
+}
+
+function isMonthSelectionReport(mode: ReportMode) {
+  return (
+    mode === "currentMonthLiability" ||
+    mode === "cashOutgoForMonth" ||
+    mode === "expectedExpenditureTillMonth"
+  );
+}
+
 function getEightReportTitle(
   mode: ReportMode,
   context: { today: string; monthKey: string; financialYear: string },
@@ -556,7 +644,7 @@ function getEightReportTitle(
   if (mode === "spentTillDateFy") {
     return `Spent till as on ${asOnDate} for FY ${fyLabel}`;
   }
-  if (mode === "currentMonthLiability") return "Current month's liability";
+  if (mode === "currentMonthLiability") return `Liability till ${monthLabel}`;
   if (mode === "cashOutgoForMonth") return `Cash outgo for ${monthLabel}`;
   if (mode === "expectedExpenditureTillMonth") {
     return `Expected expenditure till ${monthLabel}`;
@@ -578,19 +666,19 @@ function getCashOutgoReportLogic(
     return "Bill sent for payment";
   }
   if (mode === "expectedCashOutgoFy") {
-    return "Expected cash outgo by DP date.";
+    return "Expected cash outgo by DP date.\nMaterial not received.";
   }
   if (mode === "spentTillDateFy") {
-    return "";
+    return "Actual payment made monthwise";
   }
   if (mode === "currentMonthLiability") {
-    return "";
+    return "Unpaid delivered items so far";
   }
   if (mode === "cashOutgoForMonth") {
-    return `(i) Total of Items delivered and bills prepared as on date (ii) Bills submitted as on date (iii) Expected cash outgo for FY ${displayFinancialYearLabel(context.financialYear)}`;
+    return "Total of:\n(i) Undelivered materials so far\n(ii) Items delivered and bills prepared\n(iii) Bills submitted";
   }
   if (mode === "expectedExpenditureTillMonth") {
-    return "Total of (i) Spent till date (ii) Cash outgo for current month";
+    return "Total of:\n(i) Spent till date\n(ii) Cash outgo for current month";
   }
   return "";
 }
@@ -602,6 +690,8 @@ function ExpectedCashOutgoReport({
   actions,
   selectedDays,
   onDaysChange,
+  dateRange,
+  monthSelection,
   onOpenMonth,
 }: {
   rows: ExpectedCashOutgoRow[];
@@ -610,6 +700,8 @@ function ExpectedCashOutgoReport({
   actions: ReactNode;
   selectedDays?: string;
   onDaysChange?: (value: string) => void;
+  dateRange?: HistoricalDateRangeControlsProps;
+  monthSelection?: MonthSelectionControlsProps;
   onOpenMonth?: (monthKey: string) => void;
 }) {
   return (
@@ -621,20 +713,92 @@ function ExpectedCashOutgoReport({
       actions={actions}
       onOpenMonth={onOpenMonth}
       controls={
-        selectedDays !== undefined && onDaysChange ? (
-          <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
-            <span>Days after base date</span>
-            <input
-              type="number"
-              min="0"
-              value={selectedDays}
-              onChange={(event) => onDaysChange(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-            />
-          </label>
-        ) : undefined
+        <>
+          {monthSelection ? <MonthSelectionControls {...monthSelection} /> : null}
+          {dateRange ? <HistoricalDateRangeControls {...dateRange} /> : null}
+          {selectedDays !== undefined && onDaysChange ? (
+            <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+              <span>Days after base date</span>
+              <input
+                type="number"
+                min="0"
+                value={selectedDays}
+                onChange={(event) => onDaysChange(event.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+          ) : null}
+        </>
       }
     />
+  );
+}
+
+type HistoricalDateRangeControlsProps = {
+  fromDate: string;
+  toDate: string;
+  onFromDateChange: (value: string) => void;
+  onToDateChange: (value: string) => void;
+};
+
+type MonthSelectionControlsProps = {
+  month: string;
+  options: Array<{ value: string; label: string }>;
+  onMonthChange: (value: string) => void;
+};
+
+function MonthSelectionControls({ month, options, onMonthChange }: MonthSelectionControlsProps) {
+  return (
+    <label className="flex w-40 flex-col gap-1 text-xs text-muted-foreground">
+      <span>Month</span>
+      <select
+        value={month}
+        onChange={(event) => onMonthChange(event.target.value)}
+        className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function HistoricalDateRangeControls({
+  fromDate,
+  toDate,
+  onFromDateChange,
+  onToDateChange,
+}: HistoricalDateRangeControlsProps) {
+  return (
+    <>
+      <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+        <span>From</span>
+        <input
+          type="date"
+          value={fromDate}
+          max={toDate}
+          onChange={(event) => {
+            if (event.target.value) onFromDateChange(event.target.value);
+          }}
+          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        />
+      </label>
+      <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+        <span>To</span>
+        <input
+          type="date"
+          value={toDate}
+          min={fromDate}
+          onChange={(event) => {
+            if (event.target.value) onToDateChange(event.target.value);
+          }}
+          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        />
+      </label>
+    </>
   );
 }
 
@@ -663,6 +827,7 @@ function CurrentMonthLiabilityReport({
   actions,
   selectedDays,
   onDaysChange,
+  monthSelection,
 }: {
   rows: ExpectedCashOutgoRow[];
   title: string;
@@ -670,6 +835,7 @@ function CurrentMonthLiabilityReport({
   actions: ReactNode;
   selectedDays: string;
   onDaysChange: (value: string) => void;
+  monthSelection?: MonthSelectionControlsProps;
 }) {
   return (
     <CashOutgoReport
@@ -679,16 +845,19 @@ function CurrentMonthLiabilityReport({
       emptyMessage="No unpaid liability found for the current month."
       actions={actions}
       controls={
-        <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
-          <span>Days after base date</span>
-          <input
-            type="number"
-            min="0"
-            value={selectedDays}
-            onChange={(event) => onDaysChange(event.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-          />
-        </label>
+        <>
+          {monthSelection ? <MonthSelectionControls {...monthSelection} /> : null}
+          <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+            <span>Days after base date</span>
+            <input
+              type="number"
+              min="0"
+              value={selectedDays}
+              onChange={(event) => onDaysChange(event.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+            />
+          </label>
+        </>
       }
     />
   );
@@ -825,7 +994,9 @@ function CashOutgoReport({
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{title}</h2>
-          {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+          {description ? (
+            <p className="whitespace-pre-line text-xs text-muted-foreground">{description}</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
           {controls}
@@ -1642,10 +1813,9 @@ function getActualCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
   return finalizeCashOutgoRows(totals);
 }
 
-function getCurrentMonthLiabilityRows(rows: ExpectedCashOutgoRow[]) {
-  const currentMonthKey = getCurrentMonthKey();
+function getCurrentMonthLiabilityRows(rows: ExpectedCashOutgoRow[], monthKey: string) {
   const totals = rows
-    .filter((row) => row.monthKey <= currentMonthKey)
+    .filter((row) => row.monthKey <= monthKey)
     .reduce(
       (sum, row) => ({
         capital: sum.capital + row.capital,
@@ -1658,8 +1828,8 @@ function getCurrentMonthLiabilityRows(rows: ExpectedCashOutgoRow[]) {
 
   return [
     {
-      monthKey: currentMonthKey,
-      month: formatMonthLabel(`${currentMonthKey}-01`),
+      monthKey,
+      month: formatMonthLabel(`${monthKey}-01`),
       capital: Math.round(totals.capital),
       revenue: Math.round(totals.revenue),
       total: Math.round(totals.capital + totals.revenue),
@@ -1677,6 +1847,50 @@ function getFinancialYearRange(financialYear: string) {
     startMonthKey: `${startYear}-04`,
     endMonthKey: `${startYear + 1}-03`,
   };
+}
+
+function getFinancialYearStartDate(financialYear: string) {
+  const startYear = readFinancialYearStart(financialYear) ?? new Date().getFullYear();
+  return `${startYear}-04-01`;
+}
+
+function getFinancialYearMonthOptions(financialYear: string, currentMonthKey: string) {
+  const range = getFinancialYearRange(financialYear);
+  const endMonthKey = range.endMonthKey <= currentMonthKey ? range.endMonthKey : currentMonthKey;
+  if (range.startMonthKey > endMonthKey) {
+    return [{ value: currentMonthKey, label: formatMonthTitle(currentMonthKey) }];
+  }
+
+  const options: Array<{ value: string; label: string }> = [];
+  let cursor = parseLocalMonth(range.startMonthKey);
+  const end = parseLocalMonth(endMonthKey);
+  if (!cursor || !end) return [{ value: currentMonthKey, label: formatMonthTitle(currentMonthKey) }];
+
+  while (cursor <= end) {
+    const value = formatMonthKey(cursor);
+    options.push({ value, label: formatMonthTitle(value) });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  return options;
+}
+
+function parseLocalMonth(monthKey: string) {
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return undefined;
+  const parsed = new Date(`${monthKey}-01T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function formatMonthKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function getMonthEndDate(monthKey: string) {
+  const month = parseLocalMonth(monthKey);
+  if (!month) return undefined;
+  const end = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+  return formatLocalDate(end);
 }
 
 function filterMmgFilesByDivision(files: FileRecord[], activeDivision: string) {
@@ -1930,8 +2144,18 @@ function getCashOutgoDashboardFilter(
   mode: CashOutgoFilterMode,
   monthKey: string,
   offsetDays: number,
+  dateContext?: { fromDate?: string; toDate?: string; asOfDate?: string },
 ) {
-  return `cashOutgo:${mode}:${encodeURIComponent(monthKey)}:${offsetDays}`;
+  const parts = [
+    "cashOutgo",
+    mode,
+    encodeURIComponent(monthKey),
+    String(offsetDays),
+    dateContext?.fromDate ?? "",
+    dateContext?.toDate ?? "",
+    dateContext?.asOfDate ?? "",
+  ];
+  return parts.join(":");
 }
 
 function getDelayStatusSummary(rows: DelayStatusRow[]) {

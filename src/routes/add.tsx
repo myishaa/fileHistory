@@ -69,6 +69,7 @@ const empty = {
   ifa: "",
   psb: "",
   bg: "",
+  ir: "",
   rfpVetting: "No",
   highValueMeetingDate: "",
   highValueMinutesDate: "",
@@ -278,6 +279,7 @@ const ifaDisabledKeys: FieldKey[] = ["ifaSentDate", "ifaFinalDate"];
 const bgDisabledKeys: FieldKey[] = ["bgValidityDate", "bgReturnDate"];
 const refloatDisabledKeys: FieldKey[] = ["refloatBiddingDate", "refloatBidOpeningDate"];
 const supplyOrderBgDisabledKeys: SupplyOrderKey[] = ["bgValidityDate", "bgReturnDate"];
+const supplyOrderIrDisabledKeys: SupplyOrderKey[] = ["irPreparationDate", "irReceiptDate"];
 const tcecCommitteeKeys: FieldKey[] = ["preTcecCommitteeNo", "postTcecCommitteeNumber"];
 
 const yesNo = ["Yes", "No"];
@@ -382,6 +384,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
       { key: "psb", label: "PSB (Yes/No)", options: yesNo },
       { key: "bg", label: "BG (Yes/No)", options: yesNo },
+      { key: "ir", label: "IR (Yes/No)", options: yesNo },
       { key: "rfpVetting", label: "RFP vetting", options: yesNo },
     ],
   },
@@ -694,6 +697,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const rqaIsNo = isNo(formWithLockedYear.rqa);
   const ifaIsNo = isNo(formWithLockedYear.ifa);
   const bgIsNo = isNo(formWithLockedYear.bg);
+  const irIsNo = isNo(formWithLockedYear.ir);
   const rfpVettingIsNo = isNo(formWithLockedYear.rfpVetting);
   const refloatIsNo = isNo(formWithLockedYear.refloat);
   const adVettingDisabled = isDivisionAdNo(formWithLockedYear.division, divisions);
@@ -793,6 +797,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (k === "bg" && isNo(v)) {
       setSupplyOrders((current) =>
         current.map((order) => ({ ...order, bgValidityDate: "", bgReturnDate: "" })),
+      );
+    }
+    if (k === "ir" && isNo(v)) {
+      setSupplyOrders((current) =>
+        current.map((order) => ({ ...order, irPreparationDate: "", irReceiptDate: "" })),
       );
     }
     if (k === "biddingStageOver" && isYes(v)) {
@@ -1307,6 +1316,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   lockFilledFields={supplyOrdersLocked}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
+                  irDisabled={irIsNo}
                   quickFocus={Boolean(
                     quickFocus && activeSection.title === "Supply order and payment",
                   )}
@@ -2063,6 +2073,7 @@ function SupplyOrdersBlock({
   lockFilledFields,
   gemDisabled,
   bgDisabled,
+  irDisabled,
   quickFocus,
   onCountChange,
   onOrderChange,
@@ -2075,6 +2086,7 @@ function SupplyOrdersBlock({
   lockFilledFields: boolean;
   gemDisabled: boolean;
   bgDisabled: boolean;
+  irDisabled: boolean;
   quickFocus?: boolean;
   onCountChange: (value: string) => void;
   onOrderChange: (index: number, key: SupplyOrderKey, value: string) => void;
@@ -2109,7 +2121,8 @@ function SupplyOrdersBlock({
           const key = field.key as SupplyOrderKey;
           if (
             (gemDisabled && key === "gemSoNo") ||
-            (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
+            (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
+            (irDisabled && supplyOrderIrDisabledKeys.includes(key))
           ) {
             continue;
           }
@@ -2121,7 +2134,7 @@ function SupplyOrdersBlock({
         }
       }
     }, 100);
-  }, [bgDisabled, form.noOfSo, gemDisabled, orders.length, quickFocus]);
+  }, [bgDisabled, form.noOfSo, gemDisabled, irDisabled, orders.length, quickFocus]);
 
   return (
     <div className="space-y-5">
@@ -2208,7 +2221,8 @@ function SupplyOrdersBlock({
                         disabled ||
                         (lockFilledFields && hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
                         (gemDisabled && key === "gemSoNo") ||
-                        (bgDisabled && supplyOrderBgDisabledKeys.includes(key))
+                        (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
+                        (irDisabled && supplyOrderIrDisabledKeys.includes(key))
                       }
                       onChange={(value) => onOrderChange(index, key, value)}
                       inputRef={(element) => {
@@ -2943,6 +2957,7 @@ function isMilestoneApplicableToFile(
   if (key === "rqa") return isYes(form.rqa);
   if (key === "ifa") return isYes(form.ifa);
   if (key === "bankguarantee") return isYes(form.bg);
+  if (key === "irpreparation" || key === "irreceipt") return isYes(form.ir);
 
   return true;
 }

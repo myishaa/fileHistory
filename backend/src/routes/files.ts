@@ -162,6 +162,7 @@ const fileFields = {
   ifa: ["ifa", "text"],
   psb: ["psb", "text"],
   bg: ["bg", "text"],
+  ir: ["ir", "text"],
   rfpVetting: ["rfp_vetting", "text"],
   highValueMeetingDate: ["high_value_meeting_date", "date"],
   highValueMinutesDate: ["high_value_minutes_date", "date"],
@@ -873,6 +874,7 @@ const fileSearchColumns = {
   ifa: "f.ifa",
   psb: "f.psb",
   bg: "f.bg",
+  ir: "f.ir",
   rfpVetting: "f.rfp_vetting",
   highValueMeetingDate: "f.high_value_meeting_date",
   highValueMinutesDate: "f.high_value_minutes_date",
@@ -1349,9 +1351,13 @@ function statusSummaryFilterSql(filter: string) {
 }
 
 function readCashOutgoFilter(filter: string) {
-  const [, mode, rawMonthKey, rawOffsetDays] = filter.split(":");
+  const [, mode, rawMonthKey, rawOffsetDays, rawFromDate, rawToDate, rawAsOfDate] =
+    filter.split(":");
   const monthKey = decodeStatusFilterPart(rawMonthKey);
   const offsetDays = Number.parseInt(rawOffsetDays ?? "0", 10);
+  const fromDate = decodeStatusFilterPart(rawFromDate);
+  const toDate = decodeStatusFilterPart(rawToDate);
+  const asOfDate = decodeStatusFilterPart(rawAsOfDate);
   const validModes = [
     "expectedDp",
     "expectedReceipt",
@@ -1364,7 +1370,10 @@ function readCashOutgoFilter(filter: string) {
     !validModes.includes(mode) ||
     !/^\d{4}-\d{2}$/.test(monthKey) ||
     !Number.isFinite(offsetDays) ||
-    offsetDays < 0
+    offsetDays < 0 ||
+    (fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) ||
+    (toDate && !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) ||
+    (asOfDate && !/^\d{4}-\d{2}-\d{2}$/.test(asOfDate))
   ) {
     return undefined;
   }
@@ -1378,6 +1387,9 @@ function readCashOutgoFilter(filter: string) {
       | "actual",
     monthKey,
     offsetDays,
+    fromDate: fromDate || undefined,
+    toDate: toDate || undefined,
+    asOfDate: asOfDate || undefined,
   };
 }
 
@@ -1396,43 +1408,68 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   const offsetPlaceholder = usesOffset ? addSqlValue(values, parsed.offsetDays) : undefined;
   const offsetInterval = `(${offsetPlaceholder}::integer * interval '1 day')`;
   const activeFile = `not ${isCancelledFileSql()}`;
+  const fromDatePlaceholder = parsed.fromDate ? addSqlValue(values, parsed.fromDate) : undefined;
+  const toDatePlaceholder = parsed.toDate ? addSqlValue(values, parsed.toDate) : undefined;
+  const asOfDatePlaceholder = parsed.asOfDate ? addSqlValue(values, parsed.asOfDate) : undefined;
+  const rangeSql = (dateExpression: string) =>
+    fromDatePlaceholder && toDatePlaceholder
+      ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
+      : "";
+  const asOfMissingOrAfterSql = (dateExpression: string) =>
+    asOfDatePlaceholder ? `(${dateExpression} is null or ${dateExpression} > ${asOfDatePlaceholder}::date)` : undefined;
+  const asOfOnOrBeforeSql = (dateExpression: string) =>
+    asOfDatePlaceholder ? `${dateExpression} <= ${asOfDatePlaceholder}::date` : undefined;
+  const toDateMissingOrAfterSql = (dateExpression: string) =>
+    toDatePlaceholder ? `(${dateExpression} is null or ${dateExpression} > ${toDatePlaceholder}::date)` : undefined;
+  const toDateOnOrBeforeSql = (dateExpression: string) =>
+    toDatePlaceholder ? `${dateExpression} <= ${toDatePlaceholder}::date` : undefined;
 
   if (parsed.mode === "expectedDp") {
+    const childDate = `(coalesce(so.revised_dp, so.dp_date) + ${offsetInterval})::date`;
+    const legacyDate = `(coalesce(f.revised_dp, f.dp_date) + ${offsetInterval})::date`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `coalesce(so.revised_dp, so.dp_date) is not null
        and not ${isYesSql("so.so_cancelled")}
-       and not ${hasTextSql("so.material_receipt_date")}
-       and not ${hasTextSql("so.payment_date")}
-       and ${monthMatchesSql(`(coalesce(so.revised_dp, so.dp_date) + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${asOfMissingOrAfterSql("so.material_receipt_date") ?? `not ${hasTextSql("so.material_receipt_date")}`}
+       and ${asOfMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
+       and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childDate)}`,
       `coalesce(f.revised_dp, f.dp_date) is not null
        and not ${isYesSql("f.so_cancelled")}
-       and not ${hasTextSql("f.material_receipt_date")}
-       and not ${hasTextSql("f.payment_date")}
-       and ${monthMatchesSql(`(coalesce(f.revised_dp, f.dp_date) + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${asOfMissingOrAfterSql("f.material_receipt_date") ?? `not ${hasTextSql("f.material_receipt_date")}`}
+       and ${asOfMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
+       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyDate)}`,
     )}`;
   }
 
   if (parsed.mode === "expectedReceipt") {
+    const childDate = `(so.material_receipt_date + ${offsetInterval})::date`;
+    const legacyDate = `(f.material_receipt_date + ${offsetInterval})::date`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `${hasTextSql("so.material_receipt_date")}
-       and not ${hasTextSql("so.payment_date")}
-       and ${monthMatchesSql(`(so.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${asOfOnOrBeforeSql("so.material_receipt_date") ?? "true"}
+       and ${asOfMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
+       and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childDate)}`,
       `${hasTextSql("f.material_receipt_date")}
-       and not ${hasTextSql("f.payment_date")}
-       and ${monthMatchesSql(`(f.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${asOfOnOrBeforeSql("f.material_receipt_date") ?? "true"}
+       and ${asOfMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
+       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyDate)}`,
     )}`;
   }
 
   if (parsed.mode === "expectedReceiptPendingBill") {
+    const childDate = `(so.material_receipt_date + ${offsetInterval})::date`;
+    const legacyDate = `(f.material_receipt_date + ${offsetInterval})::date`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `${hasTextSql("so.material_receipt_date")}
-       and not ${hasTextSql("so.bill_preparation_date")}
-       and not ${hasTextSql("so.payment_date")}
-       and ${monthMatchesSql(`(so.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("so.material_receipt_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("so.bill_preparation_date") ?? `not ${hasTextSql("so.bill_preparation_date")}`}
+       and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
+       and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childDate)}`,
       `${hasTextSql("f.material_receipt_date")}
-       and not ${hasTextSql("f.bill_preparation_date")}
-       and not ${hasTextSql("f.payment_date")}
-       and ${monthMatchesSql(`(f.material_receipt_date + ${offsetInterval})::date`, monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("f.material_receipt_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("f.bill_preparation_date") ?? `not ${hasTextSql("f.bill_preparation_date")}`}
+       and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
+       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyDate)}`,
     )}`;
   }
 
@@ -1440,33 +1477,41 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `${hasTextSql("so.material_receipt_date")}
        and ${hasTextSql("so.bill_preparation_date")}
-       and not ${hasTextSql("so.payment_date")}
-       and ${monthMatchesSql("so.bill_preparation_date", monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("so.material_receipt_date") ?? "true"}
+       and ${toDateOnOrBeforeSql("so.bill_preparation_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("so.bill_sent_for_payment_date") ?? `not ${hasTextSql("so.bill_sent_for_payment_date")}`}
+       and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
+       and ${monthMatchesSql("so.bill_preparation_date", monthPlaceholder)}${rangeSql("so.bill_preparation_date")}`,
       `${hasTextSql("f.material_receipt_date")}
        and ${hasTextSql("f.bill_preparation_date")}
-       and not ${hasTextSql("f.payment_date")}
-       and ${monthMatchesSql("f.bill_preparation_date", monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("f.material_receipt_date") ?? "true"}
+       and ${toDateOnOrBeforeSql("f.bill_preparation_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("f.bill_sent_for_payment_date") ?? `not ${hasTextSql("f.bill_sent_for_payment_date")}`}
+       and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
+       and ${monthMatchesSql("f.bill_preparation_date", monthPlaceholder)}${rangeSql("f.bill_preparation_date")}`,
     )}`;
   }
 
   if (parsed.mode === "billSent") {
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `${hasTextSql("so.bill_sent_for_payment_date")}
-       and not ${hasTextSql("so.payment_date")}
-       and ${monthMatchesSql("so.bill_sent_for_payment_date", monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("so.bill_sent_for_payment_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
+       and ${monthMatchesSql("so.bill_sent_for_payment_date", monthPlaceholder)}${rangeSql("so.bill_sent_for_payment_date")}`,
       `${hasTextSql("f.bill_sent_for_payment_date")}
-       and not ${hasTextSql("f.payment_date")}
-       and ${monthMatchesSql("f.bill_sent_for_payment_date", monthPlaceholder)}`,
+       and ${toDateOnOrBeforeSql("f.bill_sent_for_payment_date") ?? "true"}
+       and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
+       and ${monthMatchesSql("f.bill_sent_for_payment_date", monthPlaceholder)}${rangeSql("f.bill_sent_for_payment_date")}`,
     )}`;
   }
 
   return `${activeFile} and ${supplyOrderChildOrLegacySql(
     `${hasTextSql("so.payment_date")}
      and not (${isYesSql("so.so_cancelled")} and ${hasTextSql("so.so_cancelled_date")})
-     and ${monthMatchesSql("so.payment_date", monthPlaceholder)}`,
+     and ${monthMatchesSql("so.payment_date", monthPlaceholder)}${rangeSql("so.payment_date")}`,
     `${hasTextSql("f.payment_date")}
      and not (${isYesSql("f.so_cancelled")} and ${hasTextSql("f.so_cancelled_date")})
-     and ${monthMatchesSql("f.payment_date", monthPlaceholder)}`,
+     and ${monthMatchesSql("f.payment_date", monthPlaceholder)}${rangeSql("f.payment_date")}`,
   )}`;
 }
 
@@ -1565,6 +1610,30 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
         "so.material_receipt_date",
       )}`,
     )}`;
+  if (filter === "irPreparationPending")
+    return `${isYesSql("f.ir")}
+      and not (${isYesSql("f.demand_cancelled")} or ${isYesSql("f.so_cancelled")})
+      and ${supplyOrderExists(
+        `${hasTextSql("so.so_date")}
+         and ${hasTextSql("so.material_receipt_date")}
+         and not ${hasTextSql("so.ir_preparation_date")}
+         and not (${isYesSql("so.demand_cancelled")} or ${isYesSql("so.so_cancelled")})`,
+      )}`;
+  if (filter === "irReceiptPending")
+    return `${isYesSql("f.ir")}
+      and not (${isYesSql("f.demand_cancelled")} or ${isYesSql("f.so_cancelled")})
+      and ${supplyOrderExists(
+        `${hasTextSql("so.ir_preparation_date")}
+         and not ${hasTextSql("so.ir_receipt_date")}
+         and not (${isYesSql("so.demand_cancelled")} or ${isYesSql("so.so_cancelled")})`,
+      )}`;
+  if (filter === "irCompleted")
+    return `${isYesSql("f.ir")}
+      and not (${isYesSql("f.demand_cancelled")} or ${isYesSql("f.so_cancelled")})
+      and ${supplyOrderExists(
+        `${hasTextSql("so.ir_receipt_date")}
+         and not (${isYesSql("so.demand_cancelled")} or ${isYesSql("so.so_cancelled")})`,
+      )}`;
   if (filter === "paymentDue")
     return supplyOrderExists(
       `${hasTextSql("so.material_receipt_date")} and not ${hasTextSql("so.payment_date")}`,

@@ -353,10 +353,7 @@ export function Dashboard() {
       activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
     [activeDivision, files],
   );
-  const activeDashboardStatusFiles = useMemo(
-    () => dashboardFiles,
-    [dashboardFiles],
-  );
+  const activeDashboardStatusFiles = useMemo(() => dashboardFiles, [dashboardFiles]);
   const dashboardDivisions = useMemo(
     () =>
       activeDivision === "all"
@@ -587,7 +584,8 @@ export function Dashboard() {
   const topSummaryStats =
     dashboardSummary?.topSummaryStats ??
     (needsLocalDashboardFallback ? getAttributeSummaryStats(dashboardFiles) : []);
-  const manualMilestoneFlow = dashboardSummary?.manualMilestoneFlow ?? localManualMilestoneFlow;
+  const manualMilestoneFlow =
+    dashboardSummary?.manualMilestoneFlow ?? localManualMilestoneFlow ?? [];
   const visibleLiveMilestoneNames =
     selectedLiveMilestones && manualMilestoneFlow
       ? selectedLiveMilestones.filter((name) =>
@@ -1036,7 +1034,15 @@ export function Dashboard() {
         dashboardFilter: undefined,
         division: activeAnalyticsDivision === "all" ? undefined : activeAnalyticsDivision,
         analyticsType: analyticsTransferType,
-        analyticsNames: JSON.stringify(displayedAnalyticsPanel.rows.map((row) => String(row.name))),
+        analyticsNames: JSON.stringify(
+          displayedAnalyticsPanel.rows
+            .map((row) => ("name" in row ? row.name : undefined))
+            .filter(
+              (name): name is number | string =>
+                typeof name === "number" || typeof name === "string",
+            )
+            .map((name) => String(name)),
+        ),
       },
     });
   };
@@ -1287,6 +1293,34 @@ export function Dashboard() {
                       onCompletedClick={() => handleStatusFilter("deliveryCompleted")}
                       onDueClick={() => handleStatusFilter("deliveryDue")}
                       onOverdueClick={() => handleStatusFilter("deliveryOverdue")}
+                    />
+                  );
+                }
+
+                if ("irPreparationPending" in milestone) {
+                  return (
+                    <StatusFlowNode
+                      key={milestone.key}
+                      index={index}
+                      title={milestone.label}
+                      isLast={false}
+                      items={[
+                        {
+                          label: "IR Preparation Pending",
+                          count: milestone.irPreparationPending,
+                          onClick: () => handleStatusFilter("irPreparationPending"),
+                        },
+                        {
+                          label: "IR Receipt Pending",
+                          count: milestone.irReceiptPending,
+                          onClick: () => handleStatusFilter("irReceiptPending"),
+                        },
+                        {
+                          label: "IR Completed",
+                          count: milestone.irCompleted,
+                          onClick: () => handleStatusFilter("irCompleted"),
+                        },
+                      ]}
                     />
                   );
                 }
@@ -4875,6 +4909,13 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     due: countLiveSupplyOrders(files),
     overdue: countDeliveryOverdueOrders(files),
   };
+  const ir = {
+    key: "ir",
+    label: "IR",
+    irPreparationPending: countIrPreparationPendingOrders(files),
+    irReceiptPending: countIrReceiptPendingOrders(files),
+    irCompleted: countIrCompletedOrders(files),
+  };
   const deliveryPeriod = {
     key: "deliveryPeriod",
     label: "Delivery Period",
@@ -4891,15 +4932,14 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
           deliveryPeriod,
           ...flow.slice(supplyOrderIndex + 1),
         ];
-  const bankGuaranteeIndex = withDeliveryPeriod.findIndex(
-    (milestone) => milestone.key === "bankGuarantee",
-  );
+  const paymentIndex = withDeliveryPeriod.findIndex((milestone) => milestone.key === "payment");
 
-  if (bankGuaranteeIndex === -1) return [...withDeliveryPeriod, delivery];
+  if (paymentIndex === -1) return [...withDeliveryPeriod, delivery, ir];
   return [
-    ...withDeliveryPeriod.slice(0, bankGuaranteeIndex + 1),
+    ...withDeliveryPeriod.slice(0, paymentIndex),
     delivery,
-    ...withDeliveryPeriod.slice(bankGuaranteeIndex + 1),
+    ir,
+    ...withDeliveryPeriod.slice(paymentIndex),
   ];
 }
 
@@ -5145,6 +5185,36 @@ function countBgPendingOrders(files: FileRecord[]) {
   ).length;
 }
 
+function countIrPreparationPendingOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) &&
+      hasSupplyOrderDate(order) &&
+      hasFilledString(order.materialReceiptDate) &&
+      !hasFilledString(order.irPreparationDate) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countIrReceiptPendingOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) &&
+      hasFilledString(order.irPreparationDate) &&
+      !hasFilledString(order.irReceiptDate) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countIrCompletedOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      isYes(file.ir) &&
+      hasFilledString(order.irReceiptDate) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
 function countPaymentCompletedOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
     ({ file, order }) => hasFilledString(order.paymentDate) && !isSupplyOrderCancelled(file, order),
@@ -5368,6 +5438,9 @@ const dashboardFilterTitles: Record<string, string> = {
   deliveryPeriodValid: "Delivery Period - Valid",
   deliveryPeriodExpired: "Delivery Period - Expired",
   deliveryPeriodExtended: "Delivery Period - Extended",
+  irPreparationPending: "IR - Preparation pending",
+  irReceiptPending: "IR - Receipt pending",
+  irCompleted: "IR - Completed",
   liveBids: "Bidding - Live",
   bidOverdue: "Bidding - Opening overdue",
   liveSupplyOrders: "Supply Order - Live",
@@ -5382,6 +5455,40 @@ const dashboardFilterTitles: Record<string, string> = {
 function isPaymentDue(file: FileRecord) {
   return fileSupplyOrders(file).some(
     (order) => hasFilledString(order.materialReceiptDate) && !hasFilledString(order.paymentDate),
+  );
+}
+
+function isIrPreparationPending(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) =>
+        hasSupplyOrderDate(order) &&
+        hasFilledString(order.materialReceiptDate) &&
+        !hasFilledString(order.irPreparationDate) &&
+        !isSupplyOrderCancelled(file, order),
+    )
+  );
+}
+
+function isIrReceiptPending(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) =>
+        hasFilledString(order.irPreparationDate) &&
+        !hasFilledString(order.irReceiptDate) &&
+        !isSupplyOrderCancelled(file, order),
+    )
+  );
+}
+
+function isIrCompleted(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) => hasFilledString(order.irReceiptDate) && !isSupplyOrderCancelled(file, order),
+    )
   );
 }
 
@@ -5425,6 +5532,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
+  if (filter === "irPreparationPending") return isIrPreparationPending(file);
+  if (filter === "irReceiptPending") return isIrReceiptPending(file);
+  if (filter === "irCompleted") return isIrCompleted(file);
   if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "miscLiveFiles") return isLiveFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
@@ -5528,6 +5638,23 @@ function getStatusPageExportRows(
         { section: milestone.label, metric: "Completed", count: milestone.completed },
         { section: milestone.label, metric: "Pending", count: milestone.due },
         { section: milestone.label, metric: "Overdue", count: milestone.overdue },
+      );
+      return;
+    }
+
+    if ("irPreparationPending" in milestone) {
+      rows.push(
+        {
+          section: milestone.label,
+          metric: "IR Preparation Pending",
+          count: milestone.irPreparationPending,
+        },
+        {
+          section: milestone.label,
+          metric: "IR Receipt Pending",
+          count: milestone.irReceiptPending,
+        },
+        { section: milestone.label, metric: "IR Completed", count: milestone.irCompleted },
       );
       return;
     }

@@ -473,6 +473,9 @@ type StatusCounts = {
   deliveryPeriodValid: number;
   deliveryPeriodExpired: number;
   deliveryPeriodExtended: number;
+  irPreparationPending: number;
+  irReceiptPending: number;
+  irCompleted: number;
 };
 
 type CountAnalyticsRow = { name: string; count: number };
@@ -726,6 +729,27 @@ function effectiveOrderPaymentCompletedExpression(alias = "eso") {
 function effectiveOrderPaymentPendingExpression(alias = "eso") {
   return `${hasFilledExpression(`${alias}.material_receipt_date`)}
     and not ${hasFilledExpression(`${alias}.payment_date`)}
+    and not ${effectiveOrderCancelledExpression(alias)}`;
+}
+
+function effectiveOrderIrPreparationPendingExpression(alias = "eso") {
+  return `${isYesExpression(`${alias}.file_ir`)}
+    and ${effectiveOrderPlacedExpression(alias)}
+    and ${hasFilledExpression(`${alias}.material_receipt_date`)}
+    and not ${hasFilledExpression(`${alias}.ir_preparation_date`)}
+    and not ${effectiveOrderCancelledExpression(alias)}`;
+}
+
+function effectiveOrderIrReceiptPendingExpression(alias = "eso") {
+  return `${isYesExpression(`${alias}.file_ir`)}
+    and ${hasFilledExpression(`${alias}.ir_preparation_date`)}
+    and not ${hasFilledExpression(`${alias}.ir_receipt_date`)}
+    and not ${effectiveOrderCancelledExpression(alias)}`;
+}
+
+function effectiveOrderIrCompletedExpression(alias = "eso") {
+  return `${isYesExpression(`${alias}.file_ir`)}
+    and ${hasFilledExpression(`${alias}.ir_receipt_date`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
@@ -1801,16 +1825,19 @@ async function loadStatusCounts({
   });
   const result = await pool.query<Record<string, string | number>>(
     `with effective_supply_orders as (
-       select
-         f.id as file_id,
-         f.bg as file_bg,
-         f.demand_cancelled as file_demand_cancelled,
-         f.so_cancelled as file_so_cancelled,
-         so.so_date,
+	       select
+	         f.id as file_id,
+	         f.bg as file_bg,
+	         f.ir as file_ir,
+	         f.demand_cancelled as file_demand_cancelled,
+	         f.so_cancelled as file_so_cancelled,
+	         so.so_date,
          so.dp_date,
          so.revised_dp,
-         so.material_receipt_date,
-         so.payment_date,
+	         so.material_receipt_date,
+	         so.ir_preparation_date,
+	         so.ir_receipt_date,
+	         so.payment_date,
          so.bg_validity_date,
          so.ld,
          so.demand_cancelled,
@@ -1820,16 +1847,19 @@ async function loadStatusCounts({
        join supply_orders so on so.file_id = f.id
        ${statusWhereSql}
        union all
-       select
-         f.id as file_id,
-         f.bg as file_bg,
-         f.demand_cancelled as file_demand_cancelled,
-         f.so_cancelled as file_so_cancelled,
-         f.so_date,
+	       select
+	         f.id as file_id,
+	         f.bg as file_bg,
+	         f.ir as file_ir,
+	         f.demand_cancelled as file_demand_cancelled,
+	         f.so_cancelled as file_so_cancelled,
+	         f.so_date,
          f.dp_date,
          f.revised_dp,
-         f.material_receipt_date,
-         f.payment_date,
+	         f.material_receipt_date,
+	         f.ir_preparation_date,
+	         f.ir_receipt_date,
+	         f.payment_date,
          f.bg_validity_date,
          f.ld,
          f.demand_cancelled,
@@ -1863,9 +1893,12 @@ async function loadStatusCounts({
        ${effectiveOrderCountFilter(effectiveOrderDeliveryCompletedExpression())} as delivery_completed,
        ${effectiveOrderCountFilter(effectiveOrderLiveExpression())} as delivery_due,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryOverdueExpression())} as delivery_overdue,
-       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodValidExpression())} as delivery_period_valid,
-       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExpiredExpression())} as delivery_period_expired,
-       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExtendedExpression())} as delivery_period_extended
+	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodValidExpression())} as delivery_period_valid,
+	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExpiredExpression())} as delivery_period_expired,
+	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExtendedExpression())} as delivery_period_extended,
+	       ${effectiveOrderCountFilter(effectiveOrderIrPreparationPendingExpression())} as ir_preparation_pending,
+	       ${effectiveOrderCountFilter(effectiveOrderIrReceiptPendingExpression())} as ir_receipt_pending,
+	       ${effectiveOrderCountFilter(effectiveOrderIrCompletedExpression())} as ir_completed
      from files f
      left join divisions d on d.id = f.division_id
      ${statusWhereSql}`,
@@ -1917,10 +1950,13 @@ async function loadStatusCounts({
     deliveryCompleted: readCount("delivery_completed"),
     deliveryDue: readCount("delivery_due"),
     deliveryOverdue: readCount("delivery_overdue"),
-    deliveryPeriodValid: readCount("delivery_period_valid"),
-    deliveryPeriodExpired: readCount("delivery_period_expired"),
-    deliveryPeriodExtended: readCount("delivery_period_extended"),
-  };
+	    deliveryPeriodValid: readCount("delivery_period_valid"),
+	    deliveryPeriodExpired: readCount("delivery_period_expired"),
+	    deliveryPeriodExtended: readCount("delivery_period_extended"),
+	    irPreparationPending: readCount("ir_preparation_pending"),
+	    irReceiptPending: readCount("ir_receipt_pending"),
+	    irCompleted: readCount("ir_completed"),
+	  };
 }
 
 function stableJson(value: unknown) {
@@ -1964,6 +2000,7 @@ function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): St
   const bidding = findRow("bidding");
   const supplyOrder = findRow("supplyOrder");
   const delivery = findRow("delivery");
+  const ir = findRow("ir");
   const deliveryPeriod = findRow("deliveryPeriod");
   const readCount = (row: Record<string, unknown>, key: string) => Number(row[key] ?? 0);
   return {
@@ -1989,6 +2026,9 @@ function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): St
     deliveryPeriodValid: readCount(deliveryPeriod, "valid"),
     deliveryPeriodExpired: readCount(deliveryPeriod, "expired"),
     deliveryPeriodExtended: readCount(deliveryPeriod, "extended"),
+    irPreparationPending: readCount(ir, "irPreparationPending"),
+    irReceiptPending: readCount(ir, "irReceiptPending"),
+    irCompleted: readCount(ir, "irCompleted"),
   };
 }
 
@@ -2036,6 +2076,14 @@ function mergeStatusCountsIntoFlow<T extends Array<Record<string, unknown>>>(
         valid: counts.deliveryPeriodValid,
         expired: counts.deliveryPeriodExpired,
         extended: counts.deliveryPeriodExtended,
+      };
+    }
+    if (row.key === "ir") {
+      return {
+        ...baseRow,
+        irPreparationPending: counts.irPreparationPending,
+        irReceiptPending: counts.irReceiptPending,
+        irCompleted: counts.irCompleted,
       };
     }
     return baseRow;
@@ -2120,7 +2168,6 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
           deliveryPeriod,
           ...milestoneRows.slice(supplyOrderIndex + 1),
         ];
-  const bankGuaranteeIndex = withDeliveryPeriod.findIndex((row) => row.key === "bankGuarantee");
   const delivery = {
     key: "delivery",
     label: "Delivery",
@@ -2128,12 +2175,21 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
     due: counts.deliveryDue,
     overdue: counts.deliveryOverdue,
   };
-  return bankGuaranteeIndex === -1
-    ? [...withDeliveryPeriod, delivery]
+  const ir = {
+    key: "ir",
+    label: "IR",
+    irPreparationPending: counts.irPreparationPending,
+    irReceiptPending: counts.irReceiptPending,
+    irCompleted: counts.irCompleted,
+  };
+  const paymentIndex = withDeliveryPeriod.findIndex((row) => row.key === "payment");
+  return paymentIndex === -1
+    ? [...withDeliveryPeriod, delivery, ir]
     : [
-        ...withDeliveryPeriod.slice(0, bankGuaranteeIndex + 1),
+        ...withDeliveryPeriod.slice(0, paymentIndex),
         delivery,
-        ...withDeliveryPeriod.slice(bankGuaranteeIndex + 1),
+        ir,
+        ...withDeliveryPeriod.slice(paymentIndex),
       ];
 }
 

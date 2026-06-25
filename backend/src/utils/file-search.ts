@@ -461,6 +461,15 @@ function isCancelledFile(file: FileRecord) {
   );
 }
 
+function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    isYes(file.demandCancelled) ||
+    isYes(file.soCancelled) ||
+    isYes(order.demandCancelled) ||
+    isYes(order.soCancelled)
+  );
+}
+
 function getFirmCount(
   rows: Array<{ firmName?: string; city?: string; emailId?: string }> | undefined,
 ) {
@@ -831,6 +840,40 @@ function isPaymentDue(file: FileRecord) {
   );
 }
 
+function isIrPreparationPending(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) =>
+        hasSupplyOrderDate(order) &&
+        hasFilledString(order.materialReceiptDate) &&
+        !hasFilledString(order.irPreparationDate) &&
+        !isSupplyOrderCancelled(file, order),
+    )
+  );
+}
+
+function isIrReceiptPending(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) =>
+        hasFilledString(order.irPreparationDate) &&
+        !hasFilledString(order.irReceiptDate) &&
+        !isSupplyOrderCancelled(file, order),
+    )
+  );
+}
+
+function isIrCompleted(file: FileRecord) {
+  return (
+    isYes(file.ir) &&
+    fileSupplyOrders(file).some(
+      (order) => hasFilledString(order.irReceiptDate) && !isSupplyOrderCancelled(file, order),
+    )
+  );
+}
+
 function isDateBeforeToday(date: string | undefined) {
   const dateTime = parseLocalDateTime(date ?? "");
   const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
@@ -925,9 +968,13 @@ function addDays(date: string | undefined, days: number) {
 }
 
 function readCashOutgoFilter(filter: string) {
-  const [, mode, rawMonthKey, rawOffsetDays] = filter.split(":");
+  const [, mode, rawMonthKey, rawOffsetDays, rawFromDate, rawToDate, rawAsOfDate] =
+    filter.split(":");
   const monthKey = decodeURIComponent(rawMonthKey ?? "");
   const offsetDays = Number.parseInt(rawOffsetDays ?? "0", 10);
+  const fromDate = decodeURIComponent(rawFromDate ?? "");
+  const toDate = decodeURIComponent(rawToDate ?? "");
+  const asOfDate = decodeURIComponent(rawAsOfDate ?? "");
   const validModes = [
     "expectedDp",
     "expectedReceipt",
@@ -940,65 +987,112 @@ function readCashOutgoFilter(filter: string) {
     !validModes.includes(mode) ||
     !/^\d{4}-\d{2}$/.test(monthKey) ||
     !Number.isFinite(offsetDays) ||
-    offsetDays < 0
+    offsetDays < 0 ||
+    (fromDate && !hasDate(fromDate)) ||
+    (toDate && !hasDate(toDate)) ||
+    (asOfDate && !hasDate(asOfDate))
   ) {
     return undefined;
   }
-  return { mode, monthKey, offsetDays };
+  return {
+    mode,
+    monthKey,
+    offsetDays,
+    fromDate: fromDate || undefined,
+    toDate: toDate || undefined,
+    asOfDate: asOfDate || undefined,
+  };
 }
 
 function monthMatches(date: string | undefined, monthKey: string) {
   return hasDate(date) && date?.slice(0, 7) === monthKey;
 }
 
+function dateInRange(date: string | undefined, fromDate: string | undefined, toDate: string | undefined) {
+  if (!hasDate(date)) return false;
+  if (fromDate && date! < fromDate) return false;
+  if (toDate && date! > toDate) return false;
+  return true;
+}
+
+function isOnOrBefore(date: string | undefined, limit: string | undefined) {
+  return hasFilledString(date) && (!limit || date! <= limit);
+}
+
+function isMissingOrAfter(date: string | undefined, limit: string | undefined) {
+  return !hasFilledString(date) || Boolean(limit && date! > limit);
+}
+
 function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
   const parsed = readCashOutgoFilter(filter);
   if (!parsed || isCancelledFile(file)) return false;
   return fileSupplyOrders(file).some((order) => {
+    const rangeMatches = (date: string | undefined) =>
+      monthMatches(date, parsed.monthKey) && dateInRange(date, parsed.fromDate, parsed.toDate);
+    const toDate = parsed.toDate ?? parsed.asOfDate;
     if (parsed.mode === "expectedDp") {
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
+      const cashOutgoDate = addDays(deliveryPeriodDate, parsed.offsetDays);
       return (
         hasFilledString(deliveryPeriodDate) &&
         !isYes(order.soCancelled) &&
-        !hasFilledString(order.materialReceiptDate) &&
-        !hasFilledString(order.paymentDate) &&
-        monthMatches(addDays(deliveryPeriodDate, parsed.offsetDays), parsed.monthKey)
+        (parsed.asOfDate
+          ? isMissingOrAfter(order.materialReceiptDate, parsed.asOfDate)
+          : !hasFilledString(order.materialReceiptDate)) &&
+        (parsed.asOfDate
+          ? isMissingOrAfter(order.paymentDate, parsed.asOfDate)
+          : !hasFilledString(order.paymentDate)) &&
+        rangeMatches(cashOutgoDate)
       );
     }
     if (parsed.mode === "expectedReceipt") {
+      const cashOutgoDate = addDays(order.materialReceiptDate, parsed.offsetDays);
       return (
         hasFilledString(order.materialReceiptDate) &&
-        !hasFilledString(order.paymentDate) &&
-        monthMatches(addDays(order.materialReceiptDate, parsed.offsetDays), parsed.monthKey)
+        (parsed.asOfDate ? isOnOrBefore(order.materialReceiptDate, parsed.asOfDate) : true) &&
+        (parsed.asOfDate
+          ? isMissingOrAfter(order.paymentDate, parsed.asOfDate)
+          : !hasFilledString(order.paymentDate)) &&
+        rangeMatches(cashOutgoDate)
       );
     }
     if (parsed.mode === "expectedReceiptPendingBill") {
+      const cashOutgoDate = addDays(order.materialReceiptDate, parsed.offsetDays);
       return (
         hasFilledString(order.materialReceiptDate) &&
-        !hasFilledString(order.billPreparationDate) &&
-        !hasFilledString(order.paymentDate) &&
-        monthMatches(addDays(order.materialReceiptDate, parsed.offsetDays), parsed.monthKey)
+        isOnOrBefore(order.materialReceiptDate, toDate) &&
+        (toDate
+          ? isMissingOrAfter(order.billPreparationDate, toDate)
+          : !hasFilledString(order.billPreparationDate)) &&
+        (toDate ? isMissingOrAfter(order.paymentDate, toDate) : !hasFilledString(order.paymentDate)) &&
+        rangeMatches(cashOutgoDate)
       );
     }
     if (parsed.mode === "billPreparation") {
       return (
         hasFilledString(order.materialReceiptDate) &&
         hasFilledString(order.billPreparationDate) &&
-        !hasFilledString(order.paymentDate) &&
-        monthMatches(order.billPreparationDate, parsed.monthKey)
+        isOnOrBefore(order.materialReceiptDate, toDate) &&
+        isOnOrBefore(order.billPreparationDate, toDate) &&
+        (toDate
+          ? isMissingOrAfter(order.billSentForPaymentDate, toDate)
+          : !hasFilledString(order.billSentForPaymentDate)) &&
+        (toDate ? isMissingOrAfter(order.paymentDate, toDate) : !hasFilledString(order.paymentDate)) &&
+        rangeMatches(order.billPreparationDate)
       );
     }
     if (parsed.mode === "billSent") {
       return (
         hasFilledString(order.billSentForPaymentDate) &&
-        !hasFilledString(order.paymentDate) &&
-        monthMatches(order.billSentForPaymentDate, parsed.monthKey)
+        isOnOrBefore(order.billSentForPaymentDate, toDate) &&
+        (toDate ? isMissingOrAfter(order.paymentDate, toDate) : !hasFilledString(order.paymentDate)) &&
+        rangeMatches(order.billSentForPaymentDate)
       );
     }
     return (
       hasFilledString(order.paymentDate) &&
       !(isYes(order.soCancelled) && hasFilledString(order.soCancelledDate)) &&
-      monthMatches(order.paymentDate, parsed.monthKey)
+      rangeMatches(order.paymentDate)
     );
   });
 }
@@ -1171,6 +1265,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
+  if (filter === "irPreparationPending") return isIrPreparationPending(file);
+  if (filter === "irReceiptPending") return isIrReceiptPending(file);
+  if (filter === "irCompleted") return isIrCompleted(file);
   if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
