@@ -1,0 +1,108 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="system-architecture" name="System Architecture">
+    <mxGraphModel dx="1200" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="File History System Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=26;fontStyle=1;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="390" y="30" width="620" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="client-layer" value="Client Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;dashed=1;fontSize=16;fontStyle=1;fontColor=#1E3A8A;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="70" y="120" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend-layer" value="Frontend Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;dashed=1;fontSize=16;fontStyle=1;fontColor=#14532D;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="360" y="120" width="320" height="460" as="geometry" />
+        </mxCell>
+        <mxCell id="backend-layer" value="Backend Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#EA580C;dashed=1;fontSize=16;fontStyle=1;fontColor=#7C2D12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="740" y="120" width="360" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="data-layer" value="Data Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#9333EA;dashed=1;fontSize=16;fontStyle=1;fontColor=#581C87;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="120" width="200" height="560" as="geometry" />
+        </mxCell>
+
+        <mxCell id="browser" value="User Browser / LAN Client" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontSize=14;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="105" y="210" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="react-vite" value="React + Vite Frontend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=14;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="420" y="165" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="router" value="TanStack Router&#xa;Route-based pages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="420" y="255" width="200" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="ui" value="UI Components&#xa;Radix UI, Tailwind CSS, lucide-react" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="420" y="350" width="200" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend-client" value="Frontend API Client&#xa;src/lib/files-store.ts&#xa;fetch credentials included" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="420" y="455" width="200" height="85" as="geometry" />
+        </mxCell>
+
+        <mxCell id="express" value="Express.js Backend&#xa;backend/src/server.ts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FED7AA;strokeColor=#EA580C;fontSize=14;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="815" y="155" width="210" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="middleware" value="Middleware&#xa;CORS, JSON parser, attachAuthUser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#FB923C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="815" y="250" width="210" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="auth" value="Authentication&#xa;/api/auth&#xa;cookie-backed sessions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#EA580C;fontSize=12;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="780" y="355" width="140" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="routes" value="API Routes&#xa;files, divisions, users, settings&#xa;messages, reports, dashboard&#xa;exports, live, indentors, health" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#FB923C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="950" y="355" width="120" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="utils" value="Backend Utilities&#xa;auth scope, search, summaries, exports, cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#FB923C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="780" y="480" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pg-pool" value="PostgreSQL Pool&#xa;pg Pool&#xa;max 30 connections" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#FB923C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="950" y="535" width="120" height="85" as="geometry" />
+        </mxCell>
+
+        <mxCell id="postgres" value="PostgreSQL Database" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#E9D5FF;strokeColor=#9333EA;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1195" y="230" width="130" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="domain-data" value="Domain Data&#xa;files, divisions, users&#xa;messages, supply orders&#xa;settings, financial years" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#A855F7;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="370" width="140" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-browser-react" value="loads app" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#2563EB;fontSize=12;" edge="1" parent="1" source="browser" target="react-vite">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-react-router" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;" edge="1" parent="1" source="react-vite" target="router">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-router-ui" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;" edge="1" parent="1" source="router" target="ui">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-ui-client" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;" edge="1" parent="1" source="ui" target="frontend-client">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-express" value="REST API /api/*" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#EA580C;fontSize=12;" edge="1" parent="1" source="frontend-client" target="express">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-express-middleware" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="express" target="middleware">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-middleware-auth" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="middleware" target="auth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-middleware-routes" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="middleware" target="routes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-routes-utils" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="routes" target="utils">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-routes-pool" value="SQL queries" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;fontSize=12;" edge="1" parent="1" source="routes" target="pg-pool">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-auth-pool" value="sessions, roles, scopes" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;fontSize=12;" edge="1" parent="1" source="auth" target="pg-pool">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-pool-postgres" value="DATABASE_URL" style="endArrow=block;html=1;rounded=0;strokeWidth=2;strokeColor=#9333EA;fontSize=12;" edge="1" parent="1" source="pg-pool" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-postgres-data" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#9333EA;" edge="1" parent="1" source="postgres" target="domain-data">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,126 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="entity-relationship-diagram" name="Entity Relationship Diagram">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1150" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="File History Entity Relationship Diagram" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=26;fontStyle=1;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="510" y="30" width="680" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="app_users" value="app_users&#xa;PK id uuid&#xa;name text&#xa;UK username text&#xa;role text&#xa;password_hash text&#xa;is_active boolean" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="120" width="200" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="divisions" value="divisions&#xa;PK id uuid&#xa;UK name text&#xa;UK code text&#xa;allocated_capital numeric&#xa;allocated_revenue numeric&#xa;viewer_password_hash text&#xa;messages_enabled boolean" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="360" width="220" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="user_divisions" value="user_divisions&#xa;PK/FK user_id uuid&#xa;PK/FK division_id uuid&#xa;many-to-many access map" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="370" y="245" width="210" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="auth_sessions" value="auth_sessions&#xa;PK id uuid&#xa;UK token_hash text&#xa;FK user_id uuid&#xa;FK viewer_division_id uuid&#xa;created_at timestamptz&#xa;expires_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="370" y="95" width="220" height="135" as="geometry" />
+        </mxCell>
+
+        <mxCell id="files" value="files&#xa;PK id uuid&#xa;FK division_id uuid&#xa;FK archived_by uuid&#xa;unique_code text&#xa;file_no text&#xa;year text&#xa;value_capital numeric&#xa;value_revenue numeric&#xa;current_milestone text&#xa;archived_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="680" y="330" width="230" height="215" as="geometry" />
+        </mxCell>
+        <mxCell id="file_firms" value="file_firms&#xa;PK id uuid&#xa;FK file_id uuid&#xa;firm_type text&#xa;firm_name text&#xa;city text&#xa;email_id text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="990" y="120" width="200" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="supply_orders" value="supply_orders&#xa;PK id uuid&#xa;FK file_id uuid&#xa;so_no text&#xa;gem_so_no text&#xa;so_date date&#xa;firm text&#xa;payment_date date" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="990" y="290" width="200" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="file_remarks" value="file_remarks&#xa;PK id uuid&#xa;FK file_id uuid&#xa;section text&#xa;text text&#xa;created_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="990" y="475" width="200" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="file_completed_milestones" value="file_completed_milestones&#xa;PK/FK file_id uuid&#xa;PK milestone text&#xa;completed_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="990" y="635" width="220" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="file_year_activity" value="file_year_activity&#xa;PK/FK file_id uuid&#xa;PK financial_year text&#xa;status text&#xa;created_at timestamptz&#xa;updated_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="660" y="625" width="230" height="125" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file_messages" value="file_messages&#xa;PK id uuid&#xa;FK file_id uuid&#xa;FK division_id uuid&#xa;FK created_by_user_id uuid&#xa;FK created_by_viewer_division_id uuid&#xa;FK resolved_by uuid&#xa;status text&#xa;message text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#EA580C;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="680" y="810" width="250" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="file_message_replies" value="file_message_replies&#xa;PK id uuid&#xa;FK message_id uuid&#xa;FK created_by_user_id uuid&#xa;body text&#xa;created_by_name text&#xa;created_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#EA580C;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="830" width="230" height="135" as="geometry" />
+        </mxCell>
+
+        <mxCell id="app_settings" value="app_settings&#xa;PK id boolean&#xa;FK active_user_id uuid&#xa;financial_year text&#xa;selected_year text&#xa;theme text&#xa;milestones jsonb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#9333EA;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="650" width="220" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="financial_years" value="financial_years&#xa;PK label text&#xa;created_at timestamptz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#9333EA;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="385" y="655" width="190" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="division_year_allocations" value="division_year_allocations&#xa;PK id uuid&#xa;FK division_id uuid&#xa;financial_year text&#xa;allocated_capital numeric&#xa;allocated_revenue numeric&#xa;active boolean" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#9333EA;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="370" y="415" width="230" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="indentors" value="indentors&#xa;PK id uuid&#xa;FK division_id uuid&#xa;FK created_by uuid&#xa;name text&#xa;sf_id text&#xa;designation text&#xa;email text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAF5FF;strokeColor=#9333EA;fontSize=12;fontStyle=1;align=left;spacingLeft=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="860" width="220" height="145" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-user-userdiv" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#2563EB;fontSize=11;" edge="1" parent="1" source="app_users" target="user_divisions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-userdiv" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#2563EB;fontSize=11;" edge="1" parent="1" source="divisions" target="user_divisions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-session" value="1 to many" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#2563EB;fontSize=11;" edge="1" parent="1" source="app_users" target="auth_sessions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-session" value="viewer sessions" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#2563EB;fontSize=11;" edge="1" parent="1" source="divisions" target="auth_sessions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-files" value="1 to many" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="divisions" target="files">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-archived" value="archived_by" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="app_users" target="files">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-firms" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="files" target="file_firms">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-so" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="files" target="supply_orders">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-remarks" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="files" target="file_remarks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-milestones" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="files" target="file_completed_milestones">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-year" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#16A34A;fontSize=11;" edge="1" parent="1" source="files" target="file_year_activity">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-files-messages" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#EA580C;fontSize=11;" edge="1" parent="1" source="files" target="file_messages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-message-replies" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#EA580C;fontSize=11;" edge="1" parent="1" source="file_messages" target="file_message_replies">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-messages" value="division scope" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#EA580C;fontSize=11;" edge="1" parent="1" source="divisions" target="file_messages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-messages" value="created/resolved by" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#EA580C;fontSize=11;" edge="1" parent="1" source="app_users" target="file_messages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-replies" value="creates" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#EA580C;fontSize=11;" edge="1" parent="1" source="app_users" target="file_message_replies">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-settings" value="active_user" style="endArrow=ERzeroToOne;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#9333EA;fontSize=11;" edge="1" parent="1" source="app_users" target="app_settings">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-alloc" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#9333EA;fontSize=11;" edge="1" parent="1" source="divisions" target="division_year_allocations">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-div-indentors" value="1 to many" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=0;strokeColor=#9333EA;fontSize=11;" edge="1" parent="1" source="divisions" target="indentors">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-user-indentors" value="created_by" style="endArrow=ERmany;startArrow=ERzeroToOne;html=1;rounded=0;strokeColor=#9333EA;fontSize=11;" edge="1" parent="1" source="app_users" target="indentors">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

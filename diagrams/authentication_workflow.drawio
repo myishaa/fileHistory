@@ -1,0 +1,112 @@
+<mxfile host="app.diagrams.net" modified="2026-06-27T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="authentication-workflow" name="Authentication Workflow">
+    <mxGraphModel dx="1200" dy="760" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="Authentication Workflow" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=26;fontStyle=1;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="450" y="30" width="500" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="user" value="User" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;fontSize=14;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="125" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="browser" value="Browser&#xa;stores httpOnly cookie" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#2563EB;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="290" y="125" width="170" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend" value="React Frontend&#xa;login form + API client" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=12;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="530" y="125" width="180" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="Express API&#xa;/api/auth/login" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FED7AA;strokeColor=#EA580C;fontSize=12;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="780" y="125" width="170" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="middleware" value="Auth Middleware&#xa;attachAuthUser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEDD5;strokeColor=#EA580C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="125" width="170" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="postgres" value="PostgreSQL&#xa;app_users, divisions, auth_sessions" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#E9D5FF;strokeColor=#9333EA;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="385" width="150" height="85" as="geometry" />
+        </mxCell>
+
+        <mxCell id="submit" value="1. Submit username and password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#60A5FA;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="115" y="260" width="210" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="login-request" value="2. POST /api/auth/login&#xa;credentials included" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#22C55E;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="390" y="260" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="verify" value="3. Verify password&#xa;PostgreSQL crypt($2, password_hash)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9333EA;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="690" y="260" width="240" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="decision" value="Valid credentials?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="390" width="120" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="invalid" value="Invalid login path&#xa;401 Invalid username or password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEE2E2;strokeColor=#DC2626;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="570" y="560" width="210" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="token" value="4. Generate session token&#xa;crypto.randomBytes(32).toString('base64url')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EA580C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="850" y="555" width="250" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="hash-store" value="5. Store SHA-256 token hash&#xa;insert into auth_sessions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9333EA;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="850" y="665" width="250" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="cookie" value="6. Set HTTP-only cookie&#xa;recordkeeper_session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="535" y="665" width="220" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="scope" value="7. Load role and division scope&#xa;auth_sessions + app_users + user_divisions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EA580C;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="245" y="665" width="250" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="authorized" value="8. Frontend receives authenticated user&#xa;role: admin, sub_admin, editor, viewer, division_user" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;fontSize=12;fontStyle=1;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="245" y="785" width="410" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-user-browser" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#2563EB;" edge="1" parent="1" source="user" target="browser">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-browser-front" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;" edge="1" parent="1" source="browser" target="frontend">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-front-api" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="frontend" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-api-middleware" value="subsequent requests" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;fontSize=12;" edge="1" parent="1" source="api" target="middleware">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-submit-login" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#2563EB;" edge="1" parent="1" source="submit" target="login-request">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-login-verify" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="login-request" target="verify">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-verify-db" value="query app_users" style="endArrow=block;html=1;rounded=0;strokeColor=#9333EA;fontSize=12;" edge="1" parent="1" source="verify" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-verify-decision" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#D97706;" edge="1" parent="1" source="verify" target="decision">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-invalid" value="No" style="endArrow=block;html=1;rounded=0;strokeColor=#DC2626;fontSize=12;fontStyle=1;" edge="1" parent="1" source="decision" target="invalid">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-valid-token" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;fontSize=12;fontStyle=1;" edge="1" parent="1" source="decision" target="token">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-token-hash" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="token" target="hash-store">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-hash-db" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#9333EA;" edge="1" parent="1" source="hash-store" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-hash-cookie" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#2563EB;" edge="1" parent="1" source="hash-store" target="cookie">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-cookie-scope" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#EA580C;" edge="1" parent="1" source="cookie" target="scope">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-scope-db" value="loadAuthUser" style="endArrow=block;html=1;rounded=0;strokeColor=#9333EA;fontSize=12;" edge="1" parent="1" source="scope" target="postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-scope-authorized" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#16A34A;" edge="1" parent="1" source="scope" target="authorized">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
