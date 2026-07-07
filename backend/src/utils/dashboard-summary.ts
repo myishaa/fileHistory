@@ -248,9 +248,9 @@ function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
         sum +
         (isCancelledFile(file)
           ? 0
-          : hasAmount(file.soValueCapital)
-            ? 0
-            : (getInrAmount(file.valueCapital, file) ?? 0)),
+          : hasFilledField(file, "imms") && getFileCommittedCapitalValue(file) <= 0
+            ? (getInrAmount(file.valueCapital, file) ?? 0)
+            : 0),
       0,
     ),
     bookedRevenue: files.reduce(
@@ -258,9 +258,9 @@ function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
         sum +
         (isCancelledFile(file)
           ? 0
-          : hasAmount(file.soValueRevenue)
-            ? 0
-            : (getInrAmount(file.valueRevenue, file) ?? 0)),
+          : hasFilledField(file, "imms") && getFileCommittedRevenueValue(file) <= 0
+            ? (getInrAmount(file.valueRevenue, file) ?? 0)
+            : 0),
       0,
     ),
     projectedCapital: files.reduce(
@@ -281,12 +281,12 @@ function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
     ),
     spentCapital: files.reduce(
       (sum, file) =>
-        sum + (isCancelledFile(file) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0)),
+        sum + (isSoCancelledFile(file) ? 0 : getFileCommittedCapitalValue(file)),
       0,
     ),
     spentRevenue: files.reduce(
       (sum, file) =>
-        sum + (isCancelledFile(file) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0)),
+        sum + (isSoCancelledFile(file) ? 0 : getFileCommittedRevenueValue(file)),
       0,
     ),
   };
@@ -606,8 +606,8 @@ function getDivisionValueRanking(files: FileRecord[], divisions: Division[]) {
     const cancelled = isCancelledFile(file);
     const demandCapital = cancelled ? 0 : (getInrAmount(file.valueCapital, file) ?? 0);
     const demandRevenue = cancelled ? 0 : (getInrAmount(file.valueRevenue, file) ?? 0);
-    const committedCapital = cancelled ? 0 : getFileCommittedCapitalValue(file);
-    const committedRevenue = cancelled ? 0 : getFileCommittedRevenueValue(file);
+    const committedCapital = isSoCancelledFile(file) ? 0 : getFileCommittedCapitalValue(file);
+    const committedRevenue = isSoCancelledFile(file) ? 0 : getFileCommittedRevenueValue(file);
     totals.set(name, {
       allocatedCapital: current.allocatedCapital,
       allocatedRevenue: current.allocatedRevenue,
@@ -615,8 +615,12 @@ function getDivisionValueRanking(files: FileRecord[], divisions: Division[]) {
         current.intendedCapital + (!hasFilledField(file, "imms") ? demandCapital : 0),
       intendedRevenue:
         current.intendedRevenue + (!hasFilledField(file, "imms") ? demandRevenue : 0),
-      bookedCapital: current.bookedCapital + (committedCapital > 0 ? 0 : demandCapital),
-      bookedRevenue: current.bookedRevenue + (committedRevenue > 0 ? 0 : demandRevenue),
+      bookedCapital:
+        current.bookedCapital +
+        (!cancelled && hasFilledField(file, "imms") && committedCapital <= 0 ? demandCapital : 0),
+      bookedRevenue:
+        current.bookedRevenue +
+        (!cancelled && hasFilledField(file, "imms") && committedRevenue <= 0 ? demandRevenue : 0),
       committedCapital: current.committedCapital + committedCapital,
       committedRevenue: current.committedRevenue + committedRevenue,
     });
@@ -1116,10 +1120,6 @@ function hasFilledString(value: string | undefined) {
   return Boolean(value?.trim());
 }
 
-function hasAmount(value: string | undefined) {
-  return parseAmount(value) !== undefined;
-}
-
 function parseAmount(value: string | undefined) {
   const cleaned = (value ?? "").replace(/,/g, "").trim();
   if (!cleaned) return undefined;
@@ -1144,21 +1144,33 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = file.supplyOrders?.filter((order) =>
-    Object.values(order).some((value) => Boolean(String(value ?? "").trim())),
+  const hasOrders = Boolean(file.supplyOrders?.length);
+  const orders = file.supplyOrders?.filter(
+    (order) =>
+      !isYes(order.soCancelled) &&
+      Object.values(order).some((value) => Boolean(String(value ?? "").trim())),
   );
-  if (orders?.length)
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
-  return getInrAmount(file.soValueCapital, file) ?? 0;
+  if (hasOrders)
+    return (
+      orders?.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0) ??
+      0
+    );
+  return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0);
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = file.supplyOrders?.filter((order) =>
-    Object.values(order).some((value) => Boolean(String(value ?? "").trim())),
+  const hasOrders = Boolean(file.supplyOrders?.length);
+  const orders = file.supplyOrders?.filter(
+    (order) =>
+      !isYes(order.soCancelled) &&
+      Object.values(order).some((value) => Boolean(String(value ?? "").trim())),
   );
-  if (orders?.length)
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
-  return getInrAmount(file.soValueRevenue, file) ?? 0;
+  if (hasOrders)
+    return (
+      orders?.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0) ??
+      0
+    );
+  return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0);
 }
 
 function getSupplyOrderTotalValue(file: FileRecord, order: SupplyOrderDetail) {
@@ -1403,6 +1415,10 @@ function isCancelledFile(file: FileRecord) {
     isYes(file.soCancelled) ||
     fileSupplyOrders(file).some((order) => isYes(order.demandCancelled) || isYes(order.soCancelled))
   );
+}
+
+function isSoCancelledFile(file: FileRecord) {
+  return isYes(file.soCancelled);
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {

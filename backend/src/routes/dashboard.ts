@@ -611,6 +611,10 @@ function isCancelledExpression() {
     ))`;
 }
 
+function isSoCancelledExpression() {
+  return isYesExpression("f.so_cancelled");
+}
+
 function hasFilledExpression(column: string) {
   return `coalesce(${column}::text, '') <> ''`;
 }
@@ -879,19 +883,19 @@ async function loadFinanceTotals({
   const cancelled = isCancelledExpression();
   const valueCapital = inrAmountExpression("f.value_capital");
   const valueRevenue = inrAmountExpression("f.value_revenue");
-  const soValueCapital = inrAmountExpression("f.so_value_capital");
-  const soValueRevenue = inrAmountExpression("f.so_value_revenue");
+  const committedCapital = committedValueExpression("f.so_value_capital", "so_value_capital");
+  const committedRevenue = committedValueExpression("f.so_value_revenue", "so_value_revenue");
   const result = await pool.query<Record<string, string | number>>(
     `select
        coalesce(sum(case
          when ${cancelled} then 0
-         when f.so_value_capital is not null then 0
-         else ${valueCapital}
+         when ${hasFilledExpression("f.imms")} and ${committedCapital} <= 0 then ${valueCapital}
+         else 0
        end), 0) as booked_capital,
        coalesce(sum(case
          when ${cancelled} then 0
-         when f.so_value_revenue is not null then 0
-         else ${valueRevenue}
+         when ${hasFilledExpression("f.imms")} and ${committedRevenue} <= 0 then ${valueRevenue}
+         else 0
        end), 0) as booked_revenue,
        coalesce(sum(case
          when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${valueCapital}
@@ -901,8 +905,8 @@ async function loadFinanceTotals({
          when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${valueRevenue}
          else 0
        end), 0) as projected_revenue,
-       coalesce(sum(case when ${cancelled} then 0 else ${soValueCapital} end), 0) as spent_capital,
-       coalesce(sum(case when ${cancelled} then 0 else ${soValueRevenue} end), 0) as spent_revenue
+       coalesce(sum(${committedCapital}), 0) as spent_capital,
+       coalesce(sum(${committedRevenue}), 0) as spent_revenue
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, extraConditions)}`,
@@ -973,7 +977,7 @@ function childSupplyOrderValueSumExpression(column: "so_value_capital" | "so_val
   return `coalesce((
     select sum(${inrAmountExpression(`so_value.${column}`)})
     from supply_orders so_value
-    where so_value.file_id = f.id
+    where so_value.file_id = f.id and not ${isYesExpression("so_value.so_cancelled")}
   ), 0)`;
 }
 
@@ -982,6 +986,7 @@ function committedValueExpression(
   supplyOrderColumn: "so_value_capital" | "so_value_revenue",
 ) {
   return `case
+    when ${isSoCancelledExpression()} then 0
     when ${supplyOrderRowExists()} then ${childSupplyOrderValueSumExpression(supplyOrderColumn)}
     else ${inrAmountExpression(fileColumn)}
   end`;
@@ -1422,13 +1427,13 @@ async function loadAnalyticsSqlSlice({
          as intended_capital,
        coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${demandRevenue} else 0 end), 0)
          as intended_revenue,
-       coalesce(sum(case when not ${cancelled} and ${committedCapital} <= 0 then ${demandCapital} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedCapital} <= 0 then ${demandCapital} else 0 end), 0)
          as booked_capital,
-       coalesce(sum(case when not ${cancelled} and ${committedRevenue} <= 0 then ${demandRevenue} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedRevenue} <= 0 then ${demandRevenue} else 0 end), 0)
          as booked_revenue,
-       coalesce(sum(case when not ${cancelled} then ${committedCapital} else 0 end), 0)
+       coalesce(sum(${committedCapital}), 0)
          as committed_capital,
-       coalesce(sum(case when not ${cancelled} then ${committedRevenue} else 0 end), 0)
+       coalesce(sum(${committedRevenue}), 0)
          as committed_revenue
      from files f
      left join divisions d on d.id = f.division_id
