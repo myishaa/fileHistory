@@ -33,6 +33,9 @@ type SettingsRow = {
   theme_tint: AppThemeTint;
   deletion_password: string;
   tcec_committees: unknown;
+  firm_types: unknown;
+  file_types: unknown;
+  modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
   mmg_live_enabled: boolean;
@@ -179,6 +182,13 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     themeTint: row.theme_tint,
     deletionPassword: row.deletion_password,
     tcecCommittees: await loadTcecCommittees(row.selected_year, row.tcec_committees),
+    firmTypes: fromDbJsonArray(row.firm_types).filter(
+      (firmType): firmType is string => typeof firmType === "string",
+    ),
+    fileTypes: fromDbJsonArray(row.file_types).filter(
+      (fileType): fileType is string => typeof fileType === "string",
+    ),
+    modes: fromDbJsonArray(row.modes).filter((mode): mode is string => typeof mode === "string"),
     valueThresholdLevels: await loadValueThresholdLevels(row.selected_year),
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: [...globalPresets, ...personalPresets],
@@ -271,7 +281,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
   return getCached(key, cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
+              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, active_user_id
        from app_settings
        where id = true`,
@@ -460,6 +470,20 @@ settingsRouter.patch(
     }
     if ("milestones" in body)
       addField("milestones", readArray(body.milestones, "milestones"), "::jsonb");
+    if ("firmTypes" in body)
+      addField(
+        "firm_types",
+        JSON.stringify(readStringArray(body.firmTypes, "firmTypes")),
+        "::jsonb",
+      );
+    if ("fileTypes" in body)
+      addField(
+        "file_types",
+        JSON.stringify(readStringArray(body.fileTypes, "fileTypes")),
+        "::jsonb",
+      );
+    if ("modes" in body)
+      addField("modes", JSON.stringify(readStringArray(body.modes, "modes")), "::jsonb");
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
     if ("mmgLiveOptions" in body)
       addField(
@@ -508,6 +532,9 @@ settingsRouter.patch(
       !fields.length &&
       !("tcecCommittees" in body) &&
       !("valueThresholdLevels" in body) &&
+      !("firmTypes" in body) &&
+      !("fileTypes" in body) &&
+      !("modes" in body) &&
       !("tableFieldPresets" in body) &&
       !("liveStatusLockedFields" in body) &&
       !("mmgSummaryFields" in body)

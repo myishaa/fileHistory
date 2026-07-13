@@ -63,7 +63,9 @@ export function YearSetupPanel() {
   const [splitIndentorTotal, setSplitIndentorTotal] = useState(0);
   const [splitIndentorSearch, setSplitIndentorSearch] = useState("");
   const [splitIndentorPage, setSplitIndentorPage] = useState(1);
-  const [selectedSplitIndentorNames, setSelectedSplitIndentorNames] = useState<Record<string, string>>({});
+  const [selectedSplitIndentorNames, setSelectedSplitIndentorNames] = useState<
+    Record<string, string>
+  >({});
   const [splitIndentorIds, setSplitIndentorIds] = useState<string[]>([]);
   const [splitTargetId, setSplitTargetId] = useState("");
   const [splitCapital, setSplitCapital] = useState("");
@@ -83,11 +85,7 @@ export function YearSetupPanel() {
     () =>
       Array.from(
         new Set(
-          [
-            settings.financialYear,
-            setupYear,
-            ...settings.financialYears,
-          ]
+          [settings.financialYear, setupYear, ...settings.financialYears]
             .map((year) => year?.trim())
             .filter((year): year is string => Boolean(year) && !isAllActiveFilesYear(year)),
         ),
@@ -211,7 +209,7 @@ export function YearSetupPanel() {
         isFileVisibleForYear(file, setupYear) &&
         file.division === splitSourceDivision.name &&
         Boolean(file.indentor) &&
-        splitSelectedIndentorNames.includes(file.indentor),
+        splitSelectedIndentorNames.includes(file.indentor ?? ""),
     ).length;
   }, [files, setupYear, splitSelectedIndentorNames, splitSourceDivision]);
   const splitSourceCapital = parseAmount(splitSourceDivision?.allocatedCapital) ?? 0;
@@ -359,10 +357,10 @@ export function YearSetupPanel() {
         effectiveDate: splitEffectiveDate || undefined,
         notes: splitNotes.trim() || undefined,
         deactivateSourceDivision: deactivateSplitSource,
-	      });
-	      setSplitIndentorIds([]);
-	      setSelectedSplitIndentorNames({});
-	      setSplitTargetId("");
+      });
+      setSplitIndentorIds([]);
+      setSelectedSplitIndentorNames({});
+      setSplitTargetId("");
       setSplitCapital("");
       setSplitRevenue("");
       setSplitNotes("");
@@ -561,129 +559,129 @@ export function YearSetupPanel() {
           </div>
         </>
       ) : activeSubview === "merge" ? (
-      <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-semibold">Merge divisions for {setupYearLabel}</h2>
-            <p className="text-xs text-muted-foreground">
-              Active files from selected divisions will continue under the merged division.
-            </p>
+        <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold">Merge divisions for {setupYearLabel}</h2>
+              <p className="text-xs text-muted-foreground">
+                Active files from selected divisions will continue under the merged division.
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground">
+              <GitMerge className="size-4" />
+              {selectedSourceFileCount} active files
+            </div>
           </div>
-          <div className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground">
-            <GitMerge className="size-4" />
-            {selectedSourceFileCount} active files
-          </div>
-        </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-          <div>
-            <div className="mb-2 text-xs font-medium text-muted-foreground">Source divisions</div>
-            <div className="grid max-h-52 gap-2 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2">
-              {activeDivisions.map((division) => (
-                <label
-                  key={division.id}
-                  className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
-                >
+          <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+            <div>
+              <div className="mb-2 text-xs font-medium text-muted-foreground">Source divisions</div>
+              <div className="grid max-h-52 gap-2 overflow-auto rounded-md border border-border bg-background p-2 sm:grid-cols-2">
+                {activeDivisions.map((division) => (
+                  <label
+                    key={division.id}
+                    className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={mergeSourceIds.includes(division.id)}
+                      onChange={(event) => toggleMergeSource(division.id, event.target.checked)}
+                      className="size-4 rounded border-input"
+                    />
+                    <span className="min-w-0 flex-1 truncate">{division.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {currentFilesByDivision.get(division.name) ?? 0}
+                    </span>
+                  </label>
+                ))}
+                {!activeDivisions.length && (
+                  <div className="px-2 py-3 text-sm text-muted-foreground">
+                    No active divisions in this year.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+                    Existing merged division
+                  </div>
+                  <select
+                    value={mergeTargetId}
+                    onChange={(event) => setMergeTargetId(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                  >
+                    <option value="">Select target</option>
+                    {targetOptions.map((division) => (
+                      <option key={division.id} value={division.id}>
+                        {division.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+                    Effective date
+                  </div>
+                  <input
+                    type="date"
+                    value={mergeEffectiveDate}
+                    onChange={(event) => setMergeEffectiveDate(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                  />
+                </label>
+              </div>
+
+              <textarea
+                value={mergeNotes}
+                onChange={(event) => setMergeNotes(event.target.value)}
+                placeholder="Notes"
+                rows={3}
+                className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              />
+
+              <div className="flex flex-wrap gap-2">
+                <label className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
                   <input
                     type="checkbox"
-                    checked={mergeSourceIds.includes(division.id)}
-                    onChange={(event) => toggleMergeSource(division.id, event.target.checked)}
+                    checked={moveActiveFiles}
+                    onChange={(event) => setMoveActiveFiles(event.target.checked)}
                     className="size-4 rounded border-input"
                   />
-                  <span className="min-w-0 flex-1 truncate">{division.name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {currentFilesByDivision.get(division.name) ?? 0}
-                  </span>
+                  Move active files
                 </label>
-              ))}
-              {!activeDivisions.length && (
-                <div className="px-2 py-3 text-sm text-muted-foreground">
-                  No active divisions in this year.
-                </div>
-              )}
-            </div>
-          </div>
+                <label className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={deactivateSourceDivisions}
+                    onChange={(event) => setDeactivateSourceDivisions(event.target.checked)}
+                    className="size-4 rounded border-input"
+                  />
+                  Deactivate source divisions
+                </label>
+              </div>
 
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="block">
-                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-                  Existing merged division
-                </div>
-                <select
-                  value={mergeTargetId}
-                  onChange={(event) => setMergeTargetId(event.target.value)}
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs text-muted-foreground">{mergeMessage}</div>
+                <button
+                  type="button"
+                  onClick={() => void mergeDivisions()}
+                  disabled={mergeSaving}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  <option value="">Select target</option>
-                  {targetOptions.map((division) => (
-                    <option key={division.id} value={division.id}>
-                      {division.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-                  Effective date
-                </div>
-                <input
-                  type="date"
-                  value={mergeEffectiveDate}
-                  onChange={(event) => setMergeEffectiveDate(event.target.value)}
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                />
-              </label>
-            </div>
-
-            <textarea
-              value={mergeNotes}
-              onChange={(event) => setMergeNotes(event.target.value)}
-              placeholder="Notes"
-              rows={3}
-              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-            />
-
-            <div className="flex flex-wrap gap-2">
-              <label className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={moveActiveFiles}
-                  onChange={(event) => setMoveActiveFiles(event.target.checked)}
-                  className="size-4 rounded border-input"
-                />
-                Move active files
-              </label>
-              <label className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={deactivateSourceDivisions}
-                  onChange={(event) => setDeactivateSourceDivisions(event.target.checked)}
-                  className="size-4 rounded border-input"
-                />
-                Deactivate source divisions
-              </label>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-xs text-muted-foreground">{mergeMessage}</div>
-              <button
-                type="button"
-                onClick={() => void mergeDivisions()}
-                disabled={mergeSaving}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {mergeSaving ? (
-                  <RotateCw className="size-4 animate-spin" />
-                ) : (
-                  <GitMerge className="size-4" />
-                )}
-                Merge
-              </button>
+                  {mergeSaving ? (
+                    <RotateCw className="size-4 animate-spin" />
+                  ) : (
+                    <GitMerge className="size-4" />
+                  )}
+                  Merge
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
       ) : (
         <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -710,15 +708,15 @@ export function YearSetupPanel() {
                 </div>
                 <select
                   value={splitSourceDivisionId}
-	                  onChange={(event) => {
-	                    setSplitSourceDivisionId(event.target.value);
-	                    setSplitIndentorIds([]);
-	                    setSelectedSplitIndentorNames({});
-	                    setSplitIndentorPage(1);
-	                    setSplitIndentorSearch("");
-	                    setSplitTargetId("");
-	                    setSplitMessage("");
-	                  }}
+                  onChange={(event) => {
+                    setSplitSourceDivisionId(event.target.value);
+                    setSplitIndentorIds([]);
+                    setSelectedSplitIndentorNames({});
+                    setSplitIndentorPage(1);
+                    setSplitIndentorSearch("");
+                    setSplitTargetId("");
+                    setSplitMessage("");
+                  }}
                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 >
                   <option value="">Select source division</option>
@@ -730,34 +728,32 @@ export function YearSetupPanel() {
                 </select>
               </label>
 
-	              <div>
-	                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-	                  <div className="text-xs font-medium text-muted-foreground">
-	                    Indentors to transfer
-	                  </div>
-	                  <input
-	                    value={splitIndentorSearch}
-	                    onChange={(event) => {
-	                      setSplitIndentorSearch(event.target.value);
-	                      setSplitIndentorPage(1);
-	                    }}
-	                    disabled={!splitSourceDivisionId}
-	                    placeholder="Search indentors"
-	                    className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
-	                  />
-	                </div>
-	                <div className="grid max-h-72 gap-2 overflow-auto rounded-md border border-border bg-background p-2">
-	                  {splitIndentors.map((indentor) => (
-	                    <label
+              <div>
+                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    Indentors to transfer
+                  </div>
+                  <input
+                    value={splitIndentorSearch}
+                    onChange={(event) => {
+                      setSplitIndentorSearch(event.target.value);
+                      setSplitIndentorPage(1);
+                    }}
+                    disabled={!splitSourceDivisionId}
+                    placeholder="Search indentors"
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+                  />
+                </div>
+                <div className="grid max-h-72 gap-2 overflow-auto rounded-md border border-border bg-background p-2">
+                  {splitIndentors.map((indentor) => (
+                    <label
                       key={indentor.id}
                       className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
                     >
                       <input
                         type="checkbox"
                         checked={splitIndentorIds.includes(indentor.id)}
-                        onChange={(event) =>
-                          toggleSplitIndentor(indentor.id, event.target.checked)
-                        }
+                        onChange={(event) => toggleSplitIndentor(indentor.id, event.target.checked)}
                         className="size-4 rounded border-input"
                       />
                       <span className="min-w-0 flex-1">
@@ -772,45 +768,45 @@ export function YearSetupPanel() {
                     <div className="px-2 py-3 text-sm text-muted-foreground">
                       Select a source division first.
                     </div>
-	                  ) : splitIndentors.length === 0 ? (
-	                    <div className="px-2 py-3 text-sm text-muted-foreground">
-	                      No indentors found for this division.
-	                    </div>
-	                  ) : null}
-	                </div>
-	                {splitSourceDivisionId ? (
-	                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-	                    <span>
-	                      Showing {splitIndentors.length} of {splitIndentorTotal}
-	                    </span>
-	                    <div className="flex items-center gap-2">
-	                      <button
-	                        type="button"
-	                        disabled={splitIndentorPage <= 1}
-	                        onClick={() => setSplitIndentorPage((current) => Math.max(1, current - 1))}
-	                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
-	                      >
-	                        Previous
-	                      </button>
-	                      <span>
-	                        Page {splitIndentorPage} of {splitIndentorTotalPages}
-	                      </span>
-	                      <button
-	                        type="button"
-	                        disabled={splitIndentorPage >= splitIndentorTotalPages}
-	                        onClick={() =>
-	                          setSplitIndentorPage((current) =>
-	                            Math.min(splitIndentorTotalPages, current + 1),
-	                          )
-	                        }
-	                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
-	                      >
-	                        Next
-	                      </button>
-	                    </div>
-	                  </div>
-	                ) : null}
-	              </div>
+                  ) : splitIndentors.length === 0 ? (
+                    <div className="px-2 py-3 text-sm text-muted-foreground">
+                      No indentors found for this division.
+                    </div>
+                  ) : null}
+                </div>
+                {splitSourceDivisionId ? (
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>
+                      Showing {splitIndentors.length} of {splitIndentorTotal}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage <= 1}
+                        onClick={() => setSplitIndentorPage((current) => Math.max(1, current - 1))}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span>
+                        Page {splitIndentorPage} of {splitIndentorTotalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage >= splitIndentorTotalPages}
+                        onClick={() =>
+                          setSplitIndentorPage((current) =>
+                            Math.min(splitIndentorTotalPages, current + 1),
+                          )
+                        }
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div className="space-y-3">

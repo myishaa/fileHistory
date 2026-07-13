@@ -5,6 +5,7 @@ import {
   deleteSession,
   getSessionToken,
   loadAuthUser,
+  requireAuth,
   saveUserSession,
   saveViewerSession,
   setSessionCookie,
@@ -16,6 +17,10 @@ export const authRouter = Router();
 
 type LoginUserRow = {
   id: string;
+};
+
+type VerifyPasswordRow = {
+  ok: boolean;
 };
 
 type ViewerDivisionRow = {
@@ -76,6 +81,28 @@ authRouter.get(
   "/me",
   asyncHandler(async (request, response) => {
     response.json({ user: (request as AuthRequest).authUser ?? null });
+  }),
+);
+
+authRouter.post(
+  "/verify-password",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+
+    const body = requireObjectBody(request.body);
+    const password = requireString(body.password, "password");
+    const result = await pool.query<VerifyPasswordRow>(
+      `select password_hash = crypt($2, password_hash) as ok
+       from app_users
+       where id = $1
+         and is_active = true
+         and password_hash is not null`,
+      [user.id, password],
+    );
+
+    if (!result.rows[0]?.ok) throw new HttpError(403, "Incorrect password.");
+    response.json({ ok: true });
   }),
 );
 

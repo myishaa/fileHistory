@@ -120,8 +120,8 @@ function DivisionsPage() {
                         <Pencil className="size-4" />
                       </button>
                       <button
-                        onClick={() => {
-                          if (requestDeletionPassword(`delete division "${d.name}"`)) {
+                        onClick={async () => {
+                          if (await requestDeletionPassword(`delete division "${d.name}"`)) {
                             store.deleteDivision(d.id);
                           }
                         }}

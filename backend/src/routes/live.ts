@@ -20,6 +20,9 @@ type SettingsRow = {
   theme_tint: AppSettings["themeTint"];
   deletion_password: string;
   tcec_committees: unknown;
+  firm_types: unknown;
+  file_types: unknown;
+  modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
   mmg_live_enabled: boolean;
@@ -46,6 +49,9 @@ function mapSettings(row: SettingsRow): AppSettings {
     themeTint: row.theme_tint,
     deletionPassword: row.deletion_password,
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
+    firmTypes: fromDbJsonArray(row.firm_types) as string[],
+    fileTypes: fromDbJsonArray(row.file_types) as string[],
+    modes: fromDbJsonArray(row.modes) as string[],
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: fromDbJsonArray(row.table_field_presets),
@@ -73,7 +79,8 @@ async function loadSettings() {
   return getCached("settings:live", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, milestones, table_field_presets, mmg_live_enabled, mmg_live_options, active_user_id
+              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets,
+              mmg_live_enabled, mmg_live_options, active_user_id
        from app_settings
        where id = true`,
     );
@@ -115,10 +122,7 @@ function getSelectedYearWhere(selectedYear: string) {
         and not exists (
           select 1 from supply_orders so
           where so.file_id = f.id
-            and (
-              lower(coalesce(so.demand_cancelled, '')) = 'yes'
-              or lower(coalesce(so.so_cancelled, '')) = 'yes'
-            )
+            and lower(coalesce(so.so_cancelled, '')) = 'yes'
         )`,
       values: [],
     };

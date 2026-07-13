@@ -859,7 +859,31 @@ divisionsRouter.delete(
     const division = await getDivision(id, await readAllocationYear(request.query.year));
     if (!division?.archivedAt) throw new HttpError(404, "Archived division not found.");
 
-    await pool.query("delete from divisions where id = $1 and archived_at is not null", [id]);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `delete from division_merges
+         where target_division_id = $1
+            or id in (
+              select merge_id
+              from division_merge_sources
+              where source_division_id = $1
+            )`,
+        [id],
+      );
+      const result = await client.query(
+        "delete from divisions where id = $1 and archived_at is not null returning id",
+        [id],
+      );
+      if (!result.rows[0]) throw new HttpError(404, "Archived division not found.");
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
     response.json({ deleted: true, division });
   }),
 );

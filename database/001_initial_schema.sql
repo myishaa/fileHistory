@@ -17,6 +17,7 @@ create table app_users (
   name text not null,
   username text not null unique,
   role text not null check (role in ('admin', 'division_user', 'editor', 'viewer')),
+  allowed_file_categories jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -37,6 +38,9 @@ create table app_settings (
   ),
   deletion_password text not null default '',
   tcec_committees jsonb not null default '[]'::jsonb,
+  firm_types jsonb not null default '["MSE", "MSE (Women)", "Non-MSE"]'::jsonb,
+  file_types jsonb not null default '["Goods & Services", "AMC", "MPC", "CARS", "O&M"]'::jsonb,
+  modes jsonb not null default '["OBM", "PBM", "SBM", "LBM", "LPC"]'::jsonb,
   milestones jsonb not null default '[]'::jsonb,
   table_field_presets jsonb not null default '[]'::jsonb,
   active_user_id uuid references app_users(id) on delete set null,
@@ -66,6 +70,7 @@ create table files (
   exchange_rate numeric(14, 6) default 1,
   gte text,
   tcec text,
+  file_type text not null default 'Goods & Services',
   mode text,
   gem text,
   high_value text,
@@ -126,6 +131,7 @@ create table files (
   payment_mode text,
   bg_return_date date,
   demand_cancelled text,
+  demand_cancelled_date date,
   so_cancelled text,
   so_cancelled_date date,
   current_milestone text,
@@ -153,6 +159,8 @@ create table file_firms (
 create table supply_orders (
   id uuid primary key default gen_random_uuid(),
   file_id uuid not null references files(id) on delete cascade,
+  current_milestone text,
+  completed_milestones jsonb not null default '[]'::jsonb,
   so_no text,
   gem_so_no text,
   so_date date,
@@ -172,10 +180,20 @@ create table supply_orders (
   bill_sent_for_payment_date date,
   payment_date date,
   payment_mode text,
+  actual_payment_capital numeric(14, 2),
+  actual_payment_revenue numeric(14, 2),
   bg_return_date date,
+  firm_type text,
+  firm_type_other text,
   demand_cancelled text,
   so_cancelled text,
   so_cancelled_date date,
+  stage_delivery text,
+  stage_delivery_count integer,
+  stage_payment text,
+  advance_payment text,
+  advance_payment_detail jsonb not null default '{}'::jsonb,
+  stage_deliveries jsonb not null default '[]'::jsonb,
   sort_order integer not null default 0
 );
 
@@ -185,6 +203,14 @@ create table file_remarks (
   section text not null,
   text text not null,
   created_at timestamptz not null default now()
+);
+
+create table file_markers (
+  id uuid primary key default gen_random_uuid(),
+  file_id uuid not null references files(id) on delete cascade,
+  text text not null,
+  created_at timestamptz not null default now(),
+  sort_order integer not null default 0
 );
 
 create or replace function set_updated_at()
@@ -219,6 +245,7 @@ create unique index files_unique_code_key on files(unique_code)
 where unique_code is not null and unique_code <> '';
 create index files_created_at_idx on files(created_at desc);
 create index files_current_milestone_idx on files(current_milestone);
+create index files_file_type_idx on files(file_type);
 create index files_mode_idx on files(mode);
 create index files_payment_pending_idx on files(bill_sent_for_payment_date, payment_date);
 create index files_delivery_pending_idx on files(dp_date, material_receipt_date);
@@ -230,4 +257,7 @@ create index file_firms_file_id_idx on file_firms(file_id);
 create index file_firms_name_trgm_idx on file_firms using gin (firm_name gin_trgm_ops);
 create index supply_orders_file_id_idx on supply_orders(file_id);
 create index supply_orders_firm_trgm_idx on supply_orders using gin (firm gin_trgm_ops);
+create index supply_orders_firm_type_other_trgm_idx on supply_orders using gin (firm_type_other gin_trgm_ops);
 create index file_remarks_file_id_idx on file_remarks(file_id);
+create index file_markers_file_id_idx on file_markers(file_id);
+create index file_markers_text_trgm_idx on file_markers using gin (text gin_trgm_ops);

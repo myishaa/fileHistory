@@ -14,6 +14,9 @@ insert into app_settings (
   theme_tint,
   deletion_password,
   tcec_committees,
+  firm_types,
+  file_types,
+  modes,
   milestones,
   table_field_presets
 )
@@ -24,6 +27,9 @@ values (
   'plain',
   '',
   '[]'::jsonb,
+  '["MSE", "MSE (Women)", "Non-MSE"]'::jsonb,
+  '["Goods & Services", "AMC", "MPC", "CARS", "O&M"]'::jsonb,
+  '["OBM", "PBM", "SBM", "LBM", "LPC"]'::jsonb,
   '[]'::jsonb,
   '[]'::jsonb
 )

@@ -30,6 +30,19 @@ psql "$DATABASE_URL" -f database/022_bill_preparation_date.sql
 psql "$DATABASE_URL" -f database/023_drop_refloat_post_tcec_fields.sql
 psql "$DATABASE_URL" -f database/024_mmg_summary_settings.sql
 psql "$DATABASE_URL" -f database/025_file_ir_flag.sql
+psql "$DATABASE_URL" -f database/026_supply_order_firm_type.sql
+psql "$DATABASE_URL" -f database/027_supply_order_stage_delivery.sql
+psql "$DATABASE_URL" -f database/028_supply_order_milestones.sql
+psql "$DATABASE_URL" -f database/029_file_markers.sql
+psql "$DATABASE_URL" -f database/030_firm_type_settings.sql
+psql "$DATABASE_URL" -f database/031_mode_settings.sql
+psql "$DATABASE_URL" -f database/032_default_firm_types.sql
+psql "$DATABASE_URL" -f database/033_file_type_settings.sql
+psql "$DATABASE_URL" -f database/034_user_file_category_access.sql
+psql "$DATABASE_URL" -f database/035_remove_cars_from_modes.sql
+psql "$DATABASE_URL" -f database/036_add_cars_file_type.sql
+psql "$DATABASE_URL" -f database/037_add_om_file_type.sql
+psql "$DATABASE_URL" -f database/038_demand_cancelled_date.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -84,6 +97,7 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `invitedFirms` and `bidderFirms` -> `file_firms`
 - `supplyOrders` -> `supply_orders`
 - `remarks` -> `file_remarks`
+- `markers` -> `file_markers`
 - `messages` -> `file_messages` and `file_message_replies`
 - `completedMilestones` -> `file_completed_milestones`
 
@@ -107,6 +121,7 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `file_firms`: invited and bidder firm rows.
 - `supply_orders`: multiple supply order rows for a file.
 - `file_remarks`: remarks grouped by section.
+- `file_markers`: file-specific searchable keyword markers.
 - `file_messages`: division viewer queries grouped by file and section.
 - `file_message_replies`: editor/admin replies to file messages.
 - `divisions.messages_enabled`: admin-controlled switch for enabling viewer messages per division.

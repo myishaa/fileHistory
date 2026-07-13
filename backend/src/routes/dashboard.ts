@@ -11,9 +11,15 @@ import type {
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 import {
+  matchesFileCategorySelection,
+  normalizeFileCategories,
+  type FileCategoryKey,
+} from "../utils/file-categories.js";
+import {
   canUseAllDivisions,
   getAuthScopeCacheKey,
   getDivisionScopeCondition,
+  getFileCategoryScopeCondition,
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
@@ -39,12 +45,15 @@ type SettingsRow = {
   theme_tint: AppSettings["themeTint"];
   deletion_password: string;
   tcec_committees: unknown;
+  firm_types: unknown;
+  file_types: unknown;
+  modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
   active_user_id: string | null;
 };
 
-const modeNames = ["OBM", "PBM", "SBM", "LBM", "LPC"];
+const defaultModeNames = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const snapshotAttributeDefinitions = [
   { key: "tcec", column: "f.tcec", label: "TCEC", yesLabel: "TCEC", noLabel: "Non TCEC" },
   { key: "gte", column: "f.gte", label: "GTE", yesLabel: "GTE", noLabel: "Non GTE" },
@@ -171,6 +180,7 @@ const defaultManualMilestones = [
   "Delivery Period",
   "Bank Guarantee",
   "Delivery",
+  "Bill sent for payment",
   "Payment",
 ];
 
@@ -195,6 +205,9 @@ function mapSettings(row: SettingsRow): AppSettings {
     themeTint: row.theme_tint,
     deletionPassword: row.deletion_password,
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
+    firmTypes: fromDbJsonArray(row.firm_types) as string[],
+    fileTypes: fromDbJsonArray(row.file_types) as string[],
+    modes: fromDbJsonArray(row.modes) as string[],
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: fromDbJsonArray(row.table_field_presets),
@@ -244,7 +257,7 @@ async function loadSettings() {
   return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, milestones, table_field_presets, active_user_id
+              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, active_user_id
        from app_settings
        where id = true`,
     );
@@ -310,11 +323,10 @@ function isInactiveFile(
   return (
     isPaymentCompletedFile(file) ||
     isYes(file.demandCancelled) ||
-    isYes(file.soCancelled) ||
+    ((file.supplyOrders?.length ?? 0) === 0 && isYes(file.soCancelled)) ||
     Boolean(
-      file.supplyOrders?.some(
-        (order: SupplyOrderDetail) => isYes(order.demandCancelled) || isYes(order.soCancelled),
-      ),
+      file.supplyOrders?.length &&
+        file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled)),
     )
   );
 }
@@ -351,10 +363,7 @@ function getSelectedYearCondition(selectedYear: string | undefined, values: unkn
       and not exists (
         select 1 from supply_orders so
         where so.file_id = f.id
-          and (
-            lower(coalesce(so.demand_cancelled, '')) = 'yes'
-            or lower(coalesce(so.so_cancelled, '')) = 'yes'
-          )
+          and lower(coalesce(so.so_cancelled, '')) = 'yes'
       ))`;
   }
 
@@ -371,12 +380,14 @@ function getDashboardFileWhereSql({
   selectedYear,
   activeDivision,
   activeAnalyticsDivision,
+  fileCategories,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
   selectedYear: string | undefined;
   activeDivision: string;
   activeAnalyticsDivision: string;
+  fileCategories: FileCategoryKey[];
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
@@ -399,10 +410,34 @@ function getDashboardFileWhereSql({
     }
   }
 
+  conditions.push(getFileCategoryCondition(fileCategories));
+
   return {
     whereSql: conditions.length ? `where ${conditions.join(" and ")}` : "",
     values,
   };
+}
+
+function getFileCategoryCondition(categories: FileCategoryKey[]) {
+  if (categories.length === 0) return "false";
+  const categorySet = new Set(categories);
+  const predicates: string[] = [];
+  if (categorySet.has("goodsServices")) {
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`);
+  }
+  if (categorySet.has("amc")) {
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'amc'`);
+  }
+  if (categorySet.has("mpc")) {
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'mpc'`);
+  }
+  if (categorySet.has("cars")) {
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'cars'`);
+  }
+  if (categorySet.has("om")) {
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'o&m'`);
+  }
+  return predicates.length ? `(${predicates.join(" or ")})` : "false";
 }
 
 function appendDashboardWhereClause(whereSql: string, extraConditions: string[] = []) {
@@ -442,6 +477,8 @@ type FinanceTotals = {
   projectedRevenue: number;
   spentCapital: number;
   spentRevenue: number;
+  paidCapital: number;
+  paidRevenue: number;
 };
 
 type MiscellaneousCounts = {
@@ -535,10 +572,12 @@ async function loadSimpleDashboardCounts({
   whereSql,
   values,
   activeDivision,
+  modes,
 }: {
   whereSql: string;
   values: unknown[];
   activeDivision: string;
+  modes: string[];
 }): Promise<SimpleDashboardCounts> {
   const queryValues = [...values];
   const extraConditions: string[] = [];
@@ -546,10 +585,12 @@ async function loadSimpleDashboardCounts({
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
+  extraConditions.push(`not ${isCancelledExpression()}`);
 
+  const modeNames = getConfiguredModeNames(modes);
   const modeSelects = modeNames.map(
-    (mode) =>
-      `${countFilter(`upper(trim(coalesce(f.mode, ''))) = '${mode}'`)} as mode_${mode.toLowerCase()}`,
+    (mode, index) =>
+      `${countFilter(`upper(trim(coalesce(f.mode, ''))) = ${literalSql(mode)}`)} as mode_${index}`,
   );
   const attributeSelects = snapshotAttributeDefinitions.flatMap((attribute, index) => [
     `${countFilter(isYesExpression(attribute.column))} as attribute_${index}_yes`,
@@ -569,7 +610,7 @@ async function loadSimpleDashboardCounts({
 
   return {
     dashboardFileCount: readCount("dashboard_file_count"),
-    modeCounts: modeNames.map((name) => ({ name, count: readCount(`mode_${name.toLowerCase()}`) })),
+    modeCounts: modeNames.map((name, index) => ({ name, count: readCount(`mode_${index}`) })),
     topSummaryStats: snapshotAttributeDefinitions.map((attribute, index) => ({
       label: attribute.label,
       value: [
@@ -589,6 +630,22 @@ async function loadSimpleDashboardCounts({
   };
 }
 
+function literalSql(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function getConfiguredModeNames(modes: string[] | undefined) {
+  const seen = new Set<string>();
+  return (modes?.length ? modes : defaultModeNames)
+    .map((mode) => mode.trim().toUpperCase())
+    .filter((mode) => {
+      if (!mode) return false;
+      if (seen.has(mode)) return false;
+      seen.add(mode);
+      return true;
+    });
+}
+
 function inrAmountExpression(column: string) {
   return `case
     when ${column} is null then 0
@@ -600,19 +657,21 @@ function inrAmountExpression(column: string) {
 
 function isCancelledExpression() {
   return `(${isYesExpression("f.demand_cancelled")}
-    or ${isYesExpression("f.so_cancelled")}
-    or exists (
-      select 1 from supply_orders so_cancelled
-      where so_cancelled.file_id = f.id
-        and (
-          ${isYesExpression("so_cancelled.demand_cancelled")}
-          or ${isYesExpression("so_cancelled.so_cancelled")}
-        )
-    ))`;
+    or (not ${supplyOrderRowExists()} and ${isYesExpression("f.so_cancelled")})
+    or (${supplyOrderRowExists()} and not exists (
+      select 1 from supply_orders so_active
+      where so_active.file_id = f.id
+        and not ${isYesExpression("so_active.so_cancelled")}
+    )))`;
 }
 
 function isSoCancelledExpression() {
-  return isYesExpression("f.so_cancelled");
+  return `((not ${supplyOrderRowExists()} and ${isYesExpression("f.so_cancelled")})
+    or (${supplyOrderRowExists()} and not exists (
+      select 1 from supply_orders so_active
+      where so_active.file_id = f.id
+        and not ${isYesExpression("so_active.so_cancelled")}
+    )))`;
 }
 
 function hasFilledExpression(column: string) {
@@ -632,6 +691,17 @@ function supplyOrderRowExists() {
 
 function supplyOrderChildOrLegacyExpression(childCondition: string, legacyCondition: string) {
   return `(${supplyOrderExists(childCondition)} or (not ${supplyOrderRowExists()} and ${legacyCondition}))`;
+}
+
+function bgToBeReturnedExpression() {
+  return `${isYesExpression("f.bg")} and ${supplyOrderChildOrLegacyExpression(
+    `${hasFilledExpression("so.so_date")} and ${hasFilledExpression(
+      "so.bg_validity_date",
+    )} and so.bg_validity_date < current_date and not ${hasFilledExpression("so.bg_return_date")}`,
+    `${hasFilledExpression("f.so_date")} and ${hasFilledExpression(
+      "f.bg_validity_date",
+    )} and f.bg_validity_date < current_date and not ${hasFilledExpression("f.bg_return_date")}`,
+  )}`;
 }
 
 function effectiveDpDateExpression(alias: string) {
@@ -658,10 +728,12 @@ function deliveryDueOrderExpression(extraCondition = "true") {
   );
 }
 
+function deliveryInspectionApplicableExpression() {
+  return `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`;
+}
+
 function effectiveOrderCancelledExpression(alias = "eso") {
   return `(${isYesExpression(`${alias}.file_demand_cancelled`)}
-    or ${isYesExpression(`${alias}.file_so_cancelled`)}
-    or ${isYesExpression(`${alias}.demand_cancelled`)}
     or ${isYesExpression(`${alias}.so_cancelled`)})`;
 }
 
@@ -679,6 +751,12 @@ function effectiveOrderLiveExpression(alias = "eso") {
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
+function effectiveOrderPaymentOpenExpression(alias = "eso") {
+  return `${effectiveOrderPlacedExpression(alias)}
+    and not ${hasFilledExpression(`${alias}.payment_date`)}
+    and not ${effectiveOrderCancelledExpression(alias)}`;
+}
+
 function effectiveOrderDeliveryCompletedExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and ${hasFilledExpression(`${alias}.material_receipt_date`)}
@@ -688,6 +766,12 @@ function effectiveOrderDeliveryCompletedExpression(alias = "eso") {
 function effectiveOrderDeliveryOverdueExpression(alias = "eso") {
   return `${effectiveOrderLiveExpression(alias)}
     and ${effectiveOrderDpDateExpression(alias)} < current_date`;
+}
+
+function effectiveOrderDeliveryPendingExpression(alias = "eso") {
+  return `${effectiveOrderLiveExpression(alias)}
+    and (${effectiveOrderDpDateExpression(alias)} is null
+      or ${effectiveOrderDpDateExpression(alias)} >= current_date)`;
 }
 
 function effectiveOrderDeliveryPeriodValidExpression(alias = "eso") {
@@ -723,6 +807,14 @@ function effectiveOrderBgPendingExpression(alias = "eso") {
   return `${effectiveOrderBgApplicableExpression(alias)}
     and ${effectiveOrderPlacedExpression(alias)}
     and not ${hasFilledExpression(`${alias}.bg_validity_date`)}`;
+}
+
+function effectiveOrderBgToBeReturnedExpression(alias = "eso") {
+  return `${effectiveOrderBgApplicableExpression(alias)}
+    and ${effectiveOrderPlacedExpression(alias)}
+    and ${hasFilledExpression(`${alias}.bg_validity_date`)}
+    and ${alias}.bg_validity_date < current_date
+    and not ${hasFilledExpression(`${alias}.bg_return_date`)}`;
 }
 
 function effectiveOrderPaymentCompletedExpression(alias = "eso") {
@@ -880,11 +972,14 @@ async function loadFinanceTotals({
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
+  extraConditions.push(`not ${isCancelledExpression()}`);
   const cancelled = isCancelledExpression();
   const valueCapital = inrAmountExpression("f.value_capital");
   const valueRevenue = inrAmountExpression("f.value_revenue");
   const committedCapital = committedValueExpression("f.so_value_capital", "so_value_capital");
   const committedRevenue = committedValueExpression("f.so_value_revenue", "so_value_revenue");
+  const paidCapital = paymentValueExpression("actual_payment_capital", "actualPaymentCapital");
+  const paidRevenue = paymentValueExpression("actual_payment_revenue", "actualPaymentRevenue");
   const result = await pool.query<Record<string, string | number>>(
     `select
        coalesce(sum(case
@@ -906,7 +1001,9 @@ async function loadFinanceTotals({
          else 0
        end), 0) as projected_revenue,
        coalesce(sum(${committedCapital}), 0) as spent_capital,
-       coalesce(sum(${committedRevenue}), 0) as spent_revenue
+       coalesce(sum(${committedRevenue}), 0) as spent_revenue,
+       coalesce(sum(${paidCapital}), 0) as paid_capital,
+       coalesce(sum(${paidRevenue}), 0) as paid_revenue
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, extraConditions)}`,
@@ -931,6 +1028,8 @@ async function loadFinanceTotals({
     projectedRevenue: readAmount("projected_revenue"),
     spentCapital: readAmount("spent_capital"),
     spentRevenue: readAmount("spent_revenue"),
+    paidCapital: readAmount("paid_capital"),
+    paidRevenue: readAmount("paid_revenue"),
   };
 }
 
@@ -960,6 +1059,8 @@ function roundedFinanceTotals(totals: FinanceTotals): FinanceTotals {
     projectedRevenue: Number(totals.projectedRevenue.toFixed(6)),
     spentCapital: Number(totals.spentCapital.toFixed(6)),
     spentRevenue: Number(totals.spentRevenue.toFixed(6)),
+    paidCapital: Number(totals.paidCapital.toFixed(6)),
+    paidRevenue: Number(totals.paidRevenue.toFixed(6)),
   };
 }
 
@@ -990,6 +1091,46 @@ function committedValueExpression(
     when ${supplyOrderRowExists()} then ${childSupplyOrderValueSumExpression(supplyOrderColumn)}
     else ${inrAmountExpression(fileColumn)}
   end`;
+}
+
+function paymentValueExpression(
+  supplyOrderColumn: "actual_payment_capital" | "actual_payment_revenue",
+  jsonColumn: "actualPaymentCapital" | "actualPaymentRevenue",
+) {
+  const directValue = inrAmountExpression(`so_payment.${supplyOrderColumn}`);
+  const stageValue = inrAmountExpression(
+    `nullif(stage_payment.stage ->> '${jsonColumn}', '')::numeric`,
+  );
+  const advanceValue = inrAmountExpression(
+    `nullif(so_payment.advance_payment_detail ->> '${jsonColumn}', '')::numeric`,
+  );
+  return `coalesce((
+    select sum(
+      case
+        when ${isYesExpression("so_payment.so_cancelled")}
+        then 0
+        else
+          case
+            when ${isYesExpression("so_payment.stage_delivery")}
+              and ${isYesExpression("so_payment.stage_payment")}
+            then coalesce((
+              select sum(${stageValue})
+              from jsonb_array_elements(so_payment.stage_deliveries) as stage_payment(stage)
+            ), 0)
+            else ${directValue}
+          end
+          + case
+            when ${isYesExpression("so_payment.stage_delivery")}
+              and ${isYesExpression("so_payment.stage_payment")}
+              and ${isYesExpression("so_payment.advance_payment")}
+            then ${advanceValue}
+            else 0
+          end
+      end
+    )
+    from supply_orders so_payment
+    where so_payment.file_id = f.id
+  ), 0)`;
 }
 
 function earliestSupplyOrderDateExpression(column: string) {
@@ -1087,7 +1228,7 @@ async function loadAnalyticsSqlSlice({
   valueThresholdLevels: ValueThresholdLevel[];
 }): Promise<AnalyticsSqlSlice> {
   const fileRankingValues = [...values];
-  const fileRankingConditions: string[] = [];
+  const fileRankingConditions: string[] = [`not ${isCancelledExpression()}`];
   const fileRankingDivision = analyticsDivisionExtraCondition(fileRankingValues, divisionName);
   if (fileRankingDivision) fileRankingConditions.push(fileRankingDivision);
 
@@ -1171,6 +1312,7 @@ async function loadAnalyticsSqlSlice({
       name: "Delivery",
       start: firstSoDate,
       end: earliestSupplyOrderDateExpression("material_receipt_date"),
+      applies: deliveryInspectionApplicableExpression(),
     },
     {
       name: "Payment",
@@ -1178,9 +1320,9 @@ async function loadAnalyticsSqlSlice({
       end: earliestSupplyOrderDateExpression("payment_date"),
     },
   ];
-  const milestoneSelects = milestoneClearingDefinitions.map(
-    (definition, index) =>
-      `select ${index} as sort_order,
+  const milestoneSelects = milestoneClearingDefinitions.map((definition, index) => {
+    const appliesCondition = "applies" in definition ? definition.applies : undefined;
+    return `select ${index} as sort_order,
               '${definition.name}' as name,
               ${averageDaysExpression(definition.start, definition.end)} as "averageDays",
               count(*)::integer as "sampleSize"
@@ -1188,9 +1330,10 @@ async function loadAnalyticsSqlSlice({
        left join divisions d on d.id = f.division_id
        ${appendDashboardWhereClause(whereSql, [
          ...fileRankingConditions,
+         ...(appliesCondition ? [appliesCondition] : []),
          dateDiffCondition(definition.start, definition.end),
-       ])}`,
-  );
+       ])}`;
+  });
   const milestoneResult = await pool.query<AverageDaysAnalyticsRow & { sort_order: number }>(
     `${milestoneSelects.join("\nunion all\n")}
      order by "averageDays" desc`,
@@ -1223,7 +1366,10 @@ async function loadAnalyticsSqlSlice({
        from files f
        left join divisions d on d.id = f.division_id
        join supply_orders so on so.file_id = f.id
-       ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+       ${appendDashboardWhereClause(whereSql, [
+         ...fileRankingConditions,
+         `not ${isYesExpression("so.so_cancelled")}`,
+       ])}
        union all
        select
          f.id as file_id,
@@ -1244,7 +1390,7 @@ async function loadAnalyticsSqlSlice({
     firmValues,
   );
 
-  const riskCondition = `((not ${isCancelledExpression()} and ${deliveryDueOrderExpression()})
+  const riskCondition = `((not ${isCancelledExpression()} and ${deliveryInspectionApplicableExpression()} and ${deliveryDueOrderExpression()})
     or (not ${isCancelledExpression()} and ${supplyOrderPlacedExpression()} and ${supplyOrderChildOrLegacyExpression(
       `${hasFilledExpression("so.so_date")}
        and ${effectiveDpDateExpression("so")} is not null
@@ -1255,8 +1401,9 @@ async function loadAnalyticsSqlSlice({
        and ${effectiveDpDateExpression("f")} < current_date
        and not ${hasFilledExpression("f.material_receipt_date")}`,
     )})
+    or ${isYesExpression("f.demand_cancelled")}
     or ${supplyOrderChildOrLegacyExpression(
-      `${isYesExpression("so.ld")} or ${isYesExpression("so.demand_cancelled")} or ${isYesExpression("so.so_cancelled")}`,
+      `${isYesExpression("so.ld")} or ${isYesExpression("so.so_cancelled")}`,
       isYesExpression("f.so_cancelled"),
     )})`;
   const riskResult = await pool.query<CountAnalyticsRow>(
@@ -1582,14 +1729,11 @@ async function loadMiscellaneousCounts({
          where not ${fileClosedExpression()} and not ${isCancelledExpression()}
        )::integer as live_files,
        count(*) filter (
-         where ${fileClosedExpression()}
+         where ${fileClosedExpression()} and not ${isCancelledExpression()}
        )::integer as file_closed,
-       (select count(*) from effective_supply_orders eso where ${isYesExpression("eso.ld")} and not ${isYesExpression("eso.so_cancelled")})::integer as ld,
+       (select count(*) from effective_supply_orders eso where ${isYesExpression("eso.ld")} and not ${effectiveOrderCancelledExpression("eso")})::integer as ld,
        count(*) filter (
-         where exists (
-           select 1 from supply_orders so
-           where so.file_id = f.id and ${isYesExpression("so.demand_cancelled")}
-         )
+         where ${isYesExpression("f.demand_cancelled")}
        )::integer as demand_cancelled,
        count(*) filter (
          where exists (
@@ -1601,8 +1745,9 @@ async function loadMiscellaneousCounts({
          where (
            select count(*)
            from supply_orders so
-           where so.file_id = f.id
+           where so.file_id = f.id and not ${isYesExpression("so.so_cancelled")}
          ) > 1
+         and not ${isCancelledExpression()}
        )::integer as multiple_supply_orders
      from files f
      left join divisions d on d.id = f.division_id
@@ -1626,7 +1771,7 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
     .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
     .filter(Boolean);
   const configured = values.length ? values : defaultManualMilestones;
-  return appendFileClosedMilestone(configured);
+  return appendFileClosedMilestone(insertBillSentMilestone(configured));
 }
 
 function appendFileClosedMilestone(milestones: string[]) {
@@ -1635,6 +1780,21 @@ function appendFileClosedMilestone(milestones: string[]) {
       normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function insertBillSentMilestone(milestones: string[]) {
+  const hasBillSent = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "billsentforpayment",
+  );
+  const paymentIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "payment",
+  );
+  if (hasBillSent || paymentIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, paymentIndex),
+    "Bill sent for payment",
+    ...milestones.slice(paymentIndex),
+  ];
 }
 
 function normalizeConfiguredMilestoneLabel(milestone: string) {
@@ -1701,7 +1861,8 @@ async function loadManualMilestoneSqlSlice({
   const completedValues = [...queryValues];
   const completedMilestonePlaceholder = addValue(completedValues, milestoneNames);
   const completedResult = await pool.query<{ name: string; count: number }>(
-    `select milestone.name, count(completed.file_id)::integer as count
+    `select milestone.name,
+            count(completed.file_id) filter (where not ${isCancelledExpression()})::integer as count
      from unnest(${completedMilestonePlaceholder}::text[]) as milestone(name)
      left join file_completed_milestones completed on completed.milestone = milestone.name
      left join files f on f.id = completed.file_id
@@ -1794,7 +1955,9 @@ async function loadStatusCounts({
   const supplyOrderPlaced = supplyOrderPlacedExpression();
   const statusWhereSql = appendDashboardWhereClause(whereSql, extraConditions);
   const bidOverdue = `${isNoExpression("f.bid_opened")}
-          and (f.bid_opening_date < current_date or f.refloat_bid_opening_date < current_date)`;
+          and (case when ${isYesExpression(
+            "f.refloat",
+          )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end) < current_date`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
     const prefix = `milestone_${index}`;
     const applies = statusAppliesExpression(milestone);
@@ -1811,6 +1974,7 @@ async function loadStatusCounts({
           as ${prefix}_pending`,
         `0::integer as ${prefix}_reviewed`,
         `${countFilter(cleared)} as ${prefix}_cleared`,
+        `${effectiveOrderCountFilter(effectiveOrderBgToBeReturnedExpression())} as ${prefix}_bg_to_be_returned`,
       ];
     }
     const previousComplete = previousApplicableCompleteExpression(index);
@@ -1842,8 +2006,9 @@ async function loadStatusCounts({
 	         so.material_receipt_date,
 	         so.ir_preparation_date,
 	         so.ir_receipt_date,
-	         so.payment_date,
+         so.payment_date,
          so.bg_validity_date,
+         so.bg_return_date,
          so.ld,
          so.demand_cancelled,
          so.so_cancelled
@@ -1864,8 +2029,9 @@ async function loadStatusCounts({
 	         f.material_receipt_date,
 	         f.ir_preparation_date,
 	         f.ir_receipt_date,
-	         f.payment_date,
+         f.payment_date,
          f.bg_validity_date,
+         f.bg_return_date,
          f.ld,
          f.demand_cancelled,
          f.so_cancelled
@@ -1882,21 +2048,21 @@ async function loadStatusCounts({
       ${countFilter(isYesExpression("f.tender_live"))} as live_bids,
       ${countFilter(bidOverdue)} as overdue_bids,
       ${countFilter(
-         `not ${cancelled}
+        `not ${cancelled}
           and regexp_replace(lower(coalesce(f.current_milestone, '')), '[^a-z0-9]+', '', 'g') = 'bidding'
           and not ${isYesExpression("f.tender_live")}
           and not (${bidOverdue})`,
-       )} as in_process_bids,
+      )} as in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
        ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
-       ${effectiveOrderCountFilter(effectiveOrderLiveExpression())} as live_supply_orders,
+       ${effectiveOrderCountFilter(effectiveOrderPaymentOpenExpression())} as live_supply_orders,
        ${effectiveOrderCountFilter(effectiveOrderBgApplicableExpression())} as order_bg_total,
        ${effectiveOrderCountFilter(effectiveOrderBgReceivedExpression())} as order_bg_received,
        ${effectiveOrderCountFilter(effectiveOrderBgPendingExpression())} as order_bg_pending,
        ${effectiveOrderCountFilter(effectiveOrderPaymentCompletedExpression())} as order_payment_completed,
        ${effectiveOrderCountFilter(effectiveOrderPaymentPendingExpression())} as order_payment_pending,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryCompletedExpression())} as delivery_completed,
-       ${effectiveOrderCountFilter(effectiveOrderLiveExpression())} as delivery_due,
+       ${effectiveOrderCountFilter(effectiveOrderDeliveryPendingExpression())} as delivery_due,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryOverdueExpression())} as delivery_overdue,
 	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodValidExpression())} as delivery_period_valid,
 	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExpiredExpression())} as delivery_period_expired,
@@ -1936,6 +2102,7 @@ async function loadStatusCounts({
           total: readCount("order_bg_total"),
           pending: readCount("order_bg_pending"),
           cleared: readCount("order_bg_received"),
+          bgToBeReturned: readCount(`${prefix}_bg_to_be_returned`),
         };
       }
       if (milestone.key === "payment") {
@@ -1955,13 +2122,13 @@ async function loadStatusCounts({
     deliveryCompleted: readCount("delivery_completed"),
     deliveryDue: readCount("delivery_due"),
     deliveryOverdue: readCount("delivery_overdue"),
-	    deliveryPeriodValid: readCount("delivery_period_valid"),
-	    deliveryPeriodExpired: readCount("delivery_period_expired"),
-	    deliveryPeriodExtended: readCount("delivery_period_extended"),
-	    irPreparationPending: readCount("ir_preparation_pending"),
-	    irReceiptPending: readCount("ir_receipt_pending"),
-	    irCompleted: readCount("ir_completed"),
-	  };
+    deliveryPeriodValid: readCount("delivery_period_valid"),
+    deliveryPeriodExpired: readCount("delivery_period_expired"),
+    deliveryPeriodExtended: readCount("delivery_period_extended"),
+    irPreparationPending: readCount("ir_preparation_pending"),
+    irReceiptPending: readCount("ir_receipt_pending"),
+    irCompleted: readCount("ir_completed"),
+  };
 }
 
 function stableJson(value: unknown) {
@@ -2160,7 +2327,7 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
   const supplyOrderIndex = milestoneRows.findIndex((row) => row.key === "supplyOrder");
   const deliveryPeriod = {
     key: "deliveryPeriod",
-    label: "Delivery Period",
+    label: "Delivery Period / Milestone",
     valid: counts.deliveryPeriodValid,
     expired: counts.deliveryPeriodExpired,
     extended: counts.deliveryPeriodExtended,
@@ -2264,6 +2431,7 @@ dashboardRouter.get(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
+    const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const divisionYear =
@@ -2274,6 +2442,7 @@ dashboardRouter.get(
     ]);
     const requestedDivision = readString(request.query.division) ?? "all";
     const requestedAnalyticsDivision = readString(request.query.analyticsDivision) ?? "all";
+    const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
     const activeDivision =
       requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
         ? requestedDivision
@@ -2284,11 +2453,12 @@ dashboardRouter.get(
         ? requestedAnalyticsDivision
         : "all";
     const dashboardFileWhere = getDashboardFileWhereSql({
-      scopeSql: scope.sql,
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
       activeDivision,
       activeAnalyticsDivision,
+      fileCategories,
     });
     const dashboardDivisions =
       activeDivision === "all"
@@ -2308,118 +2478,115 @@ dashboardRouter.get(
       divisionYear,
       activeDivision,
       activeAnalyticsDivision,
+      fileCategories,
       liveMilestones,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
-      const [
-        sqlSimpleCounts,
-        sqlFinanceTotals,
-        sqlMiscellaneousCounts,
-        sqlStatusCounts,
-        sqlAnalyticsSlice,
-        sqlDivisionFilteredAnalyticsSlice,
-        sqlManualMilestoneSlice,
-      ] = await Promise.all([
-        loadSimpleDashboardCounts({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          activeDivision,
-        }),
-        loadFinanceTotals({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          activeDivision,
-          dashboardDivisions,
-        }),
-        loadMiscellaneousCounts({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          activeDivision,
-        }),
-        loadStatusCounts({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          activeDivision,
-        }),
-        loadAnalyticsSqlSlice({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          divisionName: analyticsSliceDivision,
-          divisions: dashboardDivisions,
-          valueThresholdLevels,
-        }),
-        loadAnalyticsSqlSlice({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          divisionName: divisionFilteredSliceDivision,
-          divisions: divisionFilteredSliceDivisions,
-          valueThresholdLevels,
-        }),
-        loadManualMilestoneSqlSlice({
-          whereSql: dashboardFileWhere.whereSql,
-          values: dashboardFileWhere.values,
-          activeDivision,
-          divisions: dashboardDivisions,
-          configuredMilestones: getConfiguredMilestones(settings.milestones),
-          liveMilestones,
-        }),
-      ]);
+      const files = (
+        await loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values)
+      ).filter((file) => matchesFileCategorySelection(file, fileCategories));
+      const normalizedSummary = buildDashboardSummary({
+        files,
+        divisions,
+        settings: { ...settings, valueThresholdLevels },
+        division: activeDivision,
+        analyticsDivision: activeAnalyticsDivision,
+        liveMilestones,
+      });
+
       if (process.env.DASHBOARD_SQL_COMPARE === "true") {
-        const files = await loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values);
-        const legacySummary = buildDashboardSummary({
-          files,
-          divisions,
-          settings: { ...settings, valueThresholdLevels },
-          division: activeDivision,
-          analyticsDivision: activeAnalyticsDivision,
-          liveMilestones,
-        });
+        const [
+          sqlSimpleCounts,
+          sqlFinanceTotals,
+          sqlMiscellaneousCounts,
+          sqlStatusCounts,
+          sqlAnalyticsSlice,
+          sqlDivisionFilteredAnalyticsSlice,
+          sqlManualMilestoneSlice,
+        ] = await Promise.all([
+          loadSimpleDashboardCounts({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            activeDivision,
+            modes: settings.modes,
+          }),
+          loadFinanceTotals({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            activeDivision,
+            dashboardDivisions,
+          }),
+          loadMiscellaneousCounts({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            activeDivision,
+          }),
+          loadStatusCounts({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            activeDivision,
+          }),
+          loadAnalyticsSqlSlice({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            divisionName: analyticsSliceDivision,
+            divisions: dashboardDivisions,
+            valueThresholdLevels,
+          }),
+          loadAnalyticsSqlSlice({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            divisionName: divisionFilteredSliceDivision,
+            divisions: divisionFilteredSliceDivisions,
+            valueThresholdLevels,
+          }),
+          loadManualMilestoneSqlSlice({
+            whereSql: dashboardFileWhere.whereSql,
+            values: dashboardFileWhere.values,
+            activeDivision,
+            divisions: dashboardDivisions,
+            configuredMilestones: getConfiguredMilestones(settings.milestones),
+            liveMilestones,
+          }),
+        ]);
         warnIfSimpleCountsDiffer(
           {
-            dashboardFileCount: legacySummary.dashboardFileCount,
-            modeCounts: legacySummary.modeCounts,
-            topSummaryStats: legacySummary.topSummaryStats,
+            dashboardFileCount: normalizedSummary.dashboardFileCount,
+            modeCounts: normalizedSummary.modeCounts,
+            topSummaryStats: normalizedSummary.topSummaryStats,
           },
           sqlSimpleCounts,
         );
-        warnIfFinanceTotalsDiffer(legacySummary.financeTotals, sqlFinanceTotals);
-        warnIfMiscellaneousCountsDiffer(legacySummary.miscellaneousCounts, sqlMiscellaneousCounts);
-        warnIfStatusCountsDiffer(getStatusCountsFromFlow(legacySummary.statusFlow), sqlStatusCounts);
+        warnIfFinanceTotalsDiffer(normalizedSummary.financeTotals, sqlFinanceTotals);
+        warnIfMiscellaneousCountsDiffer(
+          normalizedSummary.miscellaneousCounts,
+          sqlMiscellaneousCounts,
+        );
+        warnIfStatusCountsDiffer(
+          getStatusCountsFromFlow(normalizedSummary.statusFlow),
+          sqlStatusCounts,
+        );
         warnIfAnalyticsSqlSliceDiffers(
           "dashboard",
-          getAnalyticsSqlSlice(legacySummary.analytics),
+          getAnalyticsSqlSlice(normalizedSummary.analytics),
           sqlAnalyticsSlice,
         );
         warnIfAnalyticsSqlSliceDiffers(
           "division-filtered",
-          getAnalyticsSqlSlice(legacySummary.divisionFilteredAnalytics),
+          getAnalyticsSqlSlice(normalizedSummary.divisionFilteredAnalytics),
           sqlDivisionFilteredAnalyticsSlice,
         );
         warnIfManualMilestoneSqlSliceDiffers(
           {
-            manualMilestoneFlow: legacySummary.manualMilestoneFlow,
-            visibleLiveMilestoneNames: legacySummary.visibleLiveMilestoneNames,
-            liveStatusRows: legacySummary.liveStatusRows,
+            manualMilestoneFlow: normalizedSummary.manualMilestoneFlow,
+            visibleLiveMilestoneNames: normalizedSummary.visibleLiveMilestoneNames,
+            liveStatusRows: normalizedSummary.liveStatusRows,
           },
           sqlManualMilestoneSlice,
         );
       }
 
-      return {
-        activeDivision,
-        activeAnalyticsDivision,
-        dashboardDivisions,
-        ...sqlSimpleCounts,
-        financeTotals: sqlFinanceTotals,
-        financePercents: getFinancePercents(sqlFinanceTotals),
-        miscellaneousCounts: sqlMiscellaneousCounts,
-        statusFlow: buildStatusFlowFromSql(sqlStatusCounts),
-        manualMilestoneFlow: sqlManualMilestoneSlice.manualMilestoneFlow,
-        visibleLiveMilestoneNames: sqlManualMilestoneSlice.visibleLiveMilestoneNames,
-        liveStatusRows: sqlManualMilestoneSlice.liveStatusRows,
-        analytics: sqlAnalyticsSlice,
-        divisionFilteredAnalytics: sqlDivisionFilteredAnalyticsSlice,
-      };
+      return normalizedSummary;
     });
 
     response.json({ summary });

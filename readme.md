@@ -67,6 +67,19 @@ psql "$DATABASE_URL" -f database/022_bill_preparation_date.sql
 psql "$DATABASE_URL" -f database/023_drop_refloat_post_tcec_fields.sql
 psql "$DATABASE_URL" -f database/024_mmg_summary_settings.sql
 psql "$DATABASE_URL" -f database/025_file_ir_flag.sql
+psql "$DATABASE_URL" -f database/026_supply_order_firm_type.sql
+psql "$DATABASE_URL" -f database/027_supply_order_stage_delivery.sql
+psql "$DATABASE_URL" -f database/028_supply_order_milestones.sql
+psql "$DATABASE_URL" -f database/029_file_markers.sql
+psql "$DATABASE_URL" -f database/030_firm_type_settings.sql
+psql "$DATABASE_URL" -f database/031_mode_settings.sql
+psql "$DATABASE_URL" -f database/032_default_firm_types.sql
+psql "$DATABASE_URL" -f database/033_file_type_settings.sql
+psql "$DATABASE_URL" -f database/034_user_file_category_access.sql
+psql "$DATABASE_URL" -f database/035_remove_cars_from_modes.sql
+psql "$DATABASE_URL" -f database/036_add_cars_file_type.sql
+psql "$DATABASE_URL" -f database/037_add_om_file_type.sql
+psql "$DATABASE_URL" -f database/038_demand_cancelled_date.sql
 ```
 
 The seed creates this initial admin login only if it does not already exist:

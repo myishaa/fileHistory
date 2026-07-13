@@ -113,7 +113,7 @@ function QuickEntryEditor() {
     setMilestoneFileId("");
     navigate({
       to: "/add",
-      search: { fileId: file.id, section: stage.title, quickFocus: true },
+      search: { fileId: file.id, section: stage.title, milestone: undefined, quickFocus: true },
     });
   };
 
@@ -178,7 +178,12 @@ function QuickEntryEditor() {
                 onClick={() =>
                   navigate({
                     to: "/add",
-                    search: { fileId: milestoneFileId, section: "Milestones", quickFocus: true },
+                    search: {
+                      fileId: milestoneFileId,
+                      section: "Milestones",
+                      milestone: undefined,
+                      quickFocus: true,
+                    },
                   })
                 }
                 className="mt-2 h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"

@@ -1,4 +1,5 @@
-import type { FileRecord, SupplyOrderDetail } from "@/lib/files-store";
+import type { FileRecord, StageDeliveryDetail, SupplyOrderDetail } from "@/lib/files-store";
+import { fileSupplyOrders as normalizedFileSupplyOrders } from "@/lib/effective-deliveries";
 
 type MilestoneCompletionRule = {
   aliases: string[];
@@ -86,39 +87,39 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
     aliases: ["Delivery"],
     completionLabel: "Material receipt date",
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.materialReceiptDate)),
+      areApplicableSupplyOrdersComplete(file, "materialReceiptDate"),
   },
   {
     aliases: ["IR Preparation"],
     completionLabel: "IR Preparation",
     isApplicable: (file) => isYes(file.ir),
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.irPreparationDate)),
+      areApplicableSupplyOrdersComplete(file, "irPreparationDate"),
   },
   {
     aliases: ["IR Receipt"],
     completionLabel: "IR Receipt",
     isApplicable: (file) => isYes(file.ir),
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.irReceiptDate)),
+      areApplicableSupplyOrdersComplete(file, "irReceiptDate"),
   },
   {
     aliases: ["Bill preparation"],
     completionLabel: "Bill preparation",
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.billPreparationDate)),
+      areApplicableSupplyOrdersComplete(file, "billPreparationDate"),
   },
   {
     aliases: ["Bill sent for payment"],
     completionLabel: "Bill sent for payment",
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.billSentForPaymentDate)),
+      areApplicableSupplyOrdersComplete(file, "billSentForPaymentDate"),
   },
   {
     aliases: ["Payment"],
     completionLabel: "Payment date",
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.paymentDate)),
+      areApplicableSupplyOrdersComplete(file, "paymentDate"),
   },
 ];
 
@@ -153,8 +154,11 @@ export function validateMilestoneCompletionConsistency(
       );
     }
     if (manuallyCompleted && !hasCompletionValue) {
+      const progress = getMilestoneProgress(file, stageLabel);
       errors.push(
-        `${stageLabel} is marked completed manually, but ${rule.completionLabel} is missing.`,
+        progress
+          ? `${stageLabel} is marked completed manually, but only ${progress.completed} of ${progress.total} stage(s) have ${rule.completionLabel}.`
+          : `${stageLabel} is marked completed manually, but ${rule.completionLabel} is missing.`,
       );
     }
   }
@@ -193,27 +197,108 @@ function getMilestoneCompletionRule(milestone: string) {
 }
 
 function fileSupplyOrders(file: Partial<FileRecord>) {
-  const rows =
-    file.supplyOrders
-      ?.map((row) => ({ ...row }))
-      .filter((row) => Object.values(row).some((value) => hasFilledString(String(value ?? "")))) ??
-    [];
-  if (rows.length) return rows;
+  return normalizedFileSupplyOrders(file as FileRecord);
+}
 
-  const legacy: SupplyOrderDetail = {
-    soDate: file.soDate,
-    bgValidityDate: file.bgValidityDate,
-    materialReceiptDate: file.materialReceiptDate,
-    irPreparationDate: file.irPreparationDate,
-    irReceiptDate: file.irReceiptDate,
-    billPreparationDate: file.billPreparationDate,
-    billSentForPaymentDate: file.billSentForPaymentDate,
-    paymentDate: file.paymentDate,
-    soCancelledDate: file.soCancelledDate,
+function areApplicableSupplyOrdersComplete(
+  file: Partial<FileRecord>,
+  key:
+    | "materialReceiptDate"
+    | "irPreparationDate"
+    | "irReceiptDate"
+    | "billPreparationDate"
+    | "billSentForPaymentDate"
+    | "paymentDate",
+) {
+  if (isPaymentFieldKey(key)) return areApplicablePaymentFieldsComplete(file, key);
+
+  const orders = fileSupplyOrders(file).filter((order) => hasFilledString(order.soDate));
+  if (!orders.length) return false;
+  return orders.every((order) => hasFilledString(order[key]));
+}
+
+function areApplicablePaymentFieldsComplete(
+  file: Partial<FileRecord>,
+  key: "billPreparationDate" | "billSentForPaymentDate" | "paymentDate",
+) {
+  const rawOrders = (file.supplyOrders ?? []).filter((order) => hasFilledString(order.soDate));
+  if (!rawOrders.length) return false;
+
+  return rawOrders.every((order) => {
+    if (isYes(order.stageDelivery) && isYes(order.stagePayment)) {
+      const stages = getApplicablePaymentStages(order);
+      return stages.length > 0 && stages.every((stage) => hasFilledString(stage[key]));
+    }
+    return hasFilledString(order[key]);
+  });
+}
+
+function getMilestoneProgress(file: Partial<FileRecord>, milestone: string) {
+  const key = getProgressFieldKey(milestone);
+  if (!key) return undefined;
+  const orders = isPaymentFieldKey(key)
+    ? getPaymentProgressOrders(file, key)
+    : fileSupplyOrders(file)
+        .filter((order) => hasFilledString(order.soDate))
+        .map((order) => ({ value: order[key] }));
+  if (orders.length <= 1) return undefined;
+  return {
+    completed: orders.filter((order) => hasFilledString(order.value)).length,
+    total: orders.length,
   };
-  return Object.values(legacy).some((value) => hasFilledString(String(value ?? "")))
-    ? [legacy]
-    : [];
+}
+
+function getPaymentProgressOrders(
+  file: Partial<FileRecord>,
+  key: "billPreparationDate" | "billSentForPaymentDate" | "paymentDate",
+) {
+  return (file.supplyOrders ?? [])
+    .filter((order) => hasFilledString(order.soDate))
+    .flatMap((order) => {
+      if (isYes(order.stageDelivery) && isYes(order.stagePayment)) {
+        return getApplicablePaymentStages(order).map((stage) => ({ value: stage[key] }));
+      }
+      return [{ value: order[key] }];
+    });
+}
+
+function getApplicablePaymentStages(order: SupplyOrderDetail) {
+  return (order.stageDeliveries ?? []).filter(isStagePaymentApplicable);
+}
+
+function isStagePaymentApplicable(stage: StageDeliveryDetail) {
+  const effectiveDpDate = getLaterDate(stage.dpDate, stage.revisedDp);
+  return hasFilledString(effectiveDpDate) && effectiveDpDate! <= formatLocalDate(new Date());
+}
+
+function getLaterDate(first: string | undefined, second: string | undefined) {
+  if (!hasFilledString(first)) return hasFilledString(second) ? second : undefined;
+  if (!hasFilledString(second)) return first;
+  return second! > first! ? second : first;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getProgressFieldKey(milestone: string) {
+  const normalized = normalizeMilestoneName(milestone);
+  if (normalized === "delivery") return "materialReceiptDate";
+  if (normalized === "irpreparation") return "irPreparationDate";
+  if (normalized === "irreceipt") return "irReceiptDate";
+  if (normalized === "billpreparation") return "billPreparationDate";
+  if (normalized === "billsentforpayment") return "billSentForPaymentDate";
+  if (normalized === "payment") return "paymentDate";
+  return undefined;
+}
+
+function isPaymentFieldKey(
+  key: string,
+): key is "billPreparationDate" | "billSentForPaymentDate" | "paymentDate" {
+  return key === "billPreparationDate" || key === "billSentForPaymentDate" || key === "paymentDate";
 }
 
 function normalizeMilestoneName(value: string) {

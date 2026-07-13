@@ -28,6 +28,7 @@ export type FileRecord = {
   exchangeRate?: string;
   gte?: string;
   tcec?: string;
+  fileType?: string;
   mode?: string;
   gem?: string;
   highValue?: string;
@@ -75,6 +76,8 @@ export type FileRecord = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmType?: string;
+  firmTypeOther?: string;
   bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
@@ -87,14 +90,18 @@ export type FileRecord = {
   billSentForPaymentDate?: string;
   paymentDate?: string;
   paymentMode?: string;
+  actualPaymentCapital?: string;
+  actualPaymentRevenue?: string;
   bgReturnDate?: string;
   demandCancelled?: string;
+  demandCancelledDate?: string;
   soCancelled?: string;
   soCancelledDate?: string;
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
   supplyOrders?: SupplyOrderDetail[];
   remarks?: FileRemark[];
+  markers?: FileMarker[];
   currentMilestone?: string;
   completedMilestones?: string[];
   createdAt: string;
@@ -103,6 +110,12 @@ export type FileRecord = {
 export type FileRemark = {
   id: string;
   section: string;
+  text: string;
+  createdAt: string;
+};
+
+export type FileMarker = {
+  id: string;
   text: string;
   createdAt: string;
 };
@@ -137,6 +150,8 @@ export type FileMessage = {
 };
 
 export type SupplyOrderDetail = {
+  currentMilestone?: string;
+  completedMilestones?: string[];
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -144,6 +159,8 @@ export type SupplyOrderDetail = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmType?: string;
+  firmTypeOther?: string;
   bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
@@ -156,10 +173,50 @@ export type SupplyOrderDetail = {
   billSentForPaymentDate?: string;
   paymentDate?: string;
   paymentMode?: string;
+  actualPaymentCapital?: string;
+  actualPaymentRevenue?: string;
   bgReturnDate?: string;
   demandCancelled?: string;
   soCancelled?: string;
   soCancelledDate?: string;
+  stageDelivery?: string;
+  stageDeliveryCount?: string;
+  stagePayment?: string;
+  advancePayment?: string;
+  advancePaymentDetail?: AdvancePaymentDetail;
+  deliveryPeriodStartDate?: string;
+  stageDeliveryLabel?: string;
+  stageDeliveries?: StageDeliveryDetail[];
+};
+
+export type AdvancePaymentDetail = {
+  stageAmountCapital?: string;
+  stageAmountRevenue?: string;
+  billPreparationDate?: string;
+  billSentForPaymentDate?: string;
+  paymentDate?: string;
+  paymentMode?: string;
+  actualPaymentCapital?: string;
+  actualPaymentRevenue?: string;
+};
+
+export type StageDeliveryDetail = {
+  stageAmountCapital?: string;
+  stageAmountRevenue?: string;
+  dpDate?: string;
+  dpExtension?: string;
+  dpExtensionCount?: string;
+  ld?: string;
+  revisedDp?: string;
+  materialReceiptDate?: string;
+  irPreparationDate?: string;
+  irReceiptDate?: string;
+  billPreparationDate?: string;
+  billSentForPaymentDate?: string;
+  paymentDate?: string;
+  paymentMode?: string;
+  actualPaymentCapital?: string;
+  actualPaymentRevenue?: string;
 };
 
 export type FirmDetail = {
@@ -231,6 +288,7 @@ export type AppUser = {
   username: string;
   role: AppUserRole;
   divisionIds: string[];
+  allowedFileCategories?: string[] | null;
 };
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
@@ -252,6 +310,9 @@ export type AppSettings = {
   themeTint: AppThemeTint;
   deletionPassword: string;
   tcecCommittees: string[];
+  firmTypes: string[];
+  fileTypes: string[];
+  modes: string[];
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: TableFieldPreset[];
@@ -275,6 +336,9 @@ const defaultSettings: AppSettings = {
   themeTint: "plain",
   deletionPassword: "",
   tcecCommittees: [],
+  firmTypes: ["MSE", "MSE (Women)", "Non-MSE"],
+  fileTypes: ["Goods & Services", "AMC", "MPC", "CARS", "O&M"],
+  modes: ["OBM", "PBM", "SBM", "LBM", "LPC"],
   valueThresholdLevels: [],
   milestones: [],
   tableFieldPresets: defaultTableFieldPresets,
@@ -533,6 +597,12 @@ export const store = {
       });
       await loadAll(true);
     })();
+  },
+  verifyAdminPassword(password: string) {
+    return request<{ ok: true }>("/api/auth/verify-password", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
   },
   viewerLogin(divisionId: string, password: string) {
     return (async () => {
@@ -960,8 +1030,38 @@ export function useAccessibleFiles() {
   }
   const allowedDivisionNames = new Set(accessibleDivisions.map((division) => division.name));
   return yearFilteredFiles.filter(
-    (file) => file.division && allowedDivisionNames.has(file.division),
+    (file) =>
+      file.division &&
+      allowedDivisionNames.has(file.division) &&
+      userCanAccessFileCategory(activeUser, file),
   );
+}
+
+function userCanAccessFileCategory(user: AppUser, file: Pick<FileRecord, "fileType" | "mode">) {
+  if (user.role !== "editor" || !Array.isArray(user.allowedFileCategories)) return true;
+  const categories = expandLegacyAllowedFileCategories(user.allowedFileCategories);
+  const fileType = (file.fileType ?? "").trim().toLowerCase();
+  return categories.some((category) => {
+    if (category === "cars") return fileType === "cars";
+    if (category === "amc") return fileType === "amc";
+    if (category === "mpc") return fileType === "mpc";
+    if (category === "om") return fileType === "o&m";
+    return fileType !== "amc" && fileType !== "mpc" && fileType !== "cars" && fileType !== "o&m";
+  });
+}
+
+function expandLegacyAllowedFileCategories(categories: string[]) {
+  const categorySet = new Set(categories);
+  if (
+    categorySet.has("goodsServices") &&
+    categorySet.has("amc") &&
+    categorySet.has("mpc") &&
+    categorySet.has("cars") &&
+    !categorySet.has("om")
+  ) {
+    categorySet.add("om");
+  }
+  return Array.from(categorySet);
 }
 
 export function isIncomplete(f: FileRecord) {

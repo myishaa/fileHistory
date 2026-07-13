@@ -14,7 +14,7 @@ export default defineConfig({
   },
   vite: {
     server: {
-      host: "localhost",
+      host: "0.0.0.0",
       allowedHosts: ["mmgbuildup.asl.net"],
     },
   },

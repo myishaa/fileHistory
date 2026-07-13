@@ -41,13 +41,10 @@ function isYes(value: string | undefined) {
 export function isCancelledFile(
   file: Pick<FileRecord, "demandCancelled" | "soCancelled" | "supplyOrders">,
 ) {
-  return (
-    isYes(file.demandCancelled) ||
-    isYes(file.soCancelled) ||
-    Boolean(
-      file.supplyOrders?.some((order) => isYes(order.demandCancelled) || isYes(order.soCancelled)),
-    )
-  );
+  if (isYes(file.demandCancelled)) return true;
+  const supplyOrders = file.supplyOrders ?? [];
+  if (supplyOrders.length === 0) return isYes(file.soCancelled);
+  return supplyOrders.every((order) => isYes(order.soCancelled));
 }
 
 export function isInactiveFile(

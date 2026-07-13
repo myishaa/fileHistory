@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import { pool } from "../db/pool.js";
 import type { AppUserRole, AuthUser } from "../types.js";
 import { cacheTtl, deleteCached, getCached } from "./cache.js";
+import { normalizeFileCategories, type FileCategoryKey } from "./file-categories.js";
 import { HttpError } from "./http.js";
 
 const sessionCookieName = "recordkeeper_session";
@@ -22,6 +23,7 @@ type SessionRow = {
   username: string | null;
   role: AppUserRole | null;
   division_ids: string[] | null;
+  allowed_file_categories: unknown;
 };
 
 function hashToken(token: string) {
@@ -118,6 +120,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
        u.name,
        u.username,
        u.role,
+       u.allowed_file_categories,
        coalesce(
          array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
          array[]::text[]
@@ -141,9 +144,15 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
       username: row.viewer_division_name ?? "viewer",
       role: "viewer",
       divisionIds: [row.viewer_division_id],
+      allowedFileCategories: undefined,
     };
   }
 
+  const allowedFileCategories = Array.isArray(row.allowed_file_categories)
+    ? normalizeFileCategories(
+        row.allowed_file_categories.filter((item): item is string => typeof item === "string"),
+      )
+    : undefined;
   if (!row.user_id || !row.role || !row.name || !row.username) return undefined;
   return {
     id: row.user_id,
@@ -151,6 +160,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
     username: row.username,
     role: row.role,
     divisionIds: row.division_ids ?? [],
+    allowedFileCategories,
   };
 }
 
@@ -188,6 +198,28 @@ export function canAccessDivision(user: AuthUser, divisionId: string | null | un
   return user.divisionIds.includes(divisionId);
 }
 
+export function getAllowedFileCategories(user: AuthUser): FileCategoryKey[] | undefined {
+  if (user.role !== "editor") return undefined;
+  return normalizeFileCategories(user.allowedFileCategories ?? undefined);
+}
+
+export function hasFileCategoryRestriction(user: AuthUser) {
+  return user.role === "editor" && Array.isArray(user.allowedFileCategories);
+}
+
+export function canAccessFileCategory(user: AuthUser, file: { fileType?: string; mode?: string }) {
+  const categories = getAllowedFileCategories(user);
+  if (!categories) return true;
+  const fileType = (file.fileType ?? "").trim().toLowerCase();
+  return categories.some((category) => {
+    if (category === "cars") return fileType === "cars";
+    if (category === "amc") return fileType === "amc";
+    if (category === "mpc") return fileType === "mpc";
+    if (category === "om") return fileType === "o&m";
+    return fileType !== "amc" && fileType !== "mpc" && fileType !== "cars" && fileType !== "o&m";
+  });
+}
+
 export function getDivisionScopeCondition(user: AuthUser, alias = "f") {
   if (canUseAllDivisions(user)) return { sql: "", values: [] as unknown[] };
   if (user.divisionIds.length === 0) return { sql: "1 = 0", values: [] as unknown[] };
@@ -197,7 +229,36 @@ export function getDivisionScopeCondition(user: AuthUser, alias = "f") {
   };
 }
 
+export function getFileCategoryScopeCondition(user: AuthUser, alias = "f") {
+  const categories = getAllowedFileCategories(user);
+  if (!categories) return { sql: "", values: [] as unknown[] };
+  if (categories.length === 0) return { sql: "1 = 0", values: [] as unknown[] };
+  const categorySet = new Set(categories);
+  const predicates: string[] = [];
+  if (categorySet.has("goodsServices")) {
+    predicates.push(
+      `lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`,
+    );
+  }
+  if (categorySet.has("amc")) {
+    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'amc'`);
+  }
+  if (categorySet.has("mpc")) {
+    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'mpc'`);
+  }
+  if (categorySet.has("cars")) {
+    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'cars'`);
+  }
+  if (categorySet.has("om")) {
+    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'o&m'`);
+  }
+  return { sql: predicates.length ? `(${predicates.join(" or ")})` : "1 = 0", values: [] };
+}
+
 export function getAuthScopeCacheKey(user: AuthUser) {
-  if (canUseAllDivisions(user)) return "all";
-  return [...user.divisionIds].sort().join(",") || "none";
+  const divisions = canUseAllDivisions(user) ? "all" : [...user.divisionIds].sort().join(",") || "none";
+  const categories = hasFileCategoryRestriction(user)
+    ? normalizeFileCategories(user.allowedFileCategories ?? undefined).join(",")
+    : "all-categories";
+  return `${divisions}:${categories}`;
 }

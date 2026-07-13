@@ -1,6 +1,7 @@
 import type { FileRecord } from "@/lib/files-store";
 
-export function parseAmount(value: string | undefined) {
+export function parseAmount(value: string | number | undefined) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
   const cleaned = (value ?? "").replace(/,/g, "").trim();
   if (!cleaned) return undefined;
   const parsed = Number(cleaned);
@@ -11,7 +12,7 @@ export function hasAmount(value: string | undefined) {
   return parseAmount(value) !== undefined;
 }
 
-export function getInrAmount(value: string | undefined, file: FileRecord) {
+export function getInrAmount(value: string | number | undefined, file: FileRecord) {
   const amount = parseAmount(value);
   if (amount === undefined) return undefined;
 

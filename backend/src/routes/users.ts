@@ -3,6 +3,7 @@ import { pool } from "../db/pool.js";
 import type { AppUser, AppUserRole } from "../types.js";
 import { requireAdmin, type AuthRequest } from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
+import { normalizeFileCategories } from "../utils/file-categories.js";
 import {
   asyncHandler,
   HttpError,
@@ -38,6 +39,7 @@ type UserRow = {
   username: string;
   role: AppUserRole;
   division_ids: string[] | null;
+  allowed_file_categories: unknown;
 };
 
 function mapUser(row: UserRow): AppUser {
@@ -47,6 +49,11 @@ function mapUser(row: UserRow): AppUser {
     username: row.username,
     role: row.role,
     divisionIds: row.division_ids ?? [],
+    allowedFileCategories: Array.isArray(row.allowed_file_categories)
+      ? normalizeFileCategories(
+          row.allowed_file_categories.filter((item): item is string => typeof item === "string"),
+        )
+      : undefined,
   };
 }
 
@@ -65,6 +72,15 @@ function readDivisionIds(value: unknown) {
   return value as string[];
 }
 
+function readAllowedFileCategories(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new HttpError(400, "allowedFileCategories must be an array of file category keys.");
+  }
+  return normalizeFileCategories(value);
+}
+
 function clearUserCache() {
   clearCachePrefix("auth:");
   clearCachePrefix("lookup:users");
@@ -78,6 +94,7 @@ async function listUsers() {
          u.name,
          u.username,
          u.role,
+         u.allowed_file_categories,
          coalesce(
            array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
            array[]::text[]
@@ -129,15 +146,22 @@ usersRouter.post(
     const role = readRole(body.role ?? "editor");
     const password = requireString(body.password, "password");
     const divisionIds = readDivisionIds(body.divisionIds) ?? [];
+    const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
 
     const client = await pool.connect();
     try {
       await client.query("begin");
       const result = await client.query<{ id: string }>(
-        `insert into app_users (name, username, role, password_hash, is_active)
-         values ($1, $2, $3, crypt($4, gen_salt('bf')), true)
+        `insert into app_users (name, username, role, password_hash, is_active, allowed_file_categories)
+         values ($1, $2, $3, crypt($4, gen_salt('bf')), true, $5::jsonb)
          returning id`,
-        [name, username, role, password],
+        [
+          name,
+          username,
+          role,
+          password,
+          allowedFileCategories ? JSON.stringify(allowedFileCategories) : null,
+        ],
       );
       const userId = result.rows[0].id;
       for (const divisionId of divisionIds) {
@@ -169,6 +193,7 @@ usersRouter.patch(
     const fields: string[] = [];
     const values: unknown[] = [];
     const divisionIds = readDivisionIds(body.divisionIds);
+    const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
 
     const addField = (column: string, value: unknown) => {
       values.push(value);
@@ -179,6 +204,10 @@ usersRouter.patch(
     if ("username" in body) addField("username", requireString(body.username, "username"));
     if ("role" in body) addField("role", readRole(body.role));
     if ("password" in body) addField("password_hash", requireString(body.password, "password"));
+    if ("allowedFileCategories" in body) {
+      values.push(allowedFileCategories ? JSON.stringify(allowedFileCategories) : null);
+      fields.push(`allowed_file_categories = $${values.length}::jsonb`);
+    }
 
     const client = await pool.connect();
     try {

@@ -233,7 +233,8 @@ function MessageRow({
             search: {
               fileId: message.fileId,
               section: message.section,
-              quickFocus: undefined,
+              milestone: undefined,
+              quickFocus: false,
             },
           })
         }
@@ -266,7 +267,8 @@ function MessageRow({
               search: {
                 fileId: message.fileId,
                 section: message.section,
-                quickFocus: undefined,
+                milestone: undefined,
+                quickFocus: false,
               },
             })
           }

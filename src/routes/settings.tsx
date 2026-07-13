@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
 import {
@@ -16,9 +17,10 @@ import {
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
 } from "@/lib/files-store";
-import { mmgSummaryFieldOptions, normalizeMmgSummaryFields } from "@/lib/mmg-summary";
+import { getMmgSummaryFieldOptions, normalizeMmgSummaryFields } from "@/lib/mmg-summary";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
+import { fileCategoryOptions, type FileCategoryKey } from "@/lib/file-categories";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSetupPanel } from "@/routes/year-setup";
 import { displayFinancialYearLabel, isAllActiveFilesYear } from "@/lib/year-filter";
@@ -43,9 +45,14 @@ const defaultMilestoneSequence = [
   "Delivery Period",
   "Bank Guarantee",
   "Delivery",
+  "Bill sent for payment",
   "Payment",
   "File Closed",
 ];
+const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
+const defaultFileTypes = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
+const defaultModes = ["OBM", "PBM", "SBM", "LBM", "LPC"];
+const allFileCategoryKeys = fileCategoryOptions.map((option) => option.key);
 const fileClosedMilestone = "File Closed";
 
 function appendFileClosedMilestone(milestones: string[]) {
@@ -55,10 +62,27 @@ function appendFileClosedMilestone(milestones: string[]) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "");
   const normalizedMilestones = milestones.map(normalizeConfiguredMilestoneLabel);
-  const withoutFileClosed = normalizedMilestones.filter(
+  const withBillSent = insertBillSentMilestone(normalizedMilestones);
+  const withoutFileClosed = withBillSent.filter(
     (milestone) => normalize(milestone) !== normalize(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
+}
+
+function insertBillSentMilestone(milestones: string[]) {
+  const normalize = (value: string) =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const hasBillSent = milestones.some((milestone) => normalize(milestone) === "billsentforpayment");
+  const paymentIndex = milestones.findIndex((milestone) => normalize(milestone) === "payment");
+  if (hasBillSent || paymentIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, paymentIndex),
+    "Bill sent for payment",
+    ...milestones.slice(paymentIndex),
+  ];
 }
 
 function normalizeConfiguredMilestoneLabel(milestone: string) {
@@ -84,9 +108,16 @@ function getNextFinancialYearLabel(years: string[]) {
   return formatFinancialYear((latestStartYear ?? new Date().getFullYear()) + 1);
 }
 
+type AdminSection = {
+  key: string;
+  label: string;
+  content: ReactNode;
+};
+
 function SettingsPage() {
   const activeUser = useActiveUser();
   const [activeAdminSection, setActiveAdminSection] = useState("divisions");
+  const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
   if (activeUser?.role === "viewer" || activeUser?.role === "division_user") {
     return (
       <div className="space-y-4 max-w-6xl">
@@ -151,12 +182,15 @@ function SettingsPage() {
     );
   }
 
-  const adminSections = [
+  const adminSections: AdminSection[] = [
     { key: "workspace", label: "Workspace", content: <WorkspaceSettings /> },
     { key: "yearSetup", label: "Year Setup", content: <YearSetupPanel /> },
     { key: "mmgSummary", label: "MMG Summary", content: <MmgSummarySettings /> },
     { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
     { key: "indentors", label: "Indentors", content: <IndentorSettings /> },
+    { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
+    { key: "modes", label: "Modes", content: <ModeSettings /> },
+    { key: "firmTypes", label: "Firm Types", content: <FirmTypeSettings /> },
     { key: "tcec", label: "TCEC Committee", content: <TcecCommitteeSettings /> },
     { key: "thresholds", label: "Value thresholds", content: <ValueThresholdSettings /> },
     { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
@@ -166,6 +200,11 @@ function SettingsPage() {
   ];
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
+  const selectedAdminSectionUnlocked = Boolean(unlockedAdminSections[selectedAdminSection.key]);
+
+  const setAdminSectionUnlocked = (key: string, unlocked: boolean) => {
+    setUnlockedAdminSections((current) => ({ ...current, [key]: unlocked }));
+  };
 
   return (
     <div className="space-y-4 max-w-6xl">
@@ -192,8 +231,81 @@ function SettingsPage() {
             })}
           </div>
         </aside>
-        <div className="min-w-0">{selectedAdminSection.content}</div>
+        <div className="min-w-0">
+          <LockedAdminSection
+            section={selectedAdminSection}
+            unlocked={selectedAdminSectionUnlocked}
+            onLock={() => setAdminSectionUnlocked(selectedAdminSection.key, false)}
+            onUnlock={() => setAdminSectionUnlocked(selectedAdminSection.key, true)}
+          />
+        </div>
       </div>
+    </div>
+  );
+}
+
+function LockedAdminSection({
+  section,
+  unlocked,
+  onLock,
+  onUnlock,
+}: {
+  section: AdminSection;
+  unlocked: boolean;
+  onLock: () => void;
+  onUnlock: () => void;
+}) {
+  const [verifying, setVerifying] = useState(false);
+
+  const unlock = async () => {
+    const password = window.prompt(`Enter admin password to edit ${section.label}:`);
+    if (password === null) return;
+    if (!password.trim()) {
+      window.alert("Password is required.");
+      return;
+    }
+    setVerifying(true);
+    try {
+      await store.verifyAdminPassword(password);
+      onUnlock();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Incorrect password.");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={unlocked ? onLock : () => void unlock()}
+          disabled={verifying}
+          className={
+            "h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
+            (unlocked
+              ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+              : "border-border bg-background hover:bg-accent")
+          }
+        >
+          {unlocked ? (
+            <>
+              <Unlock className="size-4" /> Unlocked
+            </>
+          ) : (
+            <>
+              <Lock className="size-4" /> Edit
+            </>
+          )}
+        </button>
+      </div>
+      <fieldset
+        disabled={!unlocked}
+        className={!unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined}
+      >
+        {section.content}
+      </fieldset>
     </div>
   );
 }
@@ -410,9 +522,9 @@ function WorkspaceSettings() {
     store.updateSettings({ yearSelectionLocked: !settings.yearSelectionLocked });
   };
 
-  const deleteSelectedFinancialYear = () => {
+  const deleteSelectedFinancialYear = async () => {
     if (!canDeleteSelectedYear) return;
-    if (requestDeletionPassword(`delete financial year "${selectedFinancialYear}"`)) {
+    if (await requestDeletionPassword(`delete financial year "${selectedFinancialYear}"`)) {
       store.deleteFinancialYear(selectedFinancialYear);
     }
   };
@@ -617,6 +729,328 @@ function TcecCommitteeSettings() {
       </div>
     </div>
   );
+}
+
+function FirmTypeSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [name, setName] = useState("");
+  const firmTypes = normalizeFirmTypes(settings.firmTypes);
+
+  if (activeUser && activeUser.role !== "admin") return null;
+
+  const updateFirmTypes = (next: string[]) => {
+    store.updateSettings({ firmTypes: normalizeFirmTypes(next) });
+  };
+
+  const add = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const exists = firmTypes.some((firmType) => firmType.toLowerCase() === trimmed.toLowerCase());
+    if (!exists) updateFirmTypes([...firmTypes, trimmed]);
+    setName("");
+  };
+
+  const rename = (index: number, value: string) => {
+    const next = [...firmTypes];
+    next[index] = value;
+    updateFirmTypes(next);
+  };
+
+  const remove = (index: number) => {
+    updateFirmTypes(firmTypes.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">Firm Types</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Add and edit the firm type values shown in Supply Order forms and search filters.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+        <DivisionInput value={name} onChange={setName} placeholder="Firm type" />
+        <button
+          type="button"
+          onClick={add}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-md border border-border">
+        {firmTypes.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+            No firm types added yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {firmTypes.map((firmType, index) => (
+              <li key={`${firmType}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                <input
+                  value={firmType}
+                  onChange={(event) => rename(index, event.target.value)}
+                  className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => remove(index)}
+                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                  aria-label={`Delete ${firmType}`}
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModeSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [name, setName] = useState("");
+  const modes = normalizeModes(settings.modes);
+
+  if (activeUser && activeUser.role !== "admin") return null;
+
+  const updateModes = (next: string[]) => {
+    store.updateSettings({ modes: normalizeModes(next) });
+  };
+
+  const add = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const exists = modes.some((mode) => mode.toLowerCase() === trimmed.toLowerCase());
+    if (!exists) updateModes([...modes, trimmed]);
+    setName("");
+  };
+
+  const rename = (index: number, value: string) => {
+    const next = [...modes];
+    next[index] = value;
+    updateModes(next);
+  };
+
+  const remove = (index: number) => {
+    if (isDefaultMode(modes[index])) return;
+    updateModes(modes.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">Modes</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Add and edit the mode values shown in File Details, Search, and Dashboard Snapshot.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+        <DivisionInput value={name} onChange={setName} placeholder="Mode" />
+        <button
+          type="button"
+          onClick={add}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-md border border-border">
+        {modes.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+            No modes added yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {modes.map((mode, index) => {
+              const protectedMode = isDefaultMode(mode);
+              return (
+                <li key={`${mode}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                  <input
+                    value={mode}
+                    onChange={(event) => rename(index, event.target.value)}
+                    disabled={protectedMode}
+                    className={
+                      "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                      (protectedMode
+                        ? "bg-secondary/50 text-muted-foreground"
+                        : "bg-background")
+                    }
+                  />
+                  {protectedMode ? (
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                      Default
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => remove(index)}
+                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                      aria-label={`Delete ${mode}`}
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FileTypeSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [name, setName] = useState("");
+  const fileTypes = normalizeFileTypes(settings.fileTypes);
+
+  if (activeUser && activeUser.role !== "admin") return null;
+
+  const updateFileTypes = (next: string[]) => {
+    store.updateSettings({ fileTypes: normalizeFileTypes(next) });
+  };
+
+  const add = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const exists = fileTypes.some((fileType) => fileType.toLowerCase() === trimmed.toLowerCase());
+    if (!exists) updateFileTypes([...fileTypes, trimmed]);
+    setName("");
+  };
+
+  const rename = (index: number, value: string) => {
+    const next = [...fileTypes];
+    next[index] = value;
+    updateFileTypes(next);
+  };
+
+  const remove = (index: number) => {
+    if (isDefaultFileType(fileTypes[index])) return;
+    updateFileTypes(fileTypes.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">File Types</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Add and edit the file type values shown in File Details.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+        <DivisionInput value={name} onChange={setName} placeholder="File type" />
+        <button
+          type="button"
+          onClick={add}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-md border border-border">
+        {fileTypes.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+            No file types added yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {fileTypes.map((fileType, index) => {
+              const protectedFileType = isDefaultFileType(fileType);
+              return (
+                <li key={`${fileType}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                  <input
+                    value={fileType}
+                    onChange={(event) => rename(index, event.target.value)}
+                    disabled={protectedFileType}
+                    className={
+                      "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                      (protectedFileType
+                        ? "bg-secondary/50 text-muted-foreground"
+                        : "bg-background")
+                    }
+                  />
+                  {protectedFileType ? (
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                      Default
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => remove(index)}
+                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                      aria-label={`Delete ${fileType}`}
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function normalizeFirmTypes(values: string[] | undefined) {
+  const seen = new Set<string>();
+  const normalized = (values?.length ? values : defaultFirmTypes)
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return normalized.length ? normalized : defaultFirmTypes;
+}
+
+function normalizeFileTypes(values: string[] | undefined) {
+  const seen = new Set<string>();
+  const normalized = [...defaultFileTypes, ...(values ?? [])]
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return normalized.length ? normalized : defaultFileTypes;
+}
+
+function normalizeModes(values: string[] | undefined) {
+  const seen = new Set<string>();
+  const normalized = [...defaultModes, ...(values ?? [])]
+    .map((value) => value.trim().toUpperCase())
+    .filter((value) => {
+      if (!value) return false;
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+  return normalized.length ? normalized : defaultModes;
+}
+
+function isDefaultFileType(fileType: string | undefined) {
+  const normalized = fileType?.trim().toLowerCase();
+  return Boolean(
+    normalized && defaultFileTypes.some((item) => item.toLowerCase() === normalized),
+  );
+}
+
+function isDefaultMode(mode: string | undefined) {
+  const normalized = mode?.trim().toUpperCase();
+  return Boolean(normalized && defaultModes.includes(normalized));
 }
 
 const defaultThresholdAppliesTo: ValueThresholdAppliesTo = "both";
@@ -1173,7 +1607,16 @@ function TableFieldPresetSettings() {
 
 function MmgSummarySettings() {
   const settings = useSettings();
-  const fields = normalizeMmgSummaryFields(settings.mmgSummaryFields);
+  const fields = normalizeMmgSummaryFields(
+    settings.mmgSummaryFields,
+    settings.modes,
+    settings.firmTypes,
+  );
+  const mmgSummaryFieldOptions = getMmgSummaryFieldOptions(
+    settings.modes,
+    settings.firmTypes,
+    fields,
+  );
   const optionGroups = Array.from(new Set(mmgSummaryFieldOptions.map((option) => option.group)));
 
   const updateFields = (nextFields: typeof fields) => {
@@ -1210,7 +1653,9 @@ function MmgSummarySettings() {
           </button>
           <button
             type="button"
-            onClick={() => updateFields(normalizeMmgSummaryFields([]))}
+            onClick={() =>
+              updateFields(normalizeMmgSummaryFields([], settings.modes, settings.firmTypes))
+            }
             className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
           >
             Reset labels
@@ -1446,8 +1891,8 @@ function DivisionSettings() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => {
-                              if (requestDeletionPassword(`delete division "${division.name}"`)) {
+                            onClick={async () => {
+                              if (await requestDeletionPassword(`delete division "${division.name}"`)) {
                                 store.deleteDivision(division.id);
                               }
                             }}
@@ -1909,12 +2354,15 @@ function UserSettings() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<AppUserRole>("editor");
   const [divisionIds, setDivisionIds] = useState<string[]>([]);
+  const [allowedFileCategories, setAllowedFileCategories] =
+    useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editUsername, setEditUsername] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [editRole, setEditRole] = useState<AppUserRole>("editor");
   const [editDivisionIds, setEditDivisionIds] = useState<string[]>([]);
+  const [editAllowedFileCategories, setEditAllowedFileCategories] = useState<FileCategoryKey[]>([]);
 
   const add = () => {
     if (!name.trim() || !username.trim() || !password.trim()) return;
@@ -1924,12 +2372,14 @@ function UserSettings() {
       password: password.trim(),
       role,
       divisionIds,
+      allowedFileCategories,
     });
     setName("");
     setUsername("");
     setPassword("");
     setRole("editor");
     setDivisionIds([]);
+    setAllowedFileCategories(allFileCategoryKeys);
   };
 
   const startEdit = (user: (typeof users)[number]) => {
@@ -1939,6 +2389,7 @@ function UserSettings() {
     setEditPassword("");
     setEditRole(user.role);
     setEditDivisionIds(user.divisionIds ?? []);
+    setEditAllowedFileCategories(normalizeUserFileCategories(user.allowedFileCategories));
   };
 
   const saveEdit = (id: string) => {
@@ -1949,6 +2400,7 @@ function UserSettings() {
       ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
       role: editRole,
       divisionIds: editDivisionIds,
+      allowedFileCategories: editAllowedFileCategories,
     });
     setEditingId(null);
   };
@@ -1981,15 +2433,23 @@ function UserSettings() {
           onChange={setDivisionIds}
         />
       </div>
+      <div className="mt-3">
+        <div className="mb-1.5 text-xs font-medium text-muted-foreground">Allowed file types</div>
+        <FileCategoryAccessPicker
+          selectedCategories={allowedFileCategories}
+          onChange={setAllowedFileCategories}
+        />
+      </div>
 
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[860px] table-fixed text-sm">
+        <table className="w-full min-w-[980px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[20%]" />
-            <col className="w-[18%]" />
+            <col className="w-[17%]" />
             <col className="w-[16%]" />
-            <col className="w-[34%]" />
-            <col className="w-[12%]" />
+            <col className="w-[13%]" />
+            <col className="w-[28%]" />
+            <col className="w-[16%]" />
+            <col className="w-[10%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
@@ -1997,13 +2457,14 @@ function UserSettings() {
               <th className="text-left font-medium px-4 py-2.5">Username</th>
               <th className="text-left font-medium px-4 py-2.5">Role</th>
               <th className="text-left font-medium px-4 py-2.5">Visible divisions</th>
+              <th className="text-left font-medium px-4 py-2.5">File types</th>
               <th className="text-right font-medium px-4 py-2.5">Action</th>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 ? (
               <tr className="border-t border-border">
-                <td className="px-4 py-6 text-muted-foreground text-center" colSpan={5}>
+                <td className="px-4 py-6 text-muted-foreground text-center" colSpan={6}>
                   No users added yet.
                 </td>
               </tr>
@@ -2059,6 +2520,16 @@ function UserSettings() {
                         divisionAccessLabel(user.divisionIds, divisions)
                       )}
                     </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {isEditing ? (
+                        <FileCategoryAccessPicker
+                          selectedCategories={editAllowedFileCategories}
+                          onChange={setEditAllowedFileCategories}
+                        />
+                      ) : (
+                        fileCategoryAccessLabel(user.allowedFileCategories)
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
                         {isEditing ? (
@@ -2089,8 +2560,8 @@ function UserSettings() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                if (requestDeletionPassword(`delete user "${user.name}"`)) {
+                              onClick={async () => {
+                                if (await requestDeletionPassword(`delete user "${user.name}"`)) {
                                   store.deleteUser(user.id);
                                 }
                               }}
@@ -2171,17 +2642,23 @@ function ArchiveSettings() {
   };
 
   const permanentlyDeleteDivision = async (division: Division) => {
-    const deletionPassword = promptDeletionPassword(
+    const deletionPassword = await promptDeletionPassword(
       `permanently delete archived division "${division.name}"`,
     );
     if (deletionPassword === null) return;
-    await store.permanentlyDeleteArchivedDivision(division.id, deletionPassword);
-    await loadArchive();
+    try {
+      await store.permanentlyDeleteArchivedDivision(division.id, deletionPassword);
+      await loadArchive();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to delete archived division.");
+    }
   };
 
   const permanentlyDelete = async (file: FileRecord) => {
     const label = file.uniqueCode || file.fileNo || file.indentor || file.id;
-    const deletionPassword = promptDeletionPassword(`permanently delete archived file "${label}"`);
+    const deletionPassword = await promptDeletionPassword(
+      `permanently delete archived file "${label}"`,
+    );
     if (deletionPassword === null) return;
     await store.permanentlyDeleteArchivedFile(file.id, deletionPassword);
     await loadArchive();
@@ -2396,11 +2873,79 @@ function DivisionAccessPicker({
   );
 }
 
+function FileCategoryAccessPicker({
+  selectedCategories,
+  onChange,
+}: {
+  selectedCategories: FileCategoryKey[];
+  onChange: (categories: FileCategoryKey[]) => void;
+}) {
+  const toggle = (category: FileCategoryKey) => {
+    onChange(
+      selectedCategories.includes(category)
+        ? selectedCategories.filter((item) => item !== category)
+        : fileCategoryOptions
+            .map((option) => option.key)
+            .filter((key) => selectedCategories.includes(key) || key === category),
+    );
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {fileCategoryOptions.map((option) => (
+          <label
+            key={option.key}
+            className="inline-flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <input
+              type="checkbox"
+              checked={selectedCategories.includes(option.key)}
+              onChange={() => toggle(option.key)}
+              className="size-4 rounded border-input"
+            />
+            <span>{option.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="text-xs text-muted-foreground">Checked file types are accessible.</div>
+    </div>
+  );
+}
+
 function roleLabel(role: AppUserRole) {
   if (role === "admin") return "Admin";
   if (role === "sub_admin") return "Sub admin";
   if (role === "editor") return "Editor";
   return "Viewer";
+}
+
+function normalizeUserFileCategories(values: string[] | null | undefined): FileCategoryKey[] {
+  if (!values) return allFileCategoryKeys;
+  const allowedKeys = new Set(fileCategoryOptions.map((option) => option.key));
+  const expandedValues = new Set(values);
+  if (
+    expandedValues.has("goodsServices") &&
+    expandedValues.has("amc") &&
+    expandedValues.has("mpc") &&
+    expandedValues.has("cars") &&
+    !expandedValues.has("om")
+  ) {
+    expandedValues.add("om");
+  }
+  return fileCategoryOptions
+    .map((option) => option.key)
+    .filter((key) => expandedValues.has(key) && allowedKeys.has(key));
+}
+
+function fileCategoryAccessLabel(values: string[] | null | undefined) {
+  const categories = normalizeUserFileCategories(values);
+  if (categories.length === allFileCategoryKeys.length) return "All file types";
+  if (categories.length === 0) return "No file types";
+  return categories
+    .map((key) => fileCategoryOptions.find((option) => option.key === key)?.label)
+    .filter(Boolean)
+    .join(", ");
 }
 
 function divisionAccessLabel(selectedIds: string[], divisions: ReturnType<typeof useDivisions>) {
