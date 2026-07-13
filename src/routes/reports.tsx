@@ -1945,7 +1945,7 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): Expe
       if (!hasFilledString(deliveryPeriodDate) || isYes(order.soCancelled)) return;
       if (hasFilledString(order.materialReceiptDate)) return;
       if (hasFilledString(order.paymentDate)) return;
-      const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays);
+      const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays + 1);
       if (!cashOutgoDate) return;
 
       addCashOutgoTotal(totals, cashOutgoDate, file, order);

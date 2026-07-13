@@ -268,13 +268,22 @@ function getApplicablePaymentStages(order: SupplyOrderDetail) {
 
 function isStagePaymentApplicable(stage: StageDeliveryDetail) {
   const effectiveDpDate = getLaterDate(stage.dpDate, stage.revisedDp);
-  return hasFilledString(effectiveDpDate) && effectiveDpDate! <= formatLocalDate(new Date());
+  const dueDate = getNextLocalDate(effectiveDpDate);
+  return hasFilledString(dueDate) && dueDate! <= formatLocalDate(new Date());
 }
 
 function getLaterDate(first: string | undefined, second: string | undefined) {
   if (!hasFilledString(first)) return hasFilledString(second) ? second : undefined;
   if (!hasFilledString(second)) return first;
   return second! > first! ? second : first;
+}
+
+function getNextLocalDate(date: string | undefined) {
+  if (!hasFilledString(date)) return undefined;
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  parsed.setDate(parsed.getDate() + 1);
+  return formatLocalDate(parsed);
 }
 
 function formatLocalDate(date: Date) {

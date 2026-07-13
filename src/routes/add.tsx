@@ -5247,7 +5247,8 @@ function isDateBefore(date: string | undefined, reference: string | undefined) {
 
 function isStagePaymentDetailsDue(stage: StageDeliveryDetail) {
   const effectiveDpDate = getLaterDate(stage.dpDate, stage.revisedDp);
-  return hasFilledValue(effectiveDpDate) && effectiveDpDate! <= formatLocalDate(new Date());
+  const dueDate = getNextLocalDate(effectiveDpDate);
+  return hasFilledValue(dueDate) && dueDate! <= formatLocalDate(new Date());
 }
 
 function getStageDeliveryPeriodRibbonLabel(

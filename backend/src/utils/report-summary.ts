@@ -276,7 +276,7 @@ function getExpectedCashOutgoByDpRows(
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
       if (!hasFilledString(deliveryPeriodDate) || isSupplyOrderCancelled(file, order)) return;
       if (!isExpectedDpCashOutgoPending(file, order, asOfDate)) return;
-      const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays);
+      const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays + 1);
       if (!cashOutgoDate) return;
 
       addCashOutgoTotal(totals, cashOutgoDate, file, order);
@@ -367,7 +367,9 @@ function getExpectedCashOutgoByReceiptPendingBillRows(
 }
 
 function getReceiptPendingBillReportDate(file: FileRecord, order: SupplyOrderDetail) {
-  return isDeliveryInspectionApplicable(file) ? order.materialReceiptDate : getDeliveryPeriodDate(order);
+  return isDeliveryInspectionApplicable(file)
+    ? order.materialReceiptDate
+    : addDays(getDeliveryPeriodDate(order), 1);
 }
 
 function getExpectedCashOutgoByBillPreparationRows(

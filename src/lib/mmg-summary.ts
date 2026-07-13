@@ -608,7 +608,7 @@ function getMmgSummaryValues(
     totalExpectedPaymentRemainingThisYear: formatMoney(
       sumOrders(files, ({ file, order }) =>
         !isCancelledOrder(file, order) &&
-        dateInFinancialYear(getDeliveryPeriodDate(order), fyRange) &&
+        dateInFinancialYear(addDays(getDeliveryPeriodDate(order), 1), fyRange) &&
         !hasFilledString(order.materialReceiptDate) &&
         !hasFilledString(order.paymentDate)
           ? getOrderTotal(file, order)
@@ -912,6 +912,13 @@ function monthBefore(date: string | undefined, monthKey: string) {
 
 function isBeforeToday(date: string | undefined) {
   return hasFilledString(date) && date! < formatLocalDate(new Date());
+}
+
+function addDays(date: string | undefined, days: number) {
+  const parsed = new Date(`${date ?? ""}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  parsed.setDate(parsed.getDate() + days);
+  return formatLocalDate(parsed);
 }
 
 function parseDate(date: string | undefined) {

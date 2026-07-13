@@ -877,7 +877,7 @@ async function loadCashOutgoRows(
     : undefined;
   const receiptPendingBillBaseDateExpression = `case
     when lower(coalesce(effective.file_type, '')) in ('amc', 'mpc', 'cars', 'o&m')
-    then coalesce(effective.revised_dp, effective.dp_date)
+    then (coalesce(effective.revised_dp, effective.dp_date) + interval '1 day')::date
     else effective.material_receipt_date
   end`;
   const nonDeliveryFileTypeExpression =
@@ -885,7 +885,7 @@ async function loadCashOutgoRows(
   const billPreparationBaseDateExpression = receiptPendingBillBaseDateExpression;
   const dateExpression = (() => {
     if (mode === "expectedDp") {
-      return `(coalesce(effective.revised_dp, effective.dp_date) + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;
+      return `(coalesce(effective.revised_dp, effective.dp_date) + ((${expectedDaysPlaceholder}::integer + 1) * interval '1 day'))::date`;
     }
     if (mode === "expectedReceipt") {
       return `(effective.material_receipt_date + (${expectedDaysPlaceholder}::integer * interval '1 day'))::date`;

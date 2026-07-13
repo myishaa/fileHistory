@@ -3058,7 +3058,7 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
     const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
     if (parsed.mode === "expectedDp") {
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
-      const cashOutgoDate = addDays(deliveryPeriodDate, parsed.offsetDays);
+      const cashOutgoDate = addDays(deliveryPeriodDate, parsed.offsetDays + 1);
       return (
         hasFilledString(deliveryPeriodDate) &&
         !isSupplyOrderCancelled(file, order) &&
@@ -3137,7 +3137,7 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
 function getReceiptPendingBillReportDate(file: FileRecord, order: SupplyOrderDetail) {
   return isDeliveryInspectionApplicable(file)
     ? order.materialReceiptDate
-    : getDeliveryPeriodDate(order);
+    : addDays(getDeliveryPeriodDate(order), 1);
 }
 
 function isExpectedDpCashOutgoPending(

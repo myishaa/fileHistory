@@ -777,7 +777,7 @@ function effectiveOrderDeliveryPendingExpression(alias = "eso") {
 function effectiveOrderDeliveryPeriodValidExpression(alias = "eso") {
   return `${effectiveOrderLiveExpression(alias)}
     and ${effectiveOrderDpDateExpression(alias)} is not null
-    and ${effectiveOrderDpDateExpression(alias)} > current_date`;
+    and ${effectiveOrderDpDateExpression(alias)} >= current_date`;
 }
 
 function effectiveOrderDeliveryPeriodExpiredExpression(alias = "eso") {
@@ -790,7 +790,7 @@ function effectiveOrderDeliveryPeriodExtendedExpression(alias = "eso") {
   return `${effectiveOrderLiveExpression(alias)}
     and ${hasFilledExpression(`${alias}.revised_dp`)}
     and ${effectiveOrderDpDateExpression(alias)} is not null
-    and ${effectiveOrderDpDateExpression(alias)} > current_date`;
+    and ${effectiveOrderDpDateExpression(alias)} >= current_date`;
 }
 
 function effectiveOrderBgApplicableExpression(alias = "eso") {

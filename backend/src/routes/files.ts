@@ -1621,8 +1621,8 @@ function statusSummaryFilterSql(filter: string) {
     const fileEffectiveDp = effectiveDpDateSql("f");
     if (stage === "Valid") {
       return `${base} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
-        `${hasTextSql("so.so_date")} and ${soEffectiveDp} is not null and ${soEffectiveDp} > current_date and not ${hasTextSql("so.material_receipt_date")}`,
-        `${hasTextSql("f.so_date")} and ${fileEffectiveDp} is not null and ${fileEffectiveDp} > current_date and not ${hasTextSql("f.material_receipt_date")}`,
+        `${hasTextSql("so.so_date")} and ${soEffectiveDp} is not null and ${soEffectiveDp} >= current_date and not ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${fileEffectiveDp} is not null and ${fileEffectiveDp} >= current_date and not ${hasTextSql("f.material_receipt_date")}`,
       )}`;
     }
     if (stage === "Expired") {
@@ -1633,8 +1633,8 @@ function statusSummaryFilterSql(filter: string) {
     }
     if (stage === "Extended") {
       return `${base} and ${statusSupplyOrderPlacedSql()} and ${supplyOrderChildOrLegacySql(
-        `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${soEffectiveDp} > current_date and not ${hasTextSql("so.material_receipt_date")}`,
-        `${hasTextSql("f.so_date")} and ${hasTextSql("f.revised_dp")} and ${fileEffectiveDp} > current_date and not ${hasTextSql("f.material_receipt_date")}`,
+        `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${soEffectiveDp} >= current_date and not ${hasTextSql("so.material_receipt_date")}`,
+        `${hasTextSql("f.so_date")} and ${hasTextSql("f.revised_dp")} and ${fileEffectiveDp} >= current_date and not ${hasTextSql("f.material_receipt_date")}`,
       )}`;
     }
     return "false";
@@ -1832,8 +1832,8 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
     getToDatePlaceholder() ? `${dateExpression} <= ${getToDatePlaceholder()}::date` : undefined;
 
   if (parsed.mode === "expectedDp") {
-    const childDate = `(coalesce(so.revised_dp, so.dp_date) + ${offsetInterval})::date`;
-    const legacyDate = `(coalesce(f.revised_dp, f.dp_date) + ${offsetInterval})::date`;
+    const childDate = `(coalesce(so.revised_dp, so.dp_date) + ((${offsetPlaceholder}::integer + 1) * interval '1 day'))::date`;
+    const legacyDate = `(coalesce(f.revised_dp, f.dp_date) + ((${offsetPlaceholder}::integer + 1) * interval '1 day'))::date`;
     const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
       `coalesce(so.revised_dp, so.dp_date) is not null
@@ -1889,12 +1889,12 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   if (parsed.mode === "expectedReceiptPendingBill") {
     const childBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(so.revised_dp, so.dp_date)
+      then (coalesce(so.revised_dp, so.dp_date) + interval '1 day')::date
       else so.material_receipt_date
     end`;
     const legacyBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(f.revised_dp, f.dp_date)
+      then (coalesce(f.revised_dp, f.dp_date) + interval '1 day')::date
       else f.material_receipt_date
     end`;
     const childDate = `(${childBaseDate} + ${offsetInterval})::date`;
@@ -1918,12 +1918,12 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   if (parsed.mode === "billPreparation") {
     const childBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(so.revised_dp, so.dp_date)
+      then (coalesce(so.revised_dp, so.dp_date) + interval '1 day')::date
       else so.material_receipt_date
     end`;
     const legacyBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(f.revised_dp, f.dp_date)
+      then (coalesce(f.revised_dp, f.dp_date) + interval '1 day')::date
       else f.material_receipt_date
     end`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
@@ -1949,12 +1949,12 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   if (parsed.mode === "billSent") {
     const childBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(so.revised_dp, so.dp_date)
+      then (coalesce(so.revised_dp, so.dp_date) + interval '1 day')::date
       else so.material_receipt_date
     end`;
     const legacyBaseDate = `case
       when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
-      then coalesce(f.revised_dp, f.dp_date)
+      then (coalesce(f.revised_dp, f.dp_date) + interval '1 day')::date
       else f.material_receipt_date
     end`;
     return `${activeFile} and ${supplyOrderChildOrLegacySql(
@@ -2183,7 +2183,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     return `${deliveryInspectionApplicableSql()} and not ${isCancelledFileSql()} and ${supplyOrderPlacedSql()} and ${deliveryPendingOrderSql()}`;
   if (filter === "deliveryPeriodValid")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} > current_date and not ${hasTextSql(
+      `${hasTextSql("so.so_date")} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} >= current_date and not ${hasTextSql(
         "so.material_receipt_date",
       )}`,
     )}`;
@@ -2195,7 +2195,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     )}`;
   if (filter === "deliveryPeriodExtended")
     return `${supplyOrderPlacedSql()} and ${supplyOrderExists(
-      `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${effectiveDpDateSql("so")} > current_date and not ${hasTextSql(
+      `${hasTextSql("so.so_date")} and ${hasTextSql("so.revised_dp")} and ${effectiveDpDateSql("so")} >= current_date and not ${hasTextSql(
         "so.material_receipt_date",
       )}`,
     )}`;
