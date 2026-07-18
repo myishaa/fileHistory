@@ -33,6 +33,15 @@ export function normalizeFileCategories(values: string[] | undefined): FileCateg
   return allFileCategoryKeys.filter((key) => seen.has(key));
 }
 
+export function getVisibleFileCategoryKeys(values: string[] | null | undefined) {
+  return Array.isArray(values) ? normalizeFileCategories(values) : [...allFileCategoryKeys];
+}
+
+export function getVisibleFileCategoryOptions(values: string[] | null | undefined) {
+  const visibleKeys = new Set(getVisibleFileCategoryKeys(values));
+  return fileCategoryOptions.filter((option) => visibleKeys.has(option.key));
+}
+
 export function serializeFileCategories(values: FileCategoryKey[]) {
   return values.length ? values.join(",") : "__none__";
 }

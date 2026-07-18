@@ -2,7 +2,11 @@
 import * as React from "react";
 import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
-import { isAllActiveFilesYear, isFileVisibleForYear } from "@/lib/year-filter";
+import {
+  isAllActiveFilesYear,
+  isFileVisibleForYear,
+  normalizeFinancialYearLabel,
+} from "@/lib/year-filter";
 
 export type FileRecord = {
   id: string;
@@ -82,6 +86,8 @@ export type FileRecord = {
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
+  ldType?: string;
+  ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
   irPreparationDate?: string;
@@ -152,6 +158,7 @@ export type FileMessage = {
 export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
+  financialSanctionDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -165,6 +172,8 @@ export type SupplyOrderDetail = {
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
+  ldType?: string;
+  ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
   irPreparationDate?: string;
@@ -190,6 +199,8 @@ export type SupplyOrderDetail = {
 };
 
 export type AdvancePaymentDetail = {
+  currentMilestone?: string;
+  completedMilestones?: string[];
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
   billPreparationDate?: string;
@@ -203,6 +214,9 @@ export type AdvancePaymentDetail = {
 export type StageDeliveryDetail = {
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
+  currentMilestone?: string;
+  completedMilestones?: string[];
+  deliveryPeriodStartDate?: string;
   dpDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
@@ -324,7 +338,8 @@ export type AppSettings = {
 };
 
 function currentYear() {
-  return String(new Date().getFullYear());
+  const startYear = new Date().getFullYear();
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
 
 const defaultSettings: AppSettings = {
@@ -443,6 +458,30 @@ function filesPath(year?: string) {
   return query ? `/api/files?${query}` : "/api/files";
 }
 
+function normalizeSettingsYears(settings: AppSettings): AppSettings {
+  const financialYear =
+    normalizeFinancialYearLabel(settings.financialYear) ||
+    normalizeFinancialYearLabel(defaultSettings.financialYear);
+  const selectedYear = isAllActiveFilesYear(settings.selectedYear)
+    ? settings.selectedYear
+    : normalizeFinancialYearLabel(settings.selectedYear) || financialYear;
+  const financialYears = Array.from(
+    new Set(
+      [financialYear, selectedYear, ...(settings.financialYears ?? [])]
+        .map((year) =>
+          isAllActiveFilesYear(year) ? undefined : normalizeFinancialYearLabel(year),
+        )
+        .filter((year): year is string => Boolean(year)),
+    ),
+  );
+  return {
+    ...settings,
+    financialYear,
+    selectedYear,
+    financialYears,
+  };
+}
+
 async function loadAll(force = false) {
   if (typeof window === "undefined") return;
   if (loadPromise && !force) return loadPromise;
@@ -463,13 +502,13 @@ async function loadAll(force = false) {
           indentors: [],
           users: [],
           authUser: undefined,
-          settings: {
+          settings: normalizeSettingsYears({
             ...defaultSettings,
             ...settings.settings,
             tableFieldPresets: settings.settings.tableFieldPresets?.length
               ? settings.settings.tableFieldPresets
               : defaultTableFieldPresets,
-          },
+          }),
           loading: false,
           loaded: true,
         });
@@ -494,14 +533,14 @@ async function loadAll(force = false) {
         indentors: [],
         users: users.users,
         authUser: auth.user,
-        settings: {
+        settings: normalizeSettingsYears({
           ...defaultSettings,
           ...settings.settings,
           activeUserId: auth.user.id,
           tableFieldPresets: settings.settings.tableFieldPresets?.length
             ? settings.settings.tableFieldPresets
             : defaultTableFieldPresets,
-        },
+        }),
         loading: false,
         loaded: true,
       });
@@ -556,7 +595,7 @@ export const store = {
   getSettings(): AppSettings {
     ensureLoaded();
     const financialYear = state.settings.financialYear ?? defaultSettings.financialYear;
-    return { ...defaultSettings, ...state.settings, financialYear };
+    return normalizeSettingsYears({ ...defaultSettings, ...state.settings, financialYear });
   },
   getUsers(): AppUser[] {
     ensureLoaded();
@@ -921,13 +960,16 @@ export function fetchFilesForYear(year: string) {
 export function fetchNextUniqueCode({
   financialYear,
   division,
+  divisionId,
 }: {
   financialYear: string;
   division: string;
+  divisionId?: string;
 }) {
   const params = new URLSearchParams();
   params.set("financialYear", financialYear);
   params.set("division", division);
+  if (divisionId) params.set("divisionId", divisionId);
   return request<{ uniqueCode: string }>(`/api/files/next-unique-code?${params.toString()}`);
 }
 
@@ -1007,6 +1049,18 @@ export function useActiveUser() {
   }, []);
   ensureLoaded();
   return state.authUser;
+}
+
+export function useStoreStatus() {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const u = store.subscribe(() => setTick((t) => t + 1));
+    return () => {
+      u();
+    };
+  }, []);
+  ensureLoaded();
+  return { loading: state.loading, loaded: state.loaded, error: state.error };
 }
 
 export function useAccessibleDivisions() {

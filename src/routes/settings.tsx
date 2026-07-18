@@ -41,6 +41,7 @@ const defaultMilestoneSequence = [
   "Bidding",
   "Post-TCEC",
   "CNC",
+  "Financial Sanction",
   "Supply Order",
   "Delivery Period",
   "Bank Guarantee",
@@ -62,7 +63,8 @@ function appendFileClosedMilestone(milestones: string[]) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "");
   const normalizedMilestones = milestones.map(normalizeConfiguredMilestoneLabel);
-  const withBillSent = insertBillSentMilestone(normalizedMilestones);
+  const withFinancialSanction = insertFinancialSanctionMilestone(normalizedMilestones);
+  const withBillSent = insertBillSentMilestone(withFinancialSanction);
   const withoutFileClosed = withBillSent.filter(
     (milestone) => normalize(milestone) !== normalize(fileClosedMilestone),
   );
@@ -85,13 +87,36 @@ function insertBillSentMilestone(milestones: string[]) {
   ];
 }
 
+function insertFinancialSanctionMilestone(milestones: string[]) {
+  const normalize = (value: string) =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const hasFinancialSanction = milestones.some(
+    (milestone) => normalize(milestone) === "financialsanction",
+  );
+  const supplyOrderIndex = milestones.findIndex((milestone) => normalize(milestone) === "supplyorder");
+  if (hasFinancialSanction || supplyOrderIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, supplyOrderIndex),
+    "Financial Sanction",
+    ...milestones.slice(supplyOrderIndex),
+  ];
+}
+
 function normalizeConfiguredMilestoneLabel(milestone: string) {
   return milestone.trim().toLowerCase() === "controlled" ? "Controlling" : milestone;
 }
 
 function readFinancialYearStart(label: string) {
-  const match = label.match(/\b(20\d{2}|19\d{2})\b/);
-  return match ? Number(match[1]) : null;
+  const match = label.trim().match(/^(\d{4})-(\d{2}|\d{4})$/);
+  if (!match) return null;
+  const startYear = Number(match[1]);
+  const endYear = Number(match[2]);
+  const expectedShortEnd = (startYear + 1) % 100;
+  const actualShortEnd = match[2].length === 2 ? endYear : endYear % 100;
+  return actualShortEnd === expectedShortEnd ? startYear : null;
 }
 
 function formatFinancialYear(startYear: number) {
@@ -106,6 +131,25 @@ function getNextFinancialYearLabel(years: string[]) {
     return latest === null || startYear > latest ? startYear : latest;
   }, null);
   return formatFinancialYear((latestStartYear ?? new Date().getFullYear()) + 1);
+}
+
+function validateNewFinancialYearLabel(label: string, years: string[]) {
+  if (!/^\d{4}-\d{2}$/.test(label)) {
+    return "Financial year must be entered in YYYY-YY format, like 2026-27.";
+  }
+  const startYear = readFinancialYearStart(label);
+  if (startYear === null) return "Financial year must be continuous, like 2026-27.";
+  const existingStartYears = years
+    .map(readFinancialYearStart)
+    .filter((year): year is number => year !== null);
+  if (existingStartYears.includes(startYear)) return `Financial year ${label} already exists.`;
+  if (!existingStartYears.length) return "";
+  const earliest = Math.min(...existingStartYears);
+  const latest = Math.max(...existingStartYears);
+  if (startYear === earliest - 1 || startYear === latest + 1) return "";
+  return `Financial years must be continuous. Add ${formatFinancialYear(
+    earliest - 1,
+  )} or ${formatFinancialYear(latest + 1)} next.`;
 }
 
 type AdminSection = {
@@ -474,6 +518,7 @@ function WorkspaceSettings() {
   const settings = useSettings();
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
+  const [newFinancialYearError, setNewFinancialYearError] = useState("");
   const selectedFinancialYear = isAllActiveFilesYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
@@ -507,6 +552,12 @@ function WorkspaceSettings() {
   const addFinancialYear = () => {
     const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
+    const error = validateNewFinancialYearLabel(label, financialYears);
+    if (error) {
+      setNewFinancialYearError(error);
+      return;
+    }
+    setNewFinancialYearError("");
     store.addFinancialYear(label, true);
     setNewFinancialYear("");
   };
@@ -570,13 +621,19 @@ function WorkspaceSettings() {
               <div className="text-xs font-medium mb-1.5">Add year</div>
               <input
                 value={newFinancialYear || suggestedFinancialYear}
-                onChange={(event) => setNewFinancialYear(event.target.value)}
+                onChange={(event) => {
+                  setNewFinancialYear(event.target.value);
+                  setNewFinancialYearError("");
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") addFinancialYear();
                 }}
                 placeholder={suggestedFinancialYear}
                 className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
+              {newFinancialYearError ? (
+                <div className="mt-1.5 text-xs text-destructive">{newFinancialYearError}</div>
+              ) : null}
             </label>
 
             <div className="flex flex-wrap items-center gap-3 xl:col-span-2">

@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ArrowRight, ScanLine } from "lucide-react";
+import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
 import { fetchFilesByUniqueCode, type FileRecord, useActiveUser } from "@/lib/files-store";
 
 export const Route = createFileRoute("/quick-entry")({
@@ -26,7 +27,18 @@ const quickEntryStageSections = [
   },
   {
     title: "Supply order and payment",
-    milestones: ["Supply Order", "Delivery Period", "Bank Guarantee", "Delivery", "Payment"],
+    milestones: [
+      "Supply Order",
+      "Delivery Period",
+      "Bank Guarantee",
+      "Delivery",
+      "IR Preparation",
+      "IR Receipt",
+      "Bill preparation",
+      "Bill sent for payment",
+      "Payment",
+      "Advance Payment",
+    ],
   },
   {
     title: "Firm details",
@@ -113,7 +125,13 @@ function QuickEntryEditor() {
     setMilestoneFileId("");
     navigate({
       to: "/add",
-      search: { fileId: file.id, section: stage.title, milestone: undefined, quickFocus: true },
+      search: {
+        fileId: file.id,
+        section: stage.title,
+        milestone: undefined,
+        focusTarget: stage.focusTarget,
+        quickFocus: true,
+      },
     });
   };
 
@@ -203,11 +221,38 @@ function normalizeQuickEntryCode(value: string | undefined) {
 }
 
 function getQuickEntryStageForCurrentMilestone(file: FileRecord) {
-  const current = normalizeQuickEntryMilestone(file.currentMilestone);
+  const current = getEffectiveQuickEntryMilestone(file);
   if (!current) return undefined;
-  return quickEntryStageSections.find((stage) =>
-    stage.milestones.some((milestone) => normalizeQuickEntryMilestone(milestone) === current),
+  const stage = quickEntryStageSections.find((item) =>
+    item.milestones.some((milestone) => normalizeQuickEntryMilestone(milestone) === current),
   );
+  if (!stage) return undefined;
+  return {
+    ...stage,
+    focusTarget: isSupplyOrderQuickEntryMilestone(current) ? `${current}:current` : undefined,
+  };
+}
+
+function getEffectiveQuickEntryMilestone(file: FileRecord) {
+  const orderCurrent = getCurrentSupplyOrderMilestone(file);
+  if (orderCurrent) return orderCurrent;
+  return normalizeQuickEntryMilestone(file.currentMilestone);
+}
+
+function getCurrentSupplyOrderMilestone(file: FileRecord) {
+  const currentMilestones = [
+    ...rawSupplyOrders(file).map((order) => order.currentMilestone),
+    ...fileSupplyOrders(file).map((order) => order.currentMilestone),
+  ];
+  return (
+    currentMilestones
+      .map(normalizeQuickEntryMilestone)
+      .find((milestone) => milestone && isSupplyOrderQuickEntryMilestone(milestone)) ?? ""
+  );
+}
+
+function isSupplyOrderQuickEntryMilestone(value: string) {
+  return supplyOrderQuickEntryMilestones.has(value);
 }
 
 function normalizeQuickEntryMilestone(value: string | undefined) {
@@ -218,3 +263,9 @@ function normalizeQuickEntryMilestone(value: string | undefined) {
       .replace(/[^a-z0-9]/g, "") ?? ""
   );
 }
+
+const supplyOrderQuickEntryMilestones = new Set(
+  quickEntryStageSections
+    .find((stage) => stage.title === "Supply order and payment")!
+    .milestones.map(normalizeQuickEntryMilestone),
+);

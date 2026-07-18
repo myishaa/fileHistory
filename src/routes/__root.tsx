@@ -13,7 +13,7 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import appCss from "../styles.css?url";
 import { TopBar } from "@/components/top-bar";
-import { store, useActiveUser, useDivisions, useSettings } from "@/lib/files-store";
+import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
 
 function NotFoundComponent() {
   return (
@@ -118,9 +118,17 @@ function RootComponent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const storeStatus = useStoreStatus();
+  const [hydrated, setHydrated] = useState(false);
   const themeClass = settings.theme === "dark" ? "dark" : "";
   const tintClass = `theme-tint-${settings.themeTint}`;
   const isPublicLivePage = pathname === "/mmg-live";
+  const isOpeningSession =
+    hydrated && !isPublicLivePage && !activeUser && !storeStatus.loaded && storeStatus.loading;
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -129,6 +137,12 @@ function RootComponent() {
       >
         {isPublicLivePage ? (
           <Outlet />
+        ) : isOpeningSession ? (
+          <main className="grid min-h-screen place-items-center bg-background px-4">
+            <div className="rounded-lg border border-border bg-card px-5 py-4 text-sm text-muted-foreground shadow-[var(--shadow-card)]">
+              Opening software...
+            </div>
+          </main>
         ) : activeUser ? (
           <>
             <TopBar />

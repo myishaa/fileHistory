@@ -115,15 +115,10 @@ function getSelectedYearWhere(selectedYear: string) {
     return {
       whereSql: `where not exists (
           select 1 from file_completed_milestones completed
-          where completed.file_id = f.id and lower(completed.milestone) = 'payment'
+          where completed.file_id = f.id
+            and regexp_replace(lower(coalesce(completed.milestone, '')), '[^a-z0-9]+', '', 'g') = 'fileclosed'
         )
-        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
-        and lower(coalesce(f.so_cancelled, '')) <> 'yes'
-        and not exists (
-          select 1 from supply_orders so
-          where so.file_id = f.id
-            and lower(coalesce(so.so_cancelled, '')) = 'yes'
-        )`,
+        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'`,
       values: [],
     };
   }

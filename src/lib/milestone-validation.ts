@@ -86,6 +86,7 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   {
     aliases: ["Delivery"],
     completionLabel: "Material receipt date",
+    isApplicable: (file) => isDeliveryInspectionApplicable(file),
     isComplete: (file) =>
       areApplicableSupplyOrdersComplete(file, "materialReceiptDate"),
   },
@@ -312,6 +313,11 @@ function isPaymentFieldKey(
 
 function normalizeMilestoneName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isDeliveryInspectionApplicable(file: Partial<FileRecord>) {
+  const fileType = file.fileType?.trim().toLowerCase();
+  return !["amc", "mpc", "cars", "o&m"].includes(fileType ?? "");
 }
 
 function hasFilledString(value: string | undefined) {

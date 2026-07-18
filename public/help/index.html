@@ -1,0 +1,2146 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>File Tracking Software</title>
+  <style>
+    @page { margin: 22mm 18mm; }
+    * { box-sizing: border-box; }
+    body {
+      color: #1f2933;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      font-size: 11pt;
+      line-height: 1.48;
+      margin: 0;
+    }
+    h1, h2, h3, h4 {
+      color: #102a43;
+      line-height: 1.2;
+      page-break-after: avoid;
+    }
+    h1 {
+      border-bottom: 2px solid #bcccdc;
+      font-size: 24pt;
+      margin: 0 0 18pt;
+      padding-bottom: 8pt;
+    }
+    h2 {
+      border-bottom: 1px solid #d9e2ec;
+      font-size: 18pt;
+      margin: 24pt 0 10pt;
+      padding-bottom: 5pt;
+    }
+    h3 { font-size: 13.5pt; margin: 16pt 0 6pt; }
+    h4 { font-size: 11.5pt; margin: 12pt 0 4pt; }
+    p { margin: 0 0 8pt; }
+    ul, ol { margin: 0 0 10pt 20pt; padding: 0; }
+    li { margin: 2pt 0; }
+    a { color: #005ea8; text-decoration: none; }
+    code {
+      background: #f0f4f8;
+      border: 1px solid #d9e2ec;
+      border-radius: 3px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 9.5pt;
+      padding: 1px 3px;
+    }
+    pre {
+      background: #f0f4f8;
+      border: 1px solid #bcccdc;
+      border-radius: 4px;
+      overflow-wrap: anywhere;
+      padding: 8pt;
+      white-space: pre-wrap;
+    }
+    table {
+      border-collapse: collapse;
+      font-size: 9.5pt;
+      margin: 8pt 0 12pt;
+      page-break-inside: avoid;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #bcccdc;
+      padding: 5pt 6pt;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #eef2f6; color: #102a43; font-weight: 700; }
+    hr { border: 0; border-top: 1px solid #d9e2ec; margin: 16pt 0; }
+    figure {
+      border: 1px solid #d9e2ec;
+      border-radius: 6px;
+      margin: 10pt 0 16pt;
+      page-break-inside: avoid;
+      padding: 6pt;
+    }
+    figure img {
+      display: block;
+      height: auto;
+      max-height: 185mm;
+      max-width: 100%;
+      object-fit: contain;
+      width: 100%;
+    }
+    figcaption {
+      color: #52606d;
+      font-size: 8.5pt;
+      margin-top: 5pt;
+      text-align: center;
+    }
+    .screenshot-placeholder {
+      background: #fff8e6;
+      border: 1px dashed #b7791f;
+      border-radius: 4px;
+      color: #7c4a03;
+      margin: 8pt 0 12pt;
+      padding: 8pt 10pt;
+    }
+    h2 { page-break-before: auto; }
+  </style>
+</head>
+<body>
+<h1 id="file-tracking-software">File Tracking Software</h1>
+<p><strong>Document status:</strong> Draft user/admin manual <strong>Audience:</strong> Admins, sub-admins, editors, division users, viewers, and report users <strong>Screenshot convention:</strong> Screenshots are embedded in the Help/PDF build. Refresh screenshots after major UI changes.</p>
+<hr>
+<h2 id="index">Index</h2>
+<ol>
+<li><a href="#1-introduction">Introduction</a></li>
+<li><a href="#2-user-roles-and-access">User Roles and Access</a></li>
+<li><a href="#3-login-and-navigation">Login and Navigation</a></li>
+<li><a href="#4-home-page">Home Page</a></li>
+<li><a href="#5-add-file-page">Add File Page</a></li>
+<li><a href="#6-quick-entry-page">Quick Entry Page</a></li>
+<li><a href="#7-search-file-page">Search File Page</a></li>
+<li><a href="#8-dashboard-page">Dashboard Page</a></li>
+<li><a href="#9-reports-page">Reports Page</a></li>
+<li><a href="#10-settings-page">Settings Page</a></li>
+<li><a href="#11-financial-year-logic">Financial Year Logic</a></li>
+<li><a href="#12-unique-code-logic">Unique Code Logic</a></li>
+<li><a href="#13-file-lifecycle-and-milestone-logic">File Lifecycle and Milestone Logic</a></li>
+<li><a href="#14-supply-order-stage-delivery-and-payment-logic">Supply Order, Stage Delivery, and Payment Logic</a></li>
+<li><a href="#15-archive-delete-and-restore-logic">Archive, Delete, and Restore Logic</a></li>
+<li><a href="#16-exports-printing-and-table-fields">Exports, Printing, and Table Fields</a></li>
+<li><a href="#17-data-entry-standards-and-precautions">Data Entry Standards and Precautions</a></li>
+<li><a href="#18-dashboard-and-reports-counterclicker-logic">Dashboard and Reports Counter/Clicker Logic</a></li>
+<li><a href="#19-troubleshooting">Troubleshooting</a></li>
+</ol>
+<hr>
+<h2 id="1-introduction">1. Introduction</h2>
+<p>File History is a records and procurement tracking application for managing procurement files, milestones, supply orders, payments, delay status, financial year-wise reporting, dashboard summaries, and MMG reporting.</p>
+<p>The system is designed around these principles:</p>
+<ul>
+<li>Every procurement file is recorded with a unique code, financial year, division, file type, mode, value, and milestone details.</li>
+<li>A file can have one or more Supply Orders.</li>
+<li>A Supply Order can have staged delivery and staged payment.</li>
+<li>Reports and dashboards use the entered dates, current status, completed milestones, cancellation flags, and settings.</li>
+<li>A counter may represent files, Supply Orders, stages, payment entries, or values. Therefore, clicking a counter may show fewer files than the counter number when multiple counted items belong to the same file.</li>
+</ul>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard navigation and main summary"><figcaption>Dashboard navigation and main summary</figcaption></figure>
+<h3 id="main-users">Main Users</h3>
+<ul>
+<li>Admin users who configure settings, years, divisions, users, and archive rules.</li>
+<li>Editors who enter and update file data.</li>
+<li>Sub-admins who manage selected administrative functions.</li>
+<li>Division users/viewers who only see permitted divisions or file categories.</li>
+<li>Report users who review dashboard, analytics, delay status, and cash outgo.</li>
+</ul>
+<h3 id="key-modules">Key Modules</h3>
+<ul>
+<li>Home</li>
+<li>Add File</li>
+<li>Quick Entry</li>
+<li>Search File</li>
+<li>Dashboard</li>
+<li>Reports</li>
+<li>Settings</li>
+<li>Archive</li>
+<li>Year Setup</li>
+</ul>
+<hr>
+<h2 id="2-user-roles-and-access">2. User Roles and Access</h2>
+<p>Access is controlled by user role, assigned divisions, and allowed file categories.</p>
+<h3 id="admin">Admin</h3>
+<p>Admin users can generally:</p>
+<ul>
+<li>Add, edit, and archive files.</li>
+<li>Manage settings.</li>
+<li>Manage users.</li>
+<li>Manage divisions.</li>
+<li>Manage financial years.</li>
+<li>Manage table fields and MMG fields.</li>
+<li>Access all file categories unless restricted by configuration.</li>
+</ul>
+<h3 id="sub-admin">Sub-admin</h3>
+<p>Sub-admin users may have broad operational access but may not have every administrative permission. Their actual visibility depends on assigned divisions and file category permissions.</p>
+<h3 id="editor">Editor</h3>
+<p>Editor users can enter and update file records as permitted by their role and access scope.</p>
+<h3 id="division-user-viewer">Division User / Viewer</h3>
+<p>Division-scoped users see only assigned division data. If file category access is configured, they see only allowed categories on dashboard, reports, and search.</p>
+<h3 id="access-rules">Access Rules</h3>
+<ul>
+<li>Division restriction limits records by division.</li>
+<li>File category restriction limits file type options and report/dashboard visibility.</li>
+<li>Backend APIs also enforce access, so hidden records should not appear through search or reports.</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Do not give admin access unless required.</li>
+<li>Review file category access after adding new file types.</li>
+<li>Verify division access after merging, splitting, or deactivating divisions.</li>
+<li>When testing report counts, use an admin account first, then test restricted users separately.</li>
+</ul>
+<hr>
+<h2 id="3-login-and-navigation">3. Login and Navigation</h2>
+<figure><img src="docs/manual-screenshots/login.png" alt="Login page"><figcaption>Login page</figcaption></figure>
+<h3 id="login">Login</h3>
+<p>Users log in with username and password.</p>
+<p>If the software does not log in:</p>
+<ul>
+<li>Confirm the backend is running.</li>
+<li>Confirm the website is connected to the correct backend.</li>
+<li>Confirm the database contains an active user.</li>
+<li>Clear browser cookies/site data if switching between test and production databases.</li>
+</ul>
+<h3 id="navigation">Navigation</h3>
+<p>The navigation usually includes:</p>
+<ul>
+<li>Home / Dashboard</li>
+<li>Add File</li>
+<li>Quick Entry</li>
+<li>Search File</li>
+<li>Reports</li>
+<li>Settings</li>
+<li>Messages / MMG Live, where enabled</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Use one browser tab when editing critical files.</li>
+<li>Avoid switching financial year during data entry.</li>
+<li>Confirm the selected financial year before searching or adding records.</li>
+</ul>
+<hr>
+<h2 id="4-home-page">4. Home Page</h2>
+<p>The Home page is the entry point after login. Depending on routing, it may redirect to Search or Dashboard.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Home/dashboard after login"><figcaption>Home/dashboard after login</figcaption></figure>
+<h3 id="purpose">Purpose</h3>
+<p>The Home page gives quick access to the main workflows:</p>
+<ul>
+<li>Search existing files.</li>
+<li>Add a new file.</li>
+<li>Review dashboard status.</li>
+<li>Open reports.</li>
+<li>Update settings if authorised.</li>
+</ul>
+<h3 id="logic">Logic</h3>
+<p>The Home page uses current user role, selected financial year, and access restrictions to determine what the user can see.</p>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>If the Home page appears blank, check login session and backend health.</li>
+<li>If expected navigation options are missing, check user role and permissions.</li>
+</ul>
+<hr>
+<h2 id="5-add-file-page">5. Add File Page</h2>
+<p>The Add File page is used to create a new file or edit an existing file.</p>
+<figure><img src="docs/manual-screenshots/add-file.png" alt="Add File page"><figcaption>Add File page</figcaption></figure>
+<h3 id="main-sections">Main Sections</h3>
+<ul>
+<li>Basic file details</li>
+<li>Financial and classification details</li>
+<li>Pre-Supply Order milestones</li>
+<li>Tender and bidding details</li>
+<li>Supply Order details</li>
+<li>Delivery and inspection details</li>
+<li>Payment details</li>
+<li>Cancellation and archive-related fields</li>
+<li>Remarks and markers</li>
+</ul>
+<h3 id="basic-file-details">Basic File Details</h3>
+<p>Typical fields include:</p>
+<ul>
+<li>Division</li>
+<li>Control no.</li>
+<li>Financial year</li>
+<li>Unique code</li>
+<li>File number</li>
+<li>Indentor</li>
+<li>Demand description</li>
+</ul>
+<h3 id="logic">Logic</h3>
+<ul>
+<li>Division must exist in settings.</li>
+<li>Financial year should be valid and selected from configured years.</li>
+<li>Unique code is generated using financial year prefix, division code, and serial.</li>
+<li>Active years determine in which financial years a file remains visible.</li>
+</ul>
+<h3 id="actual-code-logic-year-unique-code-and-active-years">Actual Code Logic: Year, Unique Code, and Active Years</h3>
+<p>The Add File page does not allow free typing of the file year. It calculates the working year from the selected system year:</p>
+<ul>
+<li>If the selected year is a normal financial year, that year is used.</li>
+<li>If the selected year is <code>All active files</code>, the current workspace financial year is used.</li>
+<li>For a new file, the first selected active year is used for unique-code generation.</li>
+<li>For an existing file, the original file year remains the base year; active years are used only to keep the file visible in later years.</li>
+</ul>
+<p>Only two active-year options are shown in Add File. The software takes the current effective financial year, adds the configured financial years from Settings, sorts them latest-first, removes duplicates, and keeps only the latest two. This is why, at one time, only two years are visible for selection. The purpose is to allow the current year and one carry-forward/recent year without letting users keep a file active across many accidental years.</p>
+<p>If year selection is locked in Settings, the Add File page allows only the fallback/effective year. If year selection is unlocked, the user can choose from the latest two options only. If an older file has active years outside the latest two, the page normalizes the selection back to an allowed year when loaded.</p>
+<p>The file becomes visible in Search/Dashboard/Reports for a year when:</p>
+<ul>
+<li>the file's original <code>year</code> matches that year, or</li>
+<li>the file's <code>activeYears</code> includes that year.</li>
+</ul>
+<p>For <code>All active files</code>, the file is visible only if it is still active. A file is treated as inactive when payment is completed or it is cancelled as per the cancellation logic.</p>
+<h3 id="actual-code-logic-section-locks">Actual Code Logic: Section Locks</h3>
+<p>When adding a new file, fields are editable according to the user's role and enabled options.</p>
+<p>When editing an existing file, important blocks are locked by default. The user must unlock the relevant block before changing filled values. Common locked blocks include:</p>
+<ul>
+<li>Firm details</li>
+<li>File Markers</li>
+<li>Supply order and payment</li>
+<li>Milestones</li>
+</ul>
+<p>The lock is not only visual. The code checks the locked state before allowing changes. If the user is in read-only mode, all edit handlers return without saving changes. Demand cancellation has an additional protection: it requires deletion-password confirmation before it can be unlocked.</p>
+<h3 id="file-markers">File Markers</h3>
+<p>File Markers are file-specific keywords or short notes used to make a file easier to find later.</p>
+<p>They are useful when the normal file fields may not contain the word by which users commonly remember the case. Example markers:</p>
+<ul>
+<li>urgent</li>
+<li>CFA follow-up</li>
+<li>vendor complaint</li>
+<li>priority inspection</li>
+<li>awaiting clarification</li>
+</ul>
+<h3 id="actual-code-logic-file-markers">Actual Code Logic: File Markers</h3>
+<p>File Markers do not change file status, milestones, delay status, dashboard counters, finance values, or reports. Their main purpose is searchability.</p>
+<p>Actual behavior:</p>
+<ul>
+<li>A file can have multiple markers.</li>
+<li>Each marker has marker text, an internal ID, creation date, and saved display order.</li>
+<li>Marker words are included in the main Search free-text box.</li>
+<li>Blank marker rows are removed during save.</li>
+<li>Marker text is trimmed before save.</li>
+<li>In an existing file, the File Markers block is locked by default.</li>
+<li>The user must unlock the File Markers block before adding, editing, or deleting markers on an existing file.</li>
+<li>In read-only mode, markers cannot be added, edited, or deleted.</li>
+<li>On backend save, the previous marker list for that file is replaced with the current marker list.</li>
+</ul>
+<p>Example:</p>
+<p>If a file has marker text vendor complaint, searching complaint in Search File can bring that file even if complaint is not written in the title, demand description, firm name, or S.O. fields.</p>
+<p>Precautions:</p>
+<ul>
+<li>Use short, meaningful keywords.</li>
+<li>Do not use File Markers as a substitute for official remarks or milestone dates.</li>
+<li>Do not enter sensitive personal information unless the same information is allowed to be searchable.</li>
+<li>If a marker does not bring the file in Search, check financial year, division access, file category access, and archive/cancellation filters.</li>
+</ul>
+<h3 id="file-category-and-mode">File Category and Mode</h3>
+<p>File category is derived from file type. Common categories include:</p>
+<ul>
+<li>Goods &amp; Services</li>
+<li>AMC</li>
+<li>MPC</li>
+<li>CARS</li>
+<li>O&amp;M</li>
+</ul>
+<p>Mode is selected from configured mode values such as OBM, PBM, SBM, LBM, LPC, or locally configured values.</p>
+<h3 id="milestone-dates">Milestone Dates</h3>
+<p>Milestone dates must be entered in sequence as far as possible.</p>
+<p>Common milestone fields include:</p>
+<ul>
+<li>Received date</li>
+<li>Scrutiny date</li>
+<li>Scrutiny response date</li>
+<li>Scrutiny completion date</li>
+<li>Controlling / Control no. date</li>
+<li>High Value meeting and minutes</li>
+<li>Pre-TCEC date and minutes</li>
+<li>AD vetting</li>
+<li>R&amp;QA approval</li>
+<li>IFA sent and final</li>
+<li>CFA sent and approval</li>
+<li>Tender / bid dates</li>
+<li>Post-TCEC date and minutes</li>
+<li>CNC date and approval</li>
+</ul>
+<h3 id="actual-code-logic-file-level-milestone-page">Actual Code Logic: File-Level Milestone Page</h3>
+<p>The Milestones block shows only applicable milestones. Applicability is calculated from the file flags:</p>
+<ul>
+<li>High Value appears only when High Value is <code>Yes</code>.</li>
+<li>Pre-TCEC, Post-TCEC, and CNC appear only when TCEC is <code>Yes</code>.</li>
+<li>AD appears only when AD is <code>Yes</code> and the selected division is not configured as AD-not-required.</li>
+<li>R&amp;QA appears only when R&amp;QA is <code>Yes</code>.</li>
+<li>IFA appears only when IFA is <code>Yes</code>.</li>
+<li>Bank Guarantee appears only when BG is <code>Yes</code>.</li>
+<li>IR Preparation and IR Receipt appear only when IR is <code>Yes</code>.</li>
+<li>Other normal milestones remain applicable by default.</li>
+</ul>
+<p>The Current checkbox for a milestone is disabled when:</p>
+<ul>
+<li>the user has no edit permission or the page is read-only,</li>
+<li>the milestone is not applicable,</li>
+<li>the milestone is already completed,</li>
+<li>the milestone is <code>File Closed</code>,</li>
+<li>the milestone is driven by S.O./stage progress, or</li>
+<li>the Milestones block is still locked and a current milestone is already filled.</li>
+</ul>
+<p>The Completed checkbox for a milestone is disabled when:</p>
+<ul>
+<li>the user has no edit permission or the page is read-only,</li>
+<li>the milestone is not applicable,</li>
+<li>the milestone is automatically completed from date/data fields,</li>
+<li>the milestone is driven by S.O./stage progress, or</li>
+<li>the Milestones block is still locked and that completed milestone was already saved.</li>
+</ul>
+<p>This is why main file-level milestone checkboxes may appear locked. For S.O.-driven milestones, the main file checkbox is not the source of truth. The software reads progress from the Supply Order/stage rows and shows progress like <code>2/3 stages done</code> or <code>1/2 supply orders done</code>.</p>
+<p>When a user manually marks a milestone as completed, and that same milestone was selected as current, the software clears the current milestone. This prevents a milestone from being both current and completed at file level.</p>
+<h3 id="actual-code-logic-automatic-completion-and-validation">Actual Code Logic: Automatic Completion and Validation</h3>
+<p>Some milestones are completed automatically when their actual completion field is present. The manual checkbox and the date field must remain consistent. The software checks for both types of mismatch:</p>
+<ul>
+<li>a completion date exists but the milestone is not completed,</li>
+<li>the milestone is completed but the required completion date is missing.</li>
+</ul>
+<p>For staged or multiple S.O. milestones, the software also checks whether all applicable rows are complete. If only some stages or S.O.s are complete, the main file milestone is treated as partially complete, not fully complete.</p>
+<h3 id="supply-order-section">Supply Order Section</h3>
+<p>A file may have zero, one, or many Supply Orders.</p>
+<p>Each Supply Order may include:</p>
+<ul>
+<li>S.O. number</li>
+<li>GeM S.O. number</li>
+<li>S.O. date</li>
+<li>S.O. value capital/revenue</li>
+<li>DP date</li>
+<li>Firm</li>
+<li>Firm type</li>
+<li>BG validity date</li>
+<li>DP extension</li>
+<li>Revised DP</li>
+<li>LD</li>
+<li>Material receipt</li>
+<li>IR preparation</li>
+<li>IR receipt</li>
+<li>Bill preparation</li>
+<li>Bill sent for payment</li>
+<li>Payment</li>
+<li>Actual payment amount</li>
+<li>S.O. cancellation</li>
+</ul>
+<h3 id="actual-code-logic-s-o-level-milestones">Actual Code Logic: S.O.-Level Milestones</h3>
+<p>S.O.-level milestone controls are used when there is more than one Supply Order or when any Supply Order contains meaningful S.O./stage data. A row is considered meaningful when real values exist; a plain <code>No</code> in flags such as stage delivery, stage payment, DP extension, LD, advance payment, demand cancelled, or S.O. cancelled is not enough by itself.</p>
+<p>Each Supply Order can have its own current milestone and completed milestones. The applicable S.O. milestone list respects file-level settings:</p>
+<ul>
+<li>Bank Guarantee is hidden/disabled when BG is <code>No</code>.</li>
+<li>IR Preparation and IR Receipt are hidden/disabled when IR is <code>No</code>.</li>
+<li>Delivery, Bill preparation, Bill sent for payment, and Payment can be stage-driven when stage delivery/payment is enabled.</li>
+</ul>
+<p>For S.O.-level validation:</p>
+<ul>
+<li>If an S.O. milestone is marked completed, its matching date must exist.</li>
+<li>If the S.O. has a current milestone, that current milestone must be applicable to that S.O.</li>
+<li>For stage-payment cases, Bill preparation, Bill sent for payment, and Payment are checked against all applicable stage rows.</li>
+</ul>
+<h3 id="stage-delivery-and-stage-payment">Stage Delivery and Stage Payment</h3>
+<p>If staged delivery/payment is enabled for an S.O.:</p>
+<ul>
+<li>Each stage can have its own DP date.</li>
+<li>Each stage can have delivery, IR, bill, and payment dates.</li>
+<li>Each stage may have its own current/completed milestone status.</li>
+<li>Report counters may count each stage separately.</li>
+</ul>
+<p>Stage delivery autofill rules:</p>
+<ul>
+<li>Stage delivery starts from the S.O. date.</li>
+<li>Stage 1 starts on the S.O. date unless a manual period start date is entered.</li>
+<li>Each next stage starts on the day after the previous stage's DP/Revised D.P.</li>
+<li>For Goods &amp; Services, AMC, O&amp;M, and CARS files, the default stage interval is 3 months.</li>
+<li>For MPC files, the default stage interval is 1 month.</li>
+<li>The stage DP date is auto-filled from the stage start date and interval. Users may still correct dates where actual contract terms differ.</li>
+<li>If the S.O. has a capital amount, the software splits the capital amount across stages. If the S.O. has revenue amount instead, it splits the revenue amount across stages.</li>
+<li>The split is proportional/equal by stage count. Rounding is handled in currency precision, and any rounding balance is carried in the last stage.</li>
+<li>If LD is selected as <code>Yes</code> for a D.P./stage, LD detail fields appear. Select either Full or Partial and enter the LD percentage value in the percentage field.</li>
+</ul>
+<p>Delivery current checkbox behavior:</p>
+<ul>
+<li>For stage delivery, Delivery Current is auto-selected for the current valid delivery period.</li>
+<li>For Goods &amp; Services files, a delivery stage is current when today falls between that stage's start date and its DP/Revised D.P., and Material Receipt is not filled.</li>
+<li>For Goods &amp; Services files, if Material Receipt is filled, that delivery stage is no longer current and is treated as completed/fructified for delivery.</li>
+<li>For AMC, MPC, O&amp;M, and CARS files, Material Receipt is not applicable. Delivery Current is controlled by delivery-period validity only: the stage whose period is currently valid becomes current, and future stages remain non-current until their period starts.</li>
+<li>Future stages should not be counted as Delivery Pending merely because their rows exist.</li>
+</ul>
+<h3 id="cancellation-logic">Cancellation Logic</h3>
+<p>Demand cancellation should be used only before any S.O. is placed.</p>
+<p>If an S.O. is already placed:</p>
+<ul>
+<li>Use S.O. cancelled instead of demand cancelled.</li>
+<li>Cancelled files may be excluded from normal milestone counts.</li>
+<li>Cancelled S.O.s may be excluded from S.O./payment/delivery counts.</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Confirm financial year before saving.</li>
+<li>Check division and file category.</li>
+<li>Do not use demand cancellation after S.O. placement.</li>
+<li>Use S.O. cancellation for placed Supply Orders.</li>
+<li>Enter dates sequentially.</li>
+<li>For stage payment, ensure stage amounts and dates are complete.</li>
+<li>Do not leave current milestone inconsistent with completed dates.</li>
+</ul>
+<hr>
+<h2 id="6-quick-entry-page">6. Quick Entry Page</h2>
+<p>Quick Entry is for rapid updates to existing files using unique code.</p>
+<figure><img src="docs/manual-screenshots/quick-entry.png" alt="Quick Entry page"><figcaption>Quick Entry page</figcaption></figure>
+<h3 id="purpose">Purpose</h3>
+<p>Quick Entry reduces time for updating the current milestone and related date fields without opening the full Add File form.</p>
+<h3 id="logic">Logic</h3>
+<p>The user enters or selects a unique code. The system identifies the file and determines the current milestone or S.O.-level stage that can be updated.</p>
+<p>Quick Entry may update:</p>
+<ul>
+<li>Main file milestone date</li>
+<li>S.O.-level milestone date</li>
+<li>Stage-level milestone date</li>
+<li>Current milestone</li>
+<li>Completed milestone</li>
+</ul>
+<h3 id="actual-code-logic">Actual Code Logic</h3>
+<p>Quick Entry first searches by Unique code within the user's accessible files. If no file is found, no update is allowed. If more than one accessible file has the same Unique code, Quick Entry stops and asks the user to correct duplicate codes before using the shortcut.</p>
+<p>After the file is identified, Quick Entry checks the file's current milestone and maps it to the matching editable section. If the current milestone cannot be linked to a Quick Entry stage, the user must open Add File and correct the current status under Milestones.</p>
+<p>Quick Entry then opens the relevant Add File route with focus parameters. The full Add File validation still applies. Therefore Quick Entry is a shortcut to the correct field, not a bypass of file validation, access control, S.O.-level logic, or stage-level logic.</p>
+<p>When the target is S.O./stage-based, the update must be made against the relevant S.O. row or stage row. If multiple S.O.s or stages exist, the user must verify the row before saving because one file can contain several pending S.O./stage statuses at the same time.</p>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Use Quick Entry only when the file code is certain.</li>
+<li>If duplicate unique codes exist, correct duplicates before using Quick Entry.</li>
+<li>Ensure the current milestone is correct before saving.</li>
+<li>For multiple S.O.s, confirm the correct S.O. row/stage is selected.</li>
+<li>Quick Entry can shift current status quickly; verify after saving.</li>
+</ul>
+<hr>
+<h2 id="7-search-file-page">7. Search File Page</h2>
+<p>The Search File page is the main file retrieval and review screen.</p>
+<figure><img src="docs/manual-screenshots/search.png" alt="Search File page and filters"><figcaption>Search File page and filters</figcaption></figure>
+<h3 id="purpose">Purpose</h3>
+<p>Search allows users to:</p>
+<ul>
+<li>Find files by text, date, year, division, indentor, firm, mode, file type, and value.</li>
+<li>Apply dashboard/report clicker filters.</li>
+<li>Export filtered results.</li>
+<li>Open file timeline.</li>
+<li>Edit selected files if authorised.</li>
+</ul>
+<h3 id="pagination">Pagination</h3>
+<p>Rows per page options:</p>
+<ul>
+<li>10</li>
+<li>25</li>
+<li>50</li>
+</ul>
+<p>Default rows per page:</p>
+<ul>
+<li>25</li>
+</ul>
+<p>Previous/Next controls are available at the bottom of the list.</p>
+<h3 id="actual-code-logic-search-scope-and-pagination">Actual Code Logic: Search Scope and Pagination</h3>
+<p>Search keeps <code>25</code> as the default page size. The user can change it only to the available page-size options: <code>10</code>, <code>25</code>, or <code>50</code>. Pagination is server-backed: the current filter set, page number, and page size are sent to the API, and the returned total is used to calculate total pages.</p>
+<p>Previous/Next navigation changes only the page number. It does not change filters. When the user changes filters, the page is reset so the first matching records are shown.</p>
+<p>Search always respects:</p>
+<ul>
+<li>selected financial year or <code>All active files</code>,</li>
+<li>division access,</li>
+<li>file category access,</li>
+<li>archive/cancellation visibility rules,</li>
+<li>dashboard/report filter passed through the URL,</li>
+<li>free-text/free-date filters,</li>
+<li>selected table fields.</li>
+</ul>
+<h3 id="search-filters">Search Filters</h3>
+<p>Common filters include:</p>
+<ul>
+<li>Financial year</li>
+<li>Division</li>
+<li>Indentor</li>
+<li>Demand description</li>
+<li>Firm</li>
+<li>Value range</li>
+<li>S.O. value range</li>
+<li>Capital/revenue only</li>
+<li>Mode</li>
+<li>Firm type</li>
+<li>File type</li>
+<li>High value</li>
+<li>GTE</li>
+<li>AD</li>
+<li>R&amp;QA</li>
+<li>IFA</li>
+<li>PSB</li>
+<li>BG</li>
+<li>RFP vetting</li>
+<li>Refloat</li>
+<li>CNC</li>
+<li>TCEC</li>
+<li>DP date range</li>
+<li>Demand cancelled</li>
+<li>S.O. cancelled</li>
+<li>Free text</li>
+<li>Free date</li>
+</ul>
+<h3 id="file-marker-search">File Marker Search</h3>
+<p>The main free-text search includes File Marker text. This means a marker can be used as an internal tag for finding a file quickly.</p>
+<p>File Marker search follows the same access and filter rules as normal search:</p>
+<ul>
+<li>If the selected financial year does not include the file, the marker will not make it appear.</li>
+<li>If the user does not have division or file category access, the marker will not bypass that restriction.</li>
+<li>If the file is archived or cancelled and the current filters exclude it, the marker will not bypass those filters.</li>
+</ul>
+<h3 id="special-filters">Special Filters</h3>
+<p>Search can receive filters from Dashboard and Reports. Examples:</p>
+<ul>
+<li>Status summary clickers</li>
+<li>Delay status rows</li>
+<li>Cash outgo month rows</li>
+<li>File category cards</li>
+<li>Mode cards</li>
+<li>Live status rows</li>
+<li>Manual milestone filters</li>
+</ul>
+<h3 id="actual-code-logic-clicker-filters">Actual Code Logic: Clicker Filters</h3>
+<p>Dashboard and Reports pass a <code>dashboardFilter</code> value to Search. Search reads that filter and applies the matching server/API query.</p>
+<p>The same Search page also decides where the Edit/Open action should focus inside Add File. For example:</p>
+<ul>
+<li>delay filters focus the Timeline or delayed milestone area,</li>
+<li>manual milestone filters focus the Milestones block,</li>
+<li>delivery/payment/cash-outgo filters focus S.O. or payment fields,</li>
+<li>BG filters focus Bank Guarantee fields,</li>
+<li>S.O. filters focus Supply Order rows.</li>
+</ul>
+<p>This is why clicking a Dashboard/Report number can open Search first, and then opening a file can take the user directly to the relevant Add File section.</p>
+<h3 id="table-fields">Table Fields</h3>
+<p>Users can select which columns appear in Search results.</p>
+<p>Table fields include file-level fields, S.O.-level fields, staged delivery/payment fields, and special computed fields.</p>
+<h3 id="actual-code-logic-table-fields">Actual Code Logic: Table Fields</h3>
+<p>Table Fields decide which fields are shown in the Search table and exports. The field list includes normal file fields, raw procurement flags, S.O. fields, stage delivery/payment fields, computed milestone fields, and finance fields such as currency, exchange rate, GTE, AD, PSB, IR, RFP vetting, current milestone, delivery-period fields, advance payment fields, staged amount fields, TCEC/RFP/refloat fields, and other configured report fields.</p>
+<p>If a field is not selected, the data may still exist in the file but will not appear in that table view/export.</p>
+<h3 id="export-and-print">Export and Print</h3>
+<p>Search results can be exported to Excel or PDF. Export respects selected table fields where applicable.</p>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>If a file is not found, check selected financial year first.</li>
+<li>Check archive/cancelled filters.</li>
+<li>Check division and file category access.</li>
+<li>For report clickers, remember that a counter may count S.O.s/stages but Search opens files.</li>
+<li>If a clicked report count is higher than the file list, confirm whether the counter is item-based.</li>
+</ul>
+<hr>
+<h2 id="8-dashboard-page">8. Dashboard Page</h2>
+<p>Dashboard gives a summary of file status, live milestones, Status-3, analytics, and finance. For the actual clicker and counter rules, see <a href="#18-dashboard-and-reports-counterclicker-logic">Dashboard and Reports Counter/Clicker Logic</a>.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard page with status tabs"><figcaption>Dashboard page with status tabs</figcaption></figure>
+<h3 id="dashboard-tabs">Dashboard Tabs</h3>
+<p>Common tabs include:</p>
+<ul>
+<li>Snapshot</li>
+<li>Status</li>
+<li>Live Status / Status-2</li>
+<li>Status-3</li>
+<li>Analytics</li>
+<li>Finance</li>
+</ul>
+<h3 id="snapshot">Snapshot</h3>
+<p>Snapshot shows high-level totals and classifications such as:</p>
+<ul>
+<li>Total files</li>
+<li>TCEC / Non-TCEC</li>
+<li>GTE / Non-GTE</li>
+<li>GeM / Non-GeM</li>
+<li>High Value</li>
+<li>AD</li>
+<li>R&amp;QA</li>
+<li>IFA</li>
+<li>PSB</li>
+<li>BG</li>
+<li>RFP vetting</li>
+<li>Refloat</li>
+<li>RST</li>
+<li>File types</li>
+<li>Modes</li>
+</ul>
+<h3 id="logic">Logic</h3>
+<p>Snapshot counters are usually file-based. Clicking should normally open the matching file list.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard counters"><figcaption>Dashboard counters</figcaption></figure>
+<h3 id="actual-code-logic-dashboard-clickers">Actual Code Logic: Dashboard Clickers</h3>
+<p>Dashboard clickers route into Search with an encoded filter. The visible number may be based on one of four counting methods:</p>
+<ul>
+<li>unique files,</li>
+<li>Supply Order rows,</li>
+<li>stage rows,</li>
+<li>payment/value rows.</li>
+</ul>
+<p>The clicked Search result normally lists unique files. Therefore the Search file count may be lower than the Dashboard number when the Dashboard number counted multiple S.O.s/stages/payments under the same file.</p>
+<p>Dashboard also respects file category access. If a user is allowed only specific file categories, only those allowed categories should appear as selectable category options, and counters should be calculated only from the accessible set.</p>
+<h3 id="status">Status</h3>
+<p>Status shows milestone flow and progress.</p>
+<p>It may include:</p>
+<ul>
+<li>Total</li>
+<li>In process</li>
+<li>Reviewed</li>
+<li>Pending</li>
+<li>Completed</li>
+<li>At previous stage</li>
+</ul>
+<p>Detailed Status counter rules are explained in <a href="#dashboard-status-counters">Dashboard Status Counters</a>.</p>
+<h3 id="status-2-live-status">Status-2 / Live Status</h3>
+<p>Live Status shows files grouped by current milestone.</p>
+<p>Logic:</p>
+<ul>
+<li>Main file current milestone is considered.</li>
+<li>S.O.-level current milestone is considered for S.O.-driven milestones.</li>
+<li>Stage-level current milestone may be considered where staged delivery/payment exists.</li>
+</ul>
+<p>Actual Status-2 behavior:</p>
+<ul>
+<li>normal file-level milestones use the file's current milestone,</li>
+<li>S.O.-level milestones use the current milestone saved on the relevant S.O. row,</li>
+<li>stage-level milestones use stage/current payment-delivery status when the milestone belongs to staged delivery/payment,</li>
+<li>cancelled/inactive rows are excluded where the specific status definition requires active files only.</li>
+</ul>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard status clickers"><figcaption>Dashboard status clickers</figcaption></figure>
+<h3 id="status-3">Status-3</h3>
+<p>Status-3 gives detailed status summary across milestone groups.</p>
+<p>Important rule:</p>
+<ul>
+<li>Some Status-3 counters are file counters.</li>
+<li>Some counters are S.O./stage/payment counters.</li>
+<li>If a counter counts multiple S.O.s/stages under one file, clicking can show fewer files than the counter.</li>
+</ul>
+<p>Example:</p>
+<ul>
+<li>Counter says Payment Pending = 25.</li>
+<li>Search opens 18 files.</li>
+<li>This can be correct if 25 pending payment rows belong to 18 files.</li>
+</ul>
+<p>See <a href="#status-summary-and-status-3-counters">Status Summary and Status-3 Counters</a> for detailed logic.</p>
+<h3 id="analytics">Analytics</h3>
+<p>Analytics panels include:</p>
+<ul>
+<li>Division file ranking</li>
+<li>Division value ranking</li>
+<li>Division turnaround ranking</li>
+<li>Top firms by S.O. value</li>
+<li>Top indentors by files</li>
+<li>Top indentors by value</li>
+<li>Milestone clearing ranking</li>
+<li>Monthly file inflow</li>
+<li>Bidding mode mix</li>
+<li>Value thresholds</li>
+<li>Division risk ranking</li>
+<li>Payment pending ranking</li>
+</ul>
+<h3 id="finance">Finance</h3>
+<p>Finance tab shows:</p>
+<ul>
+<li>Allocated amount</li>
+<li>Intended amount</li>
+<li>Booked amount</li>
+<li>Committed amount</li>
+<li>Paid amount</li>
+<li>Capital/revenue split</li>
+<li>Firm type distributions</li>
+</ul>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard finance area"><figcaption>Dashboard finance area</figcaption></figure>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Confirm selected financial year.</li>
+<li>Confirm division filter.</li>
+<li>Confirm file category filter.</li>
+<li>Do not assume every counter is a file count.</li>
+<li>For finance values, verify currency and exchange rate.</li>
+<li>For analytics rankings, value/average/sample size may not equal opened file count.</li>
+</ul>
+<hr>
+<h2 id="9-reports-page">9. Reports Page</h2>
+<p>Reports provide detailed tables for delays, cash outgo, MMG summary, and status summaries. For detailed counter/clicker interpretation, see <a href="#18-dashboard-and-reports-counterclicker-logic">Dashboard and Reports Counter/Clicker Logic</a>.</p>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Reports page"><figcaption>Reports page</figcaption></figure>
+<h3 id="main-report-areas">Main Report Areas</h3>
+<ul>
+<li>Delay Status</li>
+<li>Expected Cash Outgo</li>
+<li>Bills submitted / bill preparation</li>
+<li>Actual Cash Outgo</li>
+<li>Status Summary</li>
+<li>MMG Summary</li>
+<li>Historical reports</li>
+</ul>
+<h3 id="delay-status">Delay Status</h3>
+<p>Delay Status identifies files or S.O.-level items stuck beyond a configured number of days.</p>
+<p>Logic:</p>
+<ul>
+<li>Main file current milestone is checked.</li>
+<li>S.O.-level current milestone may be checked.</li>
+<li>Stage-level current milestone may be checked.</li>
+<li>Delay days are calculated from the relevant stage start date.</li>
+</ul>
+<h3 id="actual-code-logic-delay-status">Actual Code Logic: Delay Status</h3>
+<p>Delay Status is row-based. It can include:</p>
+<ul>
+<li>main file milestone delay rows,</li>
+<li>S.O.-level delay rows,</li>
+<li>stage-level delay rows.</li>
+</ul>
+<p>The delay start date depends on the current milestone. For example, a file-level delay uses the matching file milestone start/review date, while an S.O./stage delay uses the relevant S.O. or stage date. The delay threshold entered on the Reports page is compared with the calculated days pending.</p>
+<p>Clicking a delay row sends a filter to Search. If several delayed rows belong to the same file, the delay table can show more rows than the clicked unique-file result.</p>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Reports delay status area"><figcaption>Reports delay status area</figcaption></figure>
+<p>Precautions:</p>
+<ul>
+<li>Delay rows may contain the same file more than once if different S.O.s/stages are delayed.</li>
+<li>Clicking a file opens Search for that file.</li>
+<li>A delay summary count may not equal unique file count.</li>
+</ul>
+<h3 id="expected-cash-outgo">Expected Cash Outgo</h3>
+<p>Expected Cash Outgo estimates upcoming financial liability.</p>
+<p>Modes can include:</p>
+<ul>
+<li>Expected DP</li>
+<li>Expected receipt</li>
+<li>Receipt pending bill</li>
+<li>Bill preparation</li>
+<li>Bill sent</li>
+<li>Actual payment</li>
+</ul>
+<p>Logic:</p>
+<ul>
+<li>Uses DP dates, revised DP, receipt dates, bill dates, payment dates, staged payment rows, and actual payment fields.</li>
+<li>Can group by month.</li>
+<li>Can include historical date range or month-end context.</li>
+</ul>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Reports cash outgo area"><figcaption>Reports cash outgo area</figcaption></figure>
+<p>Precautions:</p>
+<ul>
+<li>For staged payment, each stage can contribute separately.</li>
+<li>One file can appear in multiple months if multiple S.O.s/stages exist.</li>
+<li>Counter and clicked unique file count may differ.</li>
+</ul>
+<h3 id="mmg-summary">MMG Summary</h3>
+<p>MMG Summary shows selected fields configured in Settings.</p>
+<p>It may include:</p>
+<ul>
+<li>Total files</li>
+<li>Value summaries</li>
+<li>Milestone summaries</li>
+<li>Payment summaries</li>
+<li>Advance payment</li>
+<li>Expected payment</li>
+<li>Delay/payment overdue</li>
+</ul>
+<h3 id="actual-code-logic-mmg-summary">Actual Code Logic: MMG Summary</h3>
+<p>MMG Summary uses the configured MMG Summary field list from Settings. It combines raw file fields, S.O./stage fields, finance fields, milestone/current status fields, and calculated values. If an expected column is missing from MMG Summary, first check whether that field is selected in Settings.</p>
+<p>MMG Summary uses the same year, division, file category, and access-control filtering as the rest of Reports. It is not a separate unrestricted export.</p>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Reports MMG summary area"><figcaption>Reports MMG summary area</figcaption></figure>
+<h3 id="status-summary">Status Summary</h3>
+<p>Status Summary groups milestones and counts progress.</p>
+<p>Important interpretation:</p>
+<ul>
+<li>File-level milestones should generally match file clickers.</li>
+<li>S.O./stage/payment rows may count multiple values under one file.</li>
+</ul>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Reports status summary area"><figcaption>Reports status summary area</figcaption></figure>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Always check selected financial year.</li>
+<li>Check report mode and month selection.</li>
+<li>Check historical from/to dates.</li>
+<li>Confirm delay threshold days.</li>
+<li>Understand whether a row counts files or items.</li>
+</ul>
+<hr>
+<h2 id="10-settings-page">10. Settings Page</h2>
+<p>Settings control system-wide configuration and user access.</p>
+<figure><img src="docs/manual-screenshots/settings.png" alt="Settings page"><figcaption>Settings page</figcaption></figure>
+<h3 id="settings-tabs">Settings Tabs</h3>
+<p>Admin settings may include:</p>
+<ul>
+<li>Workspace</li>
+<li>MMG Summary</li>
+<li>Divisions</li>
+<li>Indentors</li>
+<li>File Types</li>
+<li>Modes</li>
+<li>Firm Types</li>
+<li>TCEC Committee</li>
+<li>Value thresholds</li>
+<li>Milestones</li>
+<li>Preset table fields</li>
+<li>Authorised users</li>
+<li>Archive</li>
+</ul>
+<h3 id="workspace-settings">Workspace Settings</h3>
+<p>Controls:</p>
+<ul>
+<li>Selected financial year</li>
+<li>Financial year list</li>
+<li>Year lock</li>
+<li>Theme</li>
+<li>Theme tint</li>
+<li>Deletion password</li>
+</ul>
+<h3 id="actual-code-logic-workspace-settings">Actual Code Logic: Workspace Settings</h3>
+<p>The selected financial year is the default context for Dashboard, Reports, Search, and Add File. If the selected context is <code>All active files</code>, Add File still needs one concrete financial year for new-file defaults, so it uses the workspace financial year internally.</p>
+<p>The year lock controls whether Add File can keep or change active-year selection. When locked, Add File normalizes active years back to the effective/fallback year.</p>
+<p>Precautions:</p>
+<ul>
+<li>Do not change selected year during active data entry.</li>
+<li>Financial year format should be valid.</li>
+<li>Deletion password should be kept secure.</li>
+</ul>
+<h3 id="financial-years">Financial Years</h3>
+<p>Rules:</p>
+<ul>
+<li>Format should be like <code>2026-27</code>.</li>
+<li>Duplicate years are not allowed.</li>
+<li>Years should remain continuous.</li>
+<li>Previous years can be entered if continuity is maintained.</li>
+</ul>
+<h3 id="actual-code-logic-financial-year-validation">Actual Code Logic: Financial Year Validation</h3>
+<p>Financial years must follow <code>YYYY-YY</code>, for example <code>2026-27</code>. The last two digits must match the next calendar year. Therefore <code>2026-27</code> is valid and <code>2027-27</code> is invalid.</p>
+<p>Duplicate years are rejected. The configured year list must remain continuous. Continuity works in both directions: an admin may add a previous year or a future year, but the new year must touch the existing sequence without a gap.</p>
+<h3 id="divisions">Divisions</h3>
+<p>Division settings include:</p>
+<ul>
+<li>Name</li>
+<li>Division code</li>
+<li>Allocation capital/revenue</li>
+<li>AD</li>
+<li>Active/inactive status</li>
+<li>Viewer/message settings where applicable</li>
+</ul>
+<p>Precautions:</p>
+<ul>
+<li>Division code affects unique code generation.</li>
+<li>If division code has three digits/letters, unique code includes the full configured division code.</li>
+<li>Deactivating division affects visibility for that year.</li>
+</ul>
+<h3 id="indentors">Indentors</h3>
+<p>Indentors are linked to divisions and used in files/reports.</p>
+<h3 id="file-types">File Types</h3>
+<p>File types define file categories and report filtering.</p>
+<p>Common categories:</p>
+<ul>
+<li>Goods &amp; Services</li>
+<li>AMC</li>
+<li>MPC</li>
+<li>CARS</li>
+<li>O&amp;M</li>
+</ul>
+<h3 id="modes">Modes</h3>
+<p>Modes are procurement mode options used in Add File, Search, Dashboard, and Reports.</p>
+<h3 id="firm-types">Firm Types</h3>
+<p>Firm types appear in Supply Order firm classification and finance distribution.</p>
+<h3 id="tcec-committee">TCEC Committee</h3>
+<p>TCEC committee settings define committee values available for pre/post TCEC records.</p>
+<h3 id="value-thresholds">Value Thresholds</h3>
+<p>Value thresholds are used for analytics and classification.</p>
+<h3 id="milestones">Milestones</h3>
+<p>Milestones define manual milestone flow and live status tracking.</p>
+<p>Precautions:</p>
+<ul>
+<li>Do not remove milestones without understanding report impact.</li>
+<li>Keep <code>File Closed</code> logic clear.</li>
+<li>S.O.-driven milestones should remain consistent with S.O. fields.</li>
+</ul>
+<h3 id="preset-table-fields">Preset Table Fields</h3>
+<p>Controls default Search table columns.</p>
+<h3 id="mmg-summary-fields">MMG Summary Fields</h3>
+<p>Controls which fields appear in MMG Summary.</p>
+<h3 id="authorised-users">Authorised Users</h3>
+<p>Controls:</p>
+<ul>
+<li>Name</li>
+<li>Username</li>
+<li>Role</li>
+<li>Active status</li>
+<li>Division access</li>
+<li>File category access</li>
+</ul>
+<h3 id="actual-code-logic-user-and-category-access">Actual Code Logic: User and Category Access</h3>
+<p>Editors, admins, and sub-admins remain users across financial years. Creating a new financial year does not create new users and does not remove existing users. Their roles, divisions, and file category access remain as configured unless changed in Settings.</p>
+<p>File category access affects both entry and reporting. A restricted user should see only allowed file category options in Add File/Search/Dashboard/Reports, and backend APIs also filter inaccessible records.</p>
+<p>Precautions:</p>
+<ul>
+<li>Review access after adding new file categories.</li>
+<li>Inactive users should not be able to log in.</li>
+</ul>
+<h3 id="archive">Archive</h3>
+<p>Archive settings allow review and restoration/deletion of archived files.</p>
+<hr>
+<h2 id="11-financial-year-logic">11. Financial Year Logic</h2>
+<h3 id="year-format">Year Format</h3>
+<p>Financial years should use format:</p>
+<p><code>YYYY-YY</code></p>
+<p>Example:</p>
+<ul>
+<li><code>2026-27</code></li>
+<li><code>2027-28</code></li>
+</ul>
+<h3 id="continuity-rule">Continuity Rule</h3>
+<p>Years must remain continuous. If existing years are:</p>
+<ul>
+<li><code>2025-26</code></li>
+<li><code>2026-27</code></li>
+</ul>
+<p>Then next allowed years are:</p>
+<ul>
+<li><code>2024-25</code></li>
+<li><code>2027-28</code></li>
+</ul>
+<p>Skipping a year should not be allowed.</p>
+<h3 id="previous-years">Previous Years</h3>
+<p>Previous years can be added only if continuity is maintained.</p>
+<h3 id="selected-year">Selected Year</h3>
+<p>Selected year determines what Dashboard, Reports, Search, and Add File use by default.</p>
+<h3 id="active-years">Active Years</h3>
+<p>A file can remain active in multiple years. Such files may appear in later years even if original file year is earlier.</p>
+<hr>
+<h2 id="12-unique-code-logic">12. Unique Code Logic</h2>
+<p>Unique code is generated using:</p>
+<ol>
+<li>First two digits of the financial year start year.</li>
+<li>Division code.</li>
+<li>Serial number.</li>
+</ol>
+<p>Examples:</p>
+<ul>
+<li><code>2026-27</code> gives FY prefix <code>26</code>.</li>
+<li><code>2027-28</code> gives FY prefix <code>27</code>.</li>
+</ul>
+<p>If division code is <code>QAE</code>, an example unique code can be:</p>
+<p><code>26QAE001</code></p>
+<p>If division code is <code>123</code>, an example unique code can be:</p>
+<p><code>26123001</code></p>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Division code should be stable.</li>
+<li>Do not reuse division codes casually.</li>
+<li>Duplicate unique codes should be corrected before Quick Entry.</li>
+</ul>
+<hr>
+<h2 id="13-file-lifecycle-and-milestone-logic">13. File Lifecycle and Milestone Logic</h2>
+<h3 id="main-lifecycle">Main Lifecycle</h3>
+<p>Typical flow:</p>
+<ol>
+<li>Received</li>
+<li>Scrutiny</li>
+<li>Controlling / Control no.</li>
+<li>High Value, if applicable</li>
+<li>Pre-TCEC, if applicable</li>
+<li>AD, if applicable</li>
+<li>R&amp;QA, if applicable</li>
+<li>IFA, if applicable</li>
+<li>CFA</li>
+<li>Bidding</li>
+<li>Post-TCEC, if applicable</li>
+<li>CNC, if applicable</li>
+<li>Supply Order</li>
+<li>Bank Guarantee, if applicable</li>
+<li>Delivery</li>
+<li>IR</li>
+<li>Bill preparation</li>
+<li>Bill sent for payment</li>
+<li>Payment</li>
+<li>File closed</li>
+</ol>
+<h3 id="current-milestone">Current Milestone</h3>
+<p>Current milestone indicates where the file is presently pending.</p>
+<h3 id="completed-milestones">Completed Milestones</h3>
+<p>Completed milestones indicate stages already completed.</p>
+<h3 id="actual-code-completion-rules">Actual Code Completion Rules</h3>
+<p>The software treats these milestone completion fields as the source of truth:</p>
+<table><thead><tr>
+<th>Milestone</th>
+<th>Completed when this data exists</th>
+</tr></thead><tbody>
+<tr>
+<td>Scrutiny</td>
+<td>Scrutiny completion date</td>
+</tr>
+<tr>
+<td>High Value</td>
+<td>High Value minutes date, when High Value is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Pre-TCEC</td>
+<td>Pre-TCEC minutes date, when TCEC is <code>Yes</code></td>
+</tr>
+<tr>
+<td>AD</td>
+<td>AD vetting date, when AD is <code>Yes</code> and the division does not disable AD</td>
+</tr>
+<tr>
+<td>R&amp;QA</td>
+<td>R&amp;QA approval date, when R&amp;QA is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Controlling / Control no.</td>
+<td>Control no. date</td>
+</tr>
+<tr>
+<td>IFA</td>
+<td>IFA final date, when IFA is <code>Yes</code></td>
+</tr>
+<tr>
+<td>CFA</td>
+<td>CFA approval/date field</td>
+</tr>
+<tr>
+<td>Bidding</td>
+<td>Bidding stage over is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Post-TCEC</td>
+<td>Post-TCEC minutes date, when TCEC is <code>Yes</code></td>
+</tr>
+<tr>
+<td>CNC</td>
+<td>CNC approval date, when TCEC is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Supply Order</td>
+<td>Applicable S.O. row progress is complete</td>
+</tr>
+<tr>
+<td>Bank Guarantee</td>
+<td>BG validity date exists for applicable S.O.s, when BG is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Delivery</td>
+<td>Material receipt/stage delivery dates exist for applicable S.O./stage rows</td>
+</tr>
+<tr>
+<td>IR Preparation</td>
+<td>IR preparation dates exist for applicable S.O./stage rows, when IR is <code>Yes</code></td>
+</tr>
+<tr>
+<td>IR Receipt</td>
+<td>IR receipt dates exist for applicable S.O./stage rows, when IR is <code>Yes</code></td>
+</tr>
+<tr>
+<td>Bill preparation</td>
+<td>Bill preparation dates exist for applicable S.O./stage rows</td>
+</tr>
+<tr>
+<td>Bill sent for payment</td>
+<td>Bill sent for payment dates exist for applicable S.O./stage rows</td>
+</tr>
+<tr>
+<td>Payment</td>
+<td>Payment dates or applicable actual payment rows exist for applicable S.O./stage rows</td>
+</tr>
+</tbody></table>
+<p>For multi-row milestones, all applicable rows must be complete before the file-level milestone is treated as fully complete. If only part of the S.O./stage set is done, the page shows progress instead of unlocking a simple file-level completed checkbox.</p>
+<h3 id="applicability">Applicability</h3>
+<p>Some milestones apply only if a flag is <code>Yes</code>.</p>
+<p>Examples:</p>
+<ul>
+<li>Pre-TCEC applies if TCEC is Yes.</li>
+<li>AD applies if AD is Yes.</li>
+<li>R&amp;QA applies if R&amp;QA is Yes.</li>
+<li>IFA applies if IFA is Yes.</li>
+<li>BG applies if BG is Yes.</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Current milestone should match the actual pending stage.</li>
+<li>Do not mark a milestone complete unless the related date is available.</li>
+<li>For cancelled files, status/report behaviour changes.</li>
+</ul>
+<hr>
+<h2 id="14-supply-order-stage-delivery-and-payment-logic">14. Supply Order, Stage Delivery, and Payment Logic</h2>
+<h3 id="supply-order-level">Supply Order Level</h3>
+<p>Each S.O. can carry separate:</p>
+<ul>
+<li>Current milestone</li>
+<li>Completed milestones</li>
+<li>Delivery dates</li>
+<li>Payment dates</li>
+<li>Cancellation status</li>
+</ul>
+<h3 id="stage-delivery">Stage Delivery</h3>
+<p>If stage delivery is enabled:</p>
+<ul>
+<li>Each stage has its own DP/delivery dates.</li>
+<li>Delivery Period and Delivery reports may count stages separately.</li>
+<li>The software creates consecutive delivery periods from the S.O. date.</li>
+<li>Default interval is 3 months for Goods &amp; Services, AMC, O&amp;M, and CARS files.</li>
+<li>Default interval is 1 month for MPC files.</li>
+<li>Stage amounts are auto-filled from S.O. amount by splitting the S.O. value across the stage count. The final stage carries any rounding balance.</li>
+<li>If LD is selected as Yes for a D.P./stage, choose Full or Partial and enter the LD percentage in the <code>%</code> field.</li>
+<li>For Goods &amp; Services files, Delivery Current is auto-checked for the stage whose delivery period is currently valid and whose Material Receipt date is blank.</li>
+<li>For Goods &amp; Services files, when Material Receipt is filled, that stage stops being Current and becomes completed/fructified for delivery logic.</li>
+<li>For AMC, MPC, O&amp;M, and CARS files, Material Receipt is not applicable. Delivery Current is based on delivery-period validity only.</li>
+</ul>
+<h3 id="stage-payment">Stage Payment</h3>
+<p>If stage payment is enabled:</p>
+<ul>
+<li>Each stage may have its own bill and payment dates.</li>
+<li>Payment pending/completed may count stage rows.</li>
+</ul>
+<h3 id="counter-interpretation">Counter Interpretation</h3>
+<p>One file can have:</p>
+<ul>
+<li>3 S.O.s</li>
+<li>each S.O. with 3 stages</li>
+<li>multiple payment rows</li>
+</ul>
+<p>In this case:</p>
+<ul>
+<li>Report counter can show 9 pending delivery/payment items.</li>
+<li>Clicking may open only 1 file.</li>
+<li>This is acceptable because the counter is item-based and Search opens files.</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Enter stage dates in order.</li>
+<li>Do not mark S.O. cancelled if only one stage is cancelled unless business rules require it.</li>
+<li>Verify actual payment values for each stage.</li>
+<li>Ensure advance payment details are complete.</li>
+</ul>
+<hr>
+<h2 id="15-archive-delete-and-restore-logic">15. Archive, Delete, and Restore Logic</h2>
+<h3 id="archive">Archive</h3>
+<p>Archiving removes a file from normal active lists without permanently deleting it.</p>
+<h3 id="restore">Restore</h3>
+<p>Restoring brings an archived file back into active records.</p>
+<h3 id="permanent-delete">Permanent Delete</h3>
+<p>Permanent delete should be used only after confirmation and with required password.</p>
+<h3 id="deleted-fields-in-archive">Deleted Fields in Archive</h3>
+<p>Archived files should preserve the file record and related child data needed for restoration, such as:</p>
+<ul>
+<li>Main file fields</li>
+<li>Firms</li>
+<li>Supply Orders</li>
+<li>Remarks</li>
+<li>Markers</li>
+<li>Completed milestones</li>
+<li>Active years</li>
+</ul>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Prefer archive over permanent delete.</li>
+<li>Verify deletion password is configured.</li>
+<li>Export important files before permanent delete.</li>
+</ul>
+<hr>
+<h2 id="16-exports-printing-and-table-fields">16. Exports, Printing, and Table Fields</h2>
+<h3 id="export-formats">Export Formats</h3>
+<p>Supported formats may include:</p>
+<ul>
+<li>Excel</li>
+<li>PDF</li>
+</ul>
+<h3 id="search-export">Search Export</h3>
+<p>Search export uses selected filters and table fields.</p>
+<h3 id="dashboardreport-export">Dashboard/Report Export</h3>
+<p>Dashboard and report exports use the visible summary or matching files.</p>
+<h3 id="table-fields">Table Fields</h3>
+<p>Table Fields should include file-level, S.O.-level, staged, payment, cancellation, and settings-driven fields.</p>
+<h3 id="precautions">Precautions</h3>
+<ul>
+<li>Check selected table fields before export.</li>
+<li>For nested S.O./stage fields, one file may render multiple rows or combined values depending on export design.</li>
+<li>Confirm financial year and filters before sharing exported reports.</li>
+</ul>
+<hr>
+<h2 id="17-data-entry-standards-and-precautions">17. Data Entry Standards and Precautions</h2>
+<h3 id="date-entry">Date Entry</h3>
+<p>Dates should be entered sequentially.</p>
+<p>Recommended order:</p>
+<ol>
+<li>File received</li>
+<li>Scrutiny</li>
+<li>Controlling</li>
+<li>Approval milestones</li>
+<li>Tender/bid milestones</li>
+<li>S.O.</li>
+<li>Delivery</li>
+<li>IR</li>
+<li>Bill</li>
+<li>Payment</li>
+</ol>
+<h3 id="values">Values</h3>
+<ul>
+<li>Enter capital and revenue separately.</li>
+<li>Use correct currency.</li>
+<li>If currency is not INR, enter exchange rate.</li>
+</ul>
+<h3 id="cancellation">Cancellation</h3>
+<ul>
+<li>Demand cancelled before S.O.</li>
+<li>S.O. cancelled after S.O.</li>
+</ul>
+<h3 id="current-status">Current Status</h3>
+<ul>
+<li>Keep current milestone aligned with actual pending work.</li>
+<li>Update S.O./stage status where work is S.O.-specific.</li>
+</ul>
+<h3 id="before-saving">Before Saving</h3>
+<p>Check:</p>
+<ul>
+<li>Financial year</li>
+<li>Division</li>
+<li>File category</li>
+<li>Indentor</li>
+<li>Value</li>
+<li>Current milestone</li>
+<li>Required dates</li>
+<li>S.O. rows</li>
+<li>Stage rows</li>
+</ul>
+<hr>
+<h2 id="18-dashboard-and-reports-counterclicker-logic">18. Dashboard and Reports Counter/Clicker Logic</h2>
+<p>This chapter explains the actual logic used for Dashboard and Reports counters. It should be read with <a href="#8-dashboard-page">Dashboard Page</a>, <a href="#9-reports-page">Reports Page</a>, and <a href="#7-search-file-page">Search File Page</a>.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard annotated counter overview"><figcaption>Dashboard annotated counter overview</figcaption></figure>
+<h3 id="main-rule">Main Rule</h3>
+<p>Most counters are based on the selected financial year, selected division, and the logged-in user's allowed file categories.</p>
+<p>Important:</p>
+<ul>
+<li>Normal file milestones usually count unique active files.</li>
+<li>S.O.-driven milestones can count S.O. rows.</li>
+<li>Stage delivery/payment counters can count stage rows.</li>
+<li>Cash outgo counters count money values grouped by month.</li>
+<li>Search results usually show unique files.</li>
+<li>Therefore, a counter may show a higher number than the clicked Search file list.</li>
+</ul>
+<p>Example:</p>
+<ul>
+<li>Dashboard counter shows <code>Payment Pending = 25</code>.</li>
+<li>Search opens <code>18</code> files.</li>
+<li>This can be correct if 25 pending payment rows belong to 18 unique files.</li>
+</ul>
+<h3 id="common-filter-rules">Common Filter Rules</h3>
+<table><thead><tr>
+<th>Rule</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Financial year</td>
+<td>Only files visible in the selected year are considered.</td>
+</tr>
+<tr>
+<td>Division</td>
+<td>If a division is selected, only that division is counted.</td>
+</tr>
+<tr>
+<td>File category access</td>
+<td>Users see and count only allowed file categories.</td>
+</tr>
+<tr>
+<td>Cancelled files</td>
+<td>Most counters exclude demand-cancelled files. Cancellation counters intentionally include cancelled cases.</td>
+</tr>
+<tr>
+<td>S.O. cancelled</td>
+<td>S.O.-row counters generally exclude cancelled S.O.s except S.O. cancelled counters.</td>
+</tr>
+<tr>
+<td>Clicker result</td>
+<td>Clicking sends a dashboard/report filter to Search File. Search normally returns files, not every internal counted row.</td>
+</tr>
+</tbody></table>
+<h3 id="snapshot-counters">Snapshot Counters</h3>
+<p>Snapshot counters are mostly file counters. They count active files after year/division/category access filters.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard snapshot and status counters"><figcaption>Dashboard snapshot and status counters</figcaption></figure>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Clicker logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Total files</td>
+<td>Active files visible to the user.</td>
+<td>Opens all matching files.</td>
+</tr>
+<tr>
+<td>TCEC</td>
+<td>Files where TCEC flag is Yes.</td>
+<td>Opens files with TCEC = Yes.</td>
+</tr>
+<tr>
+<td>Non-TCEC</td>
+<td>Files where TCEC flag is No.</td>
+<td>Opens files with TCEC = No.</td>
+</tr>
+<tr>
+<td>GTE / Non-GTE</td>
+<td>Files by GTE flag.</td>
+<td>Opens files matching the selected GTE flag.</td>
+</tr>
+<tr>
+<td>GeM / Non-GeM</td>
+<td>Files by GeM flag.</td>
+<td>Opens files matching the selected GeM flag.</td>
+</tr>
+<tr>
+<td>High Value / Non High Value</td>
+<td>Files by High Value flag.</td>
+<td>Opens files matching the selected High Value flag.</td>
+</tr>
+<tr>
+<td>AD / Non AD</td>
+<td>Files by AD flag.</td>
+<td>Opens files matching the selected AD flag.</td>
+</tr>
+<tr>
+<td>R&amp;QA / Non R&amp;QA</td>
+<td>Files by R&amp;QA flag.</td>
+<td>Opens files matching the selected R&amp;QA flag.</td>
+</tr>
+<tr>
+<td>IFA / Non IFA</td>
+<td>Files by IFA flag.</td>
+<td>Opens files matching the selected IFA flag.</td>
+</tr>
+<tr>
+<td>PSB / Non PSB</td>
+<td>Files by PSB flag.</td>
+<td>Opens files matching the selected PSB flag.</td>
+</tr>
+<tr>
+<td>BG / Non BG</td>
+<td>Files by Bank Guarantee flag.</td>
+<td>Opens files matching the selected BG flag.</td>
+</tr>
+<tr>
+<td>RFP vetting / Non RFP vetting</td>
+<td>Files by RFP vetting flag.</td>
+<td>Opens files matching the selected RFP vetting flag.</td>
+</tr>
+<tr>
+<td>Refloat / Non Refloat</td>
+<td>Files by Refloat flag.</td>
+<td>Opens files matching the selected Refloat flag.</td>
+</tr>
+<tr>
+<td>RST / Non RST</td>
+<td>Files by RST flag.</td>
+<td>Opens files matching the selected RST flag.</td>
+</tr>
+<tr>
+<td>File Type</td>
+<td>Files grouped by Goods &amp; Services, AMC, MPC, CARS, O&amp;M.</td>
+<td>Opens files from that file category. Restricted users see only allowed categories.</td>
+</tr>
+<tr>
+<td>Mode</td>
+<td>Files grouped by procurement mode such as OBM, PBM, SBM, LBM, LPC, or configured modes.</td>
+<td>Opens files with that mode.</td>
+</tr>
+<tr>
+<td>Firm Type</td>
+<td>Files having at least one S.O. with that firm type.</td>
+<td>Opens files where any S.O. firm type matches. One file may have multiple S.O.s but opens once in Search.</td>
+</tr>
+</tbody></table>
+<h3 id="dashboard-status-counters">Dashboard Status Counters</h3>
+<p>Status counters use the configured milestone sequence. The main configured file milestones include Scrutiny, High Value, Pre-TCEC, AD, R&amp;QA, Controlling, IFA, CFA, Bidding, Post-TCEC, CNC, Supply Order, Bank Guarantee, and Payment.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard milestone cards"><figcaption>Dashboard milestone cards</figcaption></figure>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Actual logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Total files / Total cases</td>
+<td>Files where the milestone applies.</td>
+<td>For normal milestones, counts active applicable files. For High Value, AD, R&amp;QA, IFA, Pre-TCEC, Post-TCEC, CNC, applicability depends on the respective Yes flag.</td>
+</tr>
+<tr>
+<td>At previous stage</td>
+<td>Files where the milestone applies but the previous applicable milestone is not complete yet.</td>
+<td>Uses the milestone sequence and previous completed date.</td>
+</tr>
+<tr>
+<td>In process</td>
+<td>Files whose main current milestone is that milestone.</td>
+<td>Uses file-level current milestone. For Bidding, live/overdue bids are separated.</td>
+</tr>
+<tr>
+<td>Reviewed</td>
+<td>Files currently at that milestone where the reviewed/sent/meeting date exists but completion date is missing.</td>
+<td>Used only for milestones having reviewed fields, such as Scrutiny, High Value, Pre-TCEC, IFA, CFA, Post-TCEC, CNC.</td>
+</tr>
+<tr>
+<td>Pending</td>
+<td>Files currently at that milestone and not complete.</td>
+<td>For reviewed milestones, pending means current milestone is active and reviewed date is not filled.</td>
+</tr>
+<tr>
+<td>Completed / Cleared</td>
+<td>Files where completion date exists.</td>
+<td>Uses the milestone completion date or the special S.O./payment completion logic.</td>
+</tr>
+</tbody></table>
+<h3 id="normal-milestone-field-logic">Normal Milestone Field Logic</h3>
+<table><thead><tr>
+<th>Milestone</th>
+<th>Applies when</th>
+<th>Reviewed/start field</th>
+<th>Completion field</th>
+</tr></thead><tbody>
+<tr>
+<td>Scrutiny</td>
+<td>All active files.</td>
+<td>Scrutiny date.</td>
+<td>Scrutiny completion date.</td>
+</tr>
+<tr>
+<td>High Value</td>
+<td>High Value = Yes.</td>
+<td>High Value meeting date.</td>
+<td>High Value minutes date.</td>
+</tr>
+<tr>
+<td>Pre-TCEC</td>
+<td>TCEC = Yes.</td>
+<td>Pre-TCEC date.</td>
+<td>Pre-TCEC minutes date.</td>
+</tr>
+<tr>
+<td>AD</td>
+<td>AD = Yes.</td>
+<td>Previous applicable stage.</td>
+<td>AD vetting date.</td>
+</tr>
+<tr>
+<td>R&amp;QA</td>
+<td>R&amp;QA = Yes.</td>
+<td>Previous applicable stage.</td>
+<td>R&amp;QA approval date.</td>
+</tr>
+<tr>
+<td>Controlling</td>
+<td>All active files.</td>
+<td>Previous applicable stage.</td>
+<td>Control no. date.</td>
+</tr>
+<tr>
+<td>IFA</td>
+<td>IFA = Yes.</td>
+<td>IFA sent date.</td>
+<td>IFA final date.</td>
+</tr>
+<tr>
+<td>CFA</td>
+<td>All active files.</td>
+<td>CFA sent date.</td>
+<td>CFA date.</td>
+</tr>
+<tr>
+<td>Bidding</td>
+<td>All active files.</td>
+<td>Previous applicable stage.</td>
+<td>Bidding stage over.</td>
+</tr>
+<tr>
+<td>Post-TCEC</td>
+<td>TCEC = Yes.</td>
+<td>Post-TCEC date.</td>
+<td>Post-TCEC minutes date.</td>
+</tr>
+<tr>
+<td>CNC</td>
+<td>TCEC = Yes.</td>
+<td>CNC date.</td>
+<td>CNC approval date.</td>
+</tr>
+</tbody></table>
+<h3 id="bidding-counters">Bidding Counters</h3>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Live</td>
+<td>Tender live flag is Yes.</td>
+</tr>
+<tr>
+<td>Opening overdue</td>
+<td>Bid opening is overdue as per bid date/opening date logic.</td>
+</tr>
+<tr>
+<td>In process</td>
+<td>Current milestone is Bidding, but it is not live and not opening overdue.</td>
+</tr>
+<tr>
+<td>Completed</td>
+<td>Bidding stage over date/value is filled.</td>
+</tr>
+<tr>
+<td>At previous stages</td>
+<td>Bidding applies but previous applicable milestone is not complete.</td>
+</tr>
+</tbody></table>
+<h3 id="supply-order-counters">Supply Order Counters</h3>
+<p>Supply Order is S.O.-driven. If a file has multiple S.O.s, counters may count multiple S.O. rows.</p>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Total files / Total</td>
+<td>Effective expected S.O. rows.</td>
+<td>Counts expected S.O.s from file/S.O. data. Multiple S.O.s under one file can increase the count.</td>
+</tr>
+<tr>
+<td>Placed / Completed</td>
+<td>S.O. rows having S.O. date and not cancelled.</td>
+<td>Uses S.O. date from S.O. row or legacy file-level S.O. date.</td>
+</tr>
+<tr>
+<td>Live</td>
+<td>S.O. rows where S.O. date exists, payment date is not filled, and S.O. is not cancelled.</td>
+<td>Counts live S.O. rows.</td>
+</tr>
+<tr>
+<td>Pending</td>
+<td>S.O. rows whose current milestone is Supply Order and not cancelled.</td>
+<td>Uses S.O.-level current milestone when multiple S.O.s exist.</td>
+</tr>
+<tr>
+<td>At previous stage</td>
+<td>Files where Supply Order applies but previous stage is not complete.</td>
+<td>File-based.</td>
+</tr>
+</tbody></table>
+<h3 id="bank-guarantee-counters">Bank Guarantee Counters</h3>
+<p>Bank Guarantee applies independently when BG = Yes. It does not wait for S.O. placement to become pending. This is intentional because BG may be required before or parallel to S.O. placement, delivery, or payment preparation.</p>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Total files / Total</td>
+<td>BG-applicable expected S.O. rows.</td>
+<td>Counts active non-cancelled expected S.O. rows where BG = Yes.</td>
+</tr>
+<tr>
+<td>Received</td>
+<td>BG-applicable rows where BG is received/completed.</td>
+<td>BG is received when BG validity/received date exists or the BG Done checkbox is selected.</td>
+</tr>
+<tr>
+<td>Pending</td>
+<td>BG-applicable S.O. rows where BG is required but not received.</td>
+<td>BG = Yes, BG not received/completed, row not cancelled. S.O. date is not required.</td>
+</tr>
+<tr>
+<td>Expired</td>
+<td>BG rows where the BG validity date itself has expired before payment.</td>
+<td>BG = Yes, BG received/completed, BG validity date filled and before today, BG return date blank, S.O. not cancelled, and payment date blank. Delivery Period/Revised D.P. is not checked for this counter.</td>
+</tr>
+<tr>
+<td>To be returned</td>
+<td>BG rows where BG return is pending after payment or S.O. cancellation.</td>
+<td>Counts BG received/completed rows with BG return date blank when either S.O. is cancelled, or payment date is filled and BG validity date has expired.</td>
+</tr>
+<tr>
+<td>At previous stage</td>
+<td>Historical/sequence view only.</td>
+<td>BG is now treated as an independent parallel status, so pending/received counters are the primary BG status indicators.</td>
+</tr>
+</tbody></table>
+<p>If BG validity date is filled and BG Done is also checked, the row is still counted once as BG Received. It is not counted as Pending. If only BG Done is checked but BG validity date is blank, the row is counted as Received/Completed; however, normal BG Return still needs the BG validity/expiry date unless the S.O. is cancelled.</p>
+<h3 id="delivery-period-counters">Delivery Period Counters</h3>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Valid</td>
+<td>S.O./stage rows where delivery period is currently valid.</td>
+<td>Uses DP date or revised DP if present and checks that today is within the delivery period. For Goods &amp; Services, received rows are excluded through Material Receipt. For AMC, MPC, O&amp;M, and CARS, Material Receipt is not applicable, so period validity is the governing logic. Cancelled rows are excluded.</td>
+</tr>
+<tr>
+<td>Expired</td>
+<td>S.O./stage rows where delivery period has expired.</td>
+<td>Uses DP/Revised D.P. date and excludes cancelled S.O.s. For Goods &amp; Services, Material Receipt completion removes the row from pending/expired delivery logic. For AMC, MPC, O&amp;M, and CARS, Material Receipt is not applicable.</td>
+</tr>
+<tr>
+<td>Extended</td>
+<td>S.O./stage rows where revised DP exists.</td>
+<td>Counts revised-DP rows where the delivery period remains active as applicable.</td>
+</tr>
+</tbody></table>
+<h3 id="delivery-and-ir-counters">Delivery and IR Counters</h3>
+<p>Delivery and IR counters are used where delivery/inspection is applicable.</p>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Delivery Completed</td>
+<td>Goods &amp; Services S.O./stage rows where Material Receipt date exists.</td>
+<td>Excludes cancelled S.O.s. Material Receipt is not applicable for AMC, MPC, O&amp;M, and CARS.</td>
+</tr>
+<tr>
+<td>Delivery Pending</td>
+<td>Current delivery-period S.O./stage rows where delivery is still pending.</td>
+<td>Counts only the active/current delivery stage. For Goods &amp; Services, Material Receipt must be blank. For AMC, MPC, O&amp;M, and CARS, Material Receipt is ignored and period validity controls the current stage. Future stages are not counted merely because they exist.</td>
+</tr>
+<tr>
+<td>Delivery Overdue</td>
+<td>S.O./stage rows where DP/revised DP has passed.</td>
+<td>For Goods &amp; Services, Material Receipt must be blank. For AMC, MPC, O&amp;M, and CARS, Material Receipt is ignored. Cancelled S.O.s are excluded.</td>
+</tr>
+<tr>
+<td>IR Preparation Pending</td>
+<td>Rows where material receipt exists, IR = Yes, and IR preparation date is missing.</td>
+<td>Excludes cancelled S.O.s.</td>
+</tr>
+<tr>
+<td>IR Receipt Pending</td>
+<td>Rows where IR preparation date exists and IR receipt date is missing.</td>
+<td>Excludes cancelled S.O.s.</td>
+</tr>
+<tr>
+<td>IR Completed</td>
+<td>Rows where IR receipt date exists.</td>
+<td>Excludes cancelled S.O.s.</td>
+</tr>
+</tbody></table>
+<h3 id="payment-counters">Payment Counters</h3>
+<p>Payment can be file-level, S.O.-level, stage-level, or advance-payment related.</p>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>What it counts</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Total</td>
+<td>Payment pending rows plus payment completed rows.</td>
+<td>A single file can contribute multiple payment rows.</td>
+</tr>
+<tr>
+<td>Pending</td>
+<td>Payment rows where payment is due but payment date is missing.</td>
+<td>Uses material receipt, bill preparation, bill sent, staged payment, and advance payment data as applicable.</td>
+</tr>
+<tr>
+<td>Completed</td>
+<td>Payment rows where payment date exists.</td>
+<td>Uses S.O./stage payment date and excludes cancelled S.O.s.</td>
+</tr>
+<tr>
+<td>In process</td>
+<td>Files whose main current milestone is Payment.</td>
+<td>File-based current status.</td>
+</tr>
+<tr>
+<td>At previous stage</td>
+<td>Files where payment applies but earlier applicable stage is not complete.</td>
+<td>File-based previous-stage logic.</td>
+</tr>
+</tbody></table>
+<h3 id="status-2-live-status-counters">Status-2 / Live Status Counters</h3>
+<p>Status-2 shows current milestone counts by division.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Status-2 live status table"><figcaption>Status-2 live status table</figcaption></figure>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Division total</td>
+<td>Sum of visible current milestone counts for that division.</td>
+</tr>
+<tr>
+<td>Normal milestone cell</td>
+<td>Files in that division whose file-level current milestone equals that milestone.</td>
+</tr>
+<tr>
+<td>S.O.-driven milestone cell</td>
+<td>S.O./stage rows in that division whose S.O.-level or stage-level current milestone equals that milestone.</td>
+</tr>
+<tr>
+<td>Completed clicker, where shown</td>
+<td>Uses completed milestone list at file level or S.O./stage completed milestones for S.O.-driven milestones.</td>
+</tr>
+</tbody></table>
+<h3 id="status-summary-and-status-3-counters">Status Summary and Status-3 Counters</h3>
+<p>Status Summary/Status-3 uses the same broad milestone rules as Dashboard Status, but displays them as grouped rows.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Status-3 summary table"><figcaption>Status-3 summary table</figcaption></figure>
+<table><thead><tr>
+<th>Row type</th>
+<th>Counter logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Common milestone rows</td>
+<td>Total, In process, Pending, Completed are based on applicable active files.</td>
+</tr>
+<tr>
+<td>Reviewed rows</td>
+<td>Count active current files where reviewed/sent/meeting date exists but completion date is missing.</td>
+</tr>
+<tr>
+<td>Bidding rows</td>
+<td>Live and Opening overdue use tender live and bid overdue logic.</td>
+</tr>
+<tr>
+<td>Supply Order rows</td>
+<td>Placed, Live, Pending, and Total can count S.O. rows.</td>
+</tr>
+<tr>
+<td>Bank Guarantee rows</td>
+<td>Received, Pending, Expired, To be returned, and Total can count S.O. rows.</td>
+</tr>
+<tr>
+<td>Delivery Period rows</td>
+<td>Valid, Expired, Extended can count S.O./stage rows.</td>
+</tr>
+<tr>
+<td>Delivery rows</td>
+<td>Completed, Pending, Overdue can count S.O./stage rows.</td>
+</tr>
+<tr>
+<td>Payment rows</td>
+<td>Pending, Completed, Total can count payment rows.</td>
+</tr>
+</tbody></table>
+<h3 id="miscellaneous-counters">Miscellaneous Counters</h3>
+<table><thead><tr>
+<th>Counter/clicker</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Live files</td>
+<td>Active files not marked File Closed.</td>
+</tr>
+<tr>
+<td>File closed</td>
+<td>Active files where File Closed milestone/status is present.</td>
+</tr>
+<tr>
+<td>LD</td>
+<td>S.O. rows where LD flag is Yes.</td>
+</tr>
+<tr>
+<td>Demand cancelled</td>
+<td>Files where demand cancelled flag is Yes. This cancellation counter intentionally includes cancelled files.</td>
+</tr>
+<tr>
+<td>S.O. cancelled</td>
+<td>Files/S.O.s where S.O. cancelled flag is Yes. This cancellation counter intentionally includes cancelled S.O.s.</td>
+</tr>
+<tr>
+<td>Multiple S.O.</td>
+<td>Active files with more than one expected S.O. row.</td>
+</tr>
+</tbody></table>
+<h3 id="analytics-counters-and-values">Analytics Counters and Values</h3>
+<p>Analytics is usually for ranking and summary, not always direct file counts.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard analytics area"><figcaption>Dashboard analytics area</figcaption></figure>
+<table><thead><tr>
+<th>Analytics panel</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Division file ranking</td>
+<td>Counts active files by division.</td>
+</tr>
+<tr>
+<td>Top indentors by files</td>
+<td>Counts active files by indentor.</td>
+</tr>
+<tr>
+<td>Top indentors by value</td>
+<td>Sums demand value by indentor.</td>
+</tr>
+<tr>
+<td>Bidding mode mix</td>
+<td>Counts active files by mode.</td>
+</tr>
+<tr>
+<td>Monthly file inflow</td>
+<td>Counts files by received date or file date month.</td>
+</tr>
+<tr>
+<td>Division turnaround ranking</td>
+<td>Average days from received date to first S.O. date.</td>
+</tr>
+<tr>
+<td>Milestone clearing ranking</td>
+<td>Average days between milestone start and completion dates.</td>
+</tr>
+<tr>
+<td>Top firms by S.O. value</td>
+<td>Sums S.O./stage values by firm; one file can contribute multiple S.O./stage values.</td>
+</tr>
+<tr>
+<td>Value thresholds</td>
+<td>Groups files/values according to configured value threshold levels.</td>
+</tr>
+<tr>
+<td>Risk ranking</td>
+<td>Counts rows with cancellation, LD, overdue delivery, or similar risk conditions.</td>
+</tr>
+<tr>
+<td>Payment pending ranking</td>
+<td>Counts payment-pending rows by division.</td>
+</tr>
+</tbody></table>
+<h3 id="finance-counters-and-values">Finance Counters and Values</h3>
+<p>Finance shows amounts, not file counts.</p>
+<figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard finance values"><figcaption>Dashboard finance values</figcaption></figure>
+<table><thead><tr>
+<th>Finance value</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Allocated capital/revenue</td>
+<td>Sum of division allocation values from Settings.</td>
+</tr>
+<tr>
+<td>Booked capital/revenue</td>
+<td>Demand value for active files where Control no. is filled and no committed S.O. value exists.</td>
+</tr>
+<tr>
+<td>Projected capital/revenue</td>
+<td>Demand value for active files where Control no. is not filled.</td>
+</tr>
+<tr>
+<td>Committed/spent capital/revenue</td>
+<td>S.O. value from active non-cancelled S.O.s, including stage values where stage delivery is used.</td>
+</tr>
+<tr>
+<td>Paid capital/revenue</td>
+<td>Actual payment values from active non-cancelled S.O./stage/payment rows.</td>
+</tr>
+<tr>
+<td>Percent booked/projected/spent</td>
+<td>Corresponding value divided by allocated amount.</td>
+</tr>
+<tr>
+<td>Firm type distribution by S.O. value</td>
+<td>Sums S.O. values by firm type.</td>
+</tr>
+<tr>
+<td>Firm type distribution by payment</td>
+<td>Sums actual payments by firm type.</td>
+</tr>
+</tbody></table>
+<h3 id="reports-delay-status-counters">Reports Delay Status Counters</h3>
+<p>Delay Status checks the currently active milestone and the number of days spent there.</p>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Delay status rows"><figcaption>Delay status rows</figcaption></figure>
+<table><thead><tr>
+<th>Delay row type</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>File-level delay row</td>
+<td>File current milestone matches the selected milestone, milestone is not complete, and days since stage start are greater than threshold.</td>
+</tr>
+<tr>
+<td>S.O.-level delay row</td>
+<td>S.O./stage current milestone matches an S.O.-driven milestone, completion date is missing, S.O. is not cancelled, and days since relevant start date are greater than threshold.</td>
+</tr>
+<tr>
+<td>Delay summary</td>
+<td>Counts delay rows, not necessarily unique files.</td>
+</tr>
+<tr>
+<td>Click/open file</td>
+<td>Opens the related file in Search/File view. A file can appear in delay more than once if multiple S.O.s are delayed.</td>
+</tr>
+</tbody></table>
+<p>Delay stage start examples:</p>
+<table><thead><tr>
+<th>Milestone</th>
+<th>Stage start date</th>
+</tr></thead><tbody>
+<tr>
+<td>Supply Order</td>
+<td>Previous applicable file milestone date, usually CFA date or earlier stage.</td>
+</tr>
+<tr>
+<td>Bank Guarantee</td>
+<td>S.O. date.</td>
+</tr>
+<tr>
+<td>Delivery</td>
+<td>DP date or revised DP.</td>
+</tr>
+<tr>
+<td>IR Preparation</td>
+<td>Material receipt date.</td>
+</tr>
+<tr>
+<td>IR Receipt</td>
+<td>IR preparation date.</td>
+</tr>
+<tr>
+<td>Bill preparation</td>
+<td>IR receipt date or material receipt date.</td>
+</tr>
+<tr>
+<td>Bill sent for payment</td>
+<td>Bill preparation date.</td>
+</tr>
+<tr>
+<td>Payment</td>
+<td>Bill sent for payment date.</td>
+</tr>
+</tbody></table>
+<h3 id="reports-cash-outgo-counters">Reports Cash Outgo Counters</h3>
+<p>Cash outgo reports group amounts by month.</p>
+<figure><img src="docs/manual-screenshots/reports.png" alt="Cash outgo rows"><figcaption>Cash outgo rows</figcaption></figure>
+<table><thead><tr>
+<th>Report row/clicker</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>Expected DP</td>
+<td>Uses DP/revised DP date plus offset days when delivery/bill/payment is still pending.</td>
+</tr>
+<tr>
+<td>Expected receipt</td>
+<td>Uses material receipt date plus offset days when payment is still pending.</td>
+</tr>
+<tr>
+<td>Receipt pending bill</td>
+<td>Uses material receipt date for inspection files, or DP + 1 day for non-inspection files, where bill preparation/payment are still pending.</td>
+</tr>
+<tr>
+<td>Bill preparation</td>
+<td>Uses bill preparation date where bill has been prepared but bill sent/payment is pending.</td>
+</tr>
+<tr>
+<td>Bill sent for payment</td>
+<td>Uses bill sent for payment date where payment is still pending.</td>
+</tr>
+<tr>
+<td>Actual cash outgo</td>
+<td>Uses payment date and actual payment capital/revenue values.</td>
+</tr>
+<tr>
+<td>Month total</td>
+<td>Sum of capital + revenue for all matching rows in that month.</td>
+</tr>
+<tr>
+<td>Clicked file list</td>
+<td>Search shows unique files matching the row/filter. The money total may come from multiple S.O./stage rows under those files.</td>
+</tr>
+</tbody></table>
+<h3 id="mmg-summary-counters">MMG Summary Counters</h3>
+<p>MMG Summary uses the selected MMG fields from Settings.</p>
+<figure><img src="docs/manual-screenshots/settings.png" alt="MMG summary settings and report reference"><figcaption>MMG summary settings and report reference</figcaption></figure>
+<table><thead><tr>
+<th>MMG field type</th>
+<th>Logic</th>
+</tr></thead><tbody>
+<tr>
+<td>File totals</td>
+<td>Counts active files matching the selected year/division/category filters.</td>
+</tr>
+<tr>
+<td>TCEC / Non-TCEC</td>
+<td>Counts files by TCEC flag.</td>
+</tr>
+<tr>
+<td>Value fields</td>
+<td>Uses demand/S.O./payment values depending on selected field.</td>
+</tr>
+<tr>
+<td>Milestone fields</td>
+<td>Uses current/completed milestone and date logic from the normal milestone rules.</td>
+</tr>
+<tr>
+<td>Delay fields</td>
+<td>Uses delay status logic.</td>
+</tr>
+<tr>
+<td>Payment fields</td>
+<td>Uses payment pending/completed and cash outgo logic.</td>
+</tr>
+<tr>
+<td>Advance payment fields</td>
+<td>Uses advance payment detail under S.O./stage payment data.</td>
+</tr>
+</tbody></table>
+<h3 id="why-counter-and-click-result-may-differ">Why Counter and Click Result May Differ</h3>
+<p>This is expected in these cases:</p>
+<ul>
+<li>One file has multiple S.O.s.</li>
+<li>One S.O. has multiple stages.</li>
+<li>One stage has separate capital/revenue/payment values.</li>
+<li>The counter is a value total but Search shows files.</li>
+<li>The report row counts delay rows, payment rows, or S.O. rows.</li>
+<li>Cancelled-file counters intentionally include cancellation data, while normal Search may exclude cancelled items unless the filter asks for them.</li>
+</ul>
+<h3 id="precautions-while-checking-counters">Precautions While Checking Counters</h3>
+<ul>
+<li>First confirm selected financial year.</li>
+<li>Then confirm selected division.</li>
+<li>Then confirm user file category access.</li>
+<li>Check whether the counter is file-based, S.O.-based, stage-based, payment-row-based, or value-based.</li>
+<li>For S.O./stage/payment counters, compare with detailed rows, not only unique files.</li>
+<li>For finance/cash outgo, compare amount totals, not file counts.</li>
+<li>For delay status, compare delay rows, not only file count.</li>
+</ul>
+<hr>
+<h2 id="19-troubleshooting">19. Troubleshooting</h2>
+<h3 id="software-not-opening">Software Not Opening</h3>
+<p>Check:</p>
+<ul>
+<li>Frontend server is running.</li>
+<li>Backend server is running.</li>
+<li>Database is running.</li>
+<li>Browser URL is correct.</li>
+</ul>
+<h3 id="login-not-working">Login Not Working</h3>
+<p>Check:</p>
+<ul>
+<li>Username/password.</li>
+<li>User active status.</li>
+<li>Backend health.</li>
+<li>Cookies/site data.</li>
+<li><code>localhost</code> vs <code>127.0.0.1</code> mismatch.</li>
+</ul>
+<h3 id="file-not-appearing-in-search">File Not Appearing in Search</h3>
+<p>Check:</p>
+<ul>
+<li>Selected financial year.</li>
+<li>Active years.</li>
+<li>Division filter.</li>
+<li>File category access.</li>
+<li>Archive status.</li>
+<li>Cancellation filters.</li>
+</ul>
+<h3 id="file-not-appearing-in-reports">File Not Appearing in Reports</h3>
+<p>Check:</p>
+<ul>
+<li>Selected year.</li>
+<li>Applicability flags such as TCEC, AD, R&amp;QA, IFA, BG.</li>
+<li>Current milestone.</li>
+<li>Completed dates.</li>
+<li>S.O./stage data.</li>
+<li>Cancellation status.</li>
+</ul>
+<h3 id="status-not-updating">Status Not Updating</h3>
+<p>Check:</p>
+<ul>
+<li>Current milestone field.</li>
+<li>Completed milestones.</li>
+<li>S.O. current milestone.</li>
+<li>Stage current milestone.</li>
+<li>Quick Entry target.</li>
+</ul>
+<h3 id="report-counter-and-search-count-differ">Report Counter and Search Count Differ</h3>
+<p>This can be correct.</p>
+<p>Check whether the counter represents:</p>
+<ul>
+<li>files</li>
+<li>Supply Orders</li>
+<li>stages</li>
+<li>payment rows</li>
+<li>amount/value</li>
+</ul>
+<p>If it counts S.O./stage/payment rows, clicked file count may be lower.</p>
+</body>
+</html>

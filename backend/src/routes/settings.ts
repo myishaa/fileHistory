@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import type {
   AppSettings,
@@ -63,7 +64,61 @@ function presetOwnerKey(user: AuthRequest["authUser"]) {
 function normalizeYearLabel(value: unknown, field = "financialYear") {
   const label = requireString(value, field).trim();
   if (!label) throw new HttpError(400, `${field} is required.`);
+  if (label !== allActiveFilesYear && normalizeFinancialYearKey(label) === undefined) {
+    throw new HttpError(400, `${field} must be a valid financial year like 2026-27.`);
+  }
   return label;
+}
+
+function isFinancialYearLabel(label: string) {
+  return /^\d{4}-\d{2}$/.test(label.trim());
+}
+
+function readFinancialYearStart(label: string) {
+  const match = label.trim().match(/^(\d{4})-(\d{2}|\d{4})$/);
+  if (!match) return undefined;
+  const startYear = Number.parseInt(match[1], 10);
+  const endYear = Number.parseInt(match[2], 10);
+  const expectedShortEnd = (startYear + 1) % 100;
+  const actualShortEnd = match[2].length === 2 ? endYear : endYear % 100;
+  return actualShortEnd === expectedShortEnd ? startYear : undefined;
+}
+
+function normalizeFinancialYearKey(label: string) {
+  const startYear = readFinancialYearStart(label);
+  return startYear === undefined ? undefined : startYear;
+}
+
+function isKnownFinancialYear(labels: string[], label: string) {
+  const target = normalizeFinancialYearKey(label);
+  return target !== undefined && labels.some((year) => normalizeFinancialYearKey(year) === target);
+}
+
+function validateContinuousFinancialYear(labels: string[], label: string) {
+  const target = normalizeFinancialYearKey(label);
+  if (target === undefined) {
+    throw new HttpError(400, "Financial year must be a valid continuous year like 2026-27.");
+  }
+
+  const existingStarts = labels
+    .map(normalizeFinancialYearKey)
+    .filter((start): start is number => start !== undefined);
+
+  if (existingStarts.includes(target)) {
+    throw new HttpError(400, `Financial year ${label} already exists.`);
+  }
+  if (!existingStarts.length) return;
+
+  const earliest = Math.min(...existingStarts);
+  const latest = Math.max(...existingStarts);
+  if (target !== earliest - 1 && target !== latest + 1) {
+    const previousAllowed = `${earliest - 1}-${String(earliest % 100).padStart(2, "0")}`;
+    const nextAllowed = `${latest + 1}-${String((latest + 2) % 100).padStart(2, "0")}`;
+    throw new HttpError(
+      400,
+      `Financial years must be continuous. Add ${previousAllowed} or ${nextAllowed} next.`,
+    );
+  }
 }
 
 async function loadFinancialYears() {
@@ -71,7 +126,7 @@ async function loadFinancialYears() {
     const result = await pool.query<{ label: string }>(
       "select label from financial_years order by label desc",
     );
-    return result.rows.map((row) => row.label);
+    return result.rows.map((row) => row.label).filter((label) => normalizeFinancialYearKey(label));
   });
 }
 
@@ -116,10 +171,56 @@ async function loadValueThresholdLevels(financialYear: string): Promise<ValueThr
   });
 }
 
-async function ensureFinancialYear(label: string) {
-  await pool.query(
-    "insert into financial_years (label) values ($1) on conflict (label) do nothing",
+async function ensureFinancialYear(label: string, client: PoolClient | typeof pool = pool) {
+  const years = await loadFinancialYears();
+  if (isKnownFinancialYear(years, label)) {
+    return false;
+  }
+  if (!isKnownFinancialYear(years, label)) {
+    if (!isFinancialYearLabel(label)) {
+      throw new HttpError(400, "New financial year must be entered in YYYY-YY format, like 2026-27.");
+    }
+    validateContinuousFinancialYear(years, label);
+  }
+  const result = await client.query<{ label: string }>(
+    "insert into financial_years (label) values ($1) on conflict (label) do nothing returning label",
     [label],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+async function copyYearSettings(sourceYear: string, targetYear: string, client: PoolClient) {
+  if (!sourceYear || !targetYear || sourceYear === targetYear) return;
+
+  await client.query(
+    `insert into division_year_allocations (
+       division_id, financial_year, allocated_capital, allocated_revenue, active
+     )
+     select division_id, $2, allocated_capital, allocated_revenue, active
+     from division_year_allocations
+     where financial_year = $1
+     on conflict (division_id, financial_year) do nothing`,
+    [sourceYear, targetYear],
+  );
+
+  await client.query(
+    `insert into tcec_committees (financial_year, name, sort_order)
+     select $2, name, sort_order
+     from tcec_committees
+     where financial_year = $1
+     on conflict do nothing`,
+    [sourceYear, targetYear],
+  );
+
+  await client.query(
+    `insert into value_threshold_levels (
+       financial_year, level_number, label, min_value, max_value, applies_to
+     )
+     select $2, level_number, label, min_value, max_value, applies_to
+     from value_threshold_levels
+     where financial_year = $1
+     on conflict (financial_year, level_number) do nothing`,
+    [sourceYear, targetYear],
   );
 }
 
@@ -558,10 +659,30 @@ settingsRouter.post(
 
     const body = requireObjectBody(request.body);
     const label = normalizeYearLabel(body.label, "label");
-    await ensureFinancialYear(label);
+    if (!isFinancialYearLabel(label)) {
+      throw new HttpError(400, "Financial year must be entered in YYYY-YY format, like 2026-27.");
+    }
+    validateContinuousFinancialYear(await loadFinancialYears(), label);
+    const settings = await getSettings(user);
+    const sourceYear =
+      settings.selectedYear === allActiveFilesYear ? settings.financialYear : settings.selectedYear;
+    const client = await pool.connect();
 
-    if (body.select === true) {
-      await pool.query("update app_settings set selected_year = $1 where id = true", [label]);
+    try {
+      await client.query("begin");
+      const created = await ensureFinancialYear(label, client);
+      if (created) await copyYearSettings(sourceYear, label, client);
+
+      if (body.select === true) {
+        await client.query("update app_settings set selected_year = $1 where id = true", [label]);
+      }
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
     }
 
     clearSettingsCache();
@@ -598,6 +719,7 @@ settingsRouter.delete(
 
     await pool.query("delete from division_year_allocations where financial_year = $1", [label]);
     await pool.query("delete from tcec_committees where financial_year = $1", [label]);
+    await pool.query("delete from value_threshold_levels where financial_year = $1", [label]);
     await pool.query("delete from financial_years where label = $1", [label]);
     if (label === settings.selectedYear) {
       await pool.query("update app_settings set selected_year = financial_year where id = true");

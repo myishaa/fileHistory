@@ -1,48 +1,42 @@
 import type { FileRecord, SupplyOrderDetail } from "@/lib/files-store";
 
 function getBaseSupplyOrderRows(file: FileRecord) {
-  const rows = file.supplyOrders?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
-  if (rows.length) return rows;
+  return file.supplyOrders?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
+}
 
-  const legacy: SupplyOrderDetail = {
-    soNo: file.soNo,
-    gemSoNo: file.gemSoNo,
-    soDate: file.soDate,
-    soValueCapital: file.soValueCapital,
-    soValueRevenue: file.soValueRevenue,
-    dpDate: file.dpDate,
-    firm: file.firm,
-    bgValidityDate: file.bgValidityDate,
-    dpExtension: file.dpExtension,
-    dpExtensionCount: file.dpExtensionCount,
-    ld: file.ld,
-    revisedDp: file.revisedDp,
-    materialReceiptDate: file.materialReceiptDate,
-    irPreparationDate: file.irPreparationDate,
-    irReceiptDate: file.irReceiptDate,
-    billPreparationDate: file.billPreparationDate,
-    billSentForPaymentDate: file.billSentForPaymentDate,
-    paymentDate: file.paymentDate,
-    paymentMode: file.paymentMode,
-    actualPaymentCapital: file.actualPaymentCapital,
-    actualPaymentRevenue: file.actualPaymentRevenue,
-    bgReturnDate: file.bgReturnDate,
-    soCancelled: file.soCancelled,
-    soCancelledDate: file.soCancelledDate,
-  };
-  return hasFilledObjectValue(legacy) ? [legacy] : [];
+function getEffectiveSupplyOrderRows(file: FileRecord) {
+  const rows = getBaseSupplyOrderRows(file);
+  if (!hasExplicitSupplyOrderCount(file.noOfSo)) return rows;
+  return rows.slice(0, parseExpectedSupplyOrderCount(file.noOfSo));
 }
 
 export function countSupplyOrderRows(file: FileRecord) {
+  return getEffectiveSupplyOrderRows(file).length;
+}
+
+export function countExpectedSupplyOrderRows(file: FileRecord) {
+  if (hasExplicitSupplyOrderCount(file.noOfSo)) return parseExpectedSupplyOrderCount(file.noOfSo);
   return getBaseSupplyOrderRows(file).length;
 }
 
 export function rawSupplyOrders(file: FileRecord) {
-  return getBaseSupplyOrderRows(file);
+  return getEffectiveSupplyOrderRows(file);
+}
+
+export function expectedSupplyOrders(file: FileRecord) {
+  const rows = getEffectiveSupplyOrderRows(file);
+  const missing = countExpectedSupplyOrderRows(file) - rows.length;
+  if (missing <= 0) return rows;
+  return [
+    ...rows,
+    ...Array.from({ length: missing }, (): SupplyOrderDetail => ({
+      currentMilestone: "Supply Order",
+    })),
+  ];
 }
 
 export function fileSupplyOrders(file: FileRecord) {
-  return getBaseSupplyOrderRows(file).flatMap((order) => expandSupplyOrderStages(order));
+  return getEffectiveSupplyOrderRows(file).flatMap((order) => expandSupplyOrderStages(order));
 }
 
 export function effectiveSupplyOrderEntries(files: FileRecord[]) {
@@ -50,16 +44,64 @@ export function effectiveSupplyOrderEntries(files: FileRecord[]) {
 }
 
 export function filePaymentOrders(file: FileRecord) {
-  const orders = fileSupplyOrders(file);
+  const effectiveRows = getEffectiveSupplyOrderRows(file);
+  const orders = effectiveRows.flatMap((order) =>
+    isYes(order.stageDelivery) && !isYes(order.stagePayment)
+      ? [order]
+      : expandSupplyOrderStages(order),
+  );
   const advanceOrders =
-    file.supplyOrders
-      ?.map((order) => getAdvancePaymentOrder(order))
-      .filter((order): order is SupplyOrderDetail => Boolean(order)) ?? [];
+    effectiveRows
+      .map((order) => getAdvancePaymentOrder(order))
+      .filter((order): order is SupplyOrderDetail => Boolean(order));
   return [...orders, ...advanceOrders];
 }
 
 export function effectivePaymentEntries(files: FileRecord[]) {
   return files.flatMap((file) => filePaymentOrders(file).map((order) => ({ file, order })));
+}
+
+export function advancePaymentEntries(files: FileRecord[]) {
+  return files.flatMap((file) =>
+    rawSupplyOrders(file)
+      .filter(isAdvancePaymentApplicable)
+      .map((order) => ({ file, order, advance: order.advancePaymentDetail ?? {} })),
+  );
+}
+
+export function isAdvancePaymentApplicable(order: SupplyOrderDetail) {
+  return isYes(order.advancePayment);
+}
+
+export function isAdvancePaymentPaid(order: SupplyOrderDetail) {
+  return hasFilledString(order.advancePaymentDetail?.paymentDate);
+}
+
+export function isAdvancePaymentCompleted(order: SupplyOrderDetail) {
+  return (
+    isAdvancePaymentPaid(order) ||
+    normalizeCompletedMilestones(order.advancePaymentDetail?.completedMilestones).some(
+      (milestone) => normalizeMilestoneName(milestone) === "advancepayment",
+    )
+  );
+}
+
+export function isAdvancePaymentPending(order: SupplyOrderDetail) {
+  return (
+    isAdvancePaymentApplicable(order) &&
+    normalizeMilestoneName(order.advancePaymentDetail?.currentMilestone) === "advancepayment" &&
+    !isAdvancePaymentPaid(order)
+  );
+}
+
+export function getAdvancePaymentCapital(order: SupplyOrderDetail) {
+  const advance = order.advancePaymentDetail;
+  return advance?.actualPaymentCapital || advance?.stageAmountCapital || "";
+}
+
+export function getAdvancePaymentRevenue(order: SupplyOrderDetail) {
+  const advance = order.advancePaymentDetail;
+  return advance?.actualPaymentRevenue || advance?.stageAmountRevenue || "";
 }
 
 export function getActualPaymentCapital(order: SupplyOrderDetail) {
@@ -118,9 +160,12 @@ function expandSupplyOrderStages(order: SupplyOrderDetail) {
       ...order,
       ...stage,
       deliveryPeriodStartDate:
-        index === 0 ? order.soDate : getNextDate(previousDeliveryPeriodDate) || order.soDate,
+        stage.deliveryPeriodStartDate ||
+        (index === 0 ? order.soDate : getNextDate(previousDeliveryPeriodDate) || order.soDate),
       soValueCapital: stage.stageAmountCapital ?? "",
       soValueRevenue: stage.stageAmountRevenue ?? "",
+      currentMilestone: stage.currentMilestone ?? "",
+      completedMilestones: stage.completedMilestones ?? [],
       billPreparationDate: useStagePayment
         ? (stage.billPreparationDate ?? "")
         : useCommonPayment
@@ -177,6 +222,8 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     paymentMode: advance.paymentMode ?? "",
     actualPaymentCapital: advance.actualPaymentCapital || advance.stageAmountCapital || "",
     actualPaymentRevenue: advance.actualPaymentRevenue || advance.stageAmountRevenue || "",
+    currentMilestone: "",
+    completedMilestones: [],
     stageDeliveries: undefined,
     stageDeliveryLabel: "Advance Payment",
   };
@@ -211,8 +258,28 @@ function isDefaultNoField(key: string, value: string) {
   );
 }
 
+function parseExpectedSupplyOrderCount(value: string | undefined) {
+  const count = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function hasExplicitSupplyOrderCount(value: string | undefined) {
+  return String(value ?? "").trim() !== "";
+}
+
 function isYes(value: string | undefined) {
   return value?.trim().toLowerCase() === "yes";
+}
+
+function normalizeCompletedMilestones(values: string[] | undefined) {
+  return Array.isArray(values) ? values : [];
+}
+
+function normalizeMilestoneName(value: string | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 function isActiveDeliveryPeriodEntry(

@@ -3,6 +3,7 @@ import {
   BarChart3,
   CalendarDays,
   FilePlus2,
+  CircleHelp,
   LayoutDashboard,
   Moon,
   ScanLine,
@@ -16,7 +17,11 @@ import {
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { store, useActiveUser, useMessages, useSettings } from "@/lib/files-store";
-import { ALL_ACTIVE_FILES_YEAR, displayFinancialYearLabel } from "@/lib/year-filter";
+import {
+  ALL_ACTIVE_FILES_YEAR,
+  displayFinancialYearLabel,
+  normalizeFinancialYearLabel,
+} from "@/lib/year-filter";
 
 const nav = [
   { to: "/add", label: "Add File", icon: FilePlus2 },
@@ -25,6 +30,7 @@ const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/help", label: "Help", icon: CircleHelp },
 ] as const;
 
 export function TopBar() {
@@ -70,7 +76,7 @@ export function TopBar() {
         settings.selectedYear,
         ...settings.financialYears,
       ]
-        .map((year) => year?.trim())
+        .map((year) => normalizeFinancialYearLabel(year))
         .filter((year): year is string => Boolean(year) && year !== ALL_ACTIVE_FILES_YEAR),
     ),
   ).sort((a, b) => b.localeCompare(a));

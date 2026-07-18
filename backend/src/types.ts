@@ -97,6 +97,7 @@ export type FileMarker = {
 export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
+  financialSanctionDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -110,6 +111,8 @@ export type SupplyOrderDetail = {
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
+  ldType?: string;
+  ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
   irPreparationDate?: string;
@@ -135,6 +138,8 @@ export type SupplyOrderDetail = {
 };
 
 export type AdvancePaymentDetail = {
+  currentMilestone?: string;
+  completedMilestones?: string[];
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
   billPreparationDate?: string;
@@ -148,10 +153,15 @@ export type AdvancePaymentDetail = {
 export type StageDeliveryDetail = {
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
+  currentMilestone?: string;
+  completedMilestones?: string[];
+  deliveryPeriodStartDate?: string;
   dpDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
+  ldType?: string;
+  ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
   irPreparationDate?: string;

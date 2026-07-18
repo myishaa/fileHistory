@@ -6,15 +6,12 @@ export function isAllActiveFilesYear(year: string | undefined) {
   return year === ALL_ACTIVE_FILES_YEAR;
 }
 
-export function displayFinancialYearLabel(year: string | undefined) {
+export function normalizeFinancialYearLabel(year: string | undefined) {
   const label = year?.trim() ?? "";
-  if (!label) return "";
-  if (isAllActiveFilesYear(label)) return "All active files";
+  if (!label || isAllActiveFilesYear(label)) return label;
 
   const fullYearMatch = label.match(/^(\d{4})-(\d{4})$/);
-  if (fullYearMatch) {
-    return `${fullYearMatch[1]}-${fullYearMatch[2].slice(-2)}`;
-  }
+  if (fullYearMatch) return `${fullYearMatch[1]}-${fullYearMatch[2].slice(-2)}`;
 
   const startYearMatch = label.match(/^(\d{4})$/);
   if (!startYearMatch) return label;
@@ -22,6 +19,13 @@ export function displayFinancialYearLabel(year: string | undefined) {
   const startYear = Number(startYearMatch[1]);
   const endYear = String((startYear + 1) % 100).padStart(2, "0");
   return `${startYear}-${endYear}`;
+}
+
+export function displayFinancialYearLabel(year: string | undefined) {
+  const label = normalizeFinancialYearLabel(year);
+  if (!label) return "";
+  if (isAllActiveFilesYear(label)) return "All active files";
+  return label;
 }
 
 export function normalizeMilestoneName(value: string | undefined) {
