@@ -67,6 +67,8 @@ export type AppSettings = {
   mmgLiveEnabled?: boolean;
   mmgLiveOptions?: string[];
   mmgSummaryFields?: unknown[];
+  demandProcessingPresets?: unknown[];
+  demandProcessingDayRanges?: unknown[];
   activeUserId?: string;
 };
 
@@ -98,6 +100,23 @@ export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
   financialSanctionDate?: string;
+  psbApplicable?: string;
+  bgCoverageType?: string;
+  psbBgNo?: string;
+  psbBgAmount?: string;
+  psbBgReceivedDate?: string;
+  psbBgValidityDate?: string;
+  psbBgReturnDate?: string;
+  pwbBgNo?: string;
+  pwbBgAmount?: string;
+  pwbBgReceivedDate?: string;
+  pwbBgValidityDate?: string;
+  pwbBgReturnDate?: string;
+  combinedBgNo?: string;
+  combinedBgAmount?: string;
+  combinedBgReceivedDate?: string;
+  combinedBgValidityDate?: string;
+  combinedBgReturnDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -107,7 +126,6 @@ export type SupplyOrderDetail = {
   firm?: string;
   firmType?: string;
   firmTypeOther?: string;
-  bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
@@ -123,7 +141,6 @@ export type SupplyOrderDetail = {
   paymentMode?: string;
   actualPaymentCapital?: string;
   actualPaymentRevenue?: string;
-  bgReturnDate?: string;
   demandCancelled?: string;
   soCancelled?: string;
   soCancelledDate?: string;
@@ -254,7 +271,6 @@ export type FileRecord = {
   firm?: string;
   firmType?: string;
   firmTypeOther?: string;
-  bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
@@ -268,7 +284,6 @@ export type FileRecord = {
   paymentMode?: string;
   actualPaymentCapital?: string;
   actualPaymentRevenue?: string;
-  bgReturnDate?: string;
   demandCancelled?: string;
   demandCancelledDate?: string;
   soCancelled?: string;

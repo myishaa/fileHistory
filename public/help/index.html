@@ -123,7 +123,8 @@
 <li><a href="#16-exports-printing-and-table-fields">Exports, Printing, and Table Fields</a></li>
 <li><a href="#17-data-entry-standards-and-precautions">Data Entry Standards and Precautions</a></li>
 <li><a href="#18-dashboard-and-reports-counterclicker-logic">Dashboard and Reports Counter/Clicker Logic</a></li>
-<li><a href="#19-troubleshooting">Troubleshooting</a></li>
+<li><a href="#19-recent-procurement-workflow-rules">Recent Procurement Workflow Rules</a></li>
+<li><a href="#20-troubleshooting">Troubleshooting</a></li>
 </ol>
 <hr>
 <h2 id="1-introduction">1. Introduction</h2>
@@ -369,7 +370,7 @@
 <li>AD appears only when AD is <code>Yes</code> and the selected division is not configured as AD-not-required.</li>
 <li>R&amp;QA appears only when R&amp;QA is <code>Yes</code>.</li>
 <li>IFA appears only when IFA is <code>Yes</code>.</li>
-<li>Bank Guarantee appears only when BG is <code>Yes</code>.</li>
+<li>PSB, PWB, and PSB+PWB are S.O.-level milestones. PSB appears when PSB is applicable on an S.O.; PWB and PSB+PWB appear when Warranty is <code>Yes</code> and the S.O. coverage type requires them.</li>
 <li>IR Preparation and IR Receipt appear only when IR is <code>Yes</code>.</li>
 <li>Other normal milestones remain applicable by default.</li>
 </ul>
@@ -410,7 +411,7 @@
 <li>DP date</li>
 <li>Firm</li>
 <li>Firm type</li>
-<li>BG validity date</li>
+<li>PSB/PWB/PSB+PWB security and warranty BG details</li>
 <li>DP extension</li>
 <li>Revised DP</li>
 <li>LD</li>
@@ -427,10 +428,12 @@
 <p>S.O.-level milestone controls are used when there is more than one Supply Order or when any Supply Order contains meaningful S.O./stage data. A row is considered meaningful when real values exist; a plain <code>No</code> in flags such as stage delivery, stage payment, DP extension, LD, advance payment, demand cancelled, or S.O. cancelled is not enough by itself.</p>
 <p>Each Supply Order can have its own current milestone and completed milestones. The applicable S.O. milestone list respects file-level settings:</p>
 <ul>
-<li>Bank Guarantee is hidden/disabled when BG is <code>No</code>.</li>
+<li>PSB, PWB, and PSB+PWB are shown only when applicable to the S.O. row.</li>
 <li>IR Preparation and IR Receipt are hidden/disabled when IR is <code>No</code>.</li>
 <li>Delivery, Bill preparation, Bill sent for payment, and Payment can be stage-driven when stage delivery/payment is enabled.</li>
 </ul>
+<p>PSB, PWB, and PSB+PWB are independent parallel S.O. statuses. They can remain pending at the same time as Delivery, IR, Bill, or Payment workflow preparation.</p>
+<p>Payment is blocked when any required PSB/PWB/PSB+PWB is applicable but not yet received. Payment cannot be marked current/completed or paid for the S.O., stage, or advance-payment row until the required received date is filled.</p>
 <p>For S.O.-level validation:</p>
 <ul>
 <li>If an S.O. milestone is marked completed, its matching date must exist.</li>
@@ -607,7 +610,7 @@
 <li>delay filters focus the Timeline or delayed milestone area,</li>
 <li>manual milestone filters focus the Milestones block,</li>
 <li>delivery/payment/cash-outgo filters focus S.O. or payment fields,</li>
-<li>BG filters focus Bank Guarantee fields,</li>
+<li>PSB/PWB/PSB+PWB filters focus the Security/Warranty BG fields inside the matching S.O. row,</li>
 <li>S.O. filters focus Supply Order rows.</li>
 </ul>
 <p>This is why clicking a Dashboard/Report number can open Search first, and then opening a file can take the user directly to the relevant Add File section.</p>
@@ -1036,7 +1039,7 @@
 <li>Post-TCEC, if applicable</li>
 <li>CNC, if applicable</li>
 <li>Supply Order</li>
-<li>Bank Guarantee, if applicable</li>
+<li>PSB / PWB / PSB+PWB, if applicable</li>
 <li>Delivery</li>
 <li>IR</li>
 <li>Bill preparation</li>
@@ -1100,11 +1103,19 @@
 </tr>
 <tr>
 <td>Supply Order</td>
-<td>Applicable S.O. row progress is complete</td>
+<td>Applicable Supply Order tab is complete. S.O. date alone is not enough.</td>
 </tr>
 <tr>
-<td>Bank Guarantee</td>
-<td>BG validity date exists for applicable S.O.s, when BG is <code>Yes</code></td>
+<td>PSB</td>
+<td>PSB received date exists for applicable PSB rows.</td>
+</tr>
+<tr>
+<td>PWB</td>
+<td>PWB received date exists for applicable PWB rows.</td>
+</tr>
+<tr>
+<td>PSB+PWB</td>
+<td>Combined BG received date exists for applicable combined PSB+PWB rows.</td>
 </tr>
 <tr>
 <td>Delivery</td>
@@ -1158,6 +1169,68 @@
 <li>Delivery dates</li>
 <li>Payment dates</li>
 <li>Cancellation status</li>
+</ul>
+<p>Financial Sanction is an integral part of the Supply Order workflow. It is controlled from child S.O. rows. In multi-S.O. cases, each S.O. can have its own Financial Sanction pending/completed status, and the main milestone view shows progress such as <code>0/1</code>, <code>1/2</code>, or <code>3/3</code>.</p>
+<h4 id="supply-order-tab-completion-rule">Supply Order Tab Completion Rule</h4>
+<p>Supply Order Done/Placed is treated as complete only when the Supply Order tab is complete. The S.O. date alone does not make the Supply Order placed/completed.</p>
+<p>Required Supply Order tab fields are:</p>
+<ul>
+<li>S.O. No.</li>
+<li>GeM S.O. No., unless GeM is <code>No</code>.</li>
+<li>S.O. date.</li>
+<li>S.O. value on the applicable Capital/Revenue side.</li>
+<li>Firm.</li>
+<li>Firm type.</li>
+<li>Firm type other, when Firm type is <code>OTHER</code>.</li>
+<li>Stage Delivery selection.</li>
+<li>Stage Delivery Count and Stage Payment selection, when Stage Delivery is <code>Yes</code>.</li>
+<li>Advance Payment selection, when Stage Delivery and Stage Payment are both <code>Yes</code>.</li>
+</ul>
+<p>If any Supply Order tab field is partially filled, Save/Update is blocked until the tab is either completed or cleared.</p>
+<h4 id="date-sequence-blocking-rules">Date Sequence Blocking Rules</h4>
+<ul>
+<li>S.O. date cannot be earlier than Financial Sanction date.</li>
+<li>D.P. date cannot be earlier than S.O. date.</li>
+<li>Stage Delivery D.P. date cannot be earlier than the parent S.O. date.</li>
+</ul>
+<p>If a rule is violated, the software shows a warning and does not save/update until the dates are corrected.</p>
+<h4 id="financial-sanction-and-supply-order-automation">Financial Sanction and Supply Order Automation</h4>
+<ul>
+<li>When Financial Sanction date is filled, Financial Sanction Done is auto-selected.</li>
+<li>Filling Financial Sanction date also moves the Supply Order row to Supply Order Current, provided the Supply Order tab is not already complete.</li>
+<li>Supply Order Done is controlled by the complete Supply Order tab rule.</li>
+</ul>
+<h4 id="supply-order-payment-currentdone-checkbox-rules">Supply Order &amp; Payment Current/Done Checkbox Rules</h4>
+<p>Most S.O.-level Done checkboxes are read from the linked date or completion rule, not manually filled.</p>
+<table><thead><tr>
+<th>Milestone</th>
+<th>Current checkbox</th>
+<th>Done checkbox</th>
+</tr></thead><tbody>
+<tr><td>Financial Sanction</td><td>Can be manually selected while Financial Sanction is pending.</td><td>Auto-checked when Financial Sanction date is filled.</td></tr>
+<tr><td>Supply Order</td><td>Auto-checked after Financial Sanction date is filled, if the Supply Order tab is not complete.</td><td>Auto-checked only when the full Supply Order tab is complete. S.O. date alone is not enough.</td></tr>
+<tr><td>Delivery Period</td><td>Auto-checked after the Supply Order tab is complete, if D.P. date is blank.</td><td>Auto-checked when D.P. date is filled.</td></tr>
+<tr><td>PSB</td><td>Can be selected manually when PSB is applicable and pending. Status counters count PSB Pending from Financial Sanction completion and missing PSB received date.</td><td>Auto-checked when PSB received date is filled.</td></tr>
+<tr><td>PWB</td><td>Auto-checked after Material Receipt date is filled, if PWB is applicable and PWB received date is blank.</td><td>Auto-checked when PWB received date is filled.</td></tr>
+<tr><td>PSB+PWB</td><td>Auto-checked after Financial Sanction is complete, if combined BG is applicable and combined received date is blank.</td><td>Auto-checked when combined BG received date is filled.</td></tr>
+<tr><td>Delivery</td><td>Auto-checked when S.O. date and D.P./Revised D.P. date exist and Material Receipt date is blank.</td><td>Auto-checked when Material Receipt date is filled for Goods &amp; Services.</td></tr>
+<tr><td>IR Preparation</td><td>Auto-checked after Material Receipt date is filled, when IR is <code>Yes</code> and IR Preparation date is blank.</td><td>Auto-checked when IR Preparation date is filled.</td></tr>
+<tr><td>IR Receipt</td><td>Auto-checked after IR Preparation date is filled, when IR Receipt date is blank.</td><td>Auto-checked when IR Receipt date is filled.</td></tr>
+<tr><td>Bill preparation</td><td>Not auto-checked merely because Material Receipt date is filled. User starts this stage by filling Bill preparation date.</td><td>Auto-checked when Bill preparation date is filled.</td></tr>
+<tr><td>Bill sent for payment</td><td>Auto-checked after Bill preparation date is filled, if Bill sent for payment date is blank.</td><td>Auto-checked when Bill sent for payment date is filled.</td></tr>
+<tr><td>Payment</td><td>Treated as Current/Pending once payment workflow has started and Payment date is blank. For Goods &amp; Services, workflow starts from Material Receipt. For AMC/MPC/CARS/O&amp;M, workflow starts from the next day after D.P./Revised D.P. expiry. Bill preparation and Bill sent for payment also start payment workflow for all file types.</td><td>Auto-checked when Payment date is filled.</td></tr>
+</tbody></table>
+<p>When a linked date is deleted, the related Done checkbox is recalculated automatically. Dependent Current status may roll back, for example from Payment to Bill sent for payment if Bill sent date is cleared while Bill preparation still exists.</p>
+<p>PSB Current is intentionally different from PWB Current in the Add page. PSB is a surety/security BG normally relevant before or around Supply Order placement, so PSB Pending is counted after Financial Sanction is complete and PSB received date is blank. Combined PSB+PWB can also be received before S.O. placement, so its Current/Pending trigger starts from Financial Sanction completion when combined received date is blank. PWB-only is warranty-side and becomes active after Material Receipt.</p>
+<h4 id="psb-pwb-and-psbpwb-logic">PSB, PWB, and PSB+PWB</h4>
+<ul>
+<li>PSB is manually marked applicable at S.O. level.</li>
+<li>Warranty is selected separately; when Warranty is applicable, PWB may later be required.</li>
+<li>PSB+PWB uses a single combined BG field set and has its own counter/clicker.</li>
+<li>Combined PSB+PWB details can be entered after Financial Sanction even if S.O. date is not filled yet.</li>
+<li>Payment cannot move ahead until required PSB/PWB/PSB+PWB is received.</li>
+<li>PSB To be returned applies after IR Receipt date is filled, or when the S.O. is cancelled.</li>
+<li>PWB and PSB+PWB To be returned apply after Payment date is filled and validity has expired, or when the S.O. is cancelled.</li>
 </ul>
 <h3 id="stage-delivery">Stage Delivery</h3>
 <p>If stage delivery is enabled:</p>
@@ -1401,7 +1474,7 @@
 </tr>
 <tr>
 <td>BG / Non BG</td>
-<td>Files by Bank Guarantee flag.</td>
+<td>Files by Warranty flag.</td>
 <td>Opens files matching the selected BG flag.</td>
 </tr>
 <tr>
@@ -1436,7 +1509,7 @@
 </tr>
 </tbody></table>
 <h3 id="dashboard-status-counters">Dashboard Status Counters</h3>
-<p>Status counters use the configured milestone sequence. The main configured file milestones include Scrutiny, High Value, Pre-TCEC, AD, R&amp;QA, Controlling, IFA, CFA, Bidding, Post-TCEC, CNC, Supply Order, Bank Guarantee, and Payment.</p>
+<p>Status counters use the configured milestone sequence. The main configured milestones include Scrutiny, High Value, Pre-TCEC, AD, R&amp;QA, Controlling, IFA, CFA, Bidding, Post-TCEC, CNC, Supply Order, PSB, PWB, PSB+PWB, Delivery, and Payment.</p>
 <figure><img src="docs/manual-screenshots/dashboard.png" alt="Dashboard milestone cards"><figcaption>Dashboard milestone cards</figcaption></figure>
 <table><thead><tr>
 <th>Counter/clicker</th>
@@ -1588,18 +1661,18 @@
 </tr>
 <tr>
 <td>Placed / Completed</td>
-<td>S.O. rows having S.O. date and not cancelled.</td>
-<td>Uses S.O. date from S.O. row or legacy file-level S.O. date.</td>
+<td>Non-cancelled S.O. rows whose Supply Order tab is complete.</td>
+<td>S.O. date alone is not enough. Required S.O. fields, value side, firm, and stage-payment selections must be complete.</td>
 </tr>
 <tr>
 <td>Live</td>
-<td>S.O. rows where S.O. date exists, payment date is not filled, and S.O. is not cancelled.</td>
-<td>Counts live S.O. rows.</td>
+<td>Non-cancelled S.O. rows whose Supply Order tab is complete and payment date is blank.</td>
+<td>Counts active/live placed S.O. rows until payment is made.</td>
 </tr>
 <tr>
 <td>Pending</td>
-<td>S.O. rows whose current milestone is Supply Order and not cancelled.</td>
-<td>Uses S.O.-level current milestone when multiple S.O.s exist.</td>
+<td>Non-cancelled S.O. rows where Financial Sanction is complete but the Supply Order tab is not complete.</td>
+<td>This is date/data-driven and does not rely only on stored current milestone.</td>
 </tr>
 <tr>
 <td>At previous stage</td>
@@ -1607,8 +1680,8 @@
 <td>File-based.</td>
 </tr>
 </tbody></table>
-<h3 id="bank-guarantee-counters">Bank Guarantee Counters</h3>
-<p>Bank Guarantee applies independently when BG = Yes. It does not wait for S.O. placement to become pending. This is intentional because BG may be required before or parallel to S.O. placement, delivery, or payment preparation.</p>
+<h3 id="psb-pwb-and-psbpwb-counters">PSB, PWB, and PSB+PWB Counters</h3>
+<p>PSB, PWB, and PSB+PWB are S.O.-driven BG categories. They appear separately in Status-1, Status-2, and Status-3. These counters are placed immediately after Financial Sanction on the Status pages.</p>
 <table><thead><tr>
 <th>Counter/clicker</th>
 <th>What it counts</th>
@@ -1616,36 +1689,36 @@
 </tr></thead><tbody>
 <tr>
 <td>Total files / Total</td>
-<td>BG-applicable expected S.O. rows.</td>
-<td>Counts active non-cancelled expected S.O. rows where BG = Yes.</td>
-</tr>
-<tr>
-<td>Received</td>
-<td>BG-applicable rows where BG is received/completed.</td>
-<td>BG is received when BG validity/received date exists or the BG Done checkbox is selected.</td>
+<td>Applicable non-cancelled S.O. rows for that BG category.</td>
+<td>PSB uses PSB applicability. PWB and PSB+PWB use Warranty/BG applicability and BG coverage type.</td>
 </tr>
 <tr>
 <td>Pending</td>
-<td>BG-applicable S.O. rows where BG is required but not received.</td>
-<td>BG = Yes, BG not received/completed, row not cancelled. S.O. date is not required.</td>
+<td>Applicable rows where the trigger stage has arrived but received date is blank.</td>
+<td>PSB and PSB+PWB Pending start after Financial Sanction is complete. PWB Pending starts after Material Receipt date is filled.</td>
+</tr>
+<tr>
+<td>Received</td>
+<td>Applicable rows where received date exists.</td>
+<td>PSB received date, PWB received date, or combined BG received date according to category.</td>
 </tr>
 <tr>
 <td>Expired</td>
-<td>BG rows where the BG validity date itself has expired before payment.</td>
-<td>BG = Yes, BG received/completed, BG validity date filled and before today, BG return date blank, S.O. not cancelled, and payment date blank. Delivery Period/Revised D.P. is not checked for this counter.</td>
+<td>Received rows where validity has expired before return/payment completion logic closes the row.</td>
+<td>Requires received date, validity date before today, return date blank, row not cancelled, payment date blank, and validity earlier than DP/Revised D.P.</td>
 </tr>
 <tr>
 <td>To be returned</td>
-<td>BG rows where BG return is pending after payment or S.O. cancellation.</td>
-<td>Counts BG received/completed rows with BG return date blank when either S.O. is cancelled, or payment date is filled and BG validity date has expired.</td>
+<td>Received rows where return is due and return date is blank.</td>
+<td>PSB return is due after IR Receipt date is filled or S.O. is cancelled. PWB/PSB+PWB return is due after payment date is filled and validity has expired, or S.O. is cancelled.</td>
 </tr>
 <tr>
-<td>At previous stage</td>
-<td>Historical/sequence view only.</td>
-<td>BG is now treated as an independent parallel status, so pending/received counters are the primary BG status indicators.</td>
+<td>Returned</td>
+<td>Rows where return date is filled.</td>
+<td>Uses the respective PSB/PWB/combined return date.</td>
 </tr>
 </tbody></table>
-<p>If BG validity date is filled and BG Done is also checked, the row is still counted once as BG Received. It is not counted as Pending. If only BG Done is checked but BG validity date is blank, the row is counted as Received/Completed; however, normal BG Return still needs the BG validity/expiry date unless the S.O. is cancelled.</p>
+<p>For combined PSB+PWB, there is a single set of combined BG fields. It has its own counter/clicker so combined BG data does not mix with separate PSB and PWB rows.</p>
 <h3 id="delivery-period-counters">Delivery Period Counters</h3>
 <table><thead><tr>
 <th>Counter/clicker</th>
@@ -1787,8 +1860,8 @@
 <td>Placed, Live, Pending, and Total can count S.O. rows.</td>
 </tr>
 <tr>
-<td>Bank Guarantee rows</td>
-<td>Received, Pending, Expired, To be returned, and Total can count S.O. rows.</td>
+<td>Security/Warranty BG rows</td>
+<td>PSB, PWB, and PSB+PWB each have separate Received, Pending, Expired, To be returned, Returned, and Total counts at S.O. level.</td>
 </tr>
 <tr>
 <td>Delivery Period rows</td>
@@ -1956,15 +2029,23 @@
 </tr></thead><tbody>
 <tr>
 <td>Supply Order</td>
-<td>Previous applicable file milestone date, usually CFA date or earlier stage.</td>
+<td>Financial Sanction date when available; otherwise the latest applicable main timeline date before S.O. stage.</td>
 </tr>
 <tr>
-<td>Bank Guarantee</td>
-<td>S.O. date.</td>
+<td>PSB</td>
+<td>Financial Sanction date when available. PSB delay is checked when PSB is applicable, Financial Sanction is complete, and PSB received date is blank.</td>
+</tr>
+<tr>
+<td>PWB</td>
+<td>Material Receipt date. PWB delay is checked when PWB is applicable, Material Receipt date is filled, and PWB received date is blank.</td>
+</tr>
+<tr>
+<td>PSB+PWB</td>
+<td>Financial Sanction date when available. Combined BG delay is checked when combined BG is applicable, Financial Sanction is complete, and combined received date is blank.</td>
 </tr>
 <tr>
 <td>Delivery</td>
-<td>DP date or revised DP.</td>
+<td>S.O. date when available; stage delivery counters separately decide current delivery period from DP/Revised D.P. validity.</td>
 </tr>
 <tr>
 <td>IR Preparation</td>
@@ -1984,7 +2065,7 @@
 </tr>
 <tr>
 <td>Payment</td>
-<td>Bill sent for payment date.</td>
+<td>Material Receipt date when available; otherwise Bill sent for payment date.</td>
 </tr>
 </tbody></table>
 <h3 id="reports-cash-outgo-counters">Reports Cash Outgo Counters</h3>
@@ -2084,7 +2165,147 @@
 <li>For delay status, compare delay rows, not only file count.</li>
 </ul>
 <hr>
-<h2 id="19-troubleshooting">19. Troubleshooting</h2>
+<h2 id="19-recent-procurement-workflow-rules">19. Recent Procurement Workflow Rules</h2>
+<p>This chapter summarises recent rule changes for users who enter or verify Supply Order, BG, delivery, bill, and payment data.</p>
+<h3 id="financial-sanction-and-supply-order">Financial Sanction and Supply Order</h3>
+<table><thead><tr>
+<th>Situation</th>
+<th>Software behaviour</th>
+</tr></thead><tbody>
+<tr>
+<td>Financial Sanction date is filled</td>
+<td>Financial Sanction Done is auto-selected. Supply Order Current is selected if the Supply Order tab is not complete.</td>
+</tr>
+<tr>
+<td>Financial Sanction date is cleared</td>
+<td>Related Supply Order progress must be reviewed. The row should not be treated as validly advanced until Financial Sanction is restored or dependent data is corrected.</td>
+</tr>
+<tr>
+<td>Supply Order tab is partially filled</td>
+<td>Save/Update is blocked. Complete the tab or clear the partial Supply Order fields.</td>
+</tr>
+<tr>
+<td>Supply Order tab is complete</td>
+<td>Supply Order Done/Placed is treated as complete.</td>
+</tr>
+<tr>
+<td>S.O. date only is filled</td>
+<td>Supply Order is not considered placed/done unless the full Supply Order tab is complete.</td>
+</tr>
+</tbody></table>
+<h3 id="date-rules">Date Rules</h3>
+<p>These rules are blocking validations:</p>
+<table><thead><tr>
+<th>Rule</th>
+<th>Result if violated</th>
+</tr></thead><tbody>
+<tr>
+<td>S.O. date cannot be before Financial Sanction date.</td>
+<td>Save/Update is blocked with a warning.</td>
+</tr>
+<tr>
+<td>D.P. date cannot be before S.O. date.</td>
+<td>Save/Update is blocked with a warning.</td>
+</tr>
+<tr>
+<td>Stage Delivery D.P. date cannot be before parent S.O. date.</td>
+<td>Save/Update is blocked with a warning naming the stage.</td>
+</tr>
+</tbody></table>
+<h3 id="goods-and-services-flow">Goods and Services Flow</h3>
+<p>For Goods &amp; Services:</p>
+<ul>
+<li>Material Receipt date completes Delivery.</li>
+<li>When Material Receipt date is filled, IR Preparation becomes Current if IR is <code>Yes</code>.</li>
+<li>When IR Preparation date is filled, IR Preparation Done is auto-selected and IR Receipt becomes Current.</li>
+<li>When IR Receipt date is filled, IR Receipt Done is auto-selected.</li>
+<li>Payment becomes Pending/Current after Material Receipt date is filled, even though actual payment normally happens only after IR Receipt and bill flow.</li>
+<li>Payment remains Pending until Payment date is filled.</li>
+</ul>
+<p>For AMC, MPC, CARS, and O&amp;M:</p>
+<ul>
+<li>Material Receipt is normally not applicable.</li>
+<li>Payment becomes Pending/Current from the next day after effective D.P./Revised D.P. expiry.</li>
+<li>Bill Preparation date and Bill Sent for Payment date also make Payment Pending/Current if Payment date is blank.</li>
+<li>Payment remains Pending until Payment date is filled.</li>
+</ul>
+<h3 id="bill-flow">Bill Flow</h3>
+<ul>
+<li>Bill Preparation Current is not auto-selected merely because Material Receipt date is filled.</li>
+<li>When Bill Preparation date is filled, Bill Preparation Done is auto-selected.</li>
+<li>Filling Bill Preparation date also makes Bill Sent for Payment Current.</li>
+<li>When Bill Sent for Payment date is filled, Bill Sent for Payment Done is auto-selected.</li>
+<li>If these dates are deleted, the related automatic current/done state is recalculated. Do not delete fields out of sequence unless related dependent fields are also corrected.</li>
+</ul>
+<h3 id="payment-and-bg-blocking">Payment and BG Blocking</h3>
+<ul>
+<li>Payment cannot be marked current/completed or paid until all required PSB/PWB/PSB+PWB received dates are filled.</li>
+<li>This applies to order-level payment, stage payment, and advance payment.</li>
+<li>Payment Pending counters are row-based and may count more rows than the number of files opened by the clicker.</li>
+</ul>
+<h3 id="psb-pwb-and-psbpwb">PSB, PWB, and PSB+PWB</h3>
+<table><thead><tr>
+<th>Category</th>
+<th>Applicability</th>
+<th>Pending starts when</th>
+<th>Received when</th>
+<th>To be returned when</th>
+<th>Returned when</th>
+</tr></thead><tbody>
+<tr>
+<td>PSB</td>
+<td>User manually selects PSB applicable at S.O. level.</td>
+<td>Financial Sanction is complete and PSB received date is blank.</td>
+<td>PSB received date is filled.</td>
+<td>IR Receipt date is filled, or S.O. is cancelled.</td>
+<td>PSB return date is filled.</td>
+</tr>
+<tr>
+<td>PWB</td>
+<td>Warranty/BG is applicable and coverage type includes PWB.</td>
+<td>Material Receipt date is filled and PWB received date is blank.</td>
+<td>PWB received date is filled.</td>
+<td>Payment date is filled and validity has expired, or S.O. is cancelled.</td>
+<td>PWB return date is filled.</td>
+</tr>
+<tr>
+<td>PSB+PWB</td>
+<td>Single combined BG is selected as coverage type.</td>
+<td>Financial Sanction is complete and combined received date is blank.</td>
+<td>Combined received date is filled.</td>
+<td>Payment date is filled and validity has expired, or S.O. is cancelled.</td>
+<td>Combined return date is filled.</td>
+</tr>
+</tbody></table>
+<p>PSB is not linked to Warranty. Warranty indicates that PWB may be required. PSB applicability is selected separately by the user.</p>
+<h3 id="status-1-status-2-and-status-3-supply-order-counters">Status-1, Status-2, and Status-3 Supply Order Counters</h3>
+<table><thead><tr>
+<th>Counter</th>
+<th>Meaning</th>
+</tr></thead><tbody>
+<tr>
+<td>Supply Order Placed</td>
+<td>Non-cancelled S.O. rows whose Supply Order tab is complete.</td>
+</tr>
+<tr>
+<td>Supply Order Live</td>
+<td>Non-cancelled S.O. rows whose Supply Order tab is complete and Payment date is blank.</td>
+</tr>
+<tr>
+<td>Supply Order Pending</td>
+<td>Non-cancelled S.O. rows where Financial Sanction is complete but the Supply Order tab is incomplete.</td>
+</tr>
+</tbody></table>
+<p>The same Supply Order rules are used in Status-1, Status-2, Status-3, Reports, and click-through Search filters.</p>
+<h3 id="status-page-clickers">Status Page Clickers</h3>
+<ul>
+<li>Status clickers open Search with the matching filter.</li>
+<li>Search normally shows unique files, even when a counter counts multiple S.O.s, stages, or payment rows.</li>
+<li>PSB, PWB, and PSB+PWB clickers are separate so combined BG data does not mix with separate PSB/PWB data.</li>
+<li>The PSB/PWB/PSB+PWB counters appear immediately after Financial Sanction on Status pages.</li>
+</ul>
+<hr>
+<h2 id="20-troubleshooting">20. Troubleshooting</h2>
 <h3 id="software-not-opening">Software Not Opening</h3>
 <p>Check:</p>
 <ul>

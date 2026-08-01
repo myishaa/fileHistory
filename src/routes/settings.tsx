@@ -12,12 +12,19 @@ import {
   useUsers,
   type AppUserRole,
   type Division,
+  type DemandProcessingDayRange,
   type FileRecord,
   type Indentor,
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
 } from "@/lib/files-store";
 import { getMmgSummaryFieldOptions, normalizeMmgSummaryFields } from "@/lib/mmg-summary";
+import {
+  getDemandProcessingField,
+  getDemandProcessingFieldGroups,
+  normalizeDemandProcessingPresets,
+  type DemandProcessingPreset,
+} from "@/lib/demand-processing-analysis";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
 import { fileCategoryOptions, type FileCategoryKey } from "@/lib/file-categories";
@@ -44,7 +51,9 @@ const defaultMilestoneSequence = [
   "Financial Sanction",
   "Supply Order",
   "Delivery Period",
-  "Bank Guarantee",
+  "PSB",
+  "PWB",
+  "PSB+PWB",
   "Delivery",
   "Bill sent for payment",
   "Payment",
@@ -230,6 +239,11 @@ function SettingsPage() {
     { key: "workspace", label: "Workspace", content: <WorkspaceSettings /> },
     { key: "yearSetup", label: "Year Setup", content: <YearSetupPanel /> },
     { key: "mmgSummary", label: "MMG Summary", content: <MmgSummarySettings /> },
+    {
+      key: "demandProcessing",
+      label: "Demand processing presets",
+      content: <DemandProcessingPresetSettings />,
+    },
     { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
     { key: "indentors", label: "Indentors", content: <IndentorSettings /> },
     { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
@@ -1658,6 +1672,335 @@ function TableFieldPresetSettings() {
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+function DemandProcessingPresetSettings() {
+  const settings = useSettings();
+  const presets = normalizeDemandProcessingPresets(settings.demandProcessingPresets);
+  const dayRanges = normalizeDemandProcessingDayRanges(settings.demandProcessingDayRanges);
+  const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
+  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? presets[0];
+
+  useEffect(() => {
+    if (!selectedPreset && presets[0]) setSelectedPresetId(presets[0].id);
+  }, [presets, selectedPreset]);
+
+  const updatePresets = (next: DemandProcessingPreset[]) => {
+    store.updateSettings({ demandProcessingPresets: next });
+  };
+
+  const updateSelectedPreset = (patch: Partial<DemandProcessingPreset>) => {
+    if (!selectedPreset) return;
+    updatePresets(
+      presets.map((preset) => (preset.id === selectedPreset.id ? { ...preset, ...patch } : preset)),
+    );
+  };
+
+  const addPreset = () => {
+    const nextPreset: DemandProcessingPreset = {
+      id: crypto.randomUUID(),
+      name: `Demand processing preset ${presets.length + 1}`,
+      fromFieldId: "file.immsDate",
+      toFieldId: "order.soDate",
+      active: true,
+    };
+    updatePresets([...presets, nextPreset]);
+    setSelectedPresetId(nextPreset.id);
+  };
+
+  const removePreset = () => {
+    if (!selectedPreset) return;
+    const next = presets.filter((preset) => preset.id !== selectedPreset.id);
+    updatePresets(next);
+    setSelectedPresetId(next[0]?.id ?? "");
+  };
+  const updateDayRanges = (next: DemandProcessingDayRange[]) => {
+    store.updateSettings({ demandProcessingDayRanges: normalizeDemandProcessingDayRanges(next) });
+  };
+  const updateDayRange = (id: string, patch: Partial<DemandProcessingDayRange>) => {
+    updateDayRanges(dayRanges.map((range) => (range.id === id ? { ...range, ...patch } : range)));
+  };
+  const addDayRange = () => {
+    updateDayRanges([
+      ...dayRanges,
+      {
+        id: crypto.randomUUID(),
+        label: `Range ${dayRanges.length + 1}`,
+        minDays: "",
+        maxDays: "",
+      },
+    ]);
+  };
+  const removeDayRange = (id: string) => {
+    updateDayRanges(dayRanges.filter((range) => range.id !== id));
+  };
+  const resetDayRanges = () => updateDayRanges(defaultDemandProcessingDayRanges);
+
+  return (
+    <div className="space-y-4">
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold mb-1">Demand processing presets</h2>
+          <p className="text-xs text-muted-foreground">
+            Create shared presets for the Demand processing analysis report.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addPreset}
+          className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add preset
+        </button>
+      </div>
+
+      {presets.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+          No custom presets added yet. Built-in presets are always available in Reports.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="rounded-md border border-border bg-secondary/20 p-2">
+            <div className="space-y-1">
+              {presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => setSelectedPresetId(preset.id)}
+                  className={
+                    "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                    (selectedPreset?.id === preset.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate">{preset.name}</span>
+                    {preset.active === false ? (
+                      <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                        Hidden
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {selectedPreset ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto]">
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  <span>Preset name</span>
+                  <input
+                    value={selectedPreset.name}
+                    onChange={(event) => updateSelectedPreset({ name: event.target.value })}
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                  />
+                </label>
+                <label className="flex h-10 items-center gap-2 self-end rounded-md border border-input bg-background px-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedPreset.active !== false}
+                    onChange={(event) => updateSelectedPreset({ active: event.target.checked })}
+                    className="size-4 rounded border-input"
+                  />
+                  Visible
+                </label>
+                <button
+                  type="button"
+                  onClick={removePreset}
+                  className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                >
+                  Delete
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                <SettingsDemandDateSelector
+                  label="From date"
+                  value={selectedPreset.fromFieldId}
+                  onChange={(fromFieldId) => updateSelectedPreset({ fromFieldId })}
+                />
+                <SettingsDemandDateSelector
+                  label="To date"
+                  value={selectedPreset.toFieldId}
+                  onChange={(toFieldId) => updateSelectedPreset({ toFieldId })}
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+    <DemandProcessingDayRangeSettings
+      ranges={dayRanges}
+      onAdd={addDayRange}
+      onReset={resetDayRanges}
+      onUpdate={updateDayRange}
+      onRemove={removeDayRange}
+    />
+    </div>
+  );
+}
+
+function SettingsDemandDateSelector({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (fieldId: string) => void;
+}) {
+  const selectedField = getDemandProcessingField(value);
+  return (
+    <div className="rounded-md border border-border bg-secondary/20">
+      <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+        {label}: <span className="text-foreground">{selectedField?.label ?? "Select date"}</span>
+      </div>
+      <div className="max-h-80 overflow-y-auto p-2">
+        {getDemandProcessingFieldGroups().map((group) => (
+          <details key={`${label}:${group.title}`} className="rounded-md">
+            <summary className="cursor-pointer rounded px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-accent hover:text-foreground">
+              {group.title}
+            </summary>
+            <div className="space-y-1 pb-2 pl-2">
+              {group.fields.map((field) => (
+                <button
+                  key={field.id}
+                  type="button"
+                  onClick={() => onChange(field.id)}
+                  className={
+                    "block w-full rounded px-2 py-1.5 text-left text-sm transition " +
+                    (value === field.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  {field.label}
+                </button>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const defaultDemandProcessingDayRanges: DemandProcessingDayRange[] = [
+  { id: "0-90", label: "0-90", minDays: "0", maxDays: "90" },
+  { id: "91-180", label: "91-180", minDays: "91", maxDays: "180" },
+  { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
+  { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
+];
+
+function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDayRange[] {
+  if (!Array.isArray(value)) return defaultDemandProcessingDayRanges;
+  const ranges = value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+      const record = item as Record<string, unknown>;
+      const label = String(record.label ?? "").trim();
+      if (!label) return undefined;
+      return {
+        id: String(record.id ?? crypto.randomUUID()),
+        label,
+        minDays: String(record.minDays ?? "").trim(),
+        maxDays: String(record.maxDays ?? "").trim(),
+      };
+    })
+    .filter((range): range is DemandProcessingDayRange => Boolean(range));
+  return ranges.length ? ranges : defaultDemandProcessingDayRanges;
+}
+
+function DemandProcessingDayRangeSettings({
+  ranges,
+  onAdd,
+  onReset,
+  onUpdate,
+  onRemove,
+}: {
+  ranges: DemandProcessingDayRange[];
+  onAdd: () => void;
+  onReset: () => void;
+  onUpdate: (id: string, patch: Partial<DemandProcessingDayRange>) => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold mb-1">Demand processing day ranges</h2>
+          <p className="text-xs text-muted-foreground">
+            Configure gap buckets used in Demand processing analysis.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onReset}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            onClick={onAdd}
+            className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          >
+            <Plus className="size-4" /> Add range
+          </button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {ranges.map((range) => (
+          <div
+            key={range.id}
+            className="grid grid-cols-1 gap-2 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(180px,1fr)_120px_120px_80px]"
+          >
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Label</span>
+              <input
+                value={range.label}
+                onChange={(event) => onUpdate(range.id ?? "", { label: event.target.value })}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Min days</span>
+              <input
+                type="number"
+                value={range.minDays ?? ""}
+                onChange={(event) => onUpdate(range.id ?? "", { minDays: event.target.value })}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Max days</span>
+              <input
+                type="number"
+                value={range.maxDays ?? ""}
+                onChange={(event) => onUpdate(range.id ?? "", { maxDays: event.target.value })}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => onRemove(range.id ?? "")}
+                className="h-9 w-full rounded-md border border-destructive/40 bg-background px-2 text-xs text-destructive hover:bg-destructive/10"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

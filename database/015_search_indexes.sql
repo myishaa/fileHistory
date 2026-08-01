@@ -63,9 +63,17 @@ create index if not exists supply_orders_payment_due_idx
 on supply_orders(file_id, material_receipt_date, payment_date)
 where material_receipt_date is not null and payment_date is null;
 
-create index if not exists supply_orders_bg_return_due_idx
-on supply_orders(file_id, bg_validity_date, bg_return_date)
-where bg_validity_date is not null and bg_return_date is null;
+create index if not exists supply_orders_psb_bg_return_due_idx
+on supply_orders(file_id, psb_bg_validity_date, psb_bg_return_date)
+where psb_bg_validity_date is not null and psb_bg_return_date is null;
+
+create index if not exists supply_orders_pwb_bg_return_due_idx
+on supply_orders(file_id, pwb_bg_validity_date, pwb_bg_return_date)
+where pwb_bg_validity_date is not null and pwb_bg_return_date is null;
+
+create index if not exists supply_orders_combined_bg_return_due_idx
+on supply_orders(file_id, combined_bg_validity_date, combined_bg_return_date)
+where combined_bg_validity_date is not null and combined_bg_return_date is null;
 
 create index if not exists supply_orders_firm_lower_trgm_idx
 on supply_orders using gin (lower(coalesce(firm, '')) gin_trgm_ops);

@@ -43,6 +43,10 @@ import {
   validateMilestoneCompletionConsistency,
 } from "@/lib/milestone-validation";
 import type { TableFieldPreset } from "@/lib/table-field-presets";
+import {
+  buildDemandProcessingRows,
+  getDemandProcessingField,
+} from "@/lib/demand-processing-analysis";
 import { fileMatchesCategory, normalizeFileCategories } from "@/lib/file-categories";
 import { isCancelledFile } from "@/lib/year-filter";
 
@@ -51,6 +55,7 @@ export const Route = createFileRoute("/search")({
     const validated: {
       dashboardFilter?: string;
       division?: string;
+      selectedYear?: string;
       fileCategories?: string;
       analyticsType?: "firm" | "indentor";
       analyticsNames?: string;
@@ -61,6 +66,7 @@ export const Route = createFileRoute("/search")({
     if (typeof search.dashboardFilter === "string")
       validated.dashboardFilter = search.dashboardFilter;
     if (typeof search.division === "string") validated.division = search.division;
+    if (typeof search.selectedYear === "string") validated.selectedYear = search.selectedYear;
     if (typeof search.fileCategories === "string") validated.fileCategories = search.fileCategories;
     if (search.analyticsType === "firm" || search.analyticsType === "indentor") {
       validated.analyticsType = search.analyticsType;
@@ -112,13 +118,14 @@ const rfpVettingDisabledKeys: FileKey[] = ["rfpVettingInitiationDate", "rfpVetti
 const highValueDisabledKeys: FileKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
 const rqaDisabledKeys: FileKey[] = ["rqaApprovalDate"];
 const ifaDisabledKeys: FileKey[] = ["ifaSentDate", "ifaFinalDate"];
-const bgDisabledKeys: FileKey[] = ["bgValidityDate", "bgReturnDate"];
+const bgDisabledKeys: FileKey[] = [];
 const irDisabledKeys: FileKey[] = ["irPreparationDate", "irReceiptDate"];
 const refloatDisabledKeys: FileKey[] = ["refloatBiddingDate", "refloatBidOpeningDate"];
 const tcecCommitteeKeys: FileKey[] = ["preTcecCommitteeNo", "postTcecCommitteeNumber"];
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
+const bgCoverageTypeOptions = ["None", "PSB", "PWB", "PSB+PWB", "PSB and PWB separately"];
 const defaultFileTypeOptions = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
@@ -137,7 +144,9 @@ const defaultMilestones = [
   "CNC",
   "Supply Order",
   "Delivery Period",
-  "Bank Guarantee",
+  "PSB",
+  "PWB",
+  "PSB+PWB",
   "Delivery",
   "Bill sent for payment",
   "Payment",
@@ -148,7 +157,9 @@ const supplyOrderMilestoneNames = [
   "Financial Sanction",
   "Advance Payment",
   "Supply Order",
-  "Bank Guarantee",
+  "PSB",
+  "PWB",
+  "PSB+PWB",
   "Delivery",
   "IR Preparation",
   "IR Receipt",
@@ -159,7 +170,9 @@ const supplyOrderMilestoneNames = [
 const delayStatusMilestoneLabels: Record<string, string> = {
   financialSanction: "Financial Sanction",
   supplyOrder: "Supply Order",
-  bankGuarantee: "Bank Guarantee",
+  psb: "PSB",
+  pwb: "PWB",
+  psbPwb: "PSB+PWB",
   delivery: "Delivery",
   irPreparation: "IR Preparation",
   irReceipt: "IR Receipt",
@@ -181,6 +194,23 @@ const defaultNoKeys: FileKey[] = [
 type SortDirection = "asc" | "desc";
 type SupplyOrderKey =
   | "financialSanctionDate"
+  | "psbApplicable"
+  | "bgCoverageType"
+  | "psbBgNo"
+  | "psbBgAmount"
+  | "psbBgReceivedDate"
+  | "psbBgValidityDate"
+  | "psbBgReturnDate"
+  | "pwbBgNo"
+  | "pwbBgAmount"
+  | "pwbBgReceivedDate"
+  | "pwbBgValidityDate"
+  | "pwbBgReturnDate"
+  | "combinedBgNo"
+  | "combinedBgAmount"
+  | "combinedBgReceivedDate"
+  | "combinedBgValidityDate"
+  | "combinedBgReturnDate"
   | "soNo"
   | "gemSoNo"
   | "soDate"
@@ -190,7 +220,6 @@ type SupplyOrderKey =
   | "firm"
   | "firmType"
   | "firmTypeOther"
-  | "bgValidityDate"
   | "dpExtension"
   | "dpExtensionCount"
   | "ld"
@@ -206,7 +235,6 @@ type SupplyOrderKey =
   | "paymentMode"
   | "actualPaymentCapital"
   | "actualPaymentRevenue"
-  | "bgReturnDate"
   | "soCancelled"
   | "soCancelledDate"
   | "deliveryPeriodStartDate"
@@ -217,7 +245,11 @@ type SupplyOrderKey =
   | "stageAmountRevenue"
   | "stagePayment"
   | "advancePayment"
-  | "advancePaymentDetail";
+  | "advanceStageAmountCapital"
+  | "advanceStageAmountRevenue"
+  | "advancePaymentDate"
+  | "advanceActualPaymentCapital"
+  | "advanceActualPaymentRevenue";
 type CustomTableFieldKey = "soCurrentMilestone";
 type TableFieldKey = FileKey | SupplyOrderKey | CustomTableFieldKey;
 const supplyOrderKeys: SupplyOrderKey[] = [
@@ -227,11 +259,28 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "soDate",
   "soValueCapital",
   "soValueRevenue",
-  "dpDate",
   "firm",
   "firmType",
   "firmTypeOther",
-  "bgValidityDate",
+  "psbApplicable",
+  "bgCoverageType",
+  "psbBgNo",
+  "psbBgAmount",
+  "psbBgReceivedDate",
+  "psbBgValidityDate",
+  "psbBgReturnDate",
+  "pwbBgNo",
+  "pwbBgAmount",
+  "pwbBgReceivedDate",
+  "pwbBgValidityDate",
+  "pwbBgReturnDate",
+  "combinedBgNo",
+  "combinedBgAmount",
+  "combinedBgReceivedDate",
+  "combinedBgValidityDate",
+  "combinedBgReturnDate",
+  "deliveryPeriodStartDate",
+  "dpDate",
   "dpExtension",
   "dpExtensionCount",
   "ld",
@@ -247,10 +296,8 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "paymentMode",
   "actualPaymentCapital",
   "actualPaymentRevenue",
-  "bgReturnDate",
   "soCancelled",
   "soCancelledDate",
-  "deliveryPeriodStartDate",
   "stageDelivery",
   "stageDeliveryCount",
   "stageDeliveryLabel",
@@ -258,7 +305,11 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "stageAmountRevenue",
   "stagePayment",
   "advancePayment",
-  "advancePaymentDetail",
+  "advanceStageAmountCapital",
+  "advanceStageAmountRevenue",
+  "advancePaymentDate",
+  "advanceActualPaymentCapital",
+  "advanceActualPaymentRevenue",
 ];
 
 function isSupplyOrderKey(key: string): key is SupplyOrderKey {
@@ -278,9 +329,6 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "activeYears", label: "Active years" },
       { key: "uniqueCode", label: "Unique code" },
       { key: "receivedDate", label: "Received date", type: "date" },
-      { key: "scrutinyDate", label: "Scrutiny date", type: "date" },
-      { key: "scrutinyResponseDate", label: "Scrutiny response date", type: "date" },
-      { key: "scrutinyCompletionDate", label: "Scrutiny completion date", type: "date" },
       { key: "imms", label: "Control number" },
       { key: "immsDate", label: "Control date", type: "date" },
       { key: "fileNo", label: "File no" },
@@ -296,10 +344,10 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
       { key: "gem", label: "GeM (Yes/No)", options: yesNo },
       { key: "highValue", label: "High value (Yes/No)", options: yesNo },
+      { key: "ad", label: "AD (Yes/No)", options: yesNo },
       { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
       { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
-      { key: "psb", label: "PSB (Yes/No)", options: yesNo },
-      { key: "bg", label: "BG (Yes/No)", options: yesNo },
+      { key: "bg", label: "Warranty (Yes/No)", options: yesNo },
       { key: "ir", label: "IR (Yes/No)", options: yesNo },
       { key: "rfpVetting", label: "RFP vetting", options: yesNo },
       { key: "currentMilestone", label: "Current milestone" },
@@ -308,20 +356,27 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     ],
   },
   {
+    title: "Scrutiny and control",
+    fields: [
+      { key: "scrutinyDate", label: "Scrutiny date", type: "date" },
+      { key: "scrutinyResponseDate", label: "Scrutiny response date", type: "date" },
+      { key: "scrutinyCompletionDate", label: "Scrutiny completion date", type: "date" },
+    ],
+  },
+  {
     title: "TCEC block",
     fields: [
-      { key: "preTcecDate", label: "Pre-TCEC Date", type: "date" },
+      { key: "preTcecCommitteeNo", label: "Pre-TCEC committee" },
+      { key: "preTcecDate", label: "Pre-TCEC date", type: "date" },
       { key: "preTcecMinutesDate", label: "Pre-TCEC minutes date", type: "date" },
-      { key: "preTcecCommitteeNo", label: "Pre-TCEC" },
+      { key: "postTcecCommitteeNumber", label: "Post-TCEC committee" },
       { key: "postTcecDate", label: "Post-TCEC date", type: "date" },
       { key: "postTcecMinutesDate", label: "Post-TCEC minutes date", type: "date" },
-      { key: "postTcecCommitteeNumber", label: "Post-TCEC committee" },
     ],
   },
   {
     title: "Approval block",
     fields: [
-      { key: "ad", label: "AD (Yes/No)", options: yesNo },
       { key: "highValueMeetingDate", label: "High value meeting date", type: "date" },
       { key: "highValueMinutesDate", label: "High value minutes date", type: "date" },
       { key: "adVettingDate", label: "AD Vetting date", type: "date" },
@@ -357,18 +412,34 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     fields: [
       { key: "noOfSo", label: "No. of S.O.", type: "number" },
       { key: "soCurrentMilestone", label: "S.O. current milestone" },
-      { key: "financialSanctionDate", label: "Financial Sanction", type: "date" },
+      { key: "financialSanctionDate", label: "Financial Sanction date", type: "date" },
       { key: "soNo", label: "S.O. No." },
       { key: "gemSoNo", label: "GeM S.O. No." },
       { key: "soDate", label: "S.O. date", type: "date" },
-      { key: "soValueCapital", label: "S.O value(Capital)" },
+      { key: "soValueCapital", label: "S.O. value (Capital)" },
       { key: "soValueRevenue", label: "S.O. value (Revenue)" },
+      { key: "firm", label: "Firm" },
+      { key: "firmType", label: "Firm type" },
+      { key: "firmTypeOther", label: "Firm type other" },
+      { key: "psbApplicable", label: "PSB applicable", options: yesNo },
+      { key: "bgCoverageType", label: "BG coverage type" },
+      { key: "psbBgNo", label: "PSB BG No." },
+      { key: "psbBgAmount", label: "PSB BG amount" },
+      { key: "psbBgReceivedDate", label: "PSB BG received date", type: "date" },
+      { key: "psbBgValidityDate", label: "PSB BG validity date", type: "date" },
+      { key: "psbBgReturnDate", label: "PSB BG return date", type: "date" },
+      { key: "pwbBgNo", label: "PWB BG No." },
+      { key: "pwbBgAmount", label: "PWB BG amount" },
+      { key: "pwbBgReceivedDate", label: "PWB BG received date", type: "date" },
+      { key: "pwbBgValidityDate", label: "PWB BG validity date", type: "date" },
+      { key: "pwbBgReturnDate", label: "PWB BG return date", type: "date" },
+      { key: "combinedBgNo", label: "PSB+PWB BG No." },
+      { key: "combinedBgAmount", label: "PSB+PWB BG amount" },
+      { key: "combinedBgReceivedDate", label: "PSB+PWB BG received date", type: "date" },
+      { key: "combinedBgValidityDate", label: "PSB+PWB BG validity date", type: "date" },
+      { key: "combinedBgReturnDate", label: "PSB+PWB BG return date", type: "date" },
       { key: "deliveryPeriodStartDate", label: "Delivery period start date", type: "date" },
       { key: "dpDate", label: "D.P. date", type: "date" },
-      { key: "firm", label: "Firm" },
-      { key: "firmType", label: "Firm Type" },
-      { key: "firmTypeOther", label: "Firm Type Other" },
-      { key: "bgValidityDate", label: "BG validity date", type: "date" },
       { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
       { key: "dpExtensionCount", label: "Extension count", type: "number" },
       { key: "ld", label: "LD", options: yesNo },
@@ -380,21 +451,24 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "irReceiptDate", label: "IR Receipt", type: "date" },
       { key: "billPreparationDate", label: "Bill preparation", type: "date" },
       { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
-      { key: "paymentDate", label: "Payment Date", type: "date" },
-      { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
+      { key: "paymentDate", label: "Payment date", type: "date" },
+      { key: "paymentMode", label: "Payment mode (Online/Offline)", options: paymentModeOptions },
       { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
       { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
-      { key: "bgReturnDate", label: "BG return date", type: "date" },
-      { key: "soCancelled", label: "S.O. Cancelled (Yes/No)", options: yesNo },
+      { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
       { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
-      { key: "stageDelivery", label: "Stage Delivery", options: yesNo },
+      { key: "stageDelivery", label: "Stage delivery", options: yesNo },
       { key: "stageDeliveryCount", label: "No. of stage deliveries", type: "number" },
       { key: "stageDeliveryLabel", label: "Stage delivery label" },
       { key: "stageAmountCapital", label: "Stage amount (Capital)" },
       { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
       { key: "stagePayment", label: "Stage payment", options: yesNo },
-      { key: "advancePayment", label: "Advance Payment", options: yesNo },
-      { key: "advancePaymentDetail", label: "Advance payment detail" },
+      { key: "advancePayment", label: "Advance payment", options: yesNo },
+      { key: "advanceStageAmountCapital", label: "Advance stage amount (Capital)" },
+      { key: "advanceStageAmountRevenue", label: "Advance stage amount (Revenue)" },
+      { key: "advancePaymentDate", label: "Advance payment date", type: "date" },
+      { key: "advanceActualPaymentCapital", label: "Advance actual payment capital" },
+      { key: "advanceActualPaymentRevenue", label: "Advance actual payment revenue" },
     ],
   },
 ];
@@ -580,6 +654,7 @@ function SearchPage() {
   const [selectedModes, setSelectedModes] = useState<string[]>([]);
   const [selectedFirmTypes, setSelectedFirmTypes] = useState<string[]>([]);
   const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([]);
+  const [selectedBgCoverageTypes, setSelectedBgCoverageTypes] = useState<string[]>([]);
   const modeFilterOptions = useMemo(
     () => getConfiguredModes(settings.modes, selectedModes),
     [selectedModes, settings.modes],
@@ -596,6 +671,8 @@ function SearchPage() {
   const [rqa, setRqa] = useState(false);
   const [ifaFilter, setIfaFilter] = useState(false);
   const [psbFilter, setPsbFilter] = useState(false);
+  const [pwbFilter, setPwbFilter] = useState(false);
+  const [psbPwbFilter, setPsbPwbFilter] = useState(false);
   const [bgFilter, setBgFilter] = useState(false);
   const [rfpVettingFilter, setRfpVettingFilter] = useState(false);
   const [refloat, setRefloat] = useState(false);
@@ -603,6 +680,20 @@ function SearchPage() {
   const [tcec, setTcec] = useState(false);
   const [dpFrom, setDpFrom] = useState("");
   const [dpTo, setDpTo] = useState("");
+  const [financialSanctionFrom, setFinancialSanctionFrom] = useState("");
+  const [financialSanctionTo, setFinancialSanctionTo] = useState("");
+  const [soDateFrom, setSoDateFrom] = useState("");
+  const [soDateTo, setSoDateTo] = useState("");
+  const [materialReceiptFrom, setMaterialReceiptFrom] = useState("");
+  const [materialReceiptTo, setMaterialReceiptTo] = useState("");
+  const [paymentDateFrom, setPaymentDateFrom] = useState("");
+  const [paymentDateTo, setPaymentDateTo] = useState("");
+  const [bgReceivedFrom, setBgReceivedFrom] = useState("");
+  const [bgReceivedTo, setBgReceivedTo] = useState("");
+  const [bgValidityFrom, setBgValidityFrom] = useState("");
+  const [bgValidityTo, setBgValidityTo] = useState("");
+  const [bgReturnFrom, setBgReturnFrom] = useState("");
+  const [bgReturnTo, setBgReturnTo] = useState("");
   const [rstFilter, setRstFilter] = useState(false);
   const [demandCancelledFilter, setDemandCancelledFilter] = useState(false);
   const [soCancelledFilter, setSoCancelledFilter] = useState(false);
@@ -617,44 +708,41 @@ function SearchPage() {
     readDefaultTableColumnKeys(settings.activeUserId),
   );
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
-  const destinationFocus = useMemo(
-    () => {
-      const explicitFocus = getDestinationFocus(
-        search.dashboardFilter,
-        search.focusSection,
-        search.focusMilestone,
-        search.focusTarget,
-      );
-      if (
-        search.dashboardFilter ||
-        search.focusSection ||
-        search.focusMilestone ||
-        search.focusTarget
-      ) {
-        return explicitFocus;
-      }
-      return getSearchCheckboxDestinationFocus({
-        advancePaymentFilter,
-        actualPaymentFilter,
-        stageDeliveryFilter,
-        stagePaymentFilter,
-        dpExtensionFilter,
-        ldFilter,
-      });
-    },
-    [
+  const destinationFocus = useMemo(() => {
+    const explicitFocus = getDestinationFocus(
+      search.dashboardFilter,
+      search.focusSection,
+      search.focusMilestone,
+      search.focusTarget,
+    );
+    if (
+      search.dashboardFilter ||
+      search.focusSection ||
+      search.focusMilestone ||
+      search.focusTarget
+    ) {
+      return explicitFocus;
+    }
+    return getSearchCheckboxDestinationFocus({
       advancePaymentFilter,
       actualPaymentFilter,
-      dpExtensionFilter,
-      ldFilter,
-      search.dashboardFilter,
-      search.focusMilestone,
-      search.focusSection,
-      search.focusTarget,
       stageDeliveryFilter,
       stagePaymentFilter,
-    ],
-  );
+      dpExtensionFilter,
+      ldFilter,
+    });
+  }, [
+    advancePaymentFilter,
+    actualPaymentFilter,
+    dpExtensionFilter,
+    ldFilter,
+    search.dashboardFilter,
+    search.focusMilestone,
+    search.focusSection,
+    search.focusTarget,
+    stageDeliveryFilter,
+    stagePaymentFilter,
+  ]);
   const [backendResults, setBackendResults] = useState<FileRecord[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -747,6 +835,7 @@ function SearchPage() {
     selectedModes.length > 0 ||
     selectedFirmTypes.length > 0 ||
     selectedFileTypes.length > 0 ||
+    selectedBgCoverageTypes.length > 0 ||
     advancePaymentFilter ||
     actualPaymentFilter ||
     stageDeliveryFilter ||
@@ -759,6 +848,8 @@ function SearchPage() {
     rqa ||
     ifaFilter ||
     psbFilter ||
+    pwbFilter ||
+    psbPwbFilter ||
     bgFilter ||
     rfpVettingFilter ||
     refloat ||
@@ -766,6 +857,20 @@ function SearchPage() {
     tcec ||
     dpFrom ||
     dpTo ||
+    financialSanctionFrom ||
+    financialSanctionTo ||
+    soDateFrom ||
+    soDateTo ||
+    materialReceiptFrom ||
+    materialReceiptTo ||
+    paymentDateFrom ||
+    paymentDateTo ||
+    bgReceivedFrom ||
+    bgReceivedTo ||
+    bgValidityFrom ||
+    bgValidityTo ||
+    bgReturnFrom ||
+    bgReturnTo ||
     rstFilter ||
     demandCancelledFilter ||
     soCancelledFilter ||
@@ -792,6 +897,7 @@ function SearchPage() {
     appendSearchList(params, "selectedModes", selectedModes);
     appendSearchList(params, "selectedFirmTypes", selectedFirmTypes);
     appendSearchList(params, "selectedFileTypes", selectedFileTypes);
+    appendSearchList(params, "selectedBgCoverageTypes", selectedBgCoverageTypes);
     appendSearchBool(params, "advancePaymentFilter", advancePaymentFilter);
     appendSearchBool(params, "actualPaymentFilter", actualPaymentFilter);
     appendSearchBool(params, "stageDeliveryFilter", stageDeliveryFilter);
@@ -806,6 +912,8 @@ function SearchPage() {
     appendSearchBool(params, "rqa", rqa);
     appendSearchBool(params, "ifaFilter", ifaFilter);
     appendSearchBool(params, "psbFilter", psbFilter);
+    appendSearchBool(params, "pwbFilter", pwbFilter);
+    appendSearchBool(params, "psbPwbFilter", psbPwbFilter);
     appendSearchBool(params, "bgFilter", bgFilter);
     appendSearchBool(params, "rfpVettingFilter", rfpVettingFilter);
     appendSearchBool(params, "refloat", refloat);
@@ -813,12 +921,26 @@ function SearchPage() {
     appendSearchBool(params, "tcec", tcec);
     appendSearchParam(params, "dpFrom", dpFrom);
     appendSearchParam(params, "dpTo", dpTo);
+    appendSearchParam(params, "financialSanctionFrom", financialSanctionFrom);
+    appendSearchParam(params, "financialSanctionTo", financialSanctionTo);
+    appendSearchParam(params, "soDateFrom", soDateFrom);
+    appendSearchParam(params, "soDateTo", soDateTo);
+    appendSearchParam(params, "materialReceiptFrom", materialReceiptFrom);
+    appendSearchParam(params, "materialReceiptTo", materialReceiptTo);
+    appendSearchParam(params, "paymentDateFrom", paymentDateFrom);
+    appendSearchParam(params, "paymentDateTo", paymentDateTo);
+    appendSearchParam(params, "bgReceivedFrom", bgReceivedFrom);
+    appendSearchParam(params, "bgReceivedTo", bgReceivedTo);
+    appendSearchParam(params, "bgValidityFrom", bgValidityFrom);
+    appendSearchParam(params, "bgValidityTo", bgValidityTo);
+    appendSearchParam(params, "bgReturnFrom", bgReturnFrom);
+    appendSearchParam(params, "bgReturnTo", bgReturnTo);
     appendSearchBool(params, "rstFilter", rstFilter);
     appendSearchBool(params, "demandCancelledFilter", demandCancelledFilter);
     appendSearchBool(params, "soCancelledFilter", soCancelledFilter);
     appendSearchParam(params, "freeText", freeText);
     appendSearchParam(params, "freeDate", freeDate);
-    appendSearchParam(params, "selectedYear", settings.selectedYear);
+    appendSearchParam(params, "selectedYear", search.selectedYear ?? settings.selectedYear);
     appendSearchParam(params, "dashboardFilter", search.dashboardFilter);
     appendSearchParam(params, "fileCategories", search.fileCategories);
     appendSearchParam(params, "analyticsType", search.analyticsType);
@@ -850,6 +972,7 @@ function SearchPage() {
     selectedModes,
     selectedFirmTypes,
     selectedFileTypes,
+    selectedBgCoverageTypes,
     advancePaymentFilter,
     actualPaymentFilter,
     stageDeliveryFilter,
@@ -862,6 +985,8 @@ function SearchPage() {
     rqa,
     ifaFilter,
     psbFilter,
+    pwbFilter,
+    psbPwbFilter,
     bgFilter,
     rfpVettingFilter,
     refloat,
@@ -869,11 +994,26 @@ function SearchPage() {
     tcec,
     dpFrom,
     dpTo,
+    financialSanctionFrom,
+    financialSanctionTo,
+    soDateFrom,
+    soDateTo,
+    materialReceiptFrom,
+    materialReceiptTo,
+    paymentDateFrom,
+    paymentDateTo,
+    bgReceivedFrom,
+    bgReceivedTo,
+    bgValidityFrom,
+    bgValidityTo,
+    bgReturnFrom,
+    bgReturnTo,
     rstFilter,
     demandCancelledFilter,
     soCancelledFilter,
     freeText,
     freeDate,
+    search.selectedYear,
     settings.selectedYear,
     search.analyticsType,
     search.analyticsNames,
@@ -982,6 +1122,13 @@ function SearchPage() {
         : current.filter((item) => item !== fileType),
     );
   };
+  const toggleBgCoverageTypeFilter = (coverageType: string, checked: boolean) => {
+    setSelectedBgCoverageTypes((current) =>
+      checked
+        ? Array.from(new Set([...current, coverageType]))
+        : current.filter((item) => item !== coverageType),
+    );
+  };
   const saveTableDefaultFields = () => {
     if (selectedTableColumnKeys.length === 0) {
       alert("Select at least one table field to save as default.");
@@ -1023,6 +1170,7 @@ function SearchPage() {
     setSelectedModes([]);
     setSelectedFirmTypes([]);
     setSelectedFileTypes([]);
+    setSelectedBgCoverageTypes([]);
     setAdvancePaymentFilter(false);
     setActualPaymentFilter(false);
     setStageDeliveryFilter(false);
@@ -1035,6 +1183,8 @@ function SearchPage() {
     setRqa(false);
     setIfaFilter(false);
     setPsbFilter(false);
+    setPwbFilter(false);
+    setPsbPwbFilter(false);
     setBgFilter(false);
     setRfpVettingFilter(false);
     setRefloat(false);
@@ -1042,6 +1192,20 @@ function SearchPage() {
     setTcec(false);
     setDpFrom("");
     setDpTo("");
+    setFinancialSanctionFrom("");
+    setFinancialSanctionTo("");
+    setSoDateFrom("");
+    setSoDateTo("");
+    setMaterialReceiptFrom("");
+    setMaterialReceiptTo("");
+    setPaymentDateFrom("");
+    setPaymentDateTo("");
+    setBgReceivedFrom("");
+    setBgReceivedTo("");
+    setBgValidityFrom("");
+    setBgValidityTo("");
+    setBgReturnFrom("");
+    setBgReturnTo("");
     setRstFilter(false);
     setDemandCancelledFilter(false);
     setSoCancelledFilter(false);
@@ -1233,6 +1397,19 @@ function SearchPage() {
             </div>
           </FilterGroup>
 
+          <FilterGroup label="BG coverage type">
+            <div className="grid grid-cols-1 gap-2">
+              {bgCoverageTypeOptions.map((coverageType) => (
+                <CheckFilter
+                  key={coverageType}
+                  label={coverageType}
+                  checked={selectedBgCoverageTypes.includes(coverageType)}
+                  onChange={(checked) => toggleBgCoverageTypeFilter(coverageType, checked)}
+                />
+              ))}
+            </div>
+          </FilterGroup>
+
           <FilterGroup label="Payment criteria">
             <CheckFilter
               label="Advance Payment"
@@ -1282,7 +1459,9 @@ function SearchPage() {
             <CheckFilter label="R&QA" checked={rqa} onChange={setRqa} />
             <CheckFilter label="IFA" checked={ifaFilter} onChange={setIfaFilter} />
             <CheckFilter label="PSB" checked={psbFilter} onChange={setPsbFilter} />
-            <CheckFilter label="BG" checked={bgFilter} onChange={setBgFilter} />
+            <CheckFilter label="PWB" checked={pwbFilter} onChange={setPwbFilter} />
+            <CheckFilter label="PSB+PWB" checked={psbPwbFilter} onChange={setPsbPwbFilter} />
+            <CheckFilter label="Warranty" checked={bgFilter} onChange={setBgFilter} />
             <CheckFilter
               label="RFP vetting"
               checked={rfpVettingFilter}
@@ -1300,6 +1479,56 @@ function SearchPage() {
               <FilterInput type="date" value={dpTo} onChange={setDpTo} />
             </div>
           </FilterGroup>
+
+          <DateRangeFilter
+            label="Financial Sanction date"
+            from={financialSanctionFrom}
+            to={financialSanctionTo}
+            onFromChange={setFinancialSanctionFrom}
+            onToChange={setFinancialSanctionTo}
+          />
+          <DateRangeFilter
+            label="S.O. date"
+            from={soDateFrom}
+            to={soDateTo}
+            onFromChange={setSoDateFrom}
+            onToChange={setSoDateTo}
+          />
+          <DateRangeFilter
+            label="Material receipt date"
+            from={materialReceiptFrom}
+            to={materialReceiptTo}
+            onFromChange={setMaterialReceiptFrom}
+            onToChange={setMaterialReceiptTo}
+          />
+          <DateRangeFilter
+            label="Payment date"
+            from={paymentDateFrom}
+            to={paymentDateTo}
+            onFromChange={setPaymentDateFrom}
+            onToChange={setPaymentDateTo}
+          />
+          <DateRangeFilter
+            label="BG received date"
+            from={bgReceivedFrom}
+            to={bgReceivedTo}
+            onFromChange={setBgReceivedFrom}
+            onToChange={setBgReceivedTo}
+          />
+          <DateRangeFilter
+            label="BG validity date"
+            from={bgValidityFrom}
+            to={bgValidityTo}
+            onFromChange={setBgValidityFrom}
+            onToChange={setBgValidityTo}
+          />
+          <DateRangeFilter
+            label="BG return date"
+            from={bgReturnFrom}
+            to={bgReturnTo}
+            onFromChange={setBgReturnFrom}
+            onToChange={setBgReturnTo}
+          />
 
           <FilterGroup label="Free search date">
             <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
@@ -1556,7 +1785,10 @@ function SearchPage() {
             </div>
           )}
 
-          <div className="min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-card)]">
+          <div
+            className="min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-card)]"
+            data-testid="search-results"
+          >
             <div className="overflow-x-auto">
               <table
                 className="w-full text-sm"
@@ -1596,6 +1828,7 @@ function SearchPage() {
                     <tr
                       key={file.id}
                       onClick={() => openTimeline(file)}
+                      data-testid={`search-result-${testIdSlug(file.uniqueCode || file.fileNo || file.id)}`}
                       className={
                         "border-t border-border cursor-pointer transition-colors hover:bg-accent/60 " +
                         (index % 2 === 0 ? "bg-card" : "bg-secondary/40")
@@ -1666,6 +1899,10 @@ function SearchPage() {
 
 const missing = <span className="text-muted-foreground italic">Not set</span>;
 
+function testIdSlug(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
 function SearchPaginationControls({
   currentPage,
   totalPages,
@@ -1714,6 +1951,29 @@ function FilterGroup({ label, children }: { label: string; children: React.React
       </div>
       {children}
     </div>
+  );
+}
+
+function DateRangeFilter({
+  label,
+  from,
+  to,
+  onFromChange,
+  onToChange,
+}: {
+  label: string;
+  from: string;
+  to: string;
+  onFromChange: (value: string) => void;
+  onToChange: (value: string) => void;
+}) {
+  return (
+    <FilterGroup label={label}>
+      <div className="grid grid-cols-2 gap-2">
+        <FilterInput type="date" value={from} onChange={onFromChange} />
+        <FilterInput type="date" value={to} onChange={onToChange} />
+      </div>
+    </FilterGroup>
   );
 }
 
@@ -2238,8 +2498,16 @@ function applyConditionalRules(form: Record<FileKey, string>) {
   if (isNo(next.bg)) {
     next = {
       ...next,
-      bgValidityDate: "",
-      bgReturnDate: "",
+      pwbBgNo: "",
+      pwbBgAmount: "",
+      pwbBgReceivedDate: "",
+      pwbBgValidityDate: "",
+      pwbBgReturnDate: "",
+      combinedBgNo: "",
+      combinedBgAmount: "",
+      combinedBgReceivedDate: "",
+      combinedBgValidityDate: "",
+      combinedBgReturnDate: "",
     };
   }
   if (isNo(next.ir)) {
@@ -2461,9 +2729,9 @@ function getSupplyOrderFieldValue(file: FileRecord, key: SupplyOrderKey) {
       ? rawSupplyOrders(file)
       : key === "stageAmountCapital" ||
           key === "stageAmountRevenue" ||
-          key === "advancePaymentDetail"
+          isAdvancePaymentDetailField(key)
         ? filePaymentOrders(file)
-      : fileSupplyOrders(file);
+        : fileSupplyOrders(file);
   return rows
     .map((order, index) => {
       const value = getSupplyOrderValue(order, key);
@@ -2495,33 +2763,31 @@ function getSupplyOrderValue(order: SupplyOrderDetail, key: SupplyOrderKey) {
   if (key === "stageAmountRevenue") {
     return order.stageDeliveryLabel ? getSupplyOrderAmountFieldValue(order, "soValueRevenue") : "";
   }
-  if (key === "advancePaymentDetail") return formatAdvancePaymentDetail(order);
+  const advanceValue = getAdvancePaymentDetailValue(order, key);
+  if (advanceValue !== undefined) return advanceValue;
   return String(order[key] ?? "");
 }
 
-function formatAdvancePaymentDetail(order: SupplyOrderDetail) {
-  if (order.stageDeliveryLabel === "Advance Payment") {
-    return [
-      order.soValueCapital ? `Capital ${order.soValueCapital}` : "",
-      order.soValueRevenue ? `Revenue ${order.soValueRevenue}` : "",
-      order.billPreparationDate ? `Bill preparation ${order.billPreparationDate}` : "",
-      order.billSentForPaymentDate ? `Bill sent ${order.billSentForPaymentDate}` : "",
-      order.paymentDate ? `Payment ${order.paymentDate}` : "",
-    ]
-      .filter(Boolean)
-      .join(", ");
-  }
-  const detail = order.advancePaymentDetail;
-  if (!detail) return "";
-  return [
-    detail.stageAmountCapital ? `Capital ${detail.stageAmountCapital}` : "",
-    detail.stageAmountRevenue ? `Revenue ${detail.stageAmountRevenue}` : "",
-    detail.billPreparationDate ? `Bill preparation ${detail.billPreparationDate}` : "",
-    detail.billSentForPaymentDate ? `Bill sent ${detail.billSentForPaymentDate}` : "",
-    detail.paymentDate ? `Payment ${detail.paymentDate}` : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
+function isAdvancePaymentDetailField(key: SupplyOrderKey) {
+  return (
+    key === "advanceStageAmountCapital" ||
+    key === "advanceStageAmountRevenue" ||
+    key === "advancePaymentDate" ||
+    key === "advanceActualPaymentCapital" ||
+    key === "advanceActualPaymentRevenue"
+  );
+}
+
+function getAdvancePaymentDetailValue(order: SupplyOrderDetail, key: SupplyOrderKey) {
+  const detail =
+    order.stageDeliveryLabel === "Advance Payment" ? order : order.advancePaymentDetail;
+  if (!detail) return undefined;
+  if (key === "advanceStageAmountCapital") return String(detail.stageAmountCapital ?? "");
+  if (key === "advanceStageAmountRevenue") return String(detail.stageAmountRevenue ?? "");
+  if (key === "advancePaymentDate") return String(detail.paymentDate ?? "");
+  if (key === "advanceActualPaymentCapital") return String(detail.actualPaymentCapital ?? "");
+  if (key === "advanceActualPaymentRevenue") return String(detail.actualPaymentRevenue ?? "");
+  return undefined;
 }
 
 function hasAny(file: FileRecord, keys: FileKey[]) {
@@ -2590,13 +2856,20 @@ const milestoneDefinitions = [
     applies: (file) => isYes(file.tcec),
   },
   { key: "supplyOrder", previous: "postTcecMinutesDate", current: "soDate" },
+  { key: "psb", previous: "soDate", current: "psbBgReceivedDate" },
   {
-    key: "bankGuarantee",
+    key: "pwb",
     previous: "soDate",
-    current: "bgValidityDate",
+    current: "pwbBgReceivedDate",
     applies: (file) => isYes(file.bg),
   },
-  { key: "payment", previous: "bgValidityDate", current: "paymentDate" },
+  {
+    key: "psbPwb",
+    previous: "soDate",
+    current: "combinedBgReceivedDate",
+    applies: (file) => isYes(file.bg),
+  },
+  { key: "payment", previous: "combinedBgReceivedDate", current: "paymentDate" },
 ] satisfies Array<{
   key: string;
   previous: FileKey | SupplyOrderKey;
@@ -2698,8 +2971,10 @@ function isPreviousApplicableMilestoneComplete(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  if (milestone.key === "bankGuarantee") {
-    return isYes(file.bg);
+  if (isBgMilestoneKey(milestone.key)) {
+    return expectedSupplyOrders(file).some((order) =>
+      isBgCategoryApplicable(file, order, milestone.key),
+    );
   }
 
   let previousMilestone: (typeof milestoneDefinitions)[number] | undefined;
@@ -2760,7 +3035,9 @@ function getMilestoneLabelAliases(key: string) {
     cnc: "CNC",
     financialSanction: "Financial Sanction",
     supplyOrder: "Supply Order",
-    bankGuarantee: "Bank Guarantee",
+    psb: "PSB",
+    pwb: "PWB",
+    psbPwb: "PSB+PWB",
     payment: "Payment",
   };
   return key === "control" ? [labels[key], "Controlled"] : [labels[key] ?? key];
@@ -2796,7 +3073,15 @@ function hasMilestoneDate(file: FileRecord, key: FileKey | SupplyOrderKey) {
 const supplyOrderDateKeys = new Set<SupplyOrderKey>([
   "financialSanctionDate",
   "soDate",
-  "bgValidityDate",
+  "psbBgReceivedDate",
+  "psbBgValidityDate",
+  "psbBgReturnDate",
+  "pwbBgReceivedDate",
+  "pwbBgValidityDate",
+  "pwbBgReturnDate",
+  "combinedBgReceivedDate",
+  "combinedBgValidityDate",
+  "combinedBgReturnDate",
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
@@ -2823,55 +3108,153 @@ function isBidOverdue(file: FileRecord) {
 function isLiveSupplyOrder(file: FileRecord) {
   return fileSupplyOrders(file).some(
     (order) =>
-      hasSupplyOrderDate(order) &&
-      !hasFilledString(order.materialReceiptDate) &&
-      !isYes(order.soCancelled),
-  );
-}
-
-function isBgToBeReceived(file: FileRecord) {
-  return expectedSupplyOrders(file).some(
-    (order) =>
-      isYes(file.bg) &&
-      isBgCurrentOrder(order) &&
-      !isBgReceivedOrder(order) &&
+      isSupplyOrderTabComplete(file, order) &&
+      !hasFilledString(order.paymentDate) &&
       !isSupplyOrderCancelled(file, order),
   );
 }
 
-function isBgCurrentOrder(order: SupplyOrderDetail) {
-  return normalizeMilestoneName(order.currentMilestone) === "bankguarantee";
+function isBgMilestoneKey(key: string) {
+  const normalized = normalizeMilestoneName(key);
+  return normalized === "psb" || normalized === "pwb" || normalized === "psbpwb";
 }
 
-function isBgToBeReturned(file: FileRecord) {
-  return rawSupplyOrders(file).some((order) => isBgReturnDueOrder(file, order));
+function isBgCategoryApplicable(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (normalized === "psb") {
+    return (
+      isYes(order.psbApplicable) &&
+      (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately")
+    );
+  }
+  if (normalized === "pwb") {
+    return (
+      isYes(file.bg) &&
+      (order.bgCoverageType === "PWB" || order.bgCoverageType === "PSB and PWB separately")
+    );
+  }
+  if (normalized === "psbpwb") return isYes(file.bg) && order.bgCoverageType === "PSB+PWB";
+  return false;
 }
 
-function isBgExpired(file: FileRecord) {
-  return rawSupplyOrders(file).some((order) => isBgExpiredOrder(file, order));
+function getBgReceivedDate(order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (normalized === "psb") return order.psbBgReceivedDate;
+  if (normalized === "pwb") return order.pwbBgReceivedDate;
+  if (normalized === "psbpwb") return order.combinedBgReceivedDate;
+  return "";
 }
 
-function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail) {
-  if (!isYes(file.bg) || !isBgReceivedOrder(order) || hasFilledString(order.bgReturnDate)) return false;
-  if (isYes(order.soCancelled)) return true;
-  return (
-    !isSupplyOrderCancelled(file, order) &&
-    hasFilledString(order.paymentDate) &&
-    hasFilledString(order.bgValidityDate) &&
-    (isYes(file.psb) || isDateBeforeToday(order.bgValidityDate))
+function getBgValidityDate(order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (normalized === "psb") return order.psbBgValidityDate;
+  if (normalized === "pwb") return order.pwbBgValidityDate;
+  if (normalized === "psbpwb") return order.combinedBgValidityDate;
+  return "";
+}
+
+function getBgReturnDate(order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (normalized === "psb") return order.psbBgReturnDate;
+  if (normalized === "pwb") return order.pwbBgReturnDate;
+  if (normalized === "psbpwb") return order.combinedBgReturnDate;
+  return "";
+}
+
+function isBgToBeReceived(file: FileRecord, category = "psb") {
+  return expectedSupplyOrders(file).some((order) => isBgPendingOrder(file, order, category));
+}
+
+function isPsbApplicableFile(file: FileRecord) {
+  return rawSupplyOrders(file).some(
+    (order) =>
+      !isSupplyOrderCancelled(file, order) &&
+      isYes(order.psbApplicable) &&
+      (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately"),
   );
 }
 
-function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail) {
+function isBgPendingOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
   return (
-    isYes(file.bg) &&
-    isBgReceivedOrder(order) &&
-    !hasFilledString(order.bgReturnDate) &&
+    isBgCategoryApplicable(file, order, category) &&
+    !isBgReceivedOrder(order, category) &&
+    !isSupplyOrderCancelled(file, order) &&
+    (normalized === "psb" || normalized === "psbpwb"
+      ? isFinancialSanctionCompletedOrder(order)
+      : hasFilledString(order.materialReceiptDate))
+  );
+}
+
+function isBgCurrentOrder(order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (
+    normalized === "psbpwb" &&
+    isFinancialSanctionCompletedOrder(order) &&
+    !hasFilledString(order.combinedBgReceivedDate)
+  ) {
+    return true;
+  }
+  if (
+    normalized === "pwb" &&
+    hasFilledString(order.materialReceiptDate) &&
+    !hasFilledString(order.pwbBgReceivedDate)
+  ) {
+    return true;
+  }
+  return normalizeMilestoneName(order.currentMilestone) === normalizeMilestoneName(category);
+}
+
+function isBgToBeReturned(file: FileRecord, category = "psb") {
+  return rawSupplyOrders(file).some((order) => isBgReturnDueOrder(file, order, category));
+}
+
+function isBgExpired(file: FileRecord, category = "psb") {
+  return rawSupplyOrders(file).some((order) => isBgExpiredOrder(file, order, category));
+}
+
+function isBgReturned(file: FileRecord, category = "psb") {
+  return rawSupplyOrders(file).some((order) => isBgReturnedOrder(file, order, category));
+}
+
+function isBgReturnedOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  return (
+    isBgCategoryApplicable(file, order, category) &&
+    hasFilledString(getBgReturnDate(order, category))
+  );
+}
+
+function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  if (
+    !isBgCategoryApplicable(file, order, category) ||
+    !isBgReceivedOrder(order, category) ||
+    hasFilledString(getBgReturnDate(order, category))
+  )
+    return false;
+  if (isYes(order.soCancelled)) return true;
+  const validityDate = getBgValidityDate(order, category);
+  const normalizedCategory = normalizeMilestoneName(category);
+  return (
+    !isSupplyOrderCancelled(file, order) &&
+    (normalizedCategory === "psb"
+      ? hasFilledString(order.irReceiptDate)
+      : hasFilledString(order.paymentDate) &&
+        hasFilledString(validityDate) &&
+        isDateBeforeToday(validityDate))
+  );
+}
+
+function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  const validityDate = getBgValidityDate(order, category);
+  return (
+    isBgCategoryApplicable(file, order, category) &&
+    isBgReceivedOrder(order, category) &&
+    !hasFilledString(getBgReturnDate(order, category)) &&
     !isSupplyOrderCancelled(file, order) &&
     !hasFilledString(order.paymentDate) &&
-    hasFilledString(order.bgValidityDate) &&
-    isDateBefore(order.bgValidityDate, getDeliveryPeriodDate(order)) &&
-    isDateBeforeToday(order.bgValidityDate)
+    hasFilledString(validityDate) &&
+    isDateBefore(validityDate, getDeliveryPeriodDate(order)) &&
+    isDateBeforeToday(validityDate)
   );
 }
 
@@ -2886,7 +3269,7 @@ function isDeliveryOverdue(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
       !isSupplyOrderCancelled(file, order) &&
-      getEffectiveOrderCurrentMilestone(file, order) === "delivery" &&
+      isOrderCurrentForMilestone(file, order, "delivery") &&
       isOverdueDeliveryOrder(order),
   );
 }
@@ -2915,7 +3298,7 @@ function isDeliveryDue(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
       !isSupplyOrderCancelled(file, order) &&
-      getEffectiveOrderCurrentMilestone(file, order) === "delivery" &&
+      isOrderCurrentForMilestone(file, order, "delivery") &&
       isPendingDeliveryOrder(order),
   );
 }
@@ -2942,7 +3325,7 @@ function isDueDeliveryOrder(order: SupplyOrderDetail) {
 }
 
 function isPendingDeliveryOrder(order: SupplyOrderDetail) {
-  return isDueDeliveryOrder(order) && isCurrentDeliveryPeriodOrder(order);
+  return isDueDeliveryOrder(order) && hasFilledString(getDeliveryDueDate(order));
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
@@ -3021,21 +3404,70 @@ function isBankGuaranteeEligible(file: FileRecord) {
   );
 }
 
-function isBgReceived(file: FileRecord) {
+function isBgReceived(file: FileRecord, category = "psb") {
   return expectedSupplyOrders(file).some(
     (order) =>
-      isYes(file.bg) &&
-      isBgReceivedOrder(order) &&
+      isBgCategoryApplicable(file, order, category) &&
+      isBgReceivedOrder(order, category) &&
       !isSupplyOrderCancelled(file, order),
   );
 }
 
-function isBgReceivedOrder(order: SupplyOrderDetail) {
+function isBgReceivedOrder(order: SupplyOrderDetail, category: string) {
   return (
-    hasFilledString(order.bgValidityDate) ||
+    hasFilledString(getBgReceivedDate(order, category)) ||
     normalizeCompletedMilestones(order.completedMilestones).some(
-      (milestone) => normalizeMilestoneName(milestone) === "bankguarantee",
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(category),
     )
+  );
+}
+
+function isFinancialSanctionCompletedOrder(order: SupplyOrderDetail) {
+  return (
+    hasFilledString(order.financialSanctionDate) ||
+    normalizeCompletedMilestones(order.completedMilestones).some(
+      (milestone) => normalizeMilestoneName(milestone) === "financialsanction",
+    )
+  );
+}
+
+function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
+  const capitalSelected = hasNonZeroAmount(file.valueCapital);
+  const revenueSelected = hasNonZeroAmount(file.valueRevenue);
+  if (capitalSelected) return hasFilledString(order.soValueCapital);
+  if (revenueSelected) return hasFilledString(order.soValueRevenue);
+  return hasFilledString(order.soValueCapital) || hasFilledString(order.soValueRevenue);
+}
+
+function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
+  if (!hasFilledString(order.soNo)) return false;
+  if (!isNo(file.gem) && !hasFilledString(order.gemSoNo)) return false;
+  if (!hasFilledString(order.soDate)) return false;
+  if (!hasSupplyOrderValue(file, order)) return false;
+  if (!hasFilledString(order.firm)) return false;
+  if (!hasFilledString(order.firmType)) return false;
+  if (
+    (order.firmType ?? "").trim().toUpperCase() === "OTHER" &&
+    !hasFilledString(order.firmTypeOther)
+  ) {
+    return false;
+  }
+  if (!isYes(order.stageDelivery) && !isNo(order.stageDelivery)) return false;
+  if (isYes(order.stageDelivery)) {
+    if (!hasFilledString(order.stageDeliveryCount)) return false;
+    if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
+    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    !isSupplyOrderCancelled(file, order) &&
+    isFinancialSanctionCompletedOrder(order) &&
+    !isSupplyOrderTabComplete(file, order)
   );
 }
 
@@ -3058,18 +3490,20 @@ function isPaymentDue(file: FileRecord) {
 function isPaymentPending(file: FileRecord) {
   return finalPaymentOrders(file).some(
     (order) =>
-      hasPaymentWorkflowStarted(order) &&
+      hasPaymentWorkflowStarted(file, order) &&
       !hasFilledString(order.paymentDate) &&
       !isSupplyOrderCancelled(file, order),
   );
 }
 
-function hasPaymentWorkflowStarted(order: SupplyOrderDetail) {
-  return (
-    hasFilledString(order.materialReceiptDate) ||
-    hasFilledString(order.billPreparationDate) ||
-    hasFilledString(order.billSentForPaymentDate)
-  );
+function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
+  return isPaymentDueByDeliveryOrPeriod(file, order);
+}
+
+function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDetail) {
+  if (isDeliveryInspectionApplicable(file)) return hasFilledString(order.materialReceiptDate);
+  const dueDate = getDeliveryPeriodDate(order);
+  return hasFilledString(dueDate) && isDateBeforeToday(dueDate);
 }
 
 function isPaymentCompleted(file: FileRecord) {
@@ -3097,11 +3531,7 @@ function hasAdvancePaymentPending(file: FileRecord) {
 }
 
 function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isLegacySoCancelledFile(file) || isYes(order.soCancelled);
-}
-
-function isLegacySoCancelledFile(file: FileRecord) {
-  return isYes(file.soCancelled) && (file.supplyOrders?.length ?? 0) === 0;
+  return isYes(file.demandCancelled) || isYes(order.soCancelled);
 }
 
 function isIrPreparationPending(file: FileRecord) {
@@ -3229,13 +3659,6 @@ function getOrderDelayMilestones() {
       complete: (order: SupplyOrderDetail) => order.advancePaymentDetail?.paymentDate,
     },
     {
-      key: "bankGuarantee",
-      current: "bankguarantee",
-      start: (file: FileRecord, order: SupplyOrderDetail) =>
-        order.soDate || order.financialSanctionDate || getMainTimelineLastFilledDateValue(file),
-      complete: (order: SupplyOrderDetail) => order.bgValidityDate,
-    },
-    {
       key: "delivery",
       current: "delivery",
       start: (file: FileRecord, order: SupplyOrderDetail) =>
@@ -3277,9 +3700,7 @@ function getOrderDelayMilestones() {
 }
 
 function getSupplyOrderStageStartDate(file: FileRecord) {
-  const supplyOrderMilestone = milestoneDefinitions.find(
-    (item) => item.key === "supplyOrder",
-  );
+  const supplyOrderMilestone = milestoneDefinitions.find((item) => item.key === "supplyOrder");
   return supplyOrderMilestone ? getMilestoneStageStartDate(file, supplyOrderMilestone) : undefined;
 }
 
@@ -3315,7 +3736,15 @@ function getLastFilledDateValue(file: FileRecord) {
       order.financialSanctionDate,
       order.soDate,
       order.dpDate,
-      order.bgValidityDate,
+      order.psbBgReceivedDate,
+      order.psbBgValidityDate,
+      order.psbBgReturnDate,
+      order.pwbBgReceivedDate,
+      order.pwbBgValidityDate,
+      order.pwbBgReturnDate,
+      order.combinedBgReceivedDate,
+      order.combinedBgValidityDate,
+      order.combinedBgReturnDate,
       order.revisedDp,
       order.materialReceiptDate,
       order.irPreparationDate,
@@ -3323,7 +3752,6 @@ function getLastFilledDateValue(file: FileRecord) {
       order.billPreparationDate,
       order.billSentForPaymentDate,
       order.paymentDate,
-      order.bgReturnDate,
       order.soCancelledDate,
     ]),
   ]
@@ -3362,7 +3790,15 @@ function getOrderTimelineLastFilledDateValue(file: FileRecord, order: SupplyOrde
     order.financialSanctionDate,
     order.soDate,
     order.dpDate,
-    order.bgValidityDate,
+    order.psbBgReceivedDate,
+    order.psbBgValidityDate,
+    order.psbBgReturnDate,
+    order.pwbBgReceivedDate,
+    order.pwbBgValidityDate,
+    order.pwbBgReturnDate,
+    order.combinedBgReceivedDate,
+    order.combinedBgValidityDate,
+    order.combinedBgReturnDate,
     order.revisedDp,
     order.materialReceiptDate,
     order.irPreparationDate,
@@ -3696,14 +4132,39 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("delayFile:")) {
     return file.id === filter.slice("delayFile:".length);
   }
+  if (filter.startsWith("anomalyFile:")) {
+    return file.id === decodeStatusFilterPart(filter.slice("anomalyFile:".length));
+  }
+  if (filter.startsWith("fileIds:")) {
+    const ids = filter
+      .slice("fileIds:".length)
+      .split(",")
+      .map((id) => decodeStatusFilterPart(id).trim())
+      .filter(Boolean);
+    return ids.includes(file.id);
+  }
   if (filter.startsWith("cashOutgoAny:")) return isCashOutgoAnyFilterMatch(file, filter);
   if (filter.startsWith("cashOutgo:")) return isCashOutgoFilterMatch(file, filter);
   if (filter.startsWith("delayStatus:")) {
     const [, daysValue = "0", milestoneKey = "all"] = filter.split(":");
     return isDelayStatusMatch(file, getDelayThresholdDays(daysValue), milestoneKey);
   }
+  if (filter.startsWith("demandProcessing:")) {
+    const [, rawFrom = "", rawTo = "", mode = "used"] = filter.split(":");
+    const rows = buildDemandProcessingRows(
+      [file],
+      decodeStatusFilterPart(rawFrom),
+      decodeStatusFilterPart(rawTo),
+    );
+    if (mode === "reverse") return rows.some((row) => row.gapDays < 0);
+    return rows.length > 0;
+  }
   if (filter.startsWith("attribute:")) {
     const [, key, value] = filter.split(":");
+    if (key === "psb") {
+      if (value === "yes") return isPsbApplicableFile(file);
+      if (value === "no") return !isPsbApplicableFile(file);
+    }
     const fieldValue = String(file[key as keyof FileRecord] ?? "");
     if (value === "yes") return isYes(fieldValue);
     if (value === "no") return isNo(fieldValue);
@@ -3722,6 +4183,18 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
     return rawSupplyOrders(file).some(
       (order) => !isSupplyOrderCancelled(file, order) && order.soDate?.slice(0, 7) === monthKey,
+    );
+  }
+  if (filter.startsWith("completedDeliveryMonth:")) {
+    const monthKey = filter.slice("completedDeliveryMonth:".length);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
+    return (
+      isDeliveryInspectionApplicable(file) &&
+      fileSupplyOrders(file).some(
+        (order) =>
+          !isSupplyOrderCancelled(file, order) &&
+          order.materialReceiptDate?.slice(0, 7) === monthKey,
+      )
     );
   }
   if (filter.startsWith("fileCategory:")) {
@@ -3767,6 +4240,19 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "bgToBeReceived") return isBgToBeReceived(file);
   if (filter === "bgExpired") return isBgExpired(file);
   if (filter === "bgToBeReturned") return isBgToBeReturned(file);
+  if (filter === "bgReturned") return isBgReturned(file);
+  if (filter.startsWith("bgExpired:")) {
+    const category = filter.slice("bgExpired:".length);
+    return isBgMilestoneKey(category) ? isBgExpired(file, category) : true;
+  }
+  if (filter.startsWith("bgToBeReturned:")) {
+    const category = filter.slice("bgToBeReturned:".length);
+    return isBgMilestoneKey(category) ? isBgToBeReturned(file, category) : true;
+  }
+  if (filter.startsWith("bgReturned:")) {
+    const category = filter.slice("bgReturned:".length);
+    return isBgMilestoneKey(category) ? isBgReturned(file, category) : true;
+  }
   if (filter === "dpExtension") return isYes(file.dpExtension);
   if (filter === "dpExpired") return isDpExpired(file);
   if (filter === "deliveryOverdue") return isDeliveryOverdue(file);
@@ -3814,8 +4300,12 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(15));
     if (!milestone) return true;
     if (milestone.key === "payment") return isPaymentPending(file) || isPaymentCompleted(file);
-    return milestone.key === "bankGuarantee"
-      ? isBankGuaranteeEligible(file)
+    return isBgMilestoneKey(milestone.key)
+      ? expectedSupplyOrders(file).some(
+          (order) =>
+            isBgCategoryApplicable(file, order, milestone.key) &&
+            !isSupplyOrderCancelled(file, order),
+        )
       : isMilestoneApplicable(file, milestone);
   }
   if (filter.startsWith("milestoneUnderProcess:")) {
@@ -3845,7 +4335,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestonePending:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(17));
     if (milestone?.key === "payment") return isPaymentPending(file);
-    if (milestone?.key === "bankGuarantee") return isBgToBeReceived(file);
+    if (milestone && isBgMilestoneKey(milestone.key)) return isBgToBeReceived(file, milestone.key);
     if (milestone?.key === "supplyOrder") {
       return matchesCurrentSupplyOrderDrivenMilestone(file, "supplyorder");
     }
@@ -3855,15 +4345,15 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(17));
     if (!milestone) return true;
     if (milestone.key === "payment") return isPaymentCompleted(file);
-    if (milestone.key === "bankGuarantee") return isBgReceived(file);
+    if (isBgMilestoneKey(milestone.key)) return isBgReceived(file, milestone.key);
     return isClearedMilestone(file, milestone);
   }
   if (filter.startsWith("milestoneEligible:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(18));
     return milestone ? isEligibleMilestone(file, milestone) : true;
   }
-  if (filter === "soCompleted") return hasAny(file, ["soNo"]);
-  if (filter === "soRemaining") return !hasAny(file, ["soNo"]);
+  if (filter === "soCompleted") return hasPlacedSupplyOrder(file);
+  if (filter === "soRemaining") return hasCurrentSupplyOrderMilestoneRow(file);
   return true;
 }
 
@@ -3892,12 +4382,27 @@ function getDestinationFocus(
       focusTarget,
     };
   }
-  if (!dashboardFilter) return { section: "Timeline", milestone: undefined, focusTarget: undefined };
+  if (!dashboardFilter)
+    return { section: "Timeline", milestone: undefined, focusTarget: undefined };
   if (dashboardFilter.startsWith("delayFile:")) {
     return { section: "Milestones", milestone: undefined, focusTarget: undefined };
   }
+  if (dashboardFilter.startsWith("anomalyFile:")) {
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: undefined,
+    };
+  }
+  if (dashboardFilter.startsWith("fileIds:")) {
+    return { section: "Timeline", milestone: undefined, focusTarget: undefined };
+  }
+  if (dashboardFilter.startsWith("demandProcessing:")) {
+    const focus = getDemandProcessingDestinationFocus(dashboardFilter);
+    if (focus) return focus;
+  }
   if (dashboardFilter === "liveBids" || dashboardFilter === "bidOverdue") {
-    return { section: "Milestones", milestone: "Bidding", focusTarget: undefined };
+    return { section: "Bidding details", milestone: undefined, focusTarget: undefined };
   }
   if (dashboardFilter === "miscFileClosed") {
     return { section: "Milestones", milestone: "File Closed", focusTarget: undefined };
@@ -3920,6 +4425,8 @@ function getDestinationFocus(
         focusTarget: `${normalizeMilestoneName(milestone)}:current`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: "Milestones", milestone, focusTarget: undefined };
   }
   if (dashboardFilter.startsWith("manualMilestoneCompleted:")) {
@@ -3931,19 +4438,27 @@ function getDestinationFocus(
         focusTarget: `${normalizeMilestoneName(milestone)}:completed`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: "Milestones", milestone, focusTarget: undefined };
   }
   if (dashboardFilter.startsWith("statusSummary:")) {
     const [, rawMilestone = "", rawStage = ""] = dashboardFilter.split(":");
     const milestone = decodeStatusFilterPart(rawMilestone);
     const stage = decodeStatusFilterPart(rawStage);
-    if (isSupplyOrderDrivenMilestoneName(milestone) || normalizeMilestoneName(milestone) === "deliveryperiod") {
+    if (
+      isSupplyOrderDrivenMilestoneName(milestone) ||
+      normalizeMilestoneName(milestone) === "deliveryperiod"
+    ) {
+      const focusState = getSupplyOrderFocusStateForStatusStage(stage);
       return {
         section: "Supply order and payment",
         milestone: undefined,
-        focusTarget: `${normalizeMilestoneName(milestone)}:${normalizeStatusStage(stage)}`,
+        focusTarget: `${normalizeMilestoneName(milestone)}:${focusState}`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: "Milestones", milestone, focusTarget: undefined };
   }
   if (dashboardFilter.startsWith("milestone")) {
@@ -3953,7 +4468,9 @@ function getDestinationFocus(
       : undefined;
     if (milestone && isSupplyOrderDrivenMilestoneName(milestone)) {
       const targetState =
-        filterKind === "milestoneCleared" || filterKind === "milestoneCompleted"
+        filterKind === "milestoneTotal"
+          ? "any"
+          : filterKind === "milestoneCleared" || filterKind === "milestoneCompleted"
           ? "completed"
           : filterKind === "milestonePending"
             ? "pending"
@@ -3964,6 +4481,8 @@ function getDestinationFocus(
         focusTarget: `${normalizeMilestoneName(milestone)}:${targetState}`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: milestone ? "Milestones" : "Timeline", milestone, focusTarget: undefined };
   }
   if (
@@ -3983,45 +4502,136 @@ function getDestinationFocus(
     return { section: "Supply order and payment", milestone: undefined, focusTarget };
   }
   if (dashboardFilter === "liveSupplyOrders") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "supplyorder:live" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "supplyorder:live",
+    };
   }
   if (dashboardFilter === "supplyOrders") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "supplyorder:placed" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "supplyorder:placed",
+    };
   }
   if (dashboardFilter === "bgReceived") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "bankguarantee:received" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "psb:received",
+    };
   }
   if (dashboardFilter === "bgToBeReceived") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "bankguarantee:pending" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "psb:pending",
+    };
   }
   if (dashboardFilter === "bgExpired") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "bankguarantee:expired" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "psb:expired",
+    };
   }
   if (dashboardFilter === "bgToBeReturned") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "bankguarantee:tobereturned" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "psb:tobereturned",
+    };
+  }
+  if (dashboardFilter === "bgReturned") {
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "psb:returned",
+    };
+  }
+  if (dashboardFilter.startsWith("bgExpired:")) {
+    const category = dashboardFilter.slice("bgExpired:".length);
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: `${normalizeMilestoneName(category)}:expired`,
+    };
+  }
+  if (dashboardFilter.startsWith("bgToBeReturned:")) {
+    const category = dashboardFilter.slice("bgToBeReturned:".length);
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: `${normalizeMilestoneName(category)}:tobereturned`,
+    };
+  }
+  if (dashboardFilter.startsWith("bgReturned:")) {
+    const category = dashboardFilter.slice("bgReturned:".length);
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: `${normalizeMilestoneName(category)}:returned`,
+    };
+  }
+  if (dashboardFilter.startsWith("bgExpiryMonth:")) {
+    const [, category = "all"] = dashboardFilter.split(":");
+    const focusKind = isBgMilestoneKey(category) ? normalizeMilestoneName(category) : "securitybg";
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: `${focusKind}:validity`,
+    };
   }
   if (dashboardFilter === "miscLd") {
     return { section: "Supply order and payment", milestone: undefined, focusTarget: "ld:yes" };
   }
   if (dashboardFilter === "dpExtension") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "dpextension:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "dpextension:yes",
+    };
   }
   if (dashboardFilter === "miscSoCancelled") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "socancelled:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "socancelled:yes",
+    };
   }
   if (dashboardFilter === "miscMultipleSupplyOrders") {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "supplyorder:any" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "supplyorder:any",
+    };
   }
   if (dashboardFilter.startsWith("supplyOrderMonth:")) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "supplyorder:any" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "supplyorder:any",
+    };
+  }
+  if (dashboardFilter.startsWith("fileInflowMonth:")) {
+    return { section: "File details", milestone: undefined, focusTarget: undefined };
   }
   if (dashboardFilter.startsWith("deliverySchedule:")) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "deliveryperiod:any" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "deliveryperiod:any",
+    };
   }
-  if (
-    dashboardFilter.startsWith("deliveryPeriod") ||
-    dashboardFilter === "dpExpired"
-  ) {
+  if (dashboardFilter.startsWith("completedDeliveryMonth:")) {
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "delivery:done",
+    };
+  }
+  if (dashboardFilter.startsWith("deliveryPeriod") || dashboardFilter === "dpExpired") {
     const focusTarget =
       dashboardFilter === "deliveryPeriodExtended"
         ? "deliveryperiod:extended"
@@ -4040,10 +4650,10 @@ function getDestinationFocus(
       dashboardFilter === "dpExpired"
         ? "deliveryperiod:expired"
         : dashboardFilter === "irPreparationPending"
-        ? "irpreparation:pending"
-        : dashboardFilter === "irReceiptPending" || dashboardFilter === "irCompleted"
-          ? `irreceipt:${dashboardFilter === "irCompleted" ? "completed" : "pending"}`
-          : `delivery:${dashboardFilter.toLowerCase().includes("completed") ? "completed" : dashboardFilter.toLowerCase().includes("overdue") ? "overdue" : "pending"}`;
+          ? "irpreparation:pending"
+          : dashboardFilter === "irReceiptPending" || dashboardFilter === "irCompleted"
+            ? `irreceipt:${dashboardFilter === "irCompleted" ? "completed" : "pending"}`
+            : `delivery:${dashboardFilter.toLowerCase().includes("completed") ? "completed" : dashboardFilter.toLowerCase().includes("overdue") ? "overdue" : "pending"}`;
     return { section: "Supply order and payment", milestone: undefined, focusTarget };
   }
   if (dashboardFilter.startsWith("delayStatus:")) {
@@ -4058,6 +4668,8 @@ function getDestinationFocus(
         focusTarget: `${normalizeMilestoneName(milestone)}:pending`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: "Milestones", milestone, focusTarget: undefined };
   }
   return { section: "Timeline", milestone: undefined, focusTarget: undefined };
@@ -4090,6 +4702,8 @@ function getSimpleFileDestinationFocus(dashboardFilter: string) {
         focusTarget: `supplyorder:${dashboardFilter === "soRemaining" ? "pending" : "placed"}`,
       };
     }
+    const section = getDateFieldSectionForMilestone(milestone);
+    if (section) return { section, milestone: undefined, focusTarget: undefined };
     return { section: "Milestones", milestone, focusTarget: undefined };
   }
 
@@ -4105,6 +4719,76 @@ function getSimpleFileDestinationFocus(dashboardFilter: string) {
   };
   const section = sectionByFilter[dashboardFilter];
   return section ? { section, milestone: undefined, focusTarget: undefined } : undefined;
+}
+
+function getSupplyOrderFocusStateForStatusStage(stage: string) {
+  const normalized = normalizeStatusStage(stage);
+  if (normalized === "total" || normalized === "totalfiles" || normalized === "totalcases") {
+    return "any";
+  }
+  if (normalized === "atpreviousstage" || normalized === "atpreviousstages") return "pending";
+  if (normalized === "inprocess") return "current";
+  return normalized || "current";
+}
+
+function getDemandProcessingDestinationFocus(filter: string) {
+  const [, rawFrom = "", rawTo = ""] = filter.split(":");
+  const toField = getDemandProcessingField(decodeStatusFilterPart(rawTo));
+  const fromField = getDemandProcessingField(decodeStatusFilterPart(rawFrom));
+  const field = toField ?? fromField;
+  if (!field) return undefined;
+  if (field.scope === "file") {
+    return {
+      section: getDemandProcessingFileSection(field.group),
+      milestone: undefined,
+      focusTarget: undefined,
+    };
+  }
+  return {
+    section: "Supply order and payment",
+    milestone: undefined,
+    focusTarget: `${getDemandProcessingFocusKind(field.id)}:any`,
+  };
+}
+
+function getDemandProcessingFileSection(group: string) {
+  if (group === "Scrutiny") return "Scrutiny and control";
+  if (group === "TCEC") return "TCEC block";
+  if (group === "Approval / vetting") return "Approval block";
+  if (group === "Bidding") return "Bidding details";
+  return "File details";
+}
+
+function getDemandProcessingFocusKind(fieldId: string) {
+  if (fieldId.includes("financialSanctionDate")) return "financialsanction";
+  if (fieldId.includes("soDate")) return "supplyorder";
+  if (fieldId.includes("psb")) return "psb";
+  if (fieldId.includes("pwb")) return "pwb";
+  if (fieldId.includes("combined")) return "psbpwb";
+  if (fieldId.includes("dpDate") || fieldId.includes("revisedDp")) return "deliveryperiod";
+  if (fieldId.includes("materialReceiptDate")) return "delivery";
+  if (fieldId.includes("irPreparationDate")) return "irpreparation";
+  if (fieldId.includes("irReceiptDate")) return "irreceipt";
+  if (fieldId.includes("billPreparationDate")) return "billpreparation";
+  if (fieldId.includes("billSentForPaymentDate")) return "billsentforpayment";
+  if (fieldId.includes("paymentDate")) return "payment";
+  if (fieldId.includes("soCancelledDate")) return "socancelled";
+  return "supplyorder";
+}
+
+function getDateFieldSectionForMilestone(milestone: string | undefined) {
+  const normalized = normalizeMilestoneName(milestone);
+  if (["scrutiny", "control", "controlling"].includes(normalized)) {
+    return "Scrutiny and control";
+  }
+  if (["tcec", "pretcec", "posttcec"].includes(normalized)) {
+    return "TCEC block";
+  }
+  if (["highvalue", "ad", "rqa", "ifa", "cfa", "cnc"].includes(normalized)) {
+    return "Approval block";
+  }
+  if (normalized === "bidding") return "Bidding details";
+  return undefined;
 }
 
 function getCashOutgoFocusTarget(filter: string) {
@@ -4148,19 +4832,39 @@ function getSearchCheckboxDestinationFocus(filters: {
   ldFilter: boolean;
 }) {
   if (filters.actualPaymentFilter) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "actualpayment:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "actualpayment:yes",
+    };
   }
   if (filters.advancePaymentFilter) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "advancepayment:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "advancepayment:yes",
+    };
   }
   if (filters.stagePaymentFilter) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "stagepayment:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "stagepayment:yes",
+    };
   }
   if (filters.stageDeliveryFilter) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "stagedelivery:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "stagedelivery:yes",
+    };
   }
   if (filters.dpExtensionFilter) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: "dpextension:yes" };
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: "dpextension:yes",
+    };
   }
   if (filters.ldFilter) {
     return { section: "Supply order and payment", milestone: undefined, focusTarget: "ld:yes" };
@@ -4183,6 +4887,7 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     const completed = matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
     const pending = matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction");
     if (stageKey === "total" || stageKey === "totalfiles") return completed;
+    if (stageKey === "atpreviousstage") return isFinancialSanctionPreviousStageFile(file);
     if (stageKey === "pending") return pending;
   }
 
@@ -4191,12 +4896,19 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return hasAdvancePaymentPending(file);
   }
 
-  if (milestoneKey === "bankguarantee") {
-    if (stageKey === "received")
-      return matchesCompletedSupplyOrderDrivenMilestone(file, "bankguarantee");
-    if (stageKey === "pending") return isBgToBeReceived(file);
-    if (stageKey === "expired") return isBgExpired(file);
-    if (stageKey === "tobereturned") return isBgToBeReturned(file);
+  if (milestoneKey === "bankguarantee" || isBgMilestoneKey(milestoneKey)) {
+    const category = isBgMilestoneKey(milestoneKey) ? milestoneKey : "psb";
+    if (stageKey === "total" || stageKey === "totalfiles") {
+      return expectedSupplyOrders(file).some(
+        (order) =>
+          isBgCategoryApplicable(file, order, category) && !isSupplyOrderCancelled(file, order),
+      );
+    }
+    if (stageKey === "received") return isBgReceived(file, category);
+    if (stageKey === "pending") return isBgToBeReceived(file, category);
+    if (stageKey === "expired") return isBgExpired(file, category);
+    if (stageKey === "tobereturned") return isBgToBeReturned(file, category);
+    if (stageKey === "returned") return isBgReturned(file, category);
   }
 
   if (milestoneKey === "deliveryperiod") {
@@ -4217,6 +4929,23 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return isPaymentPending(file);
     if (stageKey === "total" || stageKey === "totalfiles") {
       return isPaymentPending(file) || isPaymentCompleted(file);
+    }
+  }
+
+  if (
+    milestoneKey === "irpreparation" ||
+    milestoneKey === "irreceipt" ||
+    milestoneKey === "billpreparation" ||
+    milestoneKey === "billsentforpayment"
+  ) {
+    if (stageKey === "completed")
+      return matchesCompletedSupplyOrderDrivenMilestone(file, milestoneKey);
+    if (stageKey === "pending") return matchesCurrentSupplyOrderDrivenMilestone(file, milestoneKey);
+    if (stageKey === "total" || stageKey === "totalfiles") {
+      return (
+        matchesCompletedSupplyOrderDrivenMilestone(file, milestoneKey) ||
+        matchesCurrentSupplyOrderDrivenMilestone(file, milestoneKey)
+      );
     }
   }
 
@@ -4250,9 +4979,25 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
   if (stageKey === "live" && milestone.key === "bidding") return isFileTenderLive(file);
   if (stageKey === "openingoverdue" && milestone.key === "bidding") return isBidOverdue(file);
   if (stageKey === "atpreviousstage" || stageKey === "atpreviousstages")
-    return inProcess && !reached;
+    return isAtPreviousStageStatusFile(file, milestone);
 
   return false;
+}
+
+function isAtPreviousStageStatusFile(
+  file: FileRecord,
+  milestone: (typeof milestoneDefinitions)[number],
+) {
+  if (!isEligibleMilestone(file, milestone)) return false;
+  if (isMilestoneComplete(file, milestone)) return false;
+  if (isManualActiveMilestone(file, milestone)) return false;
+  if (isMilestoneReviewed(file, milestone)) return false;
+  if (milestone.key === "bidding" && (isFileTenderLive(file) || isBidOverdue(file))) return false;
+  if (isSupplyOrderDrivenMilestoneName(milestone.label)) {
+    if (matchesCurrentSupplyOrderDrivenMilestone(file, milestone.label)) return false;
+    if (matchesCompletedSupplyOrderDrivenMilestone(file, milestone.label)) return false;
+  }
+  return true;
 }
 
 function normalizeStatusStage(value: string | undefined) {
@@ -4264,25 +5009,21 @@ function normalizeStatusStage(value: string | undefined) {
 
 function hasPlacedSupplyOrder(file: FileRecord) {
   return rawSupplyOrders(file).some(
-    (order) => hasSupplyOrderDate(order) && !isSupplyOrderCancelled(file, order),
+    (order) => isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
   );
 }
 
 function hasLiveSupplyOrderRow(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
-      hasSupplyOrderDate(order) &&
+      isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
       !isSupplyOrderCancelled(file, order),
   );
 }
 
 function hasCurrentSupplyOrderMilestoneRow(file: FileRecord) {
-  return expectedSupplyOrders(file).some(
-    (order) =>
-      !isSupplyOrderCancelled(file, order) &&
-      getEffectiveOrderCurrentMilestone(file, order) === "supplyorder",
-  );
+  return expectedSupplyOrders(file).some((order) => isSupplyOrderPendingOrder(file, order));
 }
 
 function isSupplyOrderDrivenMilestoneName(name: string) {
@@ -4293,16 +5034,77 @@ function isSupplyOrderDrivenMilestoneName(name: string) {
 }
 
 function shouldUseOrderMilestoneRows(file: FileRecord) {
-  return (
-    countExpectedSupplyOrderRows(file) > 1 ||
-    rawSupplyOrders(file).length > 0
-  );
+  return countExpectedSupplyOrderRows(file) > 1 || rawSupplyOrders(file).length > 0;
 }
 
 function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderDetail) {
+  if (isSupplyOrderPendingOrder(file, order)) return "supplyorder";
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current && isOrderMilestoneApplicable(file, current)) return current;
+  if (isDeliveryInspectionApplicable(file) && isDueDeliveryOrder(order)) return "delivery";
+  if (isBgCurrentOrder(order, "psbpwb") && isBgCategoryApplicable(file, order, "psbpwb")) {
+    return "psbpwb";
+  }
+  if (isBgCurrentOrder(order, "pwb") && isBgCategoryApplicable(file, order, "pwb")) {
+    return "pwb";
+  }
+  if (
+    isYes(file.ir) &&
+    hasFilledString(order.materialReceiptDate) &&
+    !hasFilledString(order.irPreparationDate)
+  ) {
+    return "irpreparation";
+  }
+  if (
+    isYes(file.ir) &&
+    hasFilledString(order.irPreparationDate) &&
+    !hasFilledString(order.irReceiptDate)
+  ) {
+    return "irreceipt";
+  }
   return "";
+}
+
+function isOrderCurrentForMilestone(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  normalizedMilestone: string,
+) {
+  if (normalizedMilestone === "supplyorder") return isSupplyOrderPendingOrder(file, order);
+  const current = normalizeMilestoneName(order.currentMilestone);
+  if (current === normalizedMilestone && isOrderMilestoneApplicable(file, current)) return true;
+  if (normalizedMilestone === "delivery") {
+    return isDeliveryInspectionApplicable(file) && isDueDeliveryOrder(order);
+  }
+  if (normalizedMilestone === "psbpwb") {
+    return (
+      isBgCategoryApplicable(file, order, "psbpwb") &&
+      isFinancialSanctionCompletedOrder(order) &&
+      !hasFilledString(order.combinedBgReceivedDate)
+    );
+  }
+  if (normalizedMilestone === "pwb") {
+    return (
+      isBgCategoryApplicable(file, order, "pwb") &&
+      hasFilledString(order.materialReceiptDate) &&
+      !hasFilledString(order.pwbBgReceivedDate)
+    );
+  }
+  if (normalizedMilestone === "irpreparation") {
+    return (
+      isYes(file.ir) &&
+      hasFilledString(order.materialReceiptDate) &&
+      !hasFilledString(order.irPreparationDate)
+    );
+  }
+  if (normalizedMilestone === "irreceipt") {
+    return (
+      isYes(file.ir) &&
+      hasFilledString(order.irPreparationDate) &&
+      !hasFilledString(order.irReceiptDate)
+    );
+  }
+  return false;
 }
 
 function getOrderDelayCurrentMilestone(
@@ -4319,7 +5121,11 @@ function getOrderDelayCurrentMilestone(
 function supplyOrderMilestoneRows(file: FileRecord, normalizedMilestone: string) {
   if (normalizedMilestone === "financialsanction") return rawSupplyOrders(file);
   if (normalizedMilestone === "advancepayment") return rawSupplyOrders(file);
-  if (normalizedMilestone === "supplyorder" || normalizedMilestone === "bankguarantee") {
+  if (
+    normalizedMilestone === "supplyorder" ||
+    normalizedMilestone === "bankguarantee" ||
+    isBgMilestoneKey(normalizedMilestone)
+  ) {
     return expectedSupplyOrders(file);
   }
   if (normalizedMilestone === "payment") return filePaymentOrders(file);
@@ -4334,6 +5140,11 @@ function isOrderMilestoneApplicable(file: FileRecord, normalizedMilestone: strin
     );
   }
   if (normalizedMilestone === "bankguarantee") return isYes(file.bg);
+  if (isBgMilestoneKey(normalizedMilestone)) {
+    return fileSupplyOrders(file).some((order) =>
+      isBgCategoryApplicable(file, order, normalizedMilestone),
+    );
+  }
   if (normalizedMilestone === "delivery") return isDeliveryInspectionApplicable(file);
   if (normalizedMilestone === "irpreparation" || normalizedMilestone === "irreceipt") {
     return isYes(file.ir);
@@ -4345,13 +5156,13 @@ function matchesCurrentSupplyOrderDrivenMilestone(file: FileRecord, milestone: s
   if (isCancelledFile(file)) return false;
   const normalized = normalizeMilestoneName(milestone);
   if (normalized === "advancepayment") return hasAdvancePaymentPending(file);
+  if (normalized === "payment") return isPaymentPending(file);
   if (!shouldUseOrderMilestoneRows(file)) {
     return normalizeMilestoneName(file.currentMilestone) === normalized;
   }
   return supplyOrderMilestoneRows(file, normalized).some(
     (order) =>
-      !isSupplyOrderCancelled(file, order) &&
-      getEffectiveOrderCurrentMilestone(file, order) === normalized,
+      !isSupplyOrderCancelled(file, order) && isOrderCurrentForMilestone(file, order, normalized),
   );
 }
 
@@ -4375,9 +5186,18 @@ function matchesDeliveryOverdueStatus(file: FileRecord) {
   );
 }
 
+function isFinancialSanctionPreviousStageFile(file: FileRecord) {
+  if (isCancelledFile(file)) return false;
+  if (!isYes(file.biddingStageOver)) return false;
+  if (isYes(file.tcec) && !hasFilledString(file.cncApprovalDate)) return false;
+  if (matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction")) return false;
+  return !matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction");
+}
+
 function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone: string) {
   if (isCancelledFile(file)) return false;
   const normalized = normalizeMilestoneName(milestone);
+  if (normalized === "supplyorder") return hasPlacedSupplyOrder(file);
   if (normalized === "advancepayment") {
     return advancePaymentEntries([file]).some(
       ({ file: entryFile, order }) =>
@@ -4388,14 +5208,14 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
     if (normalized === "financialsanction") {
       return Boolean(
         file.completedMilestones?.some((item) => normalizeMilestoneName(item) === normalized) ||
-          fileSupplyOrders(file).some(
-            (order) =>
-              !isSupplyOrderCancelled(file, order) &&
-              (hasFilledString(order.financialSanctionDate) ||
-                order.completedMilestones?.some(
-                  (item) => normalizeMilestoneName(item) === normalized,
-                )),
-          ),
+        fileSupplyOrders(file).some(
+          (order) =>
+            !isSupplyOrderCancelled(file, order) &&
+            (hasFilledString(order.financialSanctionDate) ||
+              order.completedMilestones?.some(
+                (item) => normalizeMilestoneName(item) === normalized,
+              )),
+        ),
       );
     }
     return Boolean(

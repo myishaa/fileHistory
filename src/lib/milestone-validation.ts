@@ -77,11 +77,36 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
     isComplete: (file) => fileSupplyOrders(file).some((order) => hasFilledString(order.soDate)),
   },
   {
-    aliases: ["Bank Guarantee"],
-    completionLabel: "BG validity date",
+    aliases: ["PSB"],
+    completionLabel: "PSB BG received date",
+    isComplete: (file) =>
+      fileSupplyOrders(file).some(
+        (order) =>
+          isYes(order.psbApplicable) &&
+          ["PSB", "PSB and PWB separately"].includes(order.bgCoverageType ?? "") &&
+          hasFilledString(order.psbBgReceivedDate),
+      ),
+  },
+  {
+    aliases: ["PWB"],
+    completionLabel: "PWB BG received date",
     isApplicable: (file) => isYes(file.bg),
     isComplete: (file) =>
-      fileSupplyOrders(file).some((order) => hasFilledString(order.bgValidityDate)),
+      fileSupplyOrders(file).some(
+        (order) =>
+          ["PWB", "PSB and PWB separately"].includes(order.bgCoverageType ?? "") &&
+          hasFilledString(order.pwbBgReceivedDate),
+      ),
+  },
+  {
+    aliases: ["PSB+PWB"],
+    completionLabel: "Combined BG received date",
+    isApplicable: (file) => isYes(file.bg),
+    isComplete: (file) =>
+      fileSupplyOrders(file).some(
+        (order) =>
+          order.bgCoverageType === "PSB+PWB" && hasFilledString(order.combinedBgReceivedDate),
+      ),
   },
   {
     aliases: ["Delivery"],
@@ -136,6 +161,14 @@ export function validateMilestoneCompletionConsistency(
   const errors: string[] = [];
   let hasAnyCompletionValue = false;
   let hasIncompleteApplicableStage = false;
+
+  if (currentMilestone && completed.has(currentMilestone)) {
+    const label =
+      configured.find((milestone) => normalizeMilestoneName(milestone) === currentMilestone) ??
+      file.currentMilestone ??
+      "Selected milestone";
+    errors.push(`${label} cannot be marked current and completed at the same time.`);
+  }
 
   for (const milestone of configured) {
     const rule = getMilestoneCompletionRule(milestone);

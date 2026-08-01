@@ -42,6 +42,8 @@ type SettingsRow = {
   mmg_live_enabled: boolean;
   mmg_live_options: unknown;
   mmg_summary_fields: unknown;
+  demand_processing_presets: unknown;
+  demand_processing_day_ranges: unknown;
   active_user_id: string | null;
 };
 
@@ -300,6 +302,12 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     mmgSummaryFields: fromDbJsonArray(row.mmg_summary_fields).filter(
       (field) => field && typeof field === "object" && !Array.isArray(field),
     ),
+    demandProcessingPresets: fromDbJsonArray(row.demand_processing_presets).filter(
+      (preset) => preset && typeof preset === "object" && !Array.isArray(preset),
+    ),
+    demandProcessingDayRanges: fromDbJsonArray(row.demand_processing_day_ranges).filter(
+      (range) => range && typeof range === "object" && !Array.isArray(range),
+    ),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -383,7 +391,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
-              mmg_summary_fields, active_user_id
+              mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges, active_user_id
        from app_settings
        where id = true`,
     );
@@ -596,6 +604,18 @@ settingsRouter.patch(
       addField(
         "mmg_summary_fields",
         JSON.stringify(readMmgSummaryFields(body.mmgSummaryFields)),
+        "::jsonb",
+      );
+    if ("demandProcessingPresets" in body)
+      addField(
+        "demand_processing_presets",
+        JSON.stringify(readArrayValue(body.demandProcessingPresets, "demandProcessingPresets")),
+        "::jsonb",
+      );
+    if ("demandProcessingDayRanges" in body)
+      addField(
+        "demand_processing_day_ranges",
+        JSON.stringify(readArrayValue(body.demandProcessingDayRanges, "demandProcessingDayRanges")),
         "::jsonb",
       );
     if ("tableFieldPresets" in body && user.role === "admin") {

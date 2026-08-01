@@ -30,7 +30,9 @@ const quickEntryStageSections = [
     milestones: [
       "Supply Order",
       "Delivery Period",
-      "Bank Guarantee",
+      "PSB",
+      "PWB",
+      "PSB+PWB",
       "Delivery",
       "IR Preparation",
       "IR Receipt",

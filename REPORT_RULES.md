@@ -91,7 +91,9 @@ It counts files across milestones such as:
 - CNC
 - Supply Order
 - Delivery Period
-- Bank Guarantee
+- PSB
+- PWB
+- PSB+PWB
 - Delivery
 - Payment
 
@@ -114,11 +116,13 @@ It counts files across milestones such as:
 - Delivery Period is expired when DP/Revised DP date is before today and material receipt date is empty.
 - Delivery Period is extended when Revised DP is filled, Revised DP is after today, and material receipt date is empty.
 
-### Bank Guarantee Rules
+### Security/Warranty BG Rules
 
-- Bank Guarantee applies when BG is Yes.
-- BG is received when BG validity date is filled.
-- BG is pending when BG applies and BG validity date is not filled.
+- PSB applies per S.O. when PSB applicable is Yes and the coverage type includes PSB.
+- PWB applies per S.O. when Warranty is Yes and the coverage type includes PWB.
+- PSB+PWB applies per S.O. when Warranty is Yes and the combined coverage type is selected.
+- A BG category is received when its received date is filled.
+- A BG category is pending after its start rule is met and its received date is not filled.
 
 ### Bidding Rules
 

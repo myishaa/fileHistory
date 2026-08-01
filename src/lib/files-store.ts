@@ -1,6 +1,7 @@
 // Backend-backed store for files, divisions, users, and settings.
 import * as React from "react";
 import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
+import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 import {
   isAllActiveFilesYear,
@@ -82,7 +83,6 @@ export type FileRecord = {
   firm?: string;
   firmType?: string;
   firmTypeOther?: string;
-  bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
@@ -98,7 +98,6 @@ export type FileRecord = {
   paymentMode?: string;
   actualPaymentCapital?: string;
   actualPaymentRevenue?: string;
-  bgReturnDate?: string;
   demandCancelled?: string;
   demandCancelledDate?: string;
   soCancelled?: string;
@@ -159,6 +158,23 @@ export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
   financialSanctionDate?: string;
+  psbApplicable?: string;
+  bgCoverageType?: string;
+  psbBgNo?: string;
+  psbBgAmount?: string;
+  psbBgReceivedDate?: string;
+  psbBgValidityDate?: string;
+  psbBgReturnDate?: string;
+  pwbBgNo?: string;
+  pwbBgAmount?: string;
+  pwbBgReceivedDate?: string;
+  pwbBgValidityDate?: string;
+  pwbBgReturnDate?: string;
+  combinedBgNo?: string;
+  combinedBgAmount?: string;
+  combinedBgReceivedDate?: string;
+  combinedBgValidityDate?: string;
+  combinedBgReturnDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -168,7 +184,6 @@ export type SupplyOrderDetail = {
   firm?: string;
   firmType?: string;
   firmTypeOther?: string;
-  bgValidityDate?: string;
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
@@ -184,7 +199,6 @@ export type SupplyOrderDetail = {
   paymentMode?: string;
   actualPaymentCapital?: string;
   actualPaymentRevenue?: string;
-  bgReturnDate?: string;
   demandCancelled?: string;
   soCancelled?: string;
   soCancelledDate?: string;
@@ -315,6 +329,12 @@ export type ValueThresholdLevel = {
   maxValue?: string;
   appliesTo: ValueThresholdAppliesTo;
 };
+export type DemandProcessingDayRange = {
+  id?: string;
+  label: string;
+  minDays?: string;
+  maxDays?: string;
+};
 export type AppSettings = {
   financialYear: string;
   selectedYear: string;
@@ -334,6 +354,8 @@ export type AppSettings = {
   mmgLiveEnabled?: boolean;
   mmgLiveOptions?: string[];
   mmgSummaryFields?: MmgSummaryFieldConfig[];
+  demandProcessingPresets?: DemandProcessingPreset[];
+  demandProcessingDayRanges?: DemandProcessingDayRange[];
   activeUserId?: string;
 };
 
@@ -360,6 +382,13 @@ const defaultSettings: AppSettings = {
   mmgLiveEnabled: false,
   mmgLiveOptions: [],
   mmgSummaryFields: [],
+  demandProcessingPresets: [],
+  demandProcessingDayRanges: [
+    { id: "0-90", label: "0-90", minDays: "0", maxDays: "90" },
+    { id: "91-180", label: "91-180", minDays: "91", maxDays: "180" },
+    { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
+    { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
+  ],
 };
 
 const defaultUsers: AppUser[] = [];
@@ -641,6 +670,22 @@ export const store = {
     return request<{ ok: true }>("/api/auth/verify-password", {
       method: "POST",
       body: JSON.stringify({ password }),
+    });
+  },
+  listSuspectedAnomalyAcceptances() {
+    return request<{
+      acceptances: Array<{
+        signature: string;
+        reason?: string;
+        acceptedByName?: string;
+        acceptedAt?: string;
+      }>;
+    }>("/api/dashboard/suspected-anomalies/acceptances");
+  },
+  acceptSuspectedAnomaly(signature: string, reason: string) {
+    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances", {
+      method: "POST",
+      body: JSON.stringify({ signature, reason }),
     });
   },
   viewerLogin(divisionId: string, password: string) {

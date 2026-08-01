@@ -291,15 +291,10 @@ function isActiveDeliveryPeriodEntry(
     hasFilledString(order.soDate) &&
     Boolean(deliveryPeriodDate) &&
     !isYes(file.demandCancelled) &&
-    !isLegacySoCancelledFile(file) &&
     !isYes(order.soCancelled) &&
     !isDateAfterToday(getDeliveryPeriodStartDate(order)) &&
     !isDeliveryPeriodComplete(file, order)
   );
-}
-
-function isLegacySoCancelledFile(file: FileRecord) {
-  return isYes(file.soCancelled) && (file.supplyOrders?.length ?? 0) === 0;
 }
 
 function isDeliveryPeriodComplete(file: FileRecord, order: SupplyOrderDetail) {
