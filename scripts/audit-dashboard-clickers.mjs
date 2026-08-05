@@ -83,7 +83,7 @@ function collectStatusCounters(summary) {
       add(counters, "Status-1", `${title} / Placed`, row.cleared, "milestoneCleared:supplyOrder");
       add(counters, "Status-1", `${title} / Live`, row.liveSupplyOrders, "liveSupplyOrders");
       add(counters, "Status-1", `${title} / Pending`, row.pending, "milestonePending:supplyOrder");
-      add(counters, "Status-1", `${title} / At Previous Stage`, row.underProcess, "milestoneUnderProcess:supplyOrder");
+      add(counters, "Status-1", `${title} / At Previous Stage`, row.underProcess, "milestonePending:financialSanction");
       continue;
     }
     if (isBgKey(key)) {

@@ -314,6 +314,7 @@ const supplyOrderFields = {
   ldPercentage: ["ld_percentage", "number"],
   revisedDp: ["revised_dp", "date"],
   materialReceiptDate: ["material_receipt_date", "date"],
+  jobCompletionDate: ["job_completion_date", "date"],
   irPreparationDate: ["ir_preparation_date", "date"],
   irReceiptDate: ["ir_receipt_date", "date"],
   billPreparationDate: ["bill_preparation_date", "date"],
@@ -997,9 +998,10 @@ function selectedFileTypesSql(selectedFileTypes: string[], values: unknown[]) {
 }
 
 function bidOpeningOverdueSql(today = "current_date") {
-  return `${isNoSql("f.bid_opened")} and (case when ${isYesSql(
+  const openingDate = `(case when ${isYesSql(
     "f.refloat",
-  )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end) < ${today}`;
+  )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end)`;
+  return `${isNoSql("f.bid_opened")} and ${openingDate} is not null and ${openingDate} < ${today}`;
 }
 
 function normalizedSql(expression: string) {
@@ -1080,6 +1082,7 @@ const demandProcessingOrderDateColumns: Record<string, string> = {
   combinedBgValidityDate: "combined_bg_validity_date",
   combinedBgReturnDate: "combined_bg_return_date",
   materialReceiptDate: "material_receipt_date",
+  jobCompletionDate: "job_completion_date",
   irPreparationDate: "ir_preparation_date",
   irReceiptDate: "ir_receipt_date",
   billPreparationDate: "bill_preparation_date",
@@ -1473,6 +1476,7 @@ const supplyOrderSearchColumns = {
   ld: "ld",
   revisedDp: "revised_dp",
   materialReceiptDate: "material_receipt_date",
+  jobCompletionDate: "job_completion_date",
   irPreparationDate: "ir_preparation_date",
   irReceiptDate: "ir_receipt_date",
   billPreparationDate: "bill_preparation_date",
@@ -1573,9 +1577,13 @@ function liveSupplyOrderSql() {
 
 function paymentPendingSql() {
   const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
+  const childDeliveryCompletion = `((${isYesSql("f.ir")} and ${hasTextSql("so.material_receipt_date")})
+       or (not ${isYesSql("f.ir")} and ${hasTextSql("so.job_completion_date")}))`;
+  const stageDeliveryCompletion = `((${isYesSql("f.ir")} and coalesce(payment_stage.stage ->> 'materialReceiptDate', '') <> '')
+         or (not ${isYesSql("f.ir")} and coalesce(payment_stage.stage ->> 'jobCompletionDate', '') <> ''))`;
   const childPaymentPending = `${hasTextSql("so.so_date")}
      and ((${nonDeliveryFileType} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} < current_date)
-       or (not ${nonDeliveryFileType} and ${hasTextSql("so.material_receipt_date")}))
+       or (not ${nonDeliveryFileType} and ${childDeliveryCompletion}))
      and not ${hasTextSql("so.payment_date")}
      and not ${isYesSql("so.so_cancelled")}`;
   const stagePaymentPending = `${hasTextSql("so.so_date")}
@@ -1589,7 +1597,7 @@ function paymentPendingSql() {
          (${nonDeliveryFileType}
           and coalesce(nullif(payment_stage.stage ->> 'revisedDp', '')::date, nullif(payment_stage.stage ->> 'dpDate', '')::date) is not null
           and coalesce(nullif(payment_stage.stage ->> 'revisedDp', '')::date, nullif(payment_stage.stage ->> 'dpDate', '')::date) < current_date)
-         or (not ${nonDeliveryFileType} and coalesce(payment_stage.stage ->> 'materialReceiptDate', '') <> '')
+         or (not ${nonDeliveryFileType} and ${stageDeliveryCompletion})
        )
        and coalesce(payment_stage.stage ->> 'paymentDate', '') = ''
      )`;
@@ -1730,13 +1738,26 @@ function financialSanctionCompletedSql() {
 
 function financialSanctionPreviousStageSql() {
   return `not ${isCancelledFileSql()}
+    and not (${financialSanctionCompletedSql()})
+    and not (${financialSanctionPendingSql()})
+    and (
+      (not ${isYesSql("f.tcec")}
+        and ${normalizedSql("f.current_milestone")} = 'bidding'
+        and not ${isYesSql("f.bidding_stage_over")})
+      or (${isYesSql("f.tcec")}
+        and ${normalizedSql("f.current_milestone")} = 'cnc'
+        and not ${hasTextSql("f.cnc_approval_date")})
+    )`;
+}
+
+function financialSanctionReachedSql() {
+  return `not ${isCancelledFileSql()}
     and ${isYesSql("f.bidding_stage_over")}
-    and (not ${isYesSql("f.tcec")} or ${hasTextSql("f.cnc_approval_date")})
-    and not ${supplyOrderExists(
-      `not ${isYesSql("so.so_cancelled")}
-       and (${financialSanctionCompletedOrderSql("so")}
-         or ${normalizedSql("so.current_milestone")} = 'financialsanction')`,
-    )}`;
+    and (not ${isYesSql("f.tcec")} or ${hasTextSql("f.cnc_approval_date")})`;
+}
+
+function financialSanctionPendingSql() {
+  return `${financialSanctionReachedSql()} and not (${financialSanctionCompletedSql()})`;
 }
 
 function bgToBeReceivedSql(category: string) {
@@ -1746,7 +1767,10 @@ function bgToBeReceivedSql(category: string) {
      and ${bgCategorySql("so", category)}
      and (
        ('${normalized}' in ('psb', 'psbpwb') and ${financialSanctionCompletedOrderSql("so")})
-       or ('${normalized}' = 'pwb' and ${hasTextSql("so.material_receipt_date")})
+       or ('${normalized}' = 'pwb' and (
+         (${isYesSql("f.ir")} and ${hasTextSql("so.material_receipt_date")})
+         or (not ${isYesSql("f.ir")} and ${hasTextSql("so.job_completion_date")})
+       ))
      )
      and not ${bgReceivedOrderSql("so", category)}`,
   );
@@ -1755,6 +1779,21 @@ function bgToBeReceivedSql(category: string) {
 function bgReturnDueSql(category: string, today = "current_date") {
   const returnColumn = bgReturnColumn(category);
   const validityColumn = bgValidityColumn(category);
+  const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
+  const stageRowsExist = `${isYesSql("so.stage_delivery")} and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0`;
+  const allStagesHaveIrReceipt = `not exists (
+    select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+    where coalesce(psb_stage.stage ->> 'irReceiptDate', '') = ''
+  )`;
+  const allStagesHaveJobCompletion = `not exists (
+    select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+    where coalesce(psb_stage.stage ->> 'jobCompletionDate', '') = ''
+  )`;
+  const psbPurposeComplete = `((${nonDeliveryFileType} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} < ${today})
+    or (not ${nonDeliveryFileType} and (
+      (${isYesSql("f.ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasTextSql("so.ir_receipt_date")})))
+      or (not ${isYesSql("f.ir")} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${hasTextSql("so.job_completion_date")})))
+    )))`;
   return supplyOrderExists(
     `${bgCategorySql("so", category)}
      and ${bgReceivedOrderSql("so", category)}
@@ -1764,7 +1803,7 @@ function bgReturnDueSql(category: string, today = "current_date") {
        or (
          not ${isYesSql("so.so_cancelled")}
          and (
-           ('${normalizeMilestoneName(category)}' = 'psb' and ${hasTextSql("so.ir_receipt_date")})
+           ('${normalizeMilestoneName(category)}' = 'psb' and ${psbPurposeComplete})
            or (
              '${normalizeMilestoneName(category)}' <> 'psb'
              and ${hasTextSql("so.payment_date")}
@@ -1788,15 +1827,31 @@ function bgReturnedSql(category: string) {
 function bgExpiredSql(category: string, today = "current_date") {
   const returnColumn = bgReturnColumn(category);
   const validityColumn = bgValidityColumn(category);
+  const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
+  const stageRowsExist = `${isYesSql("so.stage_delivery")} and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0`;
+  const allStagesHaveIrReceipt = `not exists (
+    select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+    where coalesce(psb_stage.stage ->> 'irReceiptDate', '') = ''
+  )`;
+  const allStagesHaveJobCompletion = `not exists (
+    select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+    where coalesce(psb_stage.stage ->> 'jobCompletionDate', '') = ''
+  )`;
+  const psbPurposeComplete = `((${nonDeliveryFileType} and ${effectiveDpDateSql("so")} is not null and ${effectiveDpDateSql("so")} < ${today})
+    or (not ${nonDeliveryFileType} and (
+      (${isYesSql("f.ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasTextSql("so.ir_receipt_date")})))
+      or (not ${isYesSql("f.ir")} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${hasTextSql("so.job_completion_date")})))
+    )))`;
   return supplyOrderExists(
     `${bgCategorySql("so", category)}
      and ${bgReceivedOrderSql("so", category)}
      and not ${hasTextSql(`so.${returnColumn}`)}
      and not ${isYesSql("so.so_cancelled")}
-     and not ${hasTextSql("so.payment_date")}
+     and (
+       ('${normalizeMilestoneName(category)}' = 'psb' and not (${psbPurposeComplete}))
+       or ('${normalizeMilestoneName(category)}' <> 'psb' and not ${hasTextSql("so.payment_date")})
+     )
      and ${hasTextSql(`so.${validityColumn}`)}
-     and ${effectiveDpDateSql("so")} is not null
-     and so.${validityColumn} < ${effectiveDpDateSql("so")}
      and so.${validityColumn} < ${today}`,
   );
 }
@@ -1888,6 +1943,8 @@ function inferredOrderCurrentMilestoneMatchesSql(
 
 function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: string) {
   return `not ${isCancelledFileSql()} and (
+    (${normalizedMilestoneSql} = 'financialsanction' and ${financialSanctionPendingSql()})
+    or
     (not ${supplyOrderRowExists()} and ${normalizedSql("f.current_milestone")} = ${normalizedMilestoneSql})
     or exists (
       select 1
@@ -1970,7 +2027,7 @@ function statusReviewedSql(milestone: (typeof statusSummaryMilestones)[number]) 
 
 function statusActiveSql(milestone: (typeof statusSummaryMilestones)[number]) {
   if (milestone.key === "financialSanction") {
-    return supplyOrderDrivenCurrentMilestoneConditionSql("'financialsanction'");
+    return financialSanctionPendingSql();
   }
   if (isBgStatusKey(milestone.key)) {
     return bgToBeReceivedSql(milestone.key);
@@ -2034,8 +2091,7 @@ function milestonePendingSql(milestone: (typeof statusSummaryMilestones)[number]
     return supplyOrderDrivenCurrentMilestoneConditionSql("'supplyorder'");
   }
   if (milestone.key === "financialSanction") {
-    return `${supplyOrderDrivenCurrentMilestoneConditionSql("'financialsanction'")}
-      and not (${financialSanctionCompletedSql()})`;
+    return financialSanctionPendingSql();
   }
   const complete = milestoneCompleteSql(milestone);
   const active = statusActiveSql(milestone);
@@ -2128,7 +2184,14 @@ function statusDeliveryPendingOrderSql() {
   return statusDeliveryDueOrderSql(`${effectiveDpDateSql("so")} is not null`);
 }
 
+function dateCastSql(expression: string) {
+  return `nullif((${expression})::text, '')::date`;
+}
+
 function milestoneDateExpression(milestone: (typeof statusSummaryMilestones)[number]) {
+  if (milestone.key === "bidding") {
+    return `coalesce(${dateCastSql("f.bid_opening_date")}, ${dateCastSql("f.bid_date")})`;
+  }
   if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
     const supplyOrderOnlyColumns = new Set([
       "psb_bg_received_date",
@@ -2136,15 +2199,17 @@ function milestoneDateExpression(milestone: (typeof statusSummaryMilestones)[num
       "combined_bg_received_date",
     ]);
     const orderDate = `(
-      select min(so.${milestone.supplyOrderDate})
+      select min(${dateCastSql(`so.${milestone.supplyOrderDate}`)})
       from supply_orders so
       where so.file_id = f.id and so.${milestone.supplyOrderDate} is not null
     )`;
     return supplyOrderOnlyColumns.has(milestone.supplyOrderDate)
       ? orderDate
-      : `coalesce(${orderDate}, f.${milestone.supplyOrderDate})`;
+      : `coalesce(${orderDate}, ${dateCastSql(`f.${milestone.supplyOrderDate}`)})`;
   }
-  if ("currentColumn" in milestone && milestone.currentColumn) return milestone.currentColumn;
+  if ("currentColumn" in milestone && milestone.currentColumn) {
+    return dateCastSql(milestone.currentColumn);
+  }
   return "null::date";
 }
 
@@ -2154,7 +2219,7 @@ function milestoneStageStartSql(
 ) {
   const reviewed =
     "reviewedColumn" in milestone && milestone.reviewedColumn
-      ? `when ${hasTextSql(milestone.reviewedColumn)} then ${milestone.reviewedColumn}`
+      ? `when ${hasTextSql(milestone.reviewedColumn)} then ${dateCastSql(milestone.reviewedColumn)}`
       : "";
   const previousCases = statusSummaryMilestones
     .slice(0, milestoneIndex)
@@ -2167,7 +2232,7 @@ function milestoneStageStartSql(
   return `(case
     ${reviewed}
     ${previousCases}
-    else coalesce(f.received_date, f.file_date)
+    else coalesce(${dateCastSql("f.received_date")}, ${dateCastSql("f.file_date")})
   end)`;
 }
 
@@ -2258,7 +2323,7 @@ function stageJsonDateSql(jsonKey: string) {
 }
 
 function effectiveOrderDateSql(column: string, jsonKey: string) {
-  return `coalesce(${stageJsonDateSql(jsonKey)}, so.${column})`;
+  return `coalesce(${stageJsonDateSql(jsonKey)}, nullif(so.${column}::text, '')::date)`;
 }
 
 function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"]) {
@@ -2275,13 +2340,14 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
   );
   const soDate = effectiveOrderDateSql("so_date", "soDate");
   const materialReceiptDate = effectiveOrderDateSql("material_receipt_date", "materialReceiptDate");
+  const jobCompletionDate = effectiveOrderDateSql("job_completion_date", "jobCompletionDate");
   const billSentForPaymentDate = effectiveOrderDateSql(
     "bill_sent_for_payment_date",
     "billSentForPaymentDate",
   );
   const effectiveDpDate = `greatest(
-    coalesce(${stageJsonDateSql("revisedDp")}, ${stageJsonDateSql("dpDate")}, so.revised_dp, so.dp_date),
-    coalesce(${stageJsonDateSql("dpDate")}, so.dp_date, ${stageJsonDateSql("revisedDp")}, so.revised_dp)
+    coalesce(${stageJsonDateSql("revisedDp")}, ${stageJsonDateSql("dpDate")}, nullif(so.revised_dp::text, '')::date, nullif(so.dp_date::text, '')::date),
+    coalesce(${stageJsonDateSql("dpDate")}, nullif(so.dp_date::text, '')::date, ${stageJsonDateSql("revisedDp")}, nullif(so.revised_dp::text, '')::date)
   )`;
   const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
   switch (start) {
@@ -2313,7 +2379,8 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     case "payment":
       return `case
         when ${nonDeliveryFileType} and ${effectiveDpDate} is not null then (${effectiveDpDate} + interval '1 day')::date
-        else coalesce(${materialReceiptDate}, ${billSentForPaymentDate})
+        when ${isYesSql("f.ir")} then coalesce(${materialReceiptDate}, ${billSentForPaymentDate})
+        else coalesce(${jobCompletionDate}, ${billSentForPaymentDate})
       end`;
   }
 }
@@ -2342,7 +2409,10 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
       const normalizedBgKey = normalizeMilestoneName(milestone.key);
       const currentCondition = isBgStatusKey(milestone.key)
         ? `(('${normalizedBgKey}' in ('psb', 'psbpwb') and ${financialSanctionCompletedOrderSql("so")})
-          or ('${normalizedBgKey}' = 'pwb' and ${hasTextSql("so.material_receipt_date")}))`
+          or ('${normalizedBgKey}' = 'pwb' and (
+            (${isYesSql("f.ir")} and ${hasTextSql("so.material_receipt_date")})
+            or (not ${isYesSql("f.ir")} and ${hasTextSql("so.job_completion_date")})
+          )))`
         : milestone.key === "payment"
           ? `${orderDelayStartSql("payment")} is not null`
           : `${currentMilestone} = '${milestone.current}'`;
@@ -2377,6 +2447,7 @@ function dateColumnToJsonKey(column: string) {
     combined_bg_validity_date: "combinedBgValidityDate",
     combined_bg_return_date: "combinedBgReturnDate",
     material_receipt_date: "materialReceiptDate",
+    job_completion_date: "jobCompletionDate",
     ir_preparation_date: "irPreparationDate",
     ir_receipt_date: "irReceiptDate",
     bill_preparation_date: "billPreparationDate",
@@ -2514,6 +2585,14 @@ function statusSummaryFilterSql(filter: string) {
   if (stage === "Pending" && milestone.key === "supplyOrder") {
     return `${base} and ${supplyOrderDrivenCurrentMilestoneConditionSql(
       "'supplyorder'",
+    )} and not (${complete})`;
+  }
+  if (
+    milestone.key === "supplyOrder" &&
+    (stage === "At Previous Stage" || stage === "At previous stage")
+  ) {
+    return `${base} and ${supplyOrderDrivenCurrentMilestoneConditionSql(
+      "'financialsanction'",
     )} and not (${complete})`;
   }
   if (milestone.key === "financialSanction") {
@@ -3121,8 +3200,8 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return "true";
     const fromPlaceholder = addSqlValue(values, `${monthKey}-01`);
     const toPlaceholder = addSqlValue(values, getMonthEndDateFromMonthKey(monthKey));
-    return `coalesce(f.received_date, f.date) >= ${fromPlaceholder}::date
-      and coalesce(f.received_date, f.date) <= ${toPlaceholder}::date`;
+    return `coalesce(f.received_date, f.file_date) >= ${fromPlaceholder}::date
+      and coalesce(f.received_date, f.file_date) <= ${toPlaceholder}::date`;
   }
   if (filter.startsWith("deliverySchedule:")) {
     const [, mode = "gross", monthKey = ""] = filter.split(":");

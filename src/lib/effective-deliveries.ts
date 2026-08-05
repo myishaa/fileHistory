@@ -214,6 +214,7 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     soValueCapital: advance.stageAmountCapital ?? "",
     soValueRevenue: advance.stageAmountRevenue ?? "",
     materialReceiptDate: "",
+    jobCompletionDate: "",
     irPreparationDate: "",
     irReceiptDate: "",
     billPreparationDate: advance.billPreparationDate ?? "",

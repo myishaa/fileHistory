@@ -208,6 +208,7 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "psbBgReceivedDate",
   "pwbBgReceivedDate",
   "combinedBgReceivedDate",
+  "jobCompletionDate",
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
@@ -676,7 +677,16 @@ function shouldUseOrderMilestoneRows(file: FileRecord) {
   return countExpectedSupplyOrderRows(file) > 1 || rawSupplyOrders(file).length > 0;
 }
 
+function isFinancialSanctionReached(file: FileRecord) {
+  return !isCancelledFile(file) && isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate));
+}
+
+function isFinancialSanctionPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
+  return isFinancialSanctionReached(file) && !isSupplyOrderCancelled(file, order) && !isFinancialSanctionCompletedOrder(order);
+}
+
 function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderDetail) {
+  if (isFinancialSanctionPendingOrder(file, order)) return "financialsanction";
   if (isSupplyOrderPendingOrder(file, order)) return "supplyorder";
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current && isOrderMilestoneApplicable(file, current)) return current;
@@ -709,6 +719,9 @@ function isOrderCurrentForMilestone(
   order: SupplyOrderDetail,
   normalizedMilestone: string,
 ) {
+  if (normalizedMilestone === "financialsanction") {
+    return isFinancialSanctionPendingOrder(file, order);
+  }
   if (normalizedMilestone === "supplyorder") return isSupplyOrderPendingOrder(file, order);
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current === normalizedMilestone && isOrderMilestoneApplicable(file, current)) return true;
@@ -747,7 +760,7 @@ function isOrderCurrentForMilestone(
 }
 
 function supplyOrderMilestoneRows(file: FileRecord, normalizedMilestone: string) {
-  if (normalizedMilestone === "financialsanction") return rawSupplyOrders(file);
+  if (normalizedMilestone === "financialsanction") return expectedSupplyOrders(file);
   if (normalizedMilestone === "supplyorder" || isBgMilestoneKey(normalizedMilestone)) {
     return expectedSupplyOrders(file);
   }
@@ -783,6 +796,9 @@ function countCurrentSupplyOrderMilestoneStatuses(
       return total + countPaymentPendingOrders([file]);
     }
     if (!shouldUseOrderMilestoneRows(file)) {
+      if (normalizedMilestone === "financialsanction") {
+        return total + (isFinancialSanctionReached(file) && countCompletedSupplyOrderMilestoneStatuses([file], "financialsanction") === 0 ? 1 : 0);
+      }
       return (
         total + (normalizeMilestoneName(file.currentMilestone) === normalizedMilestone ? 1 : 0)
       );
@@ -860,13 +876,16 @@ function countCompletedSupplyOrderMilestoneStatuses(
 }
 
 function countFinancialSanctionPreviousStageFiles(files: FileRecord[]) {
-  return files.filter((file) => {
-    if (isCancelledFile(file)) return false;
-    if (!isYes(file.biddingStageOver)) return false;
-    if (isYes(file.tcec) && !hasFilledString(file.cncApprovalDate)) return false;
-    if (countCompletedSupplyOrderMilestoneStatuses([file], "financialsanction") > 0) return false;
-    return countCurrentSupplyOrderMilestoneStatuses([file], "financialsanction") === 0;
-  }).length;
+  return files.filter(isFinancialSanctionPreviousStageFile).length;
+}
+
+function isFinancialSanctionPreviousStageFile(file: FileRecord) {
+  if (isCancelledFile(file)) return false;
+  if (countCompletedSupplyOrderMilestoneStatuses([file], "financialsanction") > 0) return false;
+  if (countCurrentSupplyOrderMilestoneStatuses([file], "financialsanction") > 0) return false;
+  const current = normalizeMilestoneName(file.currentMilestone);
+  if (isYes(file.tcec)) return current === "cnc" && !hasFilledString(file.cncApprovalDate);
+  return current === "bidding" && !isYes(file.biddingStageOver);
 }
 
 function getMilestoneFlow(files: FileRecord[]) {
@@ -910,6 +929,10 @@ function getMilestoneFlow(files: FileRecord[]) {
     }
 
     if (milestone.key === "supplyOrder") {
+      const supplyOrderPreviousStage = countCurrentSupplyOrderMilestoneStatuses(
+        applicableFiles,
+        "financialsanction",
+      );
       return {
         key: milestone.key,
         label: milestone.label,
@@ -917,7 +940,7 @@ function getMilestoneFlow(files: FileRecord[]) {
         totalLabel: milestone.totalLabel ?? "Total",
         pendingLabel: getMilestonePendingLabel(milestone),
         total: countEffectiveSupplyOrders(applicableFiles),
-        underProcess: countAtPreviousStageFiles(applicableFiles, milestone),
+        underProcess: supplyOrderPreviousStage,
         active: activeFiles.length,
         pending: countCurrentSupplyOrderMilestoneStatuses(applicableFiles, "supplyorder"),
         reviewed: reviewedFiles.length,
@@ -1371,7 +1394,8 @@ function getMonthWiseBgExpiry(files: FileRecord[]) {
 
 function isDeliveryFructified(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    (isDeliveryInspectionApplicable(file) && hasFilledString(order.materialReceiptDate)) ||
+    (isDeliveryInspectionApplicable(file) &&
+      (hasFilledString(order.materialReceiptDate) || hasFilledString(order.jobCompletionDate))) ||
     (order.completedMilestones ?? []).some(
       (milestone) => normalizeMilestoneName(milestone) === "delivery",
     )
@@ -1917,23 +1941,52 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
   return (
     !isSupplyOrderCancelled(file, order) &&
     (normalizedCategory === "psb"
-      ? hasFilledString(order.irReceiptDate)
+      ? isPsbReturnPurposeComplete(file, order)
       : hasFilledString(order.paymentDate) &&
         hasFilledString(validityDate) &&
         isDateBeforeToday(validityDate))
   );
 }
 
+function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isDeliveryInspectionApplicable(file)) {
+    const dueDate = getDeliveryPeriodDate(order);
+    return hasFilledString(dueDate) && isDateBeforeToday(dueDate);
+  }
+  if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+    return order.stageDeliveries.every((stage) => hasPsbReturnCompletion(file, stage));
+  }
+  return hasPsbReturnCompletion(file, order);
+}
+
+function hasPaymentDueCompletion(file: FileRecord, order: SupplyOrderDetail) {
+  return hasFilledString(getPaymentDueCompletionDate(file, order));
+}
+
+function getPaymentDueCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
+  return isYes(file.ir) ? order.materialReceiptDate : order.jobCompletionDate;
+}
+
+function hasPsbReturnCompletion(file: FileRecord, order: SupplyOrderDetail) {
+  return hasFilledString(getPsbReturnCompletionDate(file, order));
+}
+
+function getPsbReturnCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
+  return isYes(file.ir) ? order.irReceiptDate : order.jobCompletionDate;
+}
+
 function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
   const validityDate = getBgValidityDate(order, category);
+  const normalizedCategory = normalizeMilestoneName(category);
   return (
     isBgCategoryApplicable(file, order, category) &&
     isBgReceivedOrder(order, category) &&
     !hasFilledString(getBgReturnDate(order, category)) &&
     !isSupplyOrderCancelled(file, order) &&
-    !hasFilledString(order.paymentDate) &&
+    (normalizedCategory === "psb"
+      ? !isPsbReturnPurposeComplete(file, order)
+      : !hasFilledString(order.paymentDate)) &&
     hasFilledString(validityDate) &&
-    isDateBefore(validityDate, getDeliveryPeriodDate(order)) &&
     isDateBeforeToday(validityDate)
   );
 }
@@ -2146,7 +2199,7 @@ function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDetail) {
-  if (isDeliveryInspectionApplicable(file)) return hasFilledString(order.materialReceiptDate);
+  if (isDeliveryInspectionApplicable(file)) return hasPaymentDueCompletion(file, order);
   const dueDate = getDeliveryPeriodDate(order);
   return hasFilledString(dueDate) && isDateBeforeToday(dueDate);
 }
@@ -2292,13 +2345,17 @@ function isDeliveryInspectionApplicable(file: FileRecord) {
 }
 
 function isCompletedDeliveryOrder(order: SupplyOrderDetail) {
-  return hasSupplyOrderDate(order) && hasFilledString(order.materialReceiptDate);
+  return (
+    hasSupplyOrderDate(order) &&
+    (hasFilledString(order.materialReceiptDate) || hasFilledString(order.jobCompletionDate))
+  );
 }
 
 function isDueDeliveryOrder(order: SupplyOrderDetail) {
   return (
     hasSupplyOrderDate(order) &&
     !hasFilledString(order.materialReceiptDate) &&
+    !hasFilledString(order.jobCompletionDate) &&
     !isYes(order.soCancelled)
   );
 }
@@ -2391,7 +2448,7 @@ function getDeliveryPeriodDate(order: SupplyOrderDetail) {
 }
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
-  if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isDeliveryInspectionApplicable(file)) return getPaymentDueCompletionDate(file, order);
   return addDays(getDeliveryPeriodDate(order), 1);
 }
 

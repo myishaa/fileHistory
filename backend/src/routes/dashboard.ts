@@ -1058,6 +1058,14 @@ function fileClosedExpression() {
   )`;
 }
 
+function financialSanctionCompleteExpression() {
+  return `not ${isCancelledExpression()} and ${supplyOrderExists(
+    `not ${isYesExpression("so.so_cancelled")}
+     and (${hasFilledExpression("so.financial_sanction_date")}
+       or ${completedOrderMilestoneExpression("so", "Financial Sanction")})`,
+  )}`;
+}
+
 function statusAppliesExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
   return "appliesColumn" in milestone && milestone.appliesColumn
     ? isYesExpression(milestone.appliesColumn)
@@ -1105,7 +1113,11 @@ function statusActiveExpression(milestone: (typeof statusMilestoneDefinitions)[n
          or ('${normalized}' in ('psb', 'psbpwb')
            and (${hasFilledExpression("so.financial_sanction_date")}
              or ${completedOrderMilestoneExpression("so", "Financial Sanction")}))
-         or ('${normalized}' = 'pwb' and ${hasFilledExpression("so.material_receipt_date")})
+         or ('${normalized}' = 'pwb'
+           and (
+             (${isYesExpression("f.ir")} and ${hasFilledExpression("so.material_receipt_date")})
+             or (not ${isYesExpression("f.ir")} and ${hasFilledExpression("so.job_completion_date")})
+           ))
        )`,
     )}`;
   }
@@ -1148,14 +1160,29 @@ function statusPreviousStageExpression(
 
 function financialSanctionPreviousStageExpression() {
   return `not ${isCancelledExpression()}
+    and not (${financialSanctionCompleteExpression()})
+    and not (${financialSanctionReachedExpression()})
+    and (
+      (not ${isYesExpression("f.tcec")}
+        and ${normalizeMilestoneExpression("f.current_milestone")} = 'bidding'
+        and not ${isYesExpression("f.bidding_stage_over")})
+      or (${isYesExpression("f.tcec")}
+        and ${normalizeMilestoneExpression("f.current_milestone")} = 'cnc'
+        and not ${hasFilledExpression("f.cnc_approval_date")})
+    )`;
+}
+
+function financialSanctionReachedExpression() {
+  return `not ${isCancelledExpression()}
     and ${isYesExpression("f.bidding_stage_over")}
-    and (not ${isYesExpression("f.tcec")} or ${hasFilledExpression("f.cnc_approval_date")})
-    and not ${supplyOrderExists(
-      `not ${isYesExpression("so.so_cancelled")}
-       and (${hasFilledExpression("so.financial_sanction_date")}
-         or ${completedOrderMilestoneExpression("so", "Financial Sanction")}
-         or ${normalizeMilestoneExpression("so.current_milestone")} = 'financialsanction')`,
-    )}`;
+    and (not ${isYesExpression("f.tcec")} or ${hasFilledExpression("f.cnc_approval_date")})`;
+}
+
+function financialSanctionPendingExpression(orderAlias = "eso") {
+  return `${financialSanctionReachedExpression()}
+    and not ${effectiveOrderCancelledExpression(orderAlias)}
+    and not (${hasFilledExpression(`${orderAlias}.financial_sanction_date`)}
+      or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction", orderAlias)})`;
 }
 
 async function loadFinanceTotals({
@@ -1612,7 +1639,10 @@ async function loadAnalyticsSqlSlice({
            when stage_delivery.stage is not null then (
              (
                lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
-               and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> ''
+               and (
+                 (${isYesExpression("f.ir")} and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> '')
+                 or (not ${isYesExpression("f.ir")} and coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> '')
+               )
              )
              or exists (
                select 1
@@ -1625,7 +1655,10 @@ async function loadAnalyticsSqlSlice({
            else (
              (
                lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
-               and ${hasFilledExpression("so.material_receipt_date")}
+               and (
+                 (${isYesExpression("f.ir")} and ${hasFilledExpression("so.material_receipt_date")})
+                 or (not ${isYesExpression("f.ir")} and ${hasFilledExpression("so.job_completion_date")})
+               )
              )
              or ${completedOrderMilestoneExpression("so", "Delivery")}
            )
@@ -1757,7 +1790,9 @@ async function loadAnalyticsSqlSlice({
        select
          ${divisionNameSql} as name,
          f.file_type,
+         f.ir as file_ir,
          coalesce(stage_payment.stage ->> 'materialReceiptDate', so.material_receipt_date::text) as material_receipt_date,
+         coalesce(stage_payment.stage ->> 'jobCompletionDate', so.job_completion_date::text) as job_completion_date,
          coalesce(stage_payment.stage ->> 'billPreparationDate', so.bill_preparation_date::text) as bill_preparation_date,
          coalesce(stage_payment.stage ->> 'billSentForPaymentDate', so.bill_sent_for_payment_date::text) as bill_sent_for_payment_date,
          coalesce(stage_payment.stage ->> 'paymentDate', so.payment_date::text) as payment_date,
@@ -1775,7 +1810,9 @@ async function loadAnalyticsSqlSlice({
        select
          ${divisionNameSql} as name,
          f.file_type,
+         f.ir as file_ir,
          f.material_receipt_date::text as material_receipt_date,
+         ''::text as job_completion_date,
          f.bill_preparation_date::text as bill_preparation_date,
          f.bill_sent_for_payment_date::text as bill_sent_for_payment_date,
          f.payment_date::text as payment_date,
@@ -1796,8 +1833,11 @@ async function loadAnalyticsSqlSlice({
            and greatest(coalesce(nullif(revised_dp, '')::date, nullif(dp_date, '')::date), coalesce(nullif(dp_date, '')::date, nullif(revised_dp, '')::date)) < current_date
          )
          or (
-           lower(trim(coalesce(file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
-           and coalesce(material_receipt_date, '') <> ''
+         lower(trim(coalesce(file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
+           and (
+             (${isYesExpression("file_ir")} and coalesce(material_receipt_date, '') <> '')
+             or (not ${isYesExpression("file_ir")} and coalesce(job_completion_date, '') <> '')
+           )
          )
          or coalesce(bill_preparation_date, '') <> ''
          or coalesce(bill_sent_for_payment_date, '') <> ''
@@ -2548,10 +2588,12 @@ async function loadStatusCounts({
   const cancelled = isCancelledExpression();
   const supplyOrderPlaced = supplyOrderPlacedExpression();
   const statusWhereSql = appendDashboardWhereClause(whereSql, extraConditions);
+  const bidOpeningDate = `(case when ${isYesExpression(
+    "f.refloat",
+  )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end)`;
   const bidOverdue = `${isNoExpression("f.bid_opened")}
-          and (case when ${isYesExpression(
-            "f.refloat",
-          )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end) < current_date`;
+    and ${bidOpeningDate} is not null
+    and ${bidOpeningDate} < current_date`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
     const prefix = `milestone_${index}`;
     const applies = statusAppliesExpression(milestone);
@@ -2568,9 +2610,35 @@ async function loadStatusCounts({
       )}`;
       const received = `${eligible} and (${hasFilledExpression(`eso.${receivedColumn}`)}
         or ${effectiveOrderCompletedMilestoneExpression(milestone.label)})`;
+      const normalizedBg = normalizeMilestoneName(category);
+      const deliveryCompletion = `case
+        when ${isYesExpression("eso.file_ir")} then eso.material_receipt_date
+        else eso.job_completion_date
+      end`;
+      const stageRowsExist = `${isYesExpression("eso.stage_delivery")} and jsonb_array_length(coalesce(eso.stage_deliveries, '[]'::jsonb)) > 0`;
+      const allStagesHaveIrReceipt = `not exists (
+        select 1 from jsonb_array_elements(coalesce(eso.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+        where coalesce(psb_stage.stage ->> 'irReceiptDate', '') = ''
+      )`;
+      const allStagesHaveJobCompletion = `not exists (
+        select 1 from jsonb_array_elements(coalesce(eso.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+        where coalesce(psb_stage.stage ->> 'jobCompletionDate', '') = ''
+      )`;
+      const psbPurposeComplete = `(
+        (lower(trim(coalesce(eso.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
+          and ${effectiveOrderDpDateExpression()} is not null
+          and ${effectiveOrderDpDateExpression()} < current_date)
+        or (
+          lower(trim(coalesce(eso.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
+          and (
+            (${isYesExpression("eso.file_ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasFilledExpression("eso.ir_receipt_date")})))
+            or (not ${isYesExpression("eso.file_ir")} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${hasFilledExpression("eso.job_completion_date")})))
+          )
+        )
+      )`;
       const pendingStarted =
-        normalizeMilestoneName(category) === "pwb"
-          ? hasFilledExpression("eso.material_receipt_date")
+        normalizedBg === "pwb"
+          ? `${deliveryCompletion} is not null`
           : `(${hasFilledExpression("eso.financial_sanction_date")}
              or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction")})`;
       const pending = `${eligible} and ${pendingStarted} and not (${hasFilledExpression(
@@ -2578,10 +2646,11 @@ async function loadStatusCounts({
       )} or ${effectiveOrderCompletedMilestoneExpression(milestone.label)})`;
       const expired = `${received}
         and not ${hasFilledExpression(`eso.${returnColumn}`)}
-        and not ${hasFilledExpression("eso.payment_date")}
+        and (
+          ('${normalizedBg}' = 'psb' and not (${psbPurposeComplete}))
+          or ('${normalizedBg}' <> 'psb' and not ${hasFilledExpression("eso.payment_date")})
+        )
         and ${hasFilledExpression(`eso.${validityColumn}`)}
-        and ${effectiveOrderDpDateExpression()} is not null
-        and eso.${validityColumn} < ${effectiveOrderDpDateExpression()}
         and eso.${validityColumn} < current_date`;
       const toBeReturned = `${received}
         and not ${hasFilledExpression(`eso.${returnColumn}`)}
@@ -2590,10 +2659,10 @@ async function loadStatusCounts({
           or (
             not ${isYesExpression("eso.so_cancelled")}
             and (
-              ('${normalizeMilestoneName(category)}' = 'psb'
-                and ${hasFilledExpression("eso.ir_receipt_date")})
+              ('${normalizedBg}' = 'psb'
+                and ${psbPurposeComplete})
               or (
-                '${normalizeMilestoneName(category)}' <> 'psb'
+                '${normalizedBg}' <> 'psb'
                 and ${hasFilledExpression("eso.payment_date")}
                 and ${hasFilledExpression(`eso.${validityColumn}`)}
                 and eso.${validityColumn} < current_date
@@ -2631,6 +2700,7 @@ async function loadStatusCounts({
     `with effective_supply_orders as (
 	       select
 	         f.id as file_id,
+           f.file_type,
 	         f.bg as file_bg,
 	         f.ir as file_ir,
          f.psb,
@@ -2643,6 +2713,7 @@ async function loadStatusCounts({
          so.dp_date,
          so.revised_dp,
 	         so.material_receipt_date,
+           so.job_completion_date,
 	         so.ir_preparation_date,
 	         so.ir_receipt_date,
          so.payment_date,
@@ -2658,6 +2729,8 @@ async function loadStatusCounts({
          so.combined_bg_validity_date,
          so.combined_bg_return_date,
          so.ld,
+         so.stage_delivery,
+         so.stage_deliveries,
          so.demand_cancelled,
          so.so_cancelled
        from files f
@@ -2667,6 +2740,7 @@ async function loadStatusCounts({
 	       union all
 	       select
 	         f.id as file_id,
+           f.file_type,
 	         f.bg as file_bg,
 	         f.ir as file_ir,
          f.psb,
@@ -2679,6 +2753,7 @@ async function loadStatusCounts({
          null::date as dp_date,
          null::date as revised_dp,
 	         null::date as material_receipt_date,
+           null::date as job_completion_date,
 	         null::date as ir_preparation_date,
 	         null::date as ir_receipt_date,
          null::date as payment_date,
@@ -2694,6 +2769,8 @@ async function loadStatusCounts({
          null::date as combined_bg_validity_date,
          null::date as combined_bg_return_date,
          null::text as ld,
+         null::text as stage_delivery,
+         '[]'::jsonb as stage_deliveries,
          f.demand_cancelled,
          'No'::text as so_cancelled
        from files f
@@ -2721,11 +2798,7 @@ async function loadStatusCounts({
       )} as in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
 	       ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
-	       ${effectiveOrderCountFilter(
-           `not ${effectiveOrderCancelledExpression()} and ${effectiveOrderCurrentMilestoneExpression(
-             "Financial Sanction",
-           )}`,
-         )} as order_financial_sanction_pending,
+	       ${effectiveOrderCountFilter(financialSanctionPendingExpression())} as order_financial_sanction_pending,
        ${effectiveOrderCountFilter(
            `not ${effectiveOrderCancelledExpression()} and (${hasFilledExpression(
              "eso.financial_sanction_date",
@@ -2772,6 +2845,7 @@ async function loadStatusCounts({
         return {
           ...base,
           total: readCount("order_supply_order_total"),
+          underProcess: readCount("order_financial_sanction_pending"),
           pending: readCount("order_supply_order_pending"),
           cleared: readCount("order_supply_order_placed"),
         };

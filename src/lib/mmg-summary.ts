@@ -16,7 +16,7 @@ import {
   isValidDeliveryPeriodEntry,
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
-import { getInrAmount } from "@/lib/money";
+import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
 
 export type MmgSummaryFieldConfig = {
   key: string;
@@ -41,14 +41,14 @@ const customModePrefix = "mode:";
 const firmTypePrefix = "firmType:";
 
 export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
-  { key: "allocatedCapital", label: "Allocated Capital", group: "Finance" },
-  { key: "allocatedRevenue", label: "Allocated Revenue", group: "Finance" },
-  { key: "intendedCapital", label: "Intended Capital (Value / %)", group: "Finance" },
-  { key: "intendedRevenue", label: "Intended Revenue (Value / %)", group: "Finance" },
-  { key: "bookedCapital", label: "Booked Capital (Value / %)", group: "Finance" },
-  { key: "bookedRevenue", label: "Booked Revenue (Value / %)", group: "Finance" },
-  { key: "committedCapital", label: "Committed Capital (Value / %)", group: "Finance" },
-  { key: "committedRevenue", label: "Committed Revenue (Value / %)", group: "Finance" },
+  { key: "allocatedCapital", label: "Allocated Capital (Lakhs)", group: "Finance" },
+  { key: "allocatedRevenue", label: "Allocated Revenue (Lakhs)", group: "Finance" },
+  { key: "intendedCapital", label: "Intended Capital (Lakhs / %)", group: "Finance" },
+  { key: "intendedRevenue", label: "Intended Revenue (Lakhs / %)", group: "Finance" },
+  { key: "bookedCapital", label: "Booked Capital (Lakhs / %)", group: "Finance" },
+  { key: "bookedRevenue", label: "Booked Revenue (Lakhs / %)", group: "Finance" },
+  { key: "committedCapital", label: "Committed Capital (Lakhs / %)", group: "Finance" },
+  { key: "committedRevenue", label: "Committed Revenue (Lakhs / %)", group: "Finance" },
   { key: "totalDemands", label: "Total No. of demands", group: "Demand summary" },
   { key: "nonTcecDemands", label: "Non-TCEC demands", group: "Demand summary" },
   { key: "tcecDemands", label: "TCEC demands", group: "Demand summary" },
@@ -167,24 +167,24 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     group: "Payment",
   },
   { key: "totalBillsSentThisMonth", label: "Total bills sent this month", group: "Payment" },
-  { key: "totalPaymentsMadeThisYear", label: "Total payments made this year", group: "Payment" },
-  { key: "actualPaymentCapital", label: "Actual payment Capital", group: "Payment" },
-  { key: "actualPaymentRevenue", label: "Actual payment Revenue", group: "Payment" },
+  { key: "totalPaymentsMadeThisYear", label: "Total payments made (Lakhs)", group: "Payment" },
+  { key: "actualPaymentCapital", label: "Actual payment Capital (Lakhs)", group: "Payment" },
+  { key: "actualPaymentRevenue", label: "Actual payment Revenue (Lakhs)", group: "Payment" },
   { key: "advancePaymentCount", label: "Advance payment count", group: "Payment" },
   { key: "advancePaid", label: "Advance paid", group: "Payment" },
   { key: "advancePending", label: "Advance pending", group: "Payment" },
-  { key: "advancePaymentCapital", label: "Advance payment Capital", group: "Payment" },
-  { key: "advancePaymentRevenue", label: "Advance payment Revenue", group: "Payment" },
+  { key: "advancePaymentCapital", label: "Advance payment Capital (Lakhs)", group: "Payment" },
+  { key: "advancePaymentRevenue", label: "Advance payment Revenue (Lakhs)", group: "Payment" },
   {
     key: "totalExpectedPaymentRemainingThisYear",
-    label: "Total expected payment remaining this year",
+    label: "Total expected payment remaining (Lakhs)",
     group: "Payment",
   },
-  { key: "liveFilesThisYear", label: "Number of live files of this year", group: "Files" },
-  { key: "closedFilesThisYear", label: "Number of closed files of this year", group: "Files" },
+  { key: "liveFilesThisYear", label: "Number of live files", group: "Files" },
+  { key: "closedFilesThisYear", label: "Number of closed files", group: "Files" },
   {
     key: "liveFilesPreviousYears",
-    label: "Number of live files from previous years",
+    label: "Number of live files in filter",
     group: "Files",
   },
   { key: "cancelledDemands", label: "Cancelled demands", group: "Additional" },
@@ -213,10 +213,10 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "revisedDp", label: "Revised D.P.", group: "Additional" },
   {
     key: "totalSoValuePlacedThisFy",
-    label: "Total S.O. value placed this FY",
+    label: "Total S.O. value placed (Lakhs)",
     group: "Additional",
   },
-  { key: "totalUnpaidSoValue", label: "Total unpaid S.O. value", group: "Additional" },
+  { key: "totalUnpaidSoValue", label: "Total unpaid S.O. value (Lakhs)", group: "Additional" },
   {
     key: "filesClosedPercentage",
     label: "Files closed percentage of total demands",
@@ -291,10 +291,7 @@ export function normalizeMmgSummaryFields(
     const option = optionByKey.get(candidate.key);
     byKey.set(candidate.key, {
       key: candidate.key,
-      label:
-        typeof candidate.label === "string" && candidate.label.trim()
-          ? candidate.label.trim()
-          : (option?.label ?? candidate.key),
+      label: option?.label ?? candidate.key,
       enabled: candidate.enabled !== false,
     });
   });
@@ -386,9 +383,11 @@ function normalizeFirmTypeKey(value: string | undefined) {
 function getMmgSummaryValues(
   files: FileRecord[],
   divisions: Division[],
-  previousYearFiles: FileRecord[],
+  _previousYearFiles: FileRecord[],
   financialYear: string,
 ) {
+  void _previousYearFiles;
+  void financialYear;
   const allocatedCapital = divisions.reduce(
     (sum, division) => sum + (parseAmount(division.allocatedCapital) ?? 0),
     0,
@@ -399,7 +398,6 @@ function getMmgSummaryValues(
   );
   const nonCancelledFiles = files.filter((file) => !isCancelledDemand(file));
   const currentMonthKey = getCurrentMonthKey();
-  const fyRange = getFinancialYearRange(financialYear);
   const intendedCapital = sumFiles(nonCancelledFiles, (file) =>
     hasFilledString(file.imms) ? 0 : getFileAmount(file, "capital"),
   );
@@ -426,18 +424,14 @@ function getMmgSummaryValues(
   const paymentOrders = normalizedPaymentEntries(files).filter(
     ({ order }) => order.stageDeliveryLabel !== "Advance Payment",
   );
-  const actualPaymentEntriesThisYear = paymentOrders.filter(
-    ({ file, order }) =>
-      !isCancelledOrder(file, order) && dateInFinancialYear(order.paymentDate, fyRange),
+  const actualPaymentEntries = paymentOrders.filter(
+    ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
   );
   const advancePaymentEntries = normalizedAdvancePaymentEntries(files).filter(
     ({ file, order }) => !isCancelledOrder(file, order),
   );
   const liveFiles = files.filter((file) => !isCancelledDemand(file) && !isFileClosed(file));
   const closedFiles = nonCancelledFiles.filter(isFileClosed);
-  const livePreviousYearFiles = previousYearFiles.filter(
-    (file) => !isCancelledDemand(file) && !isFileClosed(file),
-  );
 
   const values: Record<string, string> = {
     allocatedCapital: formatMoney(allocatedCapital),
@@ -552,7 +546,7 @@ function getMmgSummaryValues(
       ).length,
     ),
     soTotal: formatCount(
-      nonCancelledFiles.reduce((sum, file) => sum + countExpectedSupplyOrderRows(file), 0),
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
     ),
     soPlaced: formatCount(
       rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
@@ -750,19 +744,19 @@ function getMmgSummaryValues(
       ).length,
     ),
     totalPaymentsMadeThisYear: formatMoney(
-      actualPaymentEntriesThisYear.reduce(
+      actualPaymentEntries.reduce(
         (sum, { file, order }) => sum + getActualPaymentTotal(file, order),
         0,
       ),
     ),
     actualPaymentCapital: formatMoney(
-      actualPaymentEntriesThisYear.reduce(
+      actualPaymentEntries.reduce(
         (sum, { file, order }) => sum + (getInrAmount(getActualPaymentCapital(order), file) ?? 0),
         0,
       ),
     ),
     actualPaymentRevenue: formatMoney(
-      actualPaymentEntriesThisYear.reduce(
+      actualPaymentEntries.reduce(
         (sum, { file, order }) => sum + (getInrAmount(getActualPaymentRevenue(order), file) ?? 0),
         0,
       ),
@@ -789,7 +783,6 @@ function getMmgSummaryValues(
     totalExpectedPaymentRemainingThisYear: formatMoney(
       sumOrders(files, ({ file, order }) =>
         !isCancelledOrder(file, order) &&
-        dateInFinancialYear(addDays(getDeliveryPeriodDate(order), 1), fyRange) &&
         !hasFilledString(order.materialReceiptDate) &&
         !hasFilledString(order.paymentDate)
           ? getOrderTotal(file, order)
@@ -798,7 +791,7 @@ function getMmgSummaryValues(
     ),
     liveFilesThisYear: formatCount(liveFiles.length),
     closedFilesThisYear: formatCount(closedFiles.length),
-    liveFilesPreviousYears: formatCount(livePreviousYearFiles.length),
+    liveFilesPreviousYears: formatCount(liveFiles.length),
     cancelledDemands: countFiles(files, isDemandCancelled),
     soCancelled: formatCount(countCancelledSupplyOrders(files)),
     deliveriesOverdue: formatCount(
@@ -852,8 +845,7 @@ function getMmgSummaryValues(
     ),
     totalSoValuePlacedThisFy: formatMoney(
       rawActiveOrders.reduce(
-        (sum, { file, order }) =>
-          sum + (dateInFinancialYear(order.soDate, fyRange) ? getOrderTotal(file, order) : 0),
+        (sum, { file, order }) => sum + (hasSupplyOrderDate(order) ? getOrderTotal(file, order) : 0),
         0,
       ),
     ),
@@ -1201,11 +1193,38 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
   return (
     !isCancelledOrder(file, order) &&
     (normalizedCategory === "psb"
-      ? hasFilledString(order.irReceiptDate)
+      ? isPsbReturnPurposeComplete(file, order)
       : hasFilledString(order.paymentDate) &&
         hasFilledString(validityDate) &&
         isBeforeToday(validityDate))
   );
+}
+
+function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isDeliveryInspectionApplicable(file)) {
+    const dueDate = getDeliveryPeriodDate(order);
+    return hasFilledString(dueDate) && isBeforeToday(dueDate);
+  }
+  if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+    return order.stageDeliveries.every((stage) => hasPsbReturnCompletion(file, stage));
+  }
+  return hasPsbReturnCompletion(file, order);
+}
+
+function hasPaymentDueCompletion(file: FileRecord, order: SupplyOrderDetail) {
+  return hasFilledString(getPaymentDueCompletionDate(file, order));
+}
+
+function getPaymentDueCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
+  return isYes(file.ir) ? order.materialReceiptDate : order.jobCompletionDate;
+}
+
+function hasPsbReturnCompletion(file: FileRecord, order: SupplyOrderDetail) {
+  return hasFilledString(getPsbReturnCompletionDate(file, order));
+}
+
+function getPsbReturnCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
+  return isYes(file.ir) ? order.irReceiptDate : order.jobCompletionDate;
 }
 
 function countBgExpiredOrders(files: FileRecord[], category: string) {
@@ -1215,14 +1234,16 @@ function countBgExpiredOrders(files: FileRecord[], category: string) {
 
 function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
   const validityDate = getBgValidityDate(order, category);
+  const normalizedCategory = normalizeMilestoneName(category);
   return (
     isBgCategoryApplicable(file, order, category) &&
     isBgReceivedOrder(order, category) &&
     !hasFilledString(getBgReturnDate(order, category)) &&
     !isCancelledOrder(file, order) &&
-    !hasFilledString(order.paymentDate) &&
+    (normalizedCategory === "psb"
+      ? !isPsbReturnPurposeComplete(file, order)
+      : !hasFilledString(order.paymentDate)) &&
     hasFilledString(validityDate) &&
-    isDateBefore(validityDate, getDeliveryPeriodDate(order)) &&
     isBeforeToday(validityDate)
   );
 }
@@ -1241,7 +1262,7 @@ function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDetail) {
-  if (isDeliveryInspectionApplicable(file)) return hasFilledString(order.materialReceiptDate);
+  if (isDeliveryInspectionApplicable(file)) return hasPaymentDueCompletion(file, order);
   const dueDate = getDeliveryPeriodDate(order);
   return hasFilledString(dueDate) && isBeforeToday(dueDate);
 }
@@ -1252,20 +1273,6 @@ function normalizeCompletedMilestones(value: string[] | undefined) {
 
 function getCurrentMonthKey() {
   return formatLocalDate(new Date()).slice(0, 7);
-}
-
-function getFinancialYearRange(financialYear: string) {
-  const startYear = readFinancialYearStart(financialYear) ?? new Date().getFullYear();
-  return { start: `${startYear}-04-01`, end: `${startYear + 1}-03-31` };
-}
-
-function readFinancialYearStart(financialYear: string) {
-  const match = financialYear.match(/\b(19\d{2}|20\d{2})\b/);
-  return match ? Number(match[1]) : undefined;
-}
-
-function dateInFinancialYear(date: string | undefined, range: { start: string; end: string }) {
-  return hasFilledString(date) && date! >= range.start && date! <= range.end;
 }
 
 function monthMatches(date: string | undefined, monthKey: string) {
@@ -1286,12 +1293,6 @@ function isBeforeToday(date: string | undefined) {
   return hasFilledString(date) && date! < formatLocalDate(new Date());
 }
 
-function addDays(date: string | undefined, days: number) {
-  const parsed = new Date(`${date ?? ""}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  parsed.setDate(parsed.getDate() + days);
-  return formatLocalDate(parsed);
-}
 
 function parseDate(date: string | undefined) {
   if (!date) return undefined;
@@ -1348,7 +1349,7 @@ function getPercent(value: number, total: number) {
 }
 
 function formatMoney(value: number) {
-  return Math.round(value).toLocaleString("en-IN");
+  return formatThousandsAndLakhs(value / 100_000, 2);
 }
 
 function formatCount(value: number) {

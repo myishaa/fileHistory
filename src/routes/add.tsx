@@ -130,6 +130,7 @@ const empty = {
   ldPercentage: "",
   revisedDp: "",
   materialReceiptDate: "",
+  jobCompletionDate: "",
   irPreparationDate: "",
   irReceiptDate: "",
   billPreparationDate: "",
@@ -381,7 +382,11 @@ const ifaDisabledKeys: FieldKey[] = ["ifaSentDate", "ifaFinalDate"];
 const bgDisabledKeys: FieldKey[] = [];
 const refloatDisabledKeys: FieldKey[] = ["refloatBiddingDate", "refloatBidOpeningDate"];
 const supplyOrderBgDisabledKeys: SupplyOrderKey[] = [];
-const supplyOrderIrDisabledKeys: SupplyOrderKey[] = ["irPreparationDate", "irReceiptDate"];
+const supplyOrderIrDisabledKeys: SupplyOrderKey[] = [
+  "materialReceiptDate",
+  "irPreparationDate",
+  "irReceiptDate",
+];
 const tcecCommitteeKeys: FieldKey[] = ["preTcecCommitteeNo", "postTcecCommitteeNumber"];
 
 const yesNo = ["Yes", "No"];
@@ -434,6 +439,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   ldPercentage: "",
   revisedDp: "",
   materialReceiptDate: "",
+  jobCompletionDate: "",
   irPreparationDate: "",
   irReceiptDate: "",
   billPreparationDate: "",
@@ -521,6 +527,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
   { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
+  { key: "jobCompletionDate", label: "Job Completion Date", type: "date" },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -545,6 +552,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
   { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
+  { key: "jobCompletionDate", label: "Job Completion Date", type: "date" },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -598,7 +606,7 @@ const supplyOrderSubviewFields = {
     "combinedBgReturnDate",
   ],
   dp: ["dpDate", "dpExtension", "dpExtensionCount", "ld", "revisedDp"],
-  delivery: ["materialReceiptDate", "irPreparationDate", "irReceiptDate"],
+  delivery: ["materialReceiptDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
   payment: [
     "billPreparationDate",
     "billSentForPaymentDate",
@@ -653,6 +661,7 @@ const supplyOrderFieldPrerequisites = {
   ld: ["dpDate"],
   revisedDp: ["dpDate"],
   materialReceiptDate: ["dpDate"],
+  jobCompletionDate: ["dpDate"],
   irPreparationDate: ["materialReceiptDate"],
   irReceiptDate: ["irPreparationDate"],
   billPreparationDate: ["materialReceiptDate"],
@@ -1298,7 +1307,30 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     if (k === "ir" && isNo(v)) {
       setSupplyOrders((current) =>
-        current.map((order) => ({ ...order, irPreparationDate: "", irReceiptDate: "" })),
+        current.map((order) => ({
+          ...order,
+          materialReceiptDate: "",
+          irPreparationDate: "",
+          irReceiptDate: "",
+          stageDeliveries: (order.stageDeliveries ?? []).map((stage) => ({
+            ...stage,
+            materialReceiptDate: "",
+            irPreparationDate: "",
+            irReceiptDate: "",
+          })),
+        })),
+      );
+    }
+    if (k === "ir" && isYes(v)) {
+      setSupplyOrders((current) =>
+        current.map((order) => ({
+          ...order,
+          jobCompletionDate: "",
+          stageDeliveries: (order.stageDeliveries ?? []).map((stage) => ({
+            ...stage,
+            jobCompletionDate: "",
+          })),
+        })),
       );
     }
     if (k === "fileType") {
@@ -3196,7 +3228,8 @@ function SupplyOrdersBlock({
           if (
             (gemDisabled && key === "gemSoNo") ||
             (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
-            (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key))
+            (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
+            (!effectiveIrDisabled && key === "jobCompletionDate")
           ) {
             continue;
           }
@@ -3772,7 +3805,8 @@ function SupplyOrdersBlock({
                                       (effectiveIrDisabled &&
                                         (supplyOrderIrDisabledKeys as readonly string[]).includes(
                                           key,
-                                        ))
+                                        )) ||
+                                      (!effectiveIrDisabled && key === "jobCompletionDate")
                                     }
                                     onChange={(value) =>
                                       onStageDeliveryChange(index, stageIndex, key, value)
@@ -3921,6 +3955,7 @@ function SupplyOrdersBlock({
                               (gemDisabled && key === "gemSoNo") ||
                               (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
                               (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
+                              (!effectiveIrDisabled && key === "jobCompletionDate") ||
                               isDpExtensionFieldInactive(form, key)
                             }
                             onChange={(value) => onOrderChange(index, key, value)}
@@ -4288,7 +4323,7 @@ function isFocusRowMatch(
     if (state === "completed" || state === "paid" || state === "actual") {
       return completed || hasFilledValue(row.paymentDate);
     }
-    return hasPaymentWorkflowStarted(row, form.fileType) && !hasFilledValue(row.paymentDate);
+    return hasPaymentWorkflowStarted(row, form) && !hasFilledValue(row.paymentDate);
   }
 
   if (config.kind === "actualpayment") {
@@ -4320,14 +4355,13 @@ function isFocusBgStateMatch(
   if (state === "validity" || state === "expiring") return hasFilledValue(validityDate);
   if (state === "returned") return hasFilledValue(returnDate);
   if (state === "expired") {
-    const effectiveDp = getLaterDate(row.dpDate, row.revisedDp);
     return (
       received &&
       !hasFilledValue(returnDate) &&
-      !hasFilledValue(row.paymentDate) &&
+      (config.kind === "psb"
+        ? !(isYes(form.ir) ? hasFilledValue(row.irReceiptDate) : hasFilledValue(row.jobCompletionDate))
+        : !hasFilledValue(row.paymentDate)) &&
       hasFilledValue(validityDate) &&
-      hasFilledValue(effectiveDp) &&
-      String(validityDate) < effectiveDp! &&
       String(validityDate) < formatLocalDate(new Date())
     );
   }
@@ -4336,9 +4370,13 @@ function isFocusBgStateMatch(
       received &&
       !hasFilledValue(returnDate) &&
       (isYes(row.soCancelled) ||
-        (hasFilledValue(row.paymentDate) &&
-          hasFilledValue(validityDate) &&
-          (config.kind === "psb" || String(validityDate) < formatLocalDate(new Date()))))
+        (config.kind === "psb"
+          ? isYes(form.ir)
+            ? hasFilledValue(row.irReceiptDate)
+            : hasFilledValue(row.jobCompletionDate)
+          : hasFilledValue(row.paymentDate) &&
+            hasFilledValue(validityDate) &&
+            String(validityDate) < formatLocalDate(new Date())))
     );
   }
   if (current) return true;
@@ -4405,12 +4443,20 @@ function getFocusBgReturnDate(row: SupplyOrderFocusRow, kind: string) {
   return undefined;
 }
 
-function hasPaymentWorkflowStarted(row: SupplyOrderFocusRow, fileType?: string) {
-  return isPaymentDueByDeliveryOrPeriod(row, fileType);
+function hasPaymentWorkflowStarted(
+  row: SupplyOrderFocusRow,
+  form: Pick<FormState, "fileType" | "ir">,
+) {
+  return isPaymentDueByDeliveryOrPeriod(row, form);
 }
 
-function isPaymentDueByDeliveryOrPeriod(row: SupplyOrderFocusRow, fileType?: string) {
-  if (!isStageDeliveryFileType(fileType)) return hasFilledValue(row.materialReceiptDate);
+function isPaymentDueByDeliveryOrPeriod(
+  row: SupplyOrderFocusRow,
+  form: Pick<FormState, "fileType" | "ir">,
+) {
+  if (!isStageDeliveryFileType(form.fileType)) {
+    return hasFilledValue(isYes(form.ir) ? row.materialReceiptDate : row.jobCompletionDate);
+  }
   const dueDate = getLaterDate(row.dpDate, row.revisedDp);
   return hasFilledValue(dueDate) && dueDate! < formatLocalDate(new Date());
 }
@@ -4510,6 +4556,7 @@ function getStageCompletionCount({
         if (irDisabled && (supplyOrderIrDisabledKeys as readonly string[]).includes(key)) {
           return fieldCounts;
         }
+        if (!irDisabled && key === "jobCompletionDate") return fieldCounts;
         return addNestedPaymentFieldCompletion(fieldCounts, key, stage, form, "stage");
       }, stageCounts),
     counts,
@@ -4534,6 +4581,7 @@ function getSingleStageCompletion({
       if (irDisabled && (supplyOrderIrDisabledKeys as readonly string[]).includes(key)) {
         return fieldCounts;
       }
+      if (!irDisabled && key === "jobCompletionDate") return fieldCounts;
       if (!shouldShowStageDeliveryField(activeSubview, key)) return fieldCounts;
       return addNestedPaymentFieldCompletion(fieldCounts, key, stage, form, "stage");
     },
@@ -4599,7 +4647,8 @@ function addSupplyOrderFieldCompletion(
     isOptionalDpCompletionField(key) ||
     (gemDisabled && key === "gemSoNo") ||
     (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
-    (irDisabled && supplyOrderIrDisabledKeys.includes(key))
+    (irDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
+    (!irDisabled && key === "jobCompletionDate")
   ) {
     return counts;
   }
@@ -4750,6 +4799,7 @@ function getDerivedDeliveryMilestoneState(row: MilestoneRowState, fileType?: str
   const completed =
     !periodTrackingOnly &&
     (isCompleteDateValue(String(row.materialReceiptDate ?? "")) ||
+      isCompleteDateValue(String(row.jobCompletionDate ?? "")) ||
       normalizeCompletedMilestones(row.completedMilestones).some(
         (milestone) => normalizeMilestoneName(milestone) === "delivery",
       ));
@@ -4781,7 +4831,7 @@ function isAutoCurrentSupplyOrderMilestone(
   if (isYes(String(row.soCancelled ?? ""))) return false;
   if (milestone === "Payment") {
     return (
-      hasPaymentWorkflowStarted(row as SupplyOrderFocusRow, fileType) &&
+      hasPaymentWorkflowStarted(row as SupplyOrderFocusRow, { fileType, ir: "Yes" }) &&
       !isCompleteDateValue(String(row.paymentDate ?? ""))
     );
   }
@@ -7822,6 +7872,16 @@ function normalizeSupplyOrderMilestoneState(
   )
     ? ""
     : rawManualCurrentMilestone;
+  const financialSanctionReached =
+    Boolean(form) &&
+    isYes(form.biddingStageOver) &&
+    (!isYes(form.tcec) || hasFilledValue(form.cncApprovalDate));
+  const financialSanctionBecomesCurrent =
+    financialSanctionReached &&
+    !isCompleteDateValue(order.financialSanctionDate ?? "") &&
+    Boolean(financialSanctionMilestone) &&
+    (!manualCurrentMilestone ||
+      normalizeMilestoneName(manualCurrentMilestone) === "financialsanction");
   const financialSanctionMovesToSupplyOrder =
     isCompleteDateValue(order.financialSanctionDate ?? "") &&
     !isCompleteDateValue(order.soDate ?? "") &&
@@ -7861,7 +7921,9 @@ function normalizeSupplyOrderMilestoneState(
     normalizeMilestoneName(manualCurrentMilestone) === "supplyorder";
   const currentMilestone = deliveryState.current
     ? "Delivery"
-    : financialSanctionMovesToSupplyOrder
+    : financialSanctionBecomesCurrent
+      ? financialSanctionMilestone!
+      : financialSanctionMovesToSupplyOrder
       ? supplyOrderMilestone!
       : supplyOrderMovesToDeliveryPeriod
         ? deliveryPeriodMilestone!

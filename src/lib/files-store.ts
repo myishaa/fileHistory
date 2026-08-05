@@ -90,6 +90,7 @@ export type FileRecord = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
   billPreparationDate?: string;
@@ -191,6 +192,7 @@ export type SupplyOrderDetail = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
   billPreparationDate?: string;

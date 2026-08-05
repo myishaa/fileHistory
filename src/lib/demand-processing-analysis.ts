@@ -4,6 +4,7 @@ import type {
   StageDeliveryDetail,
   SupplyOrderDetail,
 } from "@/lib/files-store";
+import { getInrAmount } from "@/lib/money";
 
 export type DemandProcessingDateScope = "file" | "order" | "stage" | "advance";
 
@@ -39,6 +40,8 @@ export type DemandProcessingAnalysisRow = {
   fromDate: string;
   toDate: string;
   gapDays: number;
+  valueCapital: number;
+  valueRevenue: number;
 };
 
 type DateFieldConfig = {
@@ -92,6 +95,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "order.combinedBgValidityDate", label: "PSB+PWB BG validity date", group: "Security/Warranty BG", scope: "order", key: "combinedBgValidityDate" },
   { id: "order.combinedBgReturnDate", label: "PSB+PWB BG return date", group: "Security/Warranty BG", scope: "order", key: "combinedBgReturnDate" },
   { id: "order.materialReceiptDate", label: "Material receipt date", group: "Delivery / IR", scope: "order", key: "materialReceiptDate" },
+  { id: "order.jobCompletionDate", label: "Job Completion Date", group: "Delivery / IR", scope: "order", key: "jobCompletionDate" },
   { id: "order.irPreparationDate", label: "IR preparation date", group: "Delivery / IR", scope: "order", key: "irPreparationDate" },
   { id: "order.irReceiptDate", label: "IR receipt date", group: "Delivery / IR", scope: "order", key: "irReceiptDate" },
   { id: "order.billPreparationDate", label: "Bill preparation date", group: "Bill / Payment", scope: "order", key: "billPreparationDate" },
@@ -102,6 +106,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "stage.dpDate", label: "Stage D.P. date", group: "Stage delivery", scope: "stage", key: "dpDate" },
   { id: "stage.revisedDp", label: "Stage revised D.P.", group: "Stage delivery", scope: "stage", key: "revisedDp" },
   { id: "stage.materialReceiptDate", label: "Stage material receipt date", group: "Stage delivery", scope: "stage", key: "materialReceiptDate" },
+  { id: "stage.jobCompletionDate", label: "Stage Job Completion Date", group: "Stage delivery", scope: "stage", key: "jobCompletionDate" },
   { id: "stage.irPreparationDate", label: "Stage IR preparation date", group: "Stage delivery", scope: "stage", key: "irPreparationDate" },
   { id: "stage.irReceiptDate", label: "Stage IR receipt date", group: "Stage delivery", scope: "stage", key: "irReceiptDate" },
   { id: "stage.billPreparationDate", label: "Stage bill preparation date", group: "Stage payment", scope: "stage", key: "billPreparationDate" },
@@ -191,6 +196,8 @@ export function buildDemandProcessingRows(
       orderRef: string,
       fromDate: string | undefined,
       toDate: string | undefined,
+      valueCapital: number,
+      valueRevenue: number,
       orderIndex?: number,
       stageIndex?: number,
     ) => {
@@ -206,22 +213,35 @@ export function buildDemandProcessingRows(
         fromDate,
         toDate,
         gapDays: differenceInDays(fromDate, toDate),
+        valueCapital,
+        valueRevenue,
       });
     };
 
     if (scope === "file") {
-      addRow("File", "-", fromField.getValue(file), toField.getValue(file));
+      const value = getDemandProcessingFileValue(file);
+      addRow(
+        "File",
+        "-",
+        fromField.getValue(file),
+        toField.getValue(file),
+        value.capital,
+        value.revenue,
+      );
       return;
     }
     const orders = file.supplyOrders?.length ? file.supplyOrders : [{} as SupplyOrderDetail];
     orders.forEach((order, orderIndex) => {
       const orderRef = order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`;
+      const value = getDemandProcessingOrderValue(file, order);
       if (scope === "order") {
         addRow(
           "S.O.",
           orderRef,
           fromField.getValue(file, order),
           toField.getValue(file, order),
+          value.capital,
+          value.revenue,
           orderIndex,
         );
         return;
@@ -232,6 +252,8 @@ export function buildDemandProcessingRows(
           `${orderRef} / Advance`,
           fromField.getValue(file, order, undefined, order.advancePaymentDetail),
           toField.getValue(file, order, undefined, order.advancePaymentDetail),
+          value.capital,
+          value.revenue,
           orderIndex,
         );
         return;
@@ -243,6 +265,8 @@ export function buildDemandProcessingRows(
           `${orderRef} / Stage ${stageIndex + 1}`,
           fromField.getValue(file, order, stage),
           toField.getValue(file, order, stage),
+          value.capital,
+          value.revenue,
           orderIndex,
           stageIndex,
         );
@@ -250,6 +274,39 @@ export function buildDemandProcessingRows(
     });
   });
   return rows;
+}
+
+function getDemandProcessingFileValue(file: FileRecord) {
+  const placedOrders = file.supplyOrders?.filter(isSupplyOrderPlaced) ?? [];
+  if (placedOrders.length) {
+    return placedOrders.reduce(
+      (total, order) => ({
+        capital: total.capital + (getInrAmount(order.soValueCapital, file) ?? 0),
+        revenue: total.revenue + (getInrAmount(order.soValueRevenue, file) ?? 0),
+      }),
+      { capital: 0, revenue: 0 },
+    );
+  }
+  return getDemandValue(file);
+}
+
+function getDemandProcessingOrderValue(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isSupplyOrderPlaced(order)) return getDemandValue(file);
+  return {
+    capital: getInrAmount(order.soValueCapital, file) ?? 0,
+    revenue: getInrAmount(order.soValueRevenue, file) ?? 0,
+  };
+}
+
+function getDemandValue(file: FileRecord) {
+  return {
+    capital: getInrAmount(file.valueCapital, file) ?? 0,
+    revenue: getInrAmount(file.valueRevenue, file) ?? 0,
+  };
+}
+
+function isSupplyOrderPlaced(order: SupplyOrderDetail) {
+  return Boolean(order.soDate?.trim());
 }
 
 function getAnalysisScope(
