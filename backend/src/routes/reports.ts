@@ -87,6 +87,21 @@ type ReportsSummaryPayload = {
   monthWiseDeliverySchedule: MonthWiseDeliveryScheduleRow[];
   monthWiseCompletedDeliveries: MonthCountRow[];
   monthWiseBgExpiry: MonthWiseBgExpiryRow[];
+  bgReceiptDelayRows: Array<{
+    thresholdDays: number;
+    label: string;
+    psb: number;
+    pwb: number;
+    psbPwb: number;
+    count: number;
+  }>;
+  warrantyBgMismatchRows: Array<{
+    bufferDays: number;
+    label: string;
+    pwb: number;
+    psbPwb: number;
+    count: number;
+  }>;
   delayRows: DelayStatusRow[];
   delaySummary: {
     averageDays: number;
@@ -272,7 +287,15 @@ const orderDelayMilestoneDefinitions = [
     startColumn: "delivery_start_date",
     completeColumn: "material_receipt_date",
     appliesCondition: () =>
-      `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`,
+      `${isYesExpression("f.ir")} and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`,
+  },
+  {
+    key: "jobCompletion",
+    label: "Job Completion",
+    current: "jobcompletion",
+    startColumn: "job_completion_start_date",
+    completeColumn: "job_completion_date",
+    appliesCondition: () => nonDeliveryFileTypeExpression("f"),
   },
   {
     key: "irPreparation",
@@ -326,14 +349,34 @@ type SettingsRow = {
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
+  bg_receipt_delay_days: unknown;
   active_user_id: string | null;
 };
+
+const defaultBgReceiptDelayDays = [10, 30, 60];
+
+function normalizeBgReceiptDelayDays(value: unknown) {
+  const source = Array.isArray(value) ? value : defaultBgReceiptDelayDays;
+  const days = Array.from(
+    new Set(
+      source
+        .map((item) => Number.parseInt(String(item), 10))
+        .filter((item) => Number.isInteger(item) && item >= 0),
+    ),
+  ).sort((a, b) => a - b);
+  return days.length ? days.slice(0, 6) : defaultBgReceiptDelayDays;
+}
 
 function mapSettings(row: SettingsRow): AppSettings {
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
-    financialYears: [row.financial_year, row.selected_year].filter(Boolean),
+    financialYears: [row.financial_year, row.selected_year].filter(
+      (year) =>
+        Boolean(year) &&
+        year !== "__all_active_files__" &&
+        year !== "__active_plus_current_fy_closed__",
+    ),
     yearSelectionLocked: row.year_selection_locked,
     theme: row.theme,
     themeTint: row.theme_tint,
@@ -345,6 +388,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: fromDbJsonArray(row.table_field_presets),
+    bgReceiptDelayDays: normalizeBgReceiptDelayDays(fromDbJsonArray(row.bg_receipt_delay_days)),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
 }
@@ -353,7 +397,8 @@ async function loadSettings() {
   return getCached("settings:reports", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, active_user_id
+              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets,
+              bg_receipt_delay_days, active_user_id
        from app_settings
        where id = true`,
     );
@@ -381,16 +426,25 @@ function readList(value: unknown) {
     .filter(Boolean);
 }
 
+function readNumberList(value: unknown) {
+  const source = readList(value);
+  if (!source) return undefined;
+  return normalizeBgReceiptDelayDays(source);
+}
+
 const allActiveFilesYear = "__all_active_files__";
+const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const fileClosedMilestone = "File Closed";
 
 function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, year: string) {
   return file.year === year || file.activeYears?.includes(year);
 }
 
-function isPaymentCompletedFile(file: { completedMilestones?: string[] }) {
+function isFileClosed(file: { completedMilestones?: string[] }) {
   return Boolean(
-    file.completedMilestones?.some((milestone) => milestone.trim().toLowerCase() === "payment"),
+    file.completedMilestones?.some(
+      (milestone) => milestone.trim().toLowerCase().replace(/[^a-z0-9]+/g, "") === "fileclosed",
+    ),
   );
 }
 
@@ -405,7 +459,7 @@ function isInactiveFile(
   >,
 ) {
   return (
-    isPaymentCompletedFile(file) ||
+    isFileClosed(file) ||
     isYes(file.demandCancelled) ||
     ((file.supplyOrders?.length ?? 0) === 0 && isYes(file.soCancelled)) ||
     Boolean(
@@ -413,6 +467,24 @@ function isInactiveFile(
         file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled)),
     )
   );
+}
+
+function isDateInFinancialYear(date: string | undefined, financialYear: string | undefined) {
+  const range = getFinancialYearDateRange(financialYear);
+  return Boolean(date && range && date >= range.start && date <= range.end);
+}
+
+function isFileVisibleForSelectedYear(
+  file: FileRecord,
+  selectedYear: string | undefined,
+  currentFinancialYear: string,
+) {
+  if (!selectedYear) return true;
+  if (selectedYear === allActiveFilesYear) return !isInactiveFile(file);
+  if (selectedYear === activePlusCurrentFyClosedYear) {
+    return !isInactiveFile(file) || isDateInFinancialYear(file.fileClosureDate, currentFinancialYear);
+  }
+  return isFileActiveInYear(file, selectedYear);
 }
 
 function readNonNegativeInteger(value: unknown, fallback: number) {
@@ -450,11 +522,38 @@ function addValue(values: unknown[], value: unknown) {
   return `$${values.length}`;
 }
 
-function getSelectedYearCondition(selectedYear: string | undefined, values: unknown[]) {
+function getFinancialYearDateRange(financialYear: string | undefined) {
+  const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  if (!match) return undefined;
+  const startYear = Number(match[1]);
+  return {
+    start: `${startYear}-04-01`,
+    end: `${startYear + 1}-03-31`,
+  };
+}
+
+function activeFilesExpression() {
+  return `(not ${fileClosedExpression()}
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes')`;
+}
+
+function getSelectedYearCondition(
+  selectedYear: string | undefined,
+  values: unknown[],
+  currentFinancialYear?: string,
+) {
   if (!selectedYear) return undefined;
   if (selectedYear === allActiveFilesYear) {
-    return `(not ${fileClosedExpression()}
-      and lower(coalesce(f.demand_cancelled, '')) <> 'yes')`;
+    return activeFilesExpression();
+  }
+  if (selectedYear === activePlusCurrentFyClosedYear) {
+    const range = getFinancialYearDateRange(currentFinancialYear);
+    if (!range) return activeFilesExpression();
+    const start = addValue(values, range.start);
+    const end = addValue(values, range.end);
+    return `(${activeFilesExpression()} or (${fileClosedExpression()}
+      and f.file_closure_date between ${start}::date and ${end}::date
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'))`;
   }
 
   const placeholder = addValue(values, selectedYear);
@@ -468,19 +567,21 @@ function getReportWhereSql({
   scopeSql,
   scopeValues,
   selectedYear,
+  currentFinancialYear,
   division,
   fileCategories,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
   selectedYear: string | undefined;
+  currentFinancialYear?: string;
   division: string;
   fileCategories: FileCategoryKey[];
 }) {
   const values = [...scopeValues];
   const conditions: string[] = [];
   if (scopeSql) conditions.push(scopeSql);
-  const selectedYearCondition = getSelectedYearCondition(selectedYear, values);
+  const selectedYearCondition = getSelectedYearCondition(selectedYear, values, currentFinancialYear);
   if (selectedYearCondition) conditions.push(selectedYearCondition);
   if (division !== "all") {
     const placeholder = addValue(values, division.toLowerCase());
@@ -560,7 +661,13 @@ function supplyOrderChildExpression(childCondition: string, _unusedFileLevelCond
 }
 
 function effectiveDpDateExpression(alias: string) {
-  return `greatest(coalesce(${alias}.revised_dp, ${alias}.dp_date), coalesce(${alias}.dp_date, ${alias}.revised_dp))`;
+  return `coalesce(${alias}.revised_dp, ${alias}.dp_date)`;
+}
+
+function nonDeliveryFileTypeExpression(alias: string) {
+  const irColumn = alias === "f" ? "f.ir" : `${alias}.file_ir`;
+  return `(not ${isYesExpression(irColumn)}
+    or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
 }
 
 function isCancelledExpression() {
@@ -646,6 +753,14 @@ function completedOrderMilestoneExpression(orderAlias: string, normalizedMilesto
   )`;
 }
 
+function completedStageMilestoneExpression(stageAlias: string, normalizedMilestone: string) {
+  return `exists (
+    select 1
+    from jsonb_array_elements_text(coalesce(${stageAlias}.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
+    where ${normalizeMilestoneExpression("completed_stage.milestone")} = '${normalizedMilestone}'
+  )`;
+}
+
 function financialSanctionCompleteExpression() {
   return `not ${isCancelledExpression()} and (
     exists (
@@ -726,14 +841,17 @@ function reportActiveExpression(milestone: (typeof reportMilestoneDefinitions)[n
            and (${hasFilledExpression("so.financial_sanction_date")}
              or ${completedOrderMilestoneExpression("so", "financialsanction")})
          )
-         or (
-           '${normalizeMilestoneName(category)}' = 'pwb'
-           and (
-             (${isYesExpression("f.ir")} and ${hasFilledExpression("so.material_receipt_date")})
-             or (not ${isYesExpression("f.ir")} and ${hasFilledExpression("so.job_completion_date")})
-           )
-         )
-       )`,
+	         or (
+	           '${normalizeMilestoneName(category)}' = 'pwb'
+	           and (
+	             (not ${nonDeliveryFileTypeExpression("f")} and ${hasFilledExpression("so.material_receipt_date")})
+	             or (${nonDeliveryFileTypeExpression("f")} and ${completedOrderMilestoneExpression(
+                 "so",
+                 "jobcompletion",
+               )})
+	           )
+	         )
+	       )`,
     )}`;
   }
   const aliases =
@@ -783,6 +901,111 @@ function deliveryPendingOrderExpression() {
      and so.so_date <= current_date
      and ${effectiveDpDateExpression("so")} >= current_date`,
   );
+}
+
+function reportPaymentRowsSource(whereSql: string, extraConditions: string[] = []) {
+  const stageCount = "jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb))";
+  const paymentApplicable = `(stage_row.stage is null
+    or ${isYesExpression("so.stage_payment")}
+    or (not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}))`;
+  const jobCompletionDone = `case
+        when stage_row.stage is not null then ${completedStageMilestoneExpression(
+          "stage_row",
+          "jobcompletion",
+        )}
+        else ${completedOrderMilestoneExpression("so", "jobcompletion")}
+      end`;
+  return `(select
+      f.file_type,
+      f.ir as file_ir,
+      ${paymentApplicable} as payment_applicable,
+      so.so_cancelled,
+      coalesce(nullif(stage_row.stage ->> 'dpDate', '')::date, so.dp_date) as dp_date,
+      coalesce(nullif(stage_row.stage ->> 'revisedDp', '')::date, so.revised_dp) as revised_dp,
+      case
+        when stage_row.stage is not null then nullif(stage_row.stage ->> 'materialReceiptDate', '')::date
+        else so.material_receipt_date
+      end as material_receipt_date,
+      case
+        when stage_row.stage is not null then nullif(stage_row.stage ->> 'jobCompletionDate', '')::date
+        else so.job_completion_date
+      end as job_completion_date,
+      ${jobCompletionDone} as job_completion_done,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then nullif(stage_row.stage ->> 'billPreparationDate', '')::date
+        when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
+          then so.bill_preparation_date
+        when stage_row.stage is not null then null::date
+        else so.bill_preparation_date
+      end as bill_preparation_date,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then nullif(stage_row.stage ->> 'billSentForPaymentDate', '')::date
+        when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
+          then so.bill_sent_for_payment_date
+        when stage_row.stage is not null then null::date
+        else so.bill_sent_for_payment_date
+      end as bill_sent_for_payment_date,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then nullif(stage_row.stage ->> 'paymentDate', '')::date
+        when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
+          then so.payment_date
+        when stage_row.stage is not null then null::date
+        else so.payment_date
+      end as payment_date,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then stage_row.stage ->> 'currentMilestone'
+        when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
+          then so.current_milestone
+        when stage_row.stage is not null then ''::text
+        else so.current_milestone
+      end as current_milestone
+    from files f
+    left join divisions d on d.id = f.division_id
+    join supply_orders so on so.file_id = f.id
+    left join lateral (
+      select stage, ordinality
+      from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) with ordinality as stages(stage, ordinality)
+      where ${isYesExpression("so.stage_delivery")}
+      union all
+      select null::jsonb as stage, 1::bigint as ordinality
+      where not ${isYesExpression("so.stage_delivery")}
+        or ${stageCount} = 0
+    ) stage_row on true
+    ${appendReportWhereClause(whereSql, extraConditions)})`;
+}
+
+function paymentRowReadyExpression(alias = "payment_row") {
+  const nonDelivery = nonDeliveryFileTypeExpression(alias);
+  return `(
+    ${normalizeMilestoneExpression(`${alias}.current_milestone`)} = 'payment'
+    or ${hasFilledExpression(`${alias}.bill_preparation_date`)}
+    or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
+    or (
+      not ${nonDelivery}
+      and (
+        ${isYesExpression(`${alias}.file_ir`)}
+        and ${hasFilledExpression(`${alias}.material_receipt_date`)}
+      )
+    )
+    or (${nonDelivery} and ${alias}.job_completion_done)
+  )`;
+}
+
+function paymentRowCompletedExpression(alias = "payment_row") {
+  return `${alias}.payment_applicable
+    and ${hasFilledExpression(`${alias}.payment_date`)}
+    and not ${isYesExpression(`${alias}.so_cancelled`)}`;
+}
+
+function paymentRowPendingExpression(alias = "payment_row") {
+  return `${alias}.payment_applicable
+    and not ${hasFilledExpression(`${alias}.payment_date`)}
+    and ${paymentRowReadyExpression(alias)}
+    and not ${isYesExpression(`${alias}.so_cancelled`)}`;
 }
 
 function financialSanctionPreviousStageExpression() {
@@ -841,6 +1064,8 @@ function isStatusSummaryColumn(stage: string) {
     "In process",
     "Opening overdue",
     "Live",
+    "Due",
+    "Done",
     "Completed",
     "Overdue",
     "Valid",
@@ -862,12 +1087,17 @@ function getStatusSummaryColumnsForRow(columns: string[]) {
     "In process",
     "Opening overdue",
     "Live",
+    "Due",
+    "Done",
     "Completed",
     "Overdue",
     "Valid",
     "Expired",
     "Extended",
   ];
+  if (columns.includes("Due") && columns.includes("Done")) {
+    return ["Due", "Done"];
+  }
   if (columns.includes("Opening overdue")) {
     return ["Live", "In process", "Opening overdue", "Completed"].filter((column) =>
       columns.includes(column),
@@ -889,6 +1119,7 @@ function getStatusSummaryGroupTitle(columns: string[]) {
   if (columns.includes("Placed")) return "Supply Order";
   if (columns.includes("Received")) return "Security/Warranty BG";
   if (columns.includes("Valid")) return "Delivery Period";
+  if (columns.includes("Due") && columns.includes("Done")) return "Job Completion";
   if (columns.includes("Overdue")) {
     return "Delivery";
   }
@@ -993,7 +1224,7 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       const receivedColumn = bgReceivedColumn(category);
       const validityColumn = bgValidityColumn(category);
       const returnColumn = bgReturnColumn(category);
-      const nonDeliveryFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')`;
+      const nonDeliveryFileType = nonDeliveryFileTypeExpression("f");
       const stageRowsExist = `${isYesExpression("so.stage_delivery")} and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0`;
       const allStagesHaveIrReceipt = `not exists (
         select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
@@ -1001,24 +1232,27 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       )`;
       const allStagesHaveJobCompletion = `not exists (
         select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
-        where coalesce(psb_stage.stage ->> 'jobCompletionDate', '') = ''
+        where not ${completedStageMilestoneExpression("psb_stage", "jobcompletion")}
       )`;
-      const psbPurposeComplete = `((${nonDeliveryFileType} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date)
+      const psbPurposeComplete = `((${nonDeliveryFileType} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${completedOrderMilestoneExpression(
+          "so",
+          "jobcompletion",
+        )})))
         or (not ${nonDeliveryFileType} and (
-          (${isYesExpression("f.ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasFilledExpression("so.ir_receipt_date")})))
-          or (not ${isYesExpression("f.ir")} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${hasFilledExpression("so.job_completion_date")})))
-        )))`;
+	          (${isYesExpression("f.ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasFilledExpression("so.ir_receipt_date")})))
+	        )))`;
       const received = supplyOrderExists(
         `not ${isYesExpression("so.so_cancelled")}
          and ${bgCategoryExpression("so", category)}
          and (${hasFilledExpression(`so.${receivedColumn}`)}
            or ${completedOrderMilestoneExpression("so", normalizeMilestoneName(category))})`,
       );
-      const pendingStarted =
-        normalizeMilestoneName(category) === "pwb"
-          ? hasFilledExpression("so.material_receipt_date")
-          : `(${hasFilledExpression("so.financial_sanction_date")}
-             or ${completedOrderMilestoneExpression("so", "financialsanction")})`;
+	      const pendingStarted =
+	        normalizeMilestoneName(category) === "pwb"
+	          ? `(not ${nonDeliveryFileType} and ${hasFilledExpression("so.material_receipt_date")})
+	            or (${nonDeliveryFileType} and ${completedOrderMilestoneExpression("so", "jobcompletion")})`
+	          : `(${hasFilledExpression("so.financial_sanction_date")}
+	             or ${completedOrderMilestoneExpression("so", "financialsanction")})`;
       addRow(milestone.label, "Received", `${eligible} and ${received}`);
       addRow(
         milestone.label,
@@ -1090,13 +1324,25 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       );
       return;
     }
-    if (milestone.key === "payment") {
-      addRow(milestone.label, "Completed", `${process} and ${complete}`);
-      addRow(milestone.label, "Pending", pending);
-      addRow(milestone.label, "At previous stage", previousStage);
-      return;
-    }
-    if (milestone.key === "bidding") {
+	    if (milestone.key === "payment") {
+	      selects.push(
+        `select '${milestone.label}' as milestone,
+                'Completed' as stage,
+                count(*)::integer as count
+         from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
+         where ${paymentRowCompletedExpression("payment_row")}`,
+      );
+      selects.push(
+        `select '${milestone.label}' as milestone,
+                'Pending' as stage,
+                count(*)::integer as count
+         from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
+         where ${paymentRowPendingExpression("payment_row")}`,
+      );
+	      addRow(milestone.label, "At previous stage", previousStage);
+	      return;
+	    }
+	    if (milestone.key === "bidding") {
       const bidOverdue = bidOpeningOverdueExpression();
       addRow(milestone.label, "Completed", `${process} and ${complete}`);
       addRow(
@@ -1147,32 +1393,88 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
     addRow(milestone.label, "Completed", `${process} and ${complete}`);
     addRow(milestone.label, "In process", active);
     addRow(milestone.label, "At previous stage", previousStage);
-  });
+	  });
+	
+  const stageJobCompletionDone = `exists (
+    select 1
+    from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as job_stage(stage)
+    where exists (
+      select 1
+      from jsonb_array_elements_text(coalesce(job_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_job_stage(milestone)
+      where ${normalizeMilestoneExpression("completed_job_stage.milestone")} = 'jobcompletion'
+    )
+  )`;
+  const stageJobCompletionDue = `exists (
+    select 1
+    from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as due_job_stage(stage)
+    where not exists (
+      select 1
+      from jsonb_array_elements_text(coalesce(due_job_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_due_job_stage(milestone)
+      where ${normalizeMilestoneExpression("completed_due_job_stage.milestone")} = 'jobcompletion'
+    )
+    and (
+      ${normalizeMilestoneExpression("due_job_stage.stage ->> 'currentMilestone'")} = 'jobcompletion'
+      or coalesce(
+        nullif(due_job_stage.stage ->> 'revisedDp', '')::date,
+        nullif(due_job_stage.stage ->> 'dpDate', '')::date,
+        so.revised_dp,
+        so.dp_date
+      ) < current_date
+    )
+  )`;
+  const orderJobCompletionDone = completedOrderMilestoneExpression("so", "Job Completion");
+  addRow(
+    "Job Completion",
+    "Due",
+    `not ${isCancelledExpression()} and ${nonDeliveryFileTypeExpression("f")} and ${supplyOrderExists(
+      `not ${isYesExpression("so.so_cancelled")}
+       and ${hasFilledExpression("so.so_date")}
+       and (
+         (
+           not ${orderJobCompletionDone}
+           and (
+             ${normalizeMilestoneExpression("so.current_milestone")} = 'jobcompletion'
+             or (${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date)
+           )
+         )
+         or ${stageJobCompletionDue}
+       )`,
+    )}`,
+  );
+  addRow(
+    "Job Completion",
+    "Done",
+    `not ${isCancelledExpression()} and ${nonDeliveryFileTypeExpression("f")} and ${supplyOrderExists(
+      `not ${isYesExpression("so.so_cancelled")}
+       and ${hasFilledExpression("so.so_date")}
+       and (${orderJobCompletionDone} or ${stageJobCompletionDone})`,
+    )}`,
+  );
 
   addRow(
-    "Delivery Period",
-    "Valid",
-    `not ${isCancelledExpression()} and ${supplyOrderChildExpression(
-      `${hasFilledExpression("so.so_date")} and so.so_date <= current_date and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} >= current_date and not ${hasFilledExpression("so.revised_dp")} and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
-      `${hasFilledExpression("f.so_date")} and f.so_date <= current_date and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} >= current_date and not ${hasFilledExpression("f.revised_dp")} and not ${hasFilledExpression("f.material_receipt_date")}`,
-    )}`,
-  );
-  addRow(
-    "Delivery Period",
-    "Expired",
-    `not ${isCancelledExpression()} and ${supplyOrderChildExpression(
-      `${hasFilledExpression("so.so_date")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date and not ${hasFilledExpression("so.revised_dp")} and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
-      `${hasFilledExpression("f.so_date")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} < current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
-    )}`,
-  );
-  addRow(
-    "Delivery Period",
-    "Extended",
-    `not ${isCancelledExpression()} and ${supplyOrderChildExpression(
-      `${hasFilledExpression("so.so_date")} and so.so_date <= current_date and ${hasFilledExpression("so.revised_dp")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} >= current_date and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
-      `${hasFilledExpression("f.so_date")} and f.so_date <= current_date and ${hasFilledExpression("f.revised_dp")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} >= current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
-    )}`,
-  );
+	    "Delivery Period",
+	    "Valid",
+	    `not ${isCancelledExpression()} and not ${nonDeliveryFileTypeExpression("f")} and ${supplyOrderChildExpression(
+	      `${hasFilledExpression("so.so_date")} and so.so_date <= current_date and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} >= current_date and not ${hasFilledExpression("so.revised_dp")} and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
+	      `${hasFilledExpression("f.so_date")} and f.so_date <= current_date and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} >= current_date and not ${hasFilledExpression("f.revised_dp")} and not ${hasFilledExpression("f.material_receipt_date")}`,
+	    )}`,
+	  );
+	  addRow(
+	    "Delivery Period",
+	    "Expired",
+	    `not ${isCancelledExpression()} and not ${nonDeliveryFileTypeExpression("f")} and ${supplyOrderChildExpression(
+	      `${hasFilledExpression("so.so_date")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date and not ${hasFilledExpression("so.revised_dp")} and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
+	      `${hasFilledExpression("f.so_date")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} < current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
+	    )}`,
+	  );
+	  addRow(
+	    "Delivery Period",
+	    "Extended",
+	    `not ${isCancelledExpression()} and not ${nonDeliveryFileTypeExpression("f")} and ${supplyOrderChildExpression(
+	      `${hasFilledExpression("so.so_date")} and so.so_date <= current_date and ${hasFilledExpression("so.revised_dp")} and ${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} >= current_date and not ${hasFilledExpression("so.material_receipt_date")} and not ${isYesExpression("so.so_cancelled")}`,
+	      `${hasFilledExpression("f.so_date")} and f.so_date <= current_date and ${hasFilledExpression("f.revised_dp")} and ${effectiveDpDateExpression("f")} is not null and ${effectiveDpDateExpression("f")} >= current_date and not ${hasFilledExpression("f.material_receipt_date")}`,
+	    )}`,
+	  );
   addRow(
     "Delivery",
     "Completed",
@@ -1221,19 +1523,19 @@ async function loadCashOutgoRows(
   const expectedDaysPlaceholder = usesExpectedOffset
     ? addValue(queryValues, expectedCashOutgoDays)
     : undefined;
+  const nonDeliveryEffective = nonDeliveryFileTypeExpression("effective");
   const receiptBaseDateExpression = `case
-    when lower(coalesce(effective.file_type, '')) in ('amc', 'mpc', 'cars', 'o&m')
+    when ${nonDeliveryEffective} and effective.job_completion_done
     then (coalesce(effective.revised_dp, effective.dp_date) + interval '1 day')::date
-    when ${isYesExpression("effective.file_ir")} then effective.material_receipt_date
-    else effective.job_completion_date
+    when not ${nonDeliveryEffective} and ${isYesExpression("effective.file_ir")} then effective.material_receipt_date
+    else null::date
   end`;
   const deliveryCompletionExpression = `case
-    when ${isYesExpression("effective.file_ir")} then effective.material_receipt_date
-    else effective.job_completion_date
+    when ${nonDeliveryEffective} and effective.job_completion_done then coalesce(effective.revised_dp, effective.dp_date)
+    when not ${nonDeliveryEffective} and ${isYesExpression("effective.file_ir")} then effective.material_receipt_date
+    else null::date
   end`;
   const receiptPendingBillBaseDateExpression = receiptBaseDateExpression;
-  const nonDeliveryFileTypeExpression =
-    "lower(coalesce(effective.file_type, '')) in ('amc', 'mpc', 'cars', 'o&m')";
   const billPreparationBaseDateExpression = receiptPendingBillBaseDateExpression;
   const dateExpression = (() => {
     if (mode === "expectedDp") {
@@ -1259,13 +1561,14 @@ async function loadCashOutgoRows(
           and not effective.so_cancelled_yes
           and (
             (
-              ${nonDeliveryFileTypeExpression}
-              and (effective.bill_preparation_date is null or effective.bill_preparation_date > ${asOfDatePlaceholder}::date)
+	              ${nonDeliveryEffective}
+                and not effective.job_completion_done
+	              and (effective.bill_preparation_date is null or effective.bill_preparation_date > ${asOfDatePlaceholder}::date)
               and (effective.bill_sent_for_payment_date is null or effective.bill_sent_for_payment_date > ${asOfDatePlaceholder}::date)
               and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)
             )
             or (
-              not ${nonDeliveryFileTypeExpression}
+	              not ${nonDeliveryEffective}
               and (${deliveryCompletionExpression} is null or ${deliveryCompletionExpression} > ${asOfDatePlaceholder}::date)
               and (effective.payment_date is null or effective.payment_date > ${asOfDatePlaceholder}::date)
             )
@@ -1275,13 +1578,14 @@ async function loadCashOutgoRows(
         and not effective.so_cancelled_yes
         and (
           (
-            ${nonDeliveryFileTypeExpression}
-            and effective.bill_preparation_date is null
+	            ${nonDeliveryEffective}
+              and not effective.job_completion_done
+	            and effective.bill_preparation_date is null
             and effective.bill_sent_for_payment_date is null
             and effective.payment_date is null
           )
           or (
-            not ${nonDeliveryFileTypeExpression}
+	            not ${nonDeliveryEffective}
             and ${deliveryCompletionExpression} is null
             and effective.payment_date is null
           )
@@ -1356,6 +1660,34 @@ async function loadCashOutgoRows(
     fromDatePlaceholder && toDatePlaceholder
       ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
       : "";
+  const effectiveCapitalExpression =
+    mode === "actual"
+      ? `case
+           when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+             then ${inrAmountExpression("stage_row.stage ->> 'actualPaymentCapital'")}
+           when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb))
+             then ${inrAmountExpression("so.actual_payment_capital")}
+           when stage_row.stage is not null then 0
+           else ${inrAmountExpression("so.actual_payment_capital")}
+         end`
+      : `case
+           when stage_row.stage is not null then ${inrAmountExpression("stage_row.stage ->> 'stageAmountCapital'")}
+           else ${inrAmountExpression("so.so_value_capital")}
+         end`;
+  const effectiveRevenueExpression =
+    mode === "actual"
+      ? `case
+           when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+             then ${inrAmountExpression("stage_row.stage ->> 'actualPaymentRevenue'")}
+           when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb))
+             then ${inrAmountExpression("so.actual_payment_revenue")}
+           when stage_row.stage is not null then 0
+           else ${inrAmountExpression("so.actual_payment_revenue")}
+         end`
+      : `case
+           when stage_row.stage is not null then ${inrAmountExpression("stage_row.stage ->> 'stageAmountRevenue'")}
+           else ${inrAmountExpression("so.so_value_revenue")}
+         end`;
   const result = await pool.query<{
     month_key: string;
     month: string;
@@ -1379,6 +1711,13 @@ async function loadCashOutgoRows(
            when stage_row.stage is not null then nullif(stage_row.stage ->> 'jobCompletionDate', '')::date
            else so.job_completion_date
          end as job_completion_date,
+         case
+           when stage_row.stage is not null then ${completedStageMilestoneExpression(
+               "stage_row",
+               "jobcompletion",
+             )}
+           else ${completedOrderMilestoneExpression("so", "jobcompletion")}
+         end as job_completion_done,
          case
            when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
              then nullif(stage_row.stage ->> 'billPreparationDate', '')::date
@@ -1406,14 +1745,8 @@ async function loadCashOutgoRows(
          so.so_cancelled_date,
          ${isYesExpression("so.so_cancelled")} as so_cancelled_yes,
          ${isYesExpression("so.advance_payment")} as advance_payment_yes,
-         case
-           when stage_row.stage is not null then ${inrAmountExpression("stage_row.stage ->> 'stageAmountCapital'")}
-           else ${inrAmountExpression("so.so_value_capital")}
-         end as capital,
-         case
-           when stage_row.stage is not null then ${inrAmountExpression("stage_row.stage ->> 'stageAmountRevenue'")}
-           else ${inrAmountExpression("so.so_value_revenue")}
-         end as revenue
+         ${effectiveCapitalExpression} as capital,
+         ${effectiveRevenueExpression} as revenue
        from files f
        left join divisions d on d.id = f.division_id
 	       join supply_orders so on so.file_id = f.id
@@ -1554,28 +1887,19 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
   const soDate = effectiveOrderDateExpression("so_date", "soDate");
   const dpDate = effectiveOrderDateExpression("dp_date", "dpDate");
   const revisedDp = effectiveOrderDateExpression("revised_dp", "revisedDp");
-  const effectiveDpDate = `greatest(
-    coalesce(${revisedDp}, ${dpDate}),
-    coalesce(${dpDate}, ${revisedDp})
-  )`;
+  const effectiveDpDate = `coalesce(${revisedDp}, ${dpDate})`;
   const materialReceiptDate = effectiveOrderDateExpression(
     "material_receipt_date",
     "materialReceiptDate",
   );
-  const jobCompletionDate = effectiveOrderDateExpression(
-    "job_completion_date",
-    "jobCompletionDate",
-  );
   const irReceiptDate = effectiveOrderDateExpression("ir_receipt_date", "irReceiptDate");
-  const advancePaymentDate = `case
-    when nullif(so.advance_payment_detail ->> 'paymentDate', '') is not null
-      then nullif(so.advance_payment_detail ->> 'paymentDate', '')::date
-    when exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(so.advance_payment_detail -> 'completedMilestones', '[]'::jsonb)) as advance_completed(milestone)
-      where ${normalizeMilestoneExpression("advance_completed.milestone")} = 'advancepayment'
-    ) then '9999-12-31'::date
-    else null::date
+  const advancePaymentDate = `nullif(so.advance_payment_detail ->> 'paymentDate', '')::date`;
+  const jobCompletionDone = `case
+    when stage_row.stage is not null then ${completedStageMilestoneExpression(
+      "stage_row",
+      "jobcompletion",
+    )}
+    else ${completedOrderMilestoneExpression("so", "jobcompletion")}
   end`;
   return `(select
       so.so_no,
@@ -1585,10 +1909,15 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
         row_number() over (order by coalesce(so.sort_order, 2147483647), so.id) - 1
       )::integer as sort_order,
       stage_row.stage_index,
-      coalesce(
-        stage_row.stage ->> 'currentMilestone',
-        so.current_milestone
-      ) as current_milestone,
+      case
+        when ${nonDeliveryFileTypeExpression("f")}
+          and ${normalizeMilestoneExpression("coalesce(stage_row.stage ->> 'currentMilestone', so.current_milestone)")} = 'delivery'
+        then 'Job Completion'
+        else coalesce(
+          stage_row.stage ->> 'currentMilestone',
+          so.current_milestone
+        )
+      end as current_milestone,
       stage_row.stage ->> 'currentMilestone' as stage_current_milestone,
       so.advance_payment_detail ->> 'currentMilestone' as advance_current_milestone,
       so.current_milestone as order_current_milestone,
@@ -1596,6 +1925,7 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
       so.psb_applicable,
       so.bg_coverage_type,
       f.bg as file_bg,
+      f.file_type,
       f.ir as file_ir,
       ${financialSanctionDate} as financial_sanction_date,
       ${soDate} as so_date,
@@ -1616,12 +1946,27 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
       coalesce(${financialSanctionDate}, ${priorMainTimelineDate}) as psb_pwb_start_date,
       coalesce(${soDate}, ${financialSanctionDate}, ${priorMainTimelineDate}) as delivery_start_date,
       ${materialReceiptDate} as material_receipt_date,
-      ${jobCompletionDate} as job_completion_date,
+      ${jobCompletionDone} as job_completion_done,
+      case
+        when ${nonDeliveryFileTypeExpression("f")} and ${effectiveDpDate} is not null
+        then (${effectiveDpDate} + interval '1 day')::date
+        else null::date
+      end as job_completion_start_date,
+      case
+        when ${jobCompletionDone} then '9999-12-31'::date
+        else null::date
+      end as job_completion_date,
       ${materialReceiptDate} as ir_preparation_start_date,
       ${effectiveOrderDateExpression("ir_preparation_date", "irPreparationDate")} as ir_preparation_date,
       ${effectiveOrderDateExpression("ir_preparation_date", "irPreparationDate")} as ir_receipt_start_date,
       ${irReceiptDate} as ir_receipt_date,
-      coalesce(${irReceiptDate}, ${materialReceiptDate}) as bill_preparation_start_date,
+      case
+        when ${nonDeliveryFileTypeExpression("f")}
+          and ${jobCompletionDone}
+          and ${effectiveDpDate} is not null
+        then (${effectiveDpDate} + interval '1 day')::date
+        else coalesce(${irReceiptDate}, ${materialReceiptDate})
+      end as bill_preparation_start_date,
       ${effectiveOrderDateExpression("bill_preparation_date", "billPreparationDate")} as bill_preparation_date,
       ${effectiveOrderDateExpression("bill_preparation_date", "billPreparationDate")} as bill_sent_for_payment_start_date,
       ${effectiveOrderDateExpression(
@@ -1635,11 +1980,12 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
         "billSentForPaymentDate",
       )} as payment_start_date,
       case
-        when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
+        when ${nonDeliveryFileTypeExpression("f")}
+          and ${jobCompletionDone}
           and ${effectiveDpDate} is not null
         then (${effectiveDpDate} + interval '1 day')::date
-        when ${isYesExpression("f.ir")} then ${materialReceiptDate}
-        else ${jobCompletionDate}
+        when not ${nonDeliveryFileTypeExpression("f")} and ${isYesExpression("f.ir")} then ${materialReceiptDate}
+        else null::date
       end as payment_due_start_date,
       ${effectiveOrderDateExpression("payment_date", "paymentDate")} as payment_date,
       (select max(date_value) from (values
@@ -1727,10 +2073,9 @@ function orderDelayRowsSelects(
         "coalesce(nullif(f.file_no, ''), nullif(f.unique_code, ''), nullif(f.title, ''), f.id::text)";
       const orderRef =
         "coalesce(nullif(effective_order.so_no, ''), nullif(effective_order.gem_so_no, ''), 'S.O. ' || (effective_order.sort_order + 1)::text)";
-      const focusTarget = `('${milestone.current}:pending:' || effective_order.sort_order::text ||
+	      const focusTarget = `('${milestone.current}:pending:' || effective_order.sort_order::text ||
         case
           when effective_order.stage_index is not null
-            and ${normalizeMilestoneExpression("effective_order.stage_current_milestone")} = '${milestone.current}'
           then ':' || (effective_order.stage_index - 1)::text
           else ''
         end)`;
@@ -1744,13 +2089,17 @@ function orderDelayRowsSelects(
       const currentCondition = isBgStatusKey(milestone.key)
         ? `(('${normalizedBgKey}' in ('psb', 'psbpwb')
               and ${hasFilledExpression("effective_order.financial_sanction_date")})
-            or ('${normalizedBgKey}' = 'pwb'
-              and (
-                (${isYesExpression("effective_order.file_ir")} and ${hasFilledExpression("effective_order.material_receipt_date")})
-                or (not ${isYesExpression("effective_order.file_ir")} and ${hasFilledExpression("effective_order.job_completion_date")})
-              )))`
+	            or ('${normalizedBgKey}' = 'pwb'
+	              and (
+	                (not ${nonDeliveryFileTypeExpression("effective_order")}
+	                  and ${hasFilledExpression("effective_order.material_receipt_date")})
+	                or (${nonDeliveryFileTypeExpression("effective_order")}
+	                  and effective_order.job_completion_done)
+	              )))`
         : milestone.key === "payment"
           ? `${startDate} is not null`
+          : milestone.key === "jobCompletion"
+            ? `${startDate} is not null`
           : `${normalizeMilestoneExpression(currentMilestoneExpression)} = '${milestone.current}'`;
       return `select
           f.id::text as "fileId",
@@ -1982,6 +2331,8 @@ async function buildReportsSummarySql({
     monthWiseDeliverySchedule: [],
     monthWiseCompletedDeliveries: [],
     monthWiseBgExpiry: [],
+    bgReceiptDelayRows: [],
+    warrantyBgMismatchRows: [],
     delayRows,
     delaySummary: getDelaySummary(delayRows),
   };
@@ -2000,6 +2351,9 @@ reportsRouter.get(
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
     const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 0);
+    const bgReceiptDelayDays =
+      readNumberList(request.query.bgReceiptDelayDays) ?? defaultBgReceiptDelayDays;
+    const warrantyBgBufferDays = readNonNegativeInteger(request.query.warrantyBgBufferDays, 60);
     const historicalFromDate = readDateString(request.query.historicalFromDate);
     const historicalToDate = readDateString(request.query.historicalToDate);
     const cashOutgoMonth = readMonthString(request.query.cashOutgoMonth);
@@ -2008,6 +2362,7 @@ reportsRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
+      currentFinancialYear: settings.financialYear,
       division,
       fileCategories,
     });
@@ -2022,6 +2377,8 @@ reportsRouter.get(
       historicalFromDate,
       historicalToDate,
       cashOutgoAsOfDate,
+      bgReceiptDelayDays,
+      warrantyBgBufferDays,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.reportsSummaryMs, async () => {
       const combinedScopeSql = [scope.sql, categoryScope.sql].filter(Boolean).join(" and ");
@@ -2029,12 +2386,9 @@ reportsRouter.get(
         combinedScopeSql ? `where ${combinedScopeSql}` : "",
         scope.values,
       );
-      const selectedYearFiles =
-        selectedYear === allActiveFilesYear
-          ? files.filter((file) => !isInactiveFile(file))
-          : selectedYear
-            ? files.filter((file) => isFileActiveInYear(file, selectedYear))
-            : files;
+      const selectedYearFiles = files.filter((file) =>
+        isFileVisibleForSelectedYear(file, selectedYear, settings.financialYear),
+      );
       const categoryFiles = selectedYearFiles.filter((file) =>
         matchesFileCategorySelection(file, fileCategories),
       );
@@ -2047,6 +2401,8 @@ reportsRouter.get(
         historicalFromDate,
         historicalToDate,
         cashOutgoAsOfDate,
+        bgReceiptDelayDays,
+        warrantyBgBufferDays,
       });
 
       if (process.env.REPORTS_SQL_COMPARE === "true") {

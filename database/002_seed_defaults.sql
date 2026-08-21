@@ -22,7 +22,7 @@ insert into app_settings (
 )
 values (
   extract(year from current_date)::text,
-  extract(year from current_date)::text,
+  '__active_plus_current_fy_closed__',
   'light',
   'plain',
   '',

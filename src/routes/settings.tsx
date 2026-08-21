@@ -15,6 +15,7 @@ import {
   type DemandProcessingDayRange,
   type FileRecord,
   type Indentor,
+  type SpecialFileMarker,
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
 } from "@/lib/files-store";
@@ -30,7 +31,11 @@ import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-pa
 import { fileCategoryOptions, type FileCategoryKey } from "@/lib/file-categories";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { YearSetupPanel } from "@/routes/year-setup";
-import { displayFinancialYearLabel, isAllActiveFilesYear } from "@/lib/year-filter";
+import {
+  displayFinancialYearLabel,
+  isActivePlusCurrentFyClosedYear,
+  isAllActiveFilesYear,
+} from "@/lib/year-filter";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -249,6 +254,7 @@ function SettingsPage() {
     { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
     { key: "modes", label: "Modes", content: <ModeSettings /> },
     { key: "firmTypes", label: "Firm Types", content: <FirmTypeSettings /> },
+    { key: "fileMarkers", label: "File Markers", content: <SpecialFileMarkerSettings /> },
     { key: "tcec", label: "TCEC Committee", content: <TcecCommitteeSettings /> },
     { key: "thresholds", label: "Value thresholds", content: <ValueThresholdSettings /> },
     { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
@@ -533,14 +539,18 @@ function WorkspaceSettings() {
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
   const [newFinancialYearError, setNewFinancialYearError] = useState("");
-  const selectedFinancialYear = isAllActiveFilesYear(settings.selectedYear)
+  const selectedFinancialYear =
+    isAllActiveFilesYear(settings.selectedYear) ||
+    isActivePlusCurrentFyClosedYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
   const financialYears = Array.from(
     new Set(
       [settings.financialYear, selectedFinancialYear, ...settings.financialYears]
         .filter(Boolean)
-        .filter((year) => !isAllActiveFilesYear(year)),
+        .filter(
+          (year) => !isAllActiveFilesYear(year) && !isActivePlusCurrentFyClosedYear(year),
+        ),
     ),
   ).sort((a, b) => b.localeCompare(a));
   const suggestedFinancialYear = getNextFinancialYearLabel(financialYears);
@@ -1071,6 +1081,122 @@ function FileTypeSettings() {
   );
 }
 
+function normalizeSpecialFileMarkers(markers: SpecialFileMarker[] | undefined) {
+  const seen = new Set<string>();
+  return (markers ?? [])
+    .map((marker) => ({
+      code: marker.code.trim().toUpperCase(),
+      description: marker.description.trim(),
+    }))
+    .filter((marker) => {
+      if (!marker.code || seen.has(marker.code)) return false;
+      seen.add(marker.code);
+      return true;
+    });
+}
+
+function SpecialFileMarkerSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [code, setCode] = useState("");
+  const [description, setDescription] = useState("");
+  const markers = normalizeSpecialFileMarkers(settings.specialFileMarkers);
+
+  if (activeUser && activeUser.role !== "admin") return null;
+
+  const updateMarkers = (next: SpecialFileMarker[]) => {
+    store.updateSettings({ specialFileMarkers: normalizeSpecialFileMarkers(next) });
+  };
+
+  const add = () => {
+    const nextCode = code.trim().toUpperCase();
+    if (!nextCode) return;
+    updateMarkers([
+      ...markers.filter((marker) => marker.code !== nextCode),
+      { code: nextCode, description: description.trim() },
+    ]);
+    setCode("");
+    setDescription("");
+  };
+
+  const rename = (index: number, value: string) => {
+    const next = [...markers];
+    next[index] = { ...next[index], code: value.trim().toUpperCase() };
+    updateMarkers(next);
+  };
+
+  const updateDescription = (index: number, value: string) => {
+    const next = [...markers];
+    next[index] = { ...next[index], description: value };
+    updateMarkers(next);
+  };
+
+  const remove = (index: number) => {
+    updateMarkers(markers.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">Special File Marker Codes</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Define marker codes for special scenarios that can be attached to files and searched later.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-[12rem_1fr_auto] gap-3">
+        <DivisionInput value={code} onChange={setCode} placeholder="Code" />
+        <DivisionInput
+          value={description}
+          onChange={setDescription}
+          placeholder="Explanation / when to use"
+        />
+        <button
+          type="button"
+          onClick={add}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+        >
+          <Plus className="size-4" /> Add
+        </button>
+      </div>
+
+      <div className="mt-4 rounded-md border border-border">
+        {markers.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+            No marker codes added yet.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {markers.map((marker, index) => (
+              <li
+                key={`${marker.code}-${index}`}
+                className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
+              >
+                <input
+                  value={marker.code}
+                  onChange={(event) => rename(index, event.target.value)}
+                  className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm font-semibold uppercase outline-none focus:ring-2 focus:ring-ring/40"
+                />
+                <input
+                  value={marker.description}
+                  onChange={(event) => updateDescription(index, event.target.value)}
+                  className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => remove(index)}
+                  className="size-9 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                  aria-label={`Delete ${marker.code}`}
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function normalizeFirmTypes(values: string[] | undefined) {
   const seen = new Set<string>();
   const normalized = (values?.length ? values : defaultFirmTypes)
@@ -1143,7 +1269,9 @@ function createThresholdLevels(count: number, existing: ValueThresholdLevel[]) {
 function ValueThresholdSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
-  const selectedYear = isAllActiveFilesYear(settings.selectedYear)
+  const selectedYear =
+    isAllActiveFilesYear(settings.selectedYear) ||
+    isActivePlusCurrentFyClosedYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
   const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>

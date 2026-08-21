@@ -69,7 +69,14 @@ export type AppSettings = {
   mmgSummaryFields?: unknown[];
   demandProcessingPresets?: unknown[];
   demandProcessingDayRanges?: unknown[];
+  bgReceiptDelayDays?: number[];
+  specialFileMarkers?: SpecialFileMarker[];
   activeUserId?: string;
+};
+
+export type SpecialFileMarker = {
+  code: string;
+  description: string;
 };
 
 export type ValueThresholdAppliesTo = "capital" | "revenue" | "both";
@@ -117,6 +124,7 @@ export type SupplyOrderDetail = {
   combinedBgReceivedDate?: string;
   combinedBgValidityDate?: string;
   combinedBgReturnDate?: string;
+  warrantyPeriodDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -248,12 +256,16 @@ export type FileRecord = {
   gemUndertakingDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
+  preBidMeeting?: string;
+  preBidMeetingDate?: string;
   tenderLive?: string;
   bidNumber?: string;
   bidDate?: string;
   bidOpeningDate?: string;
   bidOpened?: string;
   refloat?: string;
+  refloatPreBidMeeting?: string;
+  refloatPreBidMeetingDate?: string;
   postTcecDate?: string;
   postTcecMinutesDate?: string;
   postTcecCommitteeNumber?: string;
@@ -297,6 +309,7 @@ export type FileRecord = {
   markers?: FileMarker[];
   currentMilestone?: string;
   completedMilestones?: string[];
+  fileClosureDate?: string;
   createdAt: string;
 };
 

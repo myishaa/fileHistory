@@ -29,9 +29,12 @@ export function expectedSupplyOrders(file: FileRecord) {
   if (missing <= 0) return rows;
   return [
     ...rows,
-    ...Array.from({ length: missing }, (): SupplyOrderDetail => ({
-      currentMilestone: "Supply Order",
-    })),
+    ...Array.from(
+      { length: missing },
+      (): SupplyOrderDetail => ({
+        currentMilestone: "Supply Order",
+      }),
+    ),
   ];
 }
 
@@ -50,10 +53,9 @@ export function filePaymentOrders(file: FileRecord) {
       ? [order]
       : expandSupplyOrderStages(order),
   );
-  const advanceOrders =
-    effectiveRows
-      .map((order) => getAdvancePaymentOrder(order))
-      .filter((order): order is SupplyOrderDetail => Boolean(order));
+  const advanceOrders = effectiveRows
+    .map((order) => getAdvancePaymentOrder(order))
+    .filter((order): order is SupplyOrderDetail => Boolean(order));
   return [...orders, ...advanceOrders];
 }
 
@@ -78,12 +80,7 @@ export function isAdvancePaymentPaid(order: SupplyOrderDetail) {
 }
 
 export function isAdvancePaymentCompleted(order: SupplyOrderDetail) {
-  return (
-    isAdvancePaymentPaid(order) ||
-    normalizeCompletedMilestones(order.advancePaymentDetail?.completedMilestones).some(
-      (milestone) => normalizeMilestoneName(milestone) === "advancepayment",
-    )
-  );
+  return isAdvancePaymentPaid(order);
 }
 
 export function isAdvancePaymentPending(order: SupplyOrderDetail) {
@@ -139,7 +136,7 @@ export function isExtendedDeliveryPeriodEntry(file: FileRecord, order: SupplyOrd
 }
 
 export function getDeliveryPeriodDate(order: SupplyOrderDetail) {
-  return getLaterDate(order.dpDate, order.revisedDp);
+  return order.revisedDp || order.dpDate;
 }
 
 function getDeliveryPeriodStartDate(order: SupplyOrderDetail) {
@@ -154,7 +151,7 @@ function expandSupplyOrderStages(order: SupplyOrderDetail) {
     const useCommonPayment = !useStagePayment && index === order.stageDeliveries!.length - 1;
     const previousStage = index > 0 ? order.stageDeliveries![index - 1] : undefined;
     const previousDeliveryPeriodDate = previousStage
-      ? getLaterDate(previousStage.dpDate, previousStage.revisedDp)
+      ? previousStage.revisedDp || previousStage.dpDate
       : undefined;
     return {
       ...order,
@@ -272,6 +269,10 @@ function isYes(value: string | undefined) {
   return value?.trim().toLowerCase() === "yes";
 }
 
+function isNo(value: string | undefined) {
+  return value?.trim().toLowerCase() === "no";
+}
+
 function normalizeCompletedMilestones(values: string[] | undefined) {
   return Array.isArray(values) ? values : [];
 }
@@ -300,12 +301,21 @@ function isActiveDeliveryPeriodEntry(
 
 function isDeliveryPeriodComplete(file: FileRecord, order: SupplyOrderDetail) {
   return isPaymentDrivenFileType(file)
-    ? hasFilledString(order.paymentDate)
+    ? isJobCompletionDone(order)
     : hasFilledString(order.materialReceiptDate);
 }
 
+function isJobCompletionDone(order: SupplyOrderDetail) {
+  return normalizeCompletedMilestones(order.completedMilestones).some(
+    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
+  );
+}
+
 function isPaymentDrivenFileType(file: FileRecord) {
-  return ["amc", "mpc", "cars", "o&m"].includes((file.fileType ?? "").trim().toLowerCase());
+  return (
+    isNo(file.ir) ||
+    ["amc", "mpc", "cars", "o&m"].includes((file.fileType ?? "").trim().toLowerCase())
+  );
 }
 
 function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {

@@ -13,10 +13,12 @@ import {
 } from "@/lib/files-store";
 import {
   displayFinancialYearLabel,
+  isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
   isFileVisibleForYear,
 } from "@/lib/year-filter";
 import { formatThousandsAndLakhs, parseAmount } from "@/lib/money";
+import { DateInput } from "@/components/date-input";
 
 export const Route = createFileRoute("/year-setup")({
   component: YearSetupPage,
@@ -76,7 +78,9 @@ export function YearSetupPanel() {
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitMessage, setSplitMessage] = useState("");
   const [activeSubview, setActiveSubview] = useState<YearSetupSubview>("setup");
-  const setupYear = isAllActiveFilesYear(settings.selectedYear)
+  const setupYear =
+    isAllActiveFilesYear(settings.selectedYear) ||
+    isActivePlusCurrentFyClosedYear(settings.selectedYear)
     ? settings.financialYear
     : settings.selectedYear;
   const setupYearLabel = displayFinancialYearLabel(setupYear);
@@ -87,7 +91,12 @@ export function YearSetupPanel() {
         new Set(
           [settings.financialYear, setupYear, ...settings.financialYears]
             .map((year) => year?.trim())
-            .filter((year): year is string => Boolean(year) && !isAllActiveFilesYear(year)),
+            .filter(
+              (year): year is string =>
+                Boolean(year) &&
+                !isAllActiveFilesYear(year) &&
+                !isActivePlusCurrentFyClosedYear(year),
+            ),
         ),
       ).sort((a, b) => b.localeCompare(a)),
     [settings.financialYear, settings.financialYears, setupYear],
@@ -625,10 +634,9 @@ export function YearSetupPanel() {
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                     Effective date
                   </div>
-                  <input
-                    type="date"
+                  <DateInput
                     value={mergeEffectiveDate}
-                    onChange={(event) => setMergeEffectiveDate(event.target.value)}
+                    onChange={setMergeEffectiveDate}
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   />
                 </label>
@@ -832,10 +840,9 @@ export function YearSetupPanel() {
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                     Effective date
                   </div>
-                  <input
-                    type="date"
+                  <DateInput
                     value={splitEffectiveDate}
-                    onChange={(event) => setSplitEffectiveDate(event.target.value)}
+                    onChange={setSplitEffectiveDate}
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   />
                 </label>

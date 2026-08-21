@@ -25,6 +25,7 @@ const themes = new Set<AppTheme>(["light", "dark"]);
 const themeTints = new Set<AppThemeTint>(["plain", "yellow", "green", "blue", "pink", "lavender"]);
 const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>(["capital", "revenue", "both"]);
 const allActiveFilesYear = "__all_active_files__";
+const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 
 type SettingsRow = {
   financial_year: string;
@@ -44,6 +45,8 @@ type SettingsRow = {
   mmg_summary_fields: unknown;
   demand_processing_presets: unknown;
   demand_processing_day_ranges: unknown;
+  bg_receipt_delay_days: unknown;
+  special_file_markers: unknown;
   active_user_id: string | null;
 };
 
@@ -66,7 +69,11 @@ function presetOwnerKey(user: AuthRequest["authUser"]) {
 function normalizeYearLabel(value: unknown, field = "financialYear") {
   const label = requireString(value, field).trim();
   if (!label) throw new HttpError(400, `${field} is required.`);
-  if (label !== allActiveFilesYear && normalizeFinancialYearKey(label) === undefined) {
+  if (
+    label !== allActiveFilesYear &&
+    label !== activePlusCurrentFyClosedYear &&
+    normalizeFinancialYearKey(label) === undefined
+  ) {
     throw new HttpError(400, `${field} must be a valid financial year like 2026-27.`);
   }
   return label;
@@ -266,7 +273,9 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     new Set(
       [row.financial_year, row.selected_year, ...financialYears]
         .filter(Boolean)
-        .filter((year) => year !== allActiveFilesYear),
+        .filter(
+          (year) => year !== allActiveFilesYear && year !== activePlusCurrentFyClosedYear,
+        ),
     ),
   ).sort((a, b) => b.localeCompare(a));
   const globalPresets = tagPresets(row.table_field_presets, "global");
@@ -308,6 +317,8 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     demandProcessingDayRanges: fromDbJsonArray(row.demand_processing_day_ranges).filter(
       (range) => range && typeof range === "object" && !Array.isArray(range),
     ),
+    bgReceiptDelayDays: normalizeBgReceiptDelayDays(fromDbJsonArray(row.bg_receipt_delay_days)),
+    specialFileMarkers: normalizeSpecialFileMarkers(fromDbJsonArray(row.special_file_markers)),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -391,7 +402,8 @@ async function getSettings(user?: AuthRequest["authUser"]) {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
-              mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges, active_user_id
+              mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
+              bg_receipt_delay_days, special_file_markers, active_user_id
        from app_settings
        where id = true`,
     );
@@ -428,9 +440,51 @@ function readArray(value: unknown, field: string) {
   return JSON.stringify(value);
 }
 
+const defaultBgReceiptDelayDays = [10, 30, 60];
+
+function normalizeBgReceiptDelayDays(value: unknown) {
+  const source = Array.isArray(value) ? value : defaultBgReceiptDelayDays;
+  const days = Array.from(
+    new Set(
+      source
+        .map((item) => Number.parseInt(String(item), 10))
+        .filter((item) => Number.isInteger(item) && item >= 0),
+    ),
+  ).sort((a, b) => a - b);
+  return days.length ? days.slice(0, 6) : defaultBgReceiptDelayDays;
+}
+
+function readBgReceiptDelayDays(value: unknown) {
+  if (!Array.isArray(value)) throw new HttpError(400, "bgReceiptDelayDays must be an array.");
+  return normalizeBgReceiptDelayDays(value);
+}
+
 function readArrayValue(value: unknown, field: string) {
   if (!Array.isArray(value)) throw new HttpError(400, `${field} must be an array.`);
   return value;
+}
+
+function normalizeSpecialFileMarkers(value: unknown) {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set<string>();
+  const rows: Array<{ code: string; description: string }> = [];
+  for (const item of source) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const code = String(record.code ?? "").trim().toUpperCase();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    rows.push({
+      code,
+      description: String(record.description ?? "").trim(),
+    });
+  }
+  return rows;
+}
+
+function readSpecialFileMarkers(value: unknown) {
+  if (!Array.isArray(value)) throw new HttpError(400, "specialFileMarkers must be an array.");
+  return normalizeSpecialFileMarkers(value);
 }
 
 function normalizePresetForStorage(preset: unknown) {
@@ -552,7 +606,9 @@ settingsRouter.patch(
     }
     if ("selectedYear" in body) {
       const selectedYear = normalizeYearLabel(body.selectedYear, "selectedYear");
-      if (selectedYear !== allActiveFilesYear) await ensureFinancialYear(selectedYear);
+      if (selectedYear !== allActiveFilesYear && selectedYear !== activePlusCurrentFyClosedYear) {
+        await ensureFinancialYear(selectedYear);
+      }
       addField("selected_year", selectedYear);
     }
     if ("yearSelectionLocked" in body)
@@ -618,6 +674,18 @@ settingsRouter.patch(
         JSON.stringify(readArrayValue(body.demandProcessingDayRanges, "demandProcessingDayRanges")),
         "::jsonb",
       );
+    if ("bgReceiptDelayDays" in body)
+      addField(
+        "bg_receipt_delay_days",
+        JSON.stringify(readBgReceiptDelayDays(body.bgReceiptDelayDays)),
+        "::jsonb",
+      );
+    if ("specialFileMarkers" in body)
+      addField(
+        "special_file_markers",
+        JSON.stringify(readSpecialFileMarkers(body.specialFileMarkers)),
+        "::jsonb",
+      );
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",
@@ -658,7 +726,9 @@ settingsRouter.patch(
       !("modes" in body) &&
       !("tableFieldPresets" in body) &&
       !("liveStatusLockedFields" in body) &&
-      !("mmgSummaryFields" in body)
+      !("mmgSummaryFields" in body) &&
+      !("bgReceiptDelayDays" in body) &&
+      !("specialFileMarkers" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }
@@ -685,7 +755,10 @@ settingsRouter.post(
     validateContinuousFinancialYear(await loadFinancialYears(), label);
     const settings = await getSettings(user);
     const sourceYear =
-      settings.selectedYear === allActiveFilesYear ? settings.financialYear : settings.selectedYear;
+      settings.selectedYear === allActiveFilesYear ||
+      settings.selectedYear === activePlusCurrentFyClosedYear
+        ? settings.financialYear
+        : settings.selectedYear;
     const client = await pool.connect();
 
     try {

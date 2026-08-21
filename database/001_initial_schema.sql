@@ -45,6 +45,8 @@ create table app_settings (
   table_field_presets jsonb not null default '[]'::jsonb,
   demand_processing_presets jsonb not null default '[]'::jsonb,
   demand_processing_day_ranges jsonb not null default '[{"id":"0-90","label":"0-90","minDays":"0","maxDays":"90"},{"id":"91-180","label":"91-180","minDays":"91","maxDays":"180"},{"id":"181-365","label":"181-365","minDays":"181","maxDays":"365"},{"id":"365-plus","label":"365 and above","minDays":"366","maxDays":""}]'::jsonb,
+  bg_receipt_delay_days jsonb not null default '[10, 30, 60]'::jsonb,
+  special_file_markers jsonb not null default '[]'::jsonb,
   active_user_id uuid references app_users(id) on delete set null,
   updated_at timestamptz not null default now()
 );
@@ -96,12 +98,16 @@ create table files (
   gem_undertaking_date date,
   rfp_vetting_initiation_date date,
   rfp_vetting_approval_date date,
+  pre_bid_meeting text default 'No',
+  pre_bid_meeting_date date,
   tender_live text,
   bid_number text,
   bid_date date,
   bid_opening_date date,
   bid_opened text,
   refloat text,
+  refloat_pre_bid_meeting text default 'No',
+  refloat_pre_bid_meeting_date date,
   post_tcec_date date,
   post_tcec_minutes_date date,
   post_tcec_committee_number text,
@@ -137,6 +143,7 @@ create table files (
   so_cancelled text,
   so_cancelled_date date,
   current_milestone text,
+  file_closure_date date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -188,6 +195,7 @@ create table supply_orders (
   combined_bg_received_date date,
   combined_bg_validity_date date,
   combined_bg_return_date date,
+  warranty_period_date date,
   dp_extension text,
   dp_extension_count integer,
   ld text,

@@ -1,4 +1,4 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Division,
@@ -42,6 +42,7 @@ import {
 } from "@/lib/file-categories";
 import { formatThousandsAndLakhs, getInrAmount, hasAmount, parseAmount } from "@/lib/money";
 import { isCancelledFile } from "@/lib/year-filter";
+import { formatIsoDateForDisplay } from "@/components/date-input";
 import { ArrowRight, FileSpreadsheet, FileText, Search } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -83,6 +84,8 @@ type AnalyticsPanelKey =
   | "biddingMode"
   | "fileValueThresholds"
   | "paymentPending"
+  | "tcecStatus"
+  | "cncSummary"
   | "suspectedAnomaly"
   | "delayStatus"
   | "milestoneClearingTable";
@@ -109,6 +112,7 @@ type AnalyticsSearchTarget = {
   analyticsType?: "firm" | "indentor";
   analyticsNames?: string[];
 };
+type TcecStatusStage = "pre" | "post";
 type SummarySubMetric = { label: string; value: number | string; searchFilter?: string };
 type FinanceSplitValue = { capital: string; revenue: string };
 type SummaryMetricValue = number | string | FinanceSplitValue | SummarySubMetric[];
@@ -298,6 +302,8 @@ const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
   "biddingMode",
   "fileValueThresholds",
   "paymentPending",
+  "tcecStatus",
+  "cncSummary",
   "suspectedAnomaly",
   "delayStatus",
   "milestoneClearingTable",
@@ -328,6 +334,7 @@ const delayMilestoneOptions = [
   { key: "pwb", label: "PWB" },
   { key: "psbPwb", label: "PSB+PWB" },
   { key: "delivery", label: "Delivery" },
+  { key: "jobCompletion", label: "Job Completion" },
   { key: "irPreparation", label: "IR Preparation" },
   { key: "irReceipt", label: "IR Receipt" },
   { key: "billPreparation", label: "Bill preparation" },
@@ -347,6 +354,7 @@ const supplyOrderMilestoneNames = [
   "PWB",
   "PSB+PWB",
   "Delivery",
+  "Job Completion",
   "IR Preparation",
   "IR Receipt",
   "Bill preparation",
@@ -358,7 +366,28 @@ function isDivisionFilterableAnalyticsPanel(panelKey: AnalyticsPanelKey) {
   return divisionFilterableAnalyticsPanels.includes(panelKey);
 }
 
+function isAnalyticsPanelKey(value: unknown): value is AnalyticsPanelKey {
+  return (
+    value === "divisionFiles" ||
+    value === "divisionValue" ||
+    value === "divisionTotalValue" ||
+    value === "divisionTurnaround" ||
+    value === "topFirms" ||
+    value === "indentorsByFiles" ||
+    value === "indentorsByValue" ||
+    value === "biddingMode" ||
+    value === "fileValueThresholds" ||
+    value === "paymentPending" ||
+    value === "tcecStatus" ||
+    value === "cncSummary" ||
+    value === "suspectedAnomaly" ||
+    value === "delayStatus" ||
+    value === "milestoneClearingTable"
+  );
+}
+
 export function Dashboard() {
+  const locationSearch = useRouterState({ select: (state) => state.location.search });
   const files = useMemo<FileRecord[]>(() => [], []);
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
@@ -387,6 +416,16 @@ export function Dashboard() {
   const [visibleDivisionTotalValueMetrics, setVisibleDivisionTotalValueMetrics] = useState<
     DivisionValueMetricKey[]
   >(["allocated", "intended", "booked", "committed"]);
+  useEffect(() => {
+    const requestedTab =
+      typeof locationSearch.tab === "string" ? locationSearch.tab : undefined;
+    const requestedPanel =
+      typeof locationSearch.analyticsPanel === "string"
+        ? locationSearch.analyticsPanel
+        : undefined;
+    if (requestedTab === "analytics") setActiveDashboardTab("analytics");
+    if (isAnalyticsPanelKey(requestedPanel)) setActiveAnalyticsPanel(requestedPanel);
+  }, [locationSearch.analyticsPanel, locationSearch.tab]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [financeFirmTypeDistributionKey, setFinanceFirmTypeDistributionKey] =
     useState<FinanceFirmTypeDistributionKey>("supplyOrderValue");
@@ -401,6 +440,8 @@ export function Dashboard() {
   const [selectedAnalyticsDivision, setSelectedAnalyticsDivision] = useState("all");
   const [analyticsDelayDays, setAnalyticsDelayDays] = useState("5");
   const [analyticsDelayMilestoneKey, setAnalyticsDelayMilestoneKey] = useState("all");
+  const [tcecStatusStage, setTcecStatusStage] = useState<TcecStatusStage>("pre");
+  const [selectedTcecCommittee, setSelectedTcecCommittee] = useState("");
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
@@ -675,9 +716,7 @@ export function Dashboard() {
     : undefined;
   const localVisibleLiveMilestoneNames =
     needsLocalDashboardFallback && localManualMilestoneFlow
-      ? (selectedLiveMilestones?.filter((name) =>
-          localManualMilestoneFlow.some((milestone) => milestone.name === name),
-        ) ?? localManualMilestoneFlow.map((milestone) => milestone.name))
+      ? getVisibleLiveMilestoneNames(selectedLiveMilestones, localManualMilestoneFlow)
       : undefined;
   const localLiveStatusRows =
     needsLocalDashboardFallback && localVisibleLiveMilestoneNames
@@ -818,10 +857,11 @@ export function Dashboard() {
     dashboardSummary?.manualMilestoneFlow ?? localManualMilestoneFlow ?? [];
   const visibleLiveMilestoneNames =
     selectedLiveMilestones && manualMilestoneFlow
-      ? selectedLiveMilestones.filter((name) =>
-          manualMilestoneFlow.some((milestone) => milestone.name === name),
-        )
-      : (dashboardSummary?.visibleLiveMilestoneNames ?? localVisibleLiveMilestoneNames ?? []);
+      ? getVisibleLiveMilestoneNames(selectedLiveMilestones, manualMilestoneFlow)
+      : getVisibleLiveMilestoneNames(
+          dashboardSummary?.visibleLiveMilestoneNames ?? localVisibleLiveMilestoneNames,
+          manualMilestoneFlow,
+        );
   const lockLiveStatusSelection = () => {
     store.updateSettings({ liveStatusLockedFields: visibleLiveMilestoneNames });
   };
@@ -1056,6 +1096,17 @@ export function Dashboard() {
       : divisionFilteredAnalytics.monthWiseDeliverySchedule?.length
         ? divisionFilteredAnalytics.monthWiseDeliverySchedule
         : localMonthWiseDeliveryScheduleRows;
+  const activeTcecStatus =
+    tcecStatusStage === "pre"
+      ? divisionFilteredAnalytics.tcecStatus.pre
+      : divisionFilteredAnalytics.tcecStatus.post;
+  const selectedTcecCommitteeExists = activeTcecStatus.committees.some(
+    (row) => row.name === selectedTcecCommittee,
+  );
+  const activeTcecCommittee = selectedTcecCommitteeExists ? selectedTcecCommittee : "";
+  const selectedTcecMeetingRows = activeTcecCommittee
+    ? activeTcecStatus.meetings.filter((row) => row.committee === activeTcecCommittee)
+    : [];
   const analyticsPanels: AnalyticsPanel[] = [
     {
       key: "divisionFiles",
@@ -1153,13 +1204,30 @@ export function Dashboard() {
       ),
     },
     {
+      key: "tcecStatus",
+      title: "TCEC summary",
+      subtitle:
+        tcecStatusStage === "pre"
+          ? "Pre-TCEC committee-wise review and minutes status"
+          : "Post-TCEC committee-wise review and minutes status",
+      columns: getTcecStatusColumns(tcecStatusStage, setSelectedTcecCommittee),
+      rows: activeTcecStatus.committees,
+    },
+    {
+      key: "cncSummary",
+      title: "CNC summary",
+      subtitle: "CNC meeting-date wise review, approval, financial sanction, and S.O. status",
+      columns: getCncSummaryColumns(),
+      rows: divisionFilteredAnalytics.cncSummary,
+    },
+    {
       key: "suspectedAnomaly",
       title: "Suspected anomaly",
       subtitle: suspectedAnomalyError
         ? `Anomaly check unavailable: ${suspectedAnomalyError}`
         : suspectedAnomalyLoading
-          ? "Checking date sequence..."
-          : `${suspectedAnomalyRows.length} unaccepted date sequence issue${
+          ? "Checking suspected data issues..."
+          : `${suspectedAnomalyRows.length} unaccepted suspected data issue${
               suspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
       columns: getSuspectedAnomalyColumns(acceptSuspectedAnomaly),
@@ -1615,6 +1683,19 @@ export function Dashboard() {
                   );
                 }
 
+                if ("jobLive" in milestone && !("due" in milestone)) {
+                  return (
+                    <JobCompletionFlowNode
+                      key={milestone.key}
+                      milestone={milestone}
+                      index={index}
+	                      isLast={false}
+	                      onJobCompletedClick={() => handleStatusFilter("jobCompletionCompleted")}
+	                      onJobDueClick={() => handleStatusFilter("jobCompletionDue")}
+	                    />
+                  );
+                }
+
                 if ("due" in milestone) {
                   return (
                     <DeliveryFlowNode
@@ -1657,6 +1738,39 @@ export function Dashboard() {
                   );
                 }
 
+                if ("preBidDue" in milestone) {
+                  return (
+                    <StatusFlowNode
+                      key={milestone.key}
+                      index={index}
+                      title={milestone.label}
+                      isLast={false}
+                      items={[
+                        {
+                          label: "Due",
+                          count: milestone.preBidDue,
+                          onClick: () => handleStatusFilter("preBidMeeting:due"),
+                        },
+                        {
+                          label: "Completed",
+                          count: milestone.preBidCompleted,
+                          onClick: () => handleStatusFilter("preBidMeeting:completed"),
+                        },
+                        {
+                          label: "Refloat Due",
+                          count: milestone.refloatPreBidDue,
+                          onClick: () => handleStatusFilter("refloatPreBidMeeting:due"),
+                        },
+                        {
+                          label: "Refloat Completed",
+                          count: milestone.refloatPreBidCompleted,
+                          onClick: () => handleStatusFilter("refloatPreBidMeeting:completed"),
+                        },
+                      ]}
+                    />
+                  );
+                }
+
                 return (
                   <MilestoneFlowNode
                     key={milestone.key}
@@ -1669,12 +1783,8 @@ export function Dashboard() {
                     }
                     onActiveClick={() => handleStatusFilter(`milestoneActive:${milestone.key}`)}
                     onReviewedClick={() => handleStatusFilter(`milestoneReviewed:${milestone.key}`)}
-                    onPendingClick={() =>
-                      handleStatusFilter(`milestonePending:${milestone.key}`)
-                    }
-                    onClearedClick={() =>
-                      handleStatusFilter(`milestoneCleared:${milestone.key}`)
-                    }
+                    onPendingClick={() => handleStatusFilter(`milestonePending:${milestone.key}`)}
+                    onClearedClick={() => handleStatusFilter(`milestoneCleared:${milestone.key}`)}
                     onLiveBidsClick={() => handleStatusFilter("liveBids")}
                     onBidOverdueClick={() => handleStatusFilter("bidOverdue")}
                     onLiveSupplyOrdersClick={() => handleStatusFilter("liveSupplyOrders")}
@@ -1950,12 +2060,41 @@ export function Dashboard() {
                     </label>
                   </div>
                 ) : null}
+                {displayedAnalyticsPanel.key === "tcecStatus" ? (
+                  <TcecStatusControls
+                    stage={tcecStatusStage}
+                    selectedCommittee={activeTcecCommittee}
+                    onStageChange={(stage) => {
+                      setTcecStatusStage(stage);
+                      setSelectedTcecCommittee("");
+                    }}
+                  />
+                ) : null}
                 <AnalyticsRankingTable
                   columns={displayedAnalyticsPanel.columns}
                   rows={displayedAnalyticsPanel.rows}
                   getCellSearchTarget={getAnalyticsCellSearchTarget}
                   onOpenSearchTarget={openAnalyticsSearchTarget}
                 />
+                {displayedAnalyticsPanel.key === "tcecStatus" && activeTcecCommittee ? (
+                  <div className="mt-4 space-y-2">
+                    <div>
+                      <h3 className="text-sm font-semibold">{activeTcecCommittee} meeting dates</h3>
+                      <p className="text-xs text-muted-foreground">
+                        {tcecStatusStage === "pre" ? "Pre-TCEC Date" : "Post-TCEC Date"} wise
+                        reviewed files and minutes status.
+                      </p>
+                    </div>
+                    <AnalyticsRankingTable
+                      columns={getTcecMeetingColumns(tcecStatusStage)}
+                      rows={selectedTcecMeetingRows}
+                      getCellSearchTarget={(row, column) =>
+                        getTcecMeetingSearchTarget(tcecStatusStage, row, column.key)
+                      }
+                      onOpenSearchTarget={openAnalyticsSearchTarget}
+                    />
+                  </div>
+                ) : null}
                 {analyticsPagination && analyticsPagination.totalPages > 1 ? (
                   <AnalyticsPaginationControls {...analyticsPagination} />
                 ) : null}
@@ -2659,7 +2798,11 @@ function DashboardStatusSummaryValue({
 }
 
 function testIdSlug(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 function hideStatus3PendingColumn(groups: StatusSummaryTableGroup[]) {
@@ -2836,11 +2979,19 @@ function shouldUseOrderMilestoneRows(file: FileRecord) {
 }
 
 function isFinancialSanctionReached(file: FileRecord) {
-  return !isCancelledFile(file) && isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate));
+  return (
+    !isCancelledFile(file) &&
+    isYes(file.biddingStageOver) &&
+    (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
+  );
 }
 
 function isFinancialSanctionPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
-  return isFinancialSanctionReached(file) && !isSupplyOrderCancelled(file, order) && !isFinancialSanctionCompletedOrder(order);
+  return (
+    isFinancialSanctionReached(file) &&
+    !isSupplyOrderCancelled(file, order) &&
+    !isFinancialSanctionCompletedOrder(order)
+  );
 }
 
 function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderDetail) {
@@ -2848,7 +2999,8 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   if (isSupplyOrderPendingOrder(file, order)) return "supplyorder";
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current && isOrderMilestoneApplicable(file, current)) return current;
-  if (isDeliveryInspectionApplicable(file) && isDueDeliveryOrder(order)) return "delivery";
+  if (isJobCompletionCurrentOrder(file, order)) return "jobcompletion";
+  if (isDueDeliveryOrder(file, order)) return "delivery";
   if (isBgCurrentOrder(order, "psbpwb") && isBgCategoryApplicable(file, order, "psbpwb")) {
     return "psbpwb";
   }
@@ -2881,10 +3033,13 @@ function isOrderCurrentForMilestone(
     return isFinancialSanctionPendingOrder(file, order);
   }
   if (normalizedMilestone === "supplyorder") return isSupplyOrderPendingOrder(file, order);
+  if (normalizedMilestone === "jobcompletion") {
+    return isJobCompletionCurrentOrder(file, order);
+  }
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current === normalizedMilestone && isOrderMilestoneApplicable(file, current)) return true;
   if (normalizedMilestone === "delivery") {
-    return isDeliveryInspectionApplicable(file) && isDueDeliveryOrder(order);
+    return isDueDeliveryOrder(file, order);
   }
   if (normalizedMilestone === "psbpwb") {
     return (
@@ -2935,7 +3090,8 @@ function isOrderMilestoneApplicable(file: FileRecord, normalizedMilestone: strin
       isBgCategoryApplicable(file, order, normalizedMilestone),
     );
   }
-  if (normalizedMilestone === "delivery") return isDeliveryInspectionApplicable(file);
+  if (normalizedMilestone === "delivery") return isPhysicalDeliveryWorkflow(file);
+  if (normalizedMilestone === "jobcompletion") return isJobCompletionWorkflow(file);
   if (normalizedMilestone === "irpreparation" || normalizedMilestone === "irreceipt") {
     return isYes(file.ir);
   }
@@ -2949,7 +3105,10 @@ function matchesCurrentSupplyOrderDrivenMilestone(file: FileRecord, milestone: s
   if (normalized === "payment") return isPaymentPending(file);
   if (!shouldUseOrderMilestoneRows(file)) {
     if (normalized === "financialsanction") {
-      return isFinancialSanctionReached(file) && !matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
+      return (
+        isFinancialSanctionReached(file) &&
+        !matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction")
+      );
     }
     return normalizeMilestoneName(file.currentMilestone) === normalized;
   }
@@ -2962,9 +3121,9 @@ function matchesCurrentSupplyOrderDrivenMilestone(file: FileRecord, milestone: s
 function matchesDeliveryPendingStatus(file: FileRecord) {
   if (isCancelledFile(file)) return false;
   return (
-    isDeliveryActive(file) &&
+    isSupplyOrderPlaced(file) &&
     fileSupplyOrders(file).some(
-      (order) => !isSupplyOrderCancelled(file, order) && isPendingDeliveryOrder(order),
+      (order) => !isSupplyOrderCancelled(file, order) && isPendingDeliveryOrder(file, order),
     )
   );
 }
@@ -2972,9 +3131,9 @@ function matchesDeliveryPendingStatus(file: FileRecord) {
 function matchesDeliveryOverdueStatus(file: FileRecord) {
   if (isCancelledFile(file)) return false;
   return (
-    isDeliveryActive(file) &&
+    isSupplyOrderPlaced(file) &&
     fileSupplyOrders(file).some(
-      (order) => !isSupplyOrderCancelled(file, order) && isOverdueDeliveryOrder(order),
+      (order) => !isSupplyOrderCancelled(file, order) && isOverdueDeliveryOrder(file, order),
     )
   );
 }
@@ -3033,7 +3192,13 @@ function countCurrentSupplyOrderMilestoneStatuses(
     }
     if (!shouldUseOrderMilestoneRows(file)) {
       if (normalizedMilestone === "financialsanction") {
-        return total + (isFinancialSanctionReached(file) && !matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction") ? 1 : 0);
+        return (
+          total +
+          (isFinancialSanctionReached(file) &&
+          !matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction")
+            ? 1
+            : 0)
+        );
       }
       return (
         total + (normalizeMilestoneName(file.currentMilestone) === normalizedMilestone ? 1 : 0)
@@ -3173,7 +3338,7 @@ function ManualMilestoneFlowNode({
               className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
             >
               <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-                Completed
+                Delivery Completed
               </span>
               <span className="block text-base font-semibold tabular-nums">
                 {milestone.completed}
@@ -3226,7 +3391,7 @@ function StatusFlowNode({
               <span className="block truncate text-sm font-semibold">{title}</span>
             </span>
           </span>
-          <span className="grid grid-cols-3 gap-1.5">
+          <span className={`grid gap-1.5 ${items.length === 4 ? "grid-cols-2" : "grid-cols-3"}`}>
             {items.map((item) => (
               <StatusSubBox
                 key={item.label}
@@ -3678,6 +3843,49 @@ function DivisionTotalValueSortControls({
   );
 }
 
+function TcecStatusControls({
+  stage,
+  selectedCommittee,
+  onStageChange,
+}: {
+  stage: TcecStatusStage;
+  selectedCommittee: string;
+  onStageChange: (stage: TcecStatusStage) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-secondary/20 p-2">
+      <div className="inline-flex overflow-hidden rounded-md border border-border bg-card">
+        {[
+          { key: "pre", label: "Pre-TCEC" },
+          { key: "post", label: "Post-TCEC" },
+        ].map((option) => {
+          const selected = stage === option.key;
+          return (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => onStageChange(option.key as TcecStatusStage)}
+              className={
+                "h-8 px-3 text-xs font-semibold transition " +
+                (selected
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+              }
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {selectedCommittee
+          ? `Showing meeting dates for ${selectedCommittee}`
+          : "Click a committee number to see meeting dates."}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsChartCard({
   title,
   subtitle,
@@ -3753,13 +3961,13 @@ function getSuspectedAnomalyColumns(
     { key: "rule", label: "Rule", align: "left" },
     {
       key: "previousDate",
-      label: "Previous date",
+      label: "Expected / previous",
       align: "left",
       format: (value, row) => `${row.previousField || "Previous"}\n${value}`,
     },
     {
       key: "laterDate",
-      label: "Later milestone date",
+      label: "Found / later",
       align: "left",
       format: (value, row) => `${row.laterField || "Later"}\n${value}`,
     },
@@ -3951,6 +4159,58 @@ function getAverageDaysAnalyticsColumns(nameLabel: string): AnalyticsTableColumn
   ];
 }
 
+function getTcecStatusColumns(
+  stage: TcecStatusStage,
+  onCommitteeClick: (committee: string) => void,
+): AnalyticsTableColumn[] {
+  return [
+    {
+      key: "name",
+      label: stage === "pre" ? "Pre-TCEC Committee" : "Post-TCEC Committee",
+      align: "left",
+      render: (value) => (
+        <button
+          type="button"
+          onClick={() => onCommitteeClick(String(value))}
+          className="rounded-md px-2 py-1 text-left font-semibold text-primary hover:bg-primary/10"
+        >
+          {String(value)}
+        </button>
+      ),
+    },
+    { key: "reviewed", label: "Files reviewed" },
+    { key: "signed", label: "Minutes signed" },
+    { key: "pending", label: "Minutes pending" },
+  ];
+}
+
+function getTcecMeetingColumns(stage: TcecStatusStage): AnalyticsTableColumn[] {
+  return [
+    {
+      key: "name",
+      label: stage === "pre" ? "Pre-TCEC Date" : "Post-TCEC Date",
+      align: "left",
+      format: (value) => formatIsoDateForDisplay(String(value)),
+    },
+    { key: "reviewed", label: "Files reviewed" },
+    { key: "signed", label: "Minutes signed" },
+    { key: "pending", label: "Minutes pending" },
+  ];
+}
+
+function getCncSummaryColumns(): AnalyticsTableColumn[] {
+  return [
+    { key: "name", label: "CNC Date", align: "left", format: (value) => formatIsoDateForDisplay(String(value)) },
+    { key: "reviewed", label: "Cases reviewed" },
+    { key: "approved", label: "CNC approved" },
+    { key: "financialSanctionSigned", label: "Financial sanction signed" },
+    { key: "supplyOrderPlaced", label: "S.O. placed" },
+    { key: "approvalPending", label: "Approval pending" },
+    { key: "financialSanctionPending", label: "Financial sanction pending" },
+    { key: "supplyOrderPending", label: "S.O. pending" },
+  ];
+}
+
 function getMonthWiseSupplyOrderColumns(
   onMonthClick: (monthKey: string) => void,
 ): AnalyticsTableColumn[] {
@@ -4122,13 +4382,30 @@ function getAnalyticsSearchTarget(
   columnKey: string,
 ): AnalyticsSearchTarget | undefined {
   const name = String(row.name ?? row.range ?? row.fileRef ?? "").trim();
-  if (!name || columnKey === "rank" || columnKey === "name" || columnKey === "range")
+  if (
+    !name ||
+    columnKey === "rank" ||
+    (columnKey === "name" && panelKey !== "cncSummary") ||
+    columnKey === "range"
+  )
     return undefined;
 
   if (panelKey === "divisionFiles" && columnKey === "count") return { division: name };
   if (panelKey === "divisionTurnaround" && columnKey === "sampleSize") return { division: name };
   if (panelKey === "paymentPending" && columnKey === "count") {
     return { dashboardFilter: "paymentDue", division: name };
+  }
+  if (
+    panelKey === "tcecStatus" &&
+    (columnKey === "reviewed" || columnKey === "signed" || columnKey === "pending")
+  ) {
+    const stage = String(row.stage ?? "pre") === "post" ? "post" : "pre";
+    return {
+      dashboardFilter: getTcecStatusDashboardFilter(stage, columnKey, name),
+    };
+  }
+  if (panelKey === "cncSummary" && isCncSummaryMetric(columnKey)) {
+    return { dashboardFilter: getCncSummaryDashboardFilter(columnKey, name) };
   }
   if (panelKey === "topFirms" && columnKey === "value") {
     return { analyticsType: "firm", analyticsNames: [name] };
@@ -4153,6 +4430,57 @@ function getAnalyticsSearchTarget(
     return getMilestoneClearingSearchTarget(name);
   }
   return undefined;
+}
+
+function getTcecMeetingSearchTarget(
+  stage: TcecStatusStage,
+  row: Record<string, number | string>,
+  columnKey: string,
+): AnalyticsSearchTarget | undefined {
+  if (columnKey !== "name" && columnKey !== "reviewed" && columnKey !== "signed" && columnKey !== "pending") {
+    return undefined;
+  }
+  const committee = String(row.committee ?? "").trim();
+  const meetingDate = String(row.meetingDate ?? row.name ?? "").trim();
+  if (!committee || !meetingDate) return undefined;
+  const metric = columnKey === "name" ? "reviewed" : columnKey;
+  return {
+    dashboardFilter: getTcecStatusDashboardFilter(stage, metric, committee, meetingDate),
+  };
+}
+
+function getCncSummaryDashboardFilter(metric: string, cncDate: string) {
+  return `cncSummary:${encodeURIComponent(metric)}:${encodeURIComponent(cncDate)}`;
+}
+
+function isCncSummaryMetric(value: string) {
+  return (
+    value === "name" ||
+    value === "reviewed" ||
+    value === "approved" ||
+    value === "financialSanctionSigned" ||
+    value === "supplyOrderPlaced" ||
+    value === "approvalPending" ||
+    value === "financialSanctionPending" ||
+    value === "supplyOrderPending"
+  );
+}
+
+function getTcecStatusDashboardFilter(
+  stage: string,
+  metric: string,
+  committee: string,
+  meetingDate?: string,
+) {
+  return [
+    "tcecStatus",
+    encodeURIComponent(stage),
+    encodeURIComponent(metric),
+    encodeURIComponent(committee),
+    meetingDate ? encodeURIComponent(meetingDate) : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(":");
 }
 
 function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget | undefined {
@@ -5103,44 +5431,126 @@ function DeliveryFlowNode({
               <span className="block truncate text-sm font-semibold">{milestone.label}</span>
             </span>
           </span>
-          <span className="grid grid-cols-3 gap-1.5">
-            <button
-              type="button"
-              onClick={onCompletedClick}
+          <span className="flex flex-col gap-1.5">
+            <span className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={onCompletedClick}
+                className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
+              >
+                <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                  Delivery Completed
+                </span>
+                <span className="block text-base font-semibold tabular-nums">
+                  {milestone.completed}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={onDueClick}
+                className={
+                  "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " + tone.count
+                }
+              >
+                <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                  Delivery Pending
+                </span>
+                <span className="block text-base font-semibold tabular-nums">{milestone.due}</span>
+              </button>
+              <button
+                type="button"
+                onClick={onOverdueClick}
+                className={
+                  "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
+                  getMilestoneTone(milestone.overdue).count
+                }
+              >
+                <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+                  Delivery Overdue
+                </span>
+                <span className="block text-base font-semibold tabular-nums">
+                  {milestone.overdue}
+                </span>
+              </button>
+            </span>
+          </span>
+        </span>
+      </div>
+      {!isLast ? (
+        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+          <ArrowRight className="size-4" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function JobCompletionFlowNode({
+  milestone,
+  index,
+  isLast,
+  onJobCompletedClick,
+  onJobDueClick,
+}: {
+  milestone: {
+    key: string;
+    label: string;
+    jobCompleted: number;
+    jobLive: number;
+  };
+  index: number;
+  isLast: boolean;
+  onJobCompletedClick: () => void;
+  onJobDueClick: () => void;
+}) {
+  const tone = getMilestoneTone(milestone.jobLive);
+
+  return (
+    <div className="relative min-w-0">
+      <div
+        className={
+          "group flex h-full w-full flex-col justify-between rounded-lg border p-2.5 text-left transition hover:shadow-[var(--shadow-card)] " +
+          tone.card
+        }
+      >
+        <span className="flex flex-col gap-2">
+          <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
+            <span
+              className={
+                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                tone.step
+              }
+            >
+              {String(index + 1).padStart(2, "0")}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold">{milestone.label}</span>
+            </span>
+          </span>
+	          <span className="grid grid-cols-2 gap-1.5">
+	            <button
+	              type="button"
+	              onClick={onJobDueClick}
+	              className={
+	                "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
+	                getMilestoneTone(milestone.jobLive).count
+	              }
+	            >
+	              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+	                Job Completion Due
+	              </span>
+	              <span className="block text-base font-semibold tabular-nums">{milestone.jobLive}</span>
+	            </button>
+	            <button
+	              type="button"
+              onClick={onJobCompletedClick}
               className="rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
-            >
-              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-                Completed
-              </span>
+	            >
+	              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+	                Job Completion Done
+	              </span>
               <span className="block text-base font-semibold tabular-nums">
-                {milestone.completed}
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={onDueClick}
-              className={
-                "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " + tone.count
-              }
-            >
-              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-                Pending
-              </span>
-              <span className="block text-base font-semibold tabular-nums">{milestone.due}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onOverdueClick}
-              className={
-                "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
-                getMilestoneTone(milestone.overdue).count
-              }
-            >
-              <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-                Overdue
-              </span>
-              <span className="block text-base font-semibold tabular-nums">
-                {milestone.overdue}
+                {milestone.jobCompleted}
               </span>
             </button>
           </span>
@@ -5376,6 +5786,122 @@ function getAnalyticsSummary(
     fileValueThresholds: getFileValueThresholds(files, valueThresholdLevels),
     divisionRiskRanking: getDivisionRiskRanking(files),
     divisionPaymentPendingRanking: getDivisionPaymentPendingRanking(files),
+    tcecStatus: getTcecStatusSummary(files),
+    cncSummary: getCncSummary(files),
+  };
+}
+
+function getCncSummary(files: FileRecord[]) {
+  const rows = new Map<
+    string,
+    {
+      name: string;
+      cncDate: string;
+      reviewed: number;
+      approved: number;
+      financialSanctionSigned: number;
+      supplyOrderPlaced: number;
+      approvalPending: number;
+      financialSanctionPending: number;
+      supplyOrderPending: number;
+    }
+  >();
+  files.forEach((file) => {
+    if (!hasFilledString(file.cncDate)) return;
+    const cncDate = file.cncDate!;
+    const approved = hasFilledString(file.cncApprovalDate);
+    const financialSanctionSigned = hasOrderFinancialSanctionCompleted(file);
+    const supplyOrderPlaced = hasPlacedSupplyOrder(file);
+    const current =
+      rows.get(cncDate) ??
+      {
+        name: cncDate,
+        cncDate,
+        reviewed: 0,
+        approved: 0,
+        financialSanctionSigned: 0,
+        supplyOrderPlaced: 0,
+        approvalPending: 0,
+        financialSanctionPending: 0,
+        supplyOrderPending: 0,
+      };
+    current.reviewed += 1;
+    current.approved += approved ? 1 : 0;
+    current.financialSanctionSigned += financialSanctionSigned ? 1 : 0;
+    current.supplyOrderPlaced += supplyOrderPlaced ? 1 : 0;
+    current.approvalPending += approved ? 0 : 1;
+    current.financialSanctionPending += approved && !financialSanctionSigned ? 1 : 0;
+    current.supplyOrderPending += financialSanctionSigned && !supplyOrderPlaced ? 1 : 0;
+    rows.set(cncDate, current);
+  });
+  return Array.from(rows.values()).sort((a, b) => b.cncDate.localeCompare(a.cncDate));
+}
+
+function getTcecStatusSummary(files: FileRecord[]) {
+  return {
+    pre: getTcecStageStatus(files, "pre"),
+    post: getTcecStageStatus(files, "post"),
+  };
+}
+
+function getTcecStageStatus(files: FileRecord[], stage: TcecStatusStage) {
+  const committeeRows = new Map<string, { reviewed: number; signed: number; pending: number }>();
+  const meetingRows = new Map<
+    string,
+    {
+      name: string;
+      committee: string;
+      meetingDate: string;
+      stage: TcecStatusStage;
+      reviewed: number;
+      signed: number;
+      pending: number;
+    }
+  >();
+  files.forEach((file) => {
+    const committee =
+      stage === "pre" ? file.preTcecCommitteeNo?.trim() : file.postTcecCommitteeNumber?.trim();
+    if (!committee) return;
+    const minutesDate = stage === "pre" ? file.preTcecMinutesDate : file.postTcecMinutesDate;
+    const meetingDate = stage === "pre" ? file.preTcecDate : file.postTcecDate;
+    const signed = hasFilledString(minutesDate);
+    const committeeCurrent = committeeRows.get(committee) ?? {
+      reviewed: 0,
+      signed: 0,
+      pending: 0,
+    };
+    committeeCurrent.reviewed += 1;
+    committeeCurrent.signed += signed ? 1 : 0;
+    committeeCurrent.pending += signed ? 0 : 1;
+    committeeRows.set(committee, committeeCurrent);
+    if (!hasFilledString(meetingDate)) return;
+    const meetingKey = `${committee}\u0000${meetingDate}`;
+    const meetingCurrent =
+      meetingRows.get(meetingKey) ??
+      {
+        name: meetingDate!,
+        committee,
+        meetingDate: meetingDate!,
+        stage,
+        reviewed: 0,
+        signed: 0,
+        pending: 0,
+      };
+    meetingCurrent.reviewed += 1;
+    meetingCurrent.signed += signed ? 1 : 0;
+    meetingCurrent.pending += signed ? 0 : 1;
+    meetingRows.set(meetingKey, meetingCurrent);
+  });
+  return {
+    committees: Array.from(committeeRows.entries())
+      .map(([name, counts]) => ({ name, stage, ...counts }))
+      .sort((a, b) => b.reviewed - a.reviewed || a.name.localeCompare(b.name)),
+    meetings: Array.from(meetingRows.values()).sort(
+      (a, b) =>
+        a.committee.localeCompare(b.committee) ||
+        b.meetingDate.localeCompare(a.meetingDate) ||
+        a.name.localeCompare(b.name),
+    ),
   };
 }
 
@@ -5574,6 +6100,7 @@ function getMilestoneClearingDurations(
     return files.flatMap((file) =>
       isDeliveryInspectionApplicable(file)
         ? fileSupplyOrders(file)
+            .filter((order) => !isSupplyOrderCancelled(file, order))
             .map((order) =>
               getDayDifference(
                 order.deliveryPeriodStartDate || order.soDate,
@@ -5586,14 +6113,19 @@ function getMilestoneClearingDurations(
   }
   if (definition.name === "Payment") {
     return files.flatMap((file) =>
-      normalizedFilePaymentOrders(file)
-        .map((order) => getDayDifference(getPaymentWorkflowStartDate(file, order), order.paymentDate))
+      effectivePaymentEntries([file])
+        .filter(({ file: entryFile, order }) => !isSupplyOrderCancelled(entryFile, order))
+        .map(({ order }) => order)
+        .map((order) =>
+          getDayDifference(getPaymentWorkflowStartDate(file, order), order.paymentDate),
+        )
         .filter((days): days is number => days !== undefined && days >= 0),
     );
   }
   if (definition.name === "Supply Order") {
     return files.flatMap((file) =>
       rawSupplyOrders(file)
+        .filter((order) => !isSupplyOrderCancelled(file, order))
         .map((order) => getDayDifference(file.cfaDate, order.soDate))
         .filter((days): days is number => days !== undefined && days >= 0),
     );
@@ -5654,10 +6186,15 @@ function getMonthWiseDeliverySchedule(files: FileRecord[]) {
 function getMonthWiseBgExpiry(files: FileRecord[]) {
   const rows = new Map<string, { psb: number; pwb: number; psbPwb: number; count: number }>();
   const categories = ["psb", "pwb", "psbpwb"] as const;
-  effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
-    if (isCancelledFile(file) || isSupplyOrderCancelled(file, order)) return;
+  rawSupplyOrderEntries(files).forEach(({ file, order }) => {
     categories.forEach((category) => {
-      if (!isBgCategoryApplicable(file, order, category)) return;
+      if (
+        !isBgCategoryApplicable(file, order, category) ||
+        !isBgReceivedOrder(order, category) ||
+        hasFilledString(getBgReturnDate(order, category))
+      ) {
+        return;
+      }
       const month = getMonthKey(getBgValidityDate(order, category));
       if (!month) return;
       const current = rows.get(month) ?? { psb: 0, pwb: 0, psbPwb: 0, count: 0 };
@@ -5676,12 +6213,23 @@ function getMonthWiseBgExpiry(files: FileRecord[]) {
 
 function isDeliveryFructified(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    (isDeliveryInspectionApplicable(file) &&
-      (hasFilledString(order.materialReceiptDate) || hasFilledString(order.jobCompletionDate))) ||
+    (isDeliveryInspectionApplicable(file) && hasFilledString(order.materialReceiptDate)) ||
+    (!isDeliveryInspectionApplicable(file) && isJobCompletionDone(order)) ||
     (order.completedMilestones ?? []).some(
       (milestone) => normalizeMilestoneName(milestone) === "delivery",
     )
   );
+}
+
+function isJobCompletionDone(order: SupplyOrderDetail) {
+  return (order.completedMilestones ?? []).some(
+    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
+  );
+}
+
+function getDeliveryCompletionMonthDate(file: FileRecord, order: SupplyOrderDetail) {
+  if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  return isJobCompletionDone(order) ? getDeliveryPeriodDate(order) : undefined;
 }
 
 function getBiddingModeMix(files: FileRecord[]) {
@@ -5814,7 +6362,7 @@ function getRiskRowCount(file: FileRecord) {
   const deliveryRiskCount = fileSupplyOrders(file).filter(
     (order) =>
       !isSupplyOrderCancelled(file, order) &&
-      (isPendingDeliveryOrder(order) || isExpiredDeliveryPeriodEntry(file, order)),
+      (isPendingDeliveryOrder(file, order) || isExpiredDeliveryPeriodEntry(file, order)),
   ).length;
   const orderRiskCount = fileSupplyOrders(file).filter(
     (order) => isYes(order.ld) || isYes(order.soCancelled),
@@ -6204,11 +6752,13 @@ const defaultManualMilestones = [
   "PWB",
   "PSB+PWB",
   "Delivery",
+  "Job Completion",
   "Bill sent for payment",
   "Advance Payment",
   "Payment",
   fileClosedMilestone,
 ];
+const protectedLiveStatusMilestones = ["Job Completion"];
 
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? [])
@@ -6216,7 +6766,7 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
     .filter(Boolean);
   const configured = values.length ? values : defaultManualMilestones;
   return appendFileClosedMilestone(
-    insertAdvancePaymentMilestone(insertBillSentMilestone(configured)),
+    insertAdvancePaymentMilestone(insertBillSentMilestone(insertJobCompletionMilestone(configured))),
   );
 }
 
@@ -6258,8 +6808,38 @@ function insertAdvancePaymentMilestone(milestones: string[]) {
   ];
 }
 
+function insertJobCompletionMilestone(milestones: string[]) {
+  const hasJobCompletion = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
+  );
+  const deliveryIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "delivery",
+  );
+  if (hasJobCompletion || deliveryIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, deliveryIndex + 1),
+    "Job Completion",
+    ...milestones.slice(deliveryIndex + 1),
+  ];
+}
+
 function normalizeConfiguredMilestoneLabel(milestone: string) {
   return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
+}
+
+function getVisibleLiveMilestoneNames(
+  liveMilestones: string[] | undefined,
+  manualMilestoneFlow: Array<{ name: string }>,
+) {
+  const available = new Set(manualMilestoneFlow.map((milestone) => milestone.name));
+  const visible = (
+    liveMilestones?.filter((name) => available.has(name)) ??
+    manualMilestoneFlow.map((milestone) => milestone.name)
+  ).filter(Boolean);
+  protectedLiveStatusMilestones.forEach((milestone) => {
+    if (available.has(milestone) && !visible.includes(milestone)) visible.push(milestone);
+  });
+  return visible;
 }
 
 function getManualMilestoneFlow(
@@ -6335,9 +6915,8 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         applicableFiles,
         "financialsanction",
       );
-      const financialSanctionPreviousStage = countFinancialSanctionPreviousStageFiles(
-        applicableFiles,
-      );
+      const financialSanctionPreviousStage =
+        countFinancialSanctionPreviousStageFiles(applicableFiles);
       return {
         key: milestone.key,
         label: milestone.label,
@@ -6457,6 +7036,13 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     due: countDeliveryPendingOrders(files),
     overdue: countDeliveryOverdueOrders(files),
   };
+  const jobCompletion = {
+    key: "jobCompletion",
+    label: "Job Completion",
+    jobCompleted: countJobCompletionCompletedOrders(files),
+    jobLive: countJobCompletionLiveOrders(files),
+    jobPeriodOver: countJobCompletionPeriodOverOrders(files),
+  };
   const ir = {
     key: "ir",
     label: "IR",
@@ -6482,10 +7068,11 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         ];
   const paymentIndex = withDeliveryPeriod.findIndex((milestone) => milestone.key === "payment");
 
-  if (paymentIndex === -1) return [...withDeliveryPeriod, delivery, ir];
+  if (paymentIndex === -1) return [...withDeliveryPeriod, delivery, jobCompletion, ir];
   return [
     ...withDeliveryPeriod.slice(0, paymentIndex),
     delivery,
+    jobCompletion,
     ir,
     ...withDeliveryPeriod.slice(paymentIndex),
   ];
@@ -6498,10 +7085,7 @@ function countAtPreviousStageFiles(
   return files.filter((file) => isAtPreviousStageFile(file, milestone)).length;
 }
 
-function isAtPreviousStageFile(
-  file: FileRecord,
-  milestone: (typeof milestoneDefinitions)[number],
-) {
+function isAtPreviousStageFile(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
   if (!isEligibleMilestone(file, milestone)) return false;
   if (isMilestoneComplete(file, milestone)) return false;
   if (isManualActiveMilestone(file, milestone)) return false;
@@ -6627,6 +7211,7 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "combinedBgReceivedDate",
   "combinedBgValidityDate",
   "combinedBgReturnDate",
+  "warrantyPeriodDate",
   "jobCompletionDate",
   "irPreparationDate",
   "irReceiptDate",
@@ -6741,8 +7326,8 @@ function countLiveSupplyOrders(files: FileRecord[]) {
 function countDeliveryCompletedOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
     ({ file, order }) =>
-      isDeliveryInspectionApplicable(file) &&
       hasSupplyOrderDate(order) &&
+      isPhysicalDeliveryWorkflow(file) &&
       hasFilledString(order.materialReceiptDate) &&
       !isSupplyOrderCancelled(file, order),
   ).length;
@@ -6751,20 +7336,48 @@ function countDeliveryCompletedOrders(files: FileRecord[]) {
 function countDeliveryPendingOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
     ({ file, order }) =>
-      isDeliveryInspectionApplicable(file) &&
       hasSupplyOrderDate(order) &&
-      !hasFilledString(order.materialReceiptDate) &&
+      isPhysicalDeliveryWorkflow(file) &&
+      !isCompletedDeliveryOrder(file, order) &&
       !isSupplyOrderCancelled(file, order) &&
-      hasFilledString(getDeliveryPeriodDate(order)),
+      isCurrentDeliveryPeriodOrder(order),
   ).length;
 }
 
 function countDeliveryOverdueOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
     ({ file, order }) =>
-      isDeliveryInspectionApplicable(file) &&
       hasSupplyOrderDate(order) &&
-      !hasFilledString(order.materialReceiptDate) &&
+      isPhysicalDeliveryWorkflow(file) &&
+      !isCompletedDeliveryOrder(file, order) &&
+      !isSupplyOrderCancelled(file, order) &&
+      isDateBeforeToday(getDeliveryPeriodDate(order)),
+  ).length;
+}
+
+function countJobCompletionLiveOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      !isSupplyOrderCancelled(file, order) && isJobCompletionCurrentOrder(file, order),
+  ).length;
+}
+
+function countJobCompletionCompletedOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      hasSupplyOrderDate(order) &&
+      isJobCompletionWorkflow(file) &&
+      isJobCompletionDone(order) &&
+      !isSupplyOrderCancelled(file, order),
+  ).length;
+}
+
+function countJobCompletionPeriodOverOrders(files: FileRecord[]) {
+  return effectiveSupplyOrderEntries(files).filter(
+    ({ file, order }) =>
+      hasSupplyOrderDate(order) &&
+      isJobCompletionWorkflow(file) &&
+      !isJobCompletionDone(order) &&
       !isSupplyOrderCancelled(file, order) &&
       isDateBeforeToday(getDeliveryPeriodDate(order)),
   ).length;
@@ -6966,13 +7579,17 @@ function hasAdvancePaymentPending(file: FileRecord) {
 }
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
-  return isPaymentDueByDeliveryOrPeriod(file, order);
+  return (
+    normalizeMilestoneName(order.currentMilestone) === "payment" ||
+    hasFilledString(order.billPreparationDate) ||
+    hasFilledString(order.billSentForPaymentDate) ||
+    isPaymentDueByDeliveryOrPeriod(file, order)
+  );
 }
 
 function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return hasPaymentDueCompletion(file, order);
-  const dueDate = getDeliveryPeriodDate(order);
-  return hasFilledString(dueDate) && isDateBeforeToday(dueDate);
+  return isJobCompletionDone(order);
 }
 
 function countLdOrders(files: FileRecord[]) {
@@ -7002,11 +7619,30 @@ function isFileTenderLive(file: FileRecord) {
   return isYes(file.tenderLive);
 }
 
+function getEffectiveBidOpeningDate(file: FileRecord) {
+  return isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)
+    ? file.refloatBidOpeningDate
+    : file.bidOpeningDate;
+}
+
 function isBidOverdue(file: FileRecord) {
-  return (
-    isNo(file.bidOpened) &&
-    (isDateBeforeToday(file.bidOpeningDate) || isDateBeforeToday(file.refloatBidOpeningDate))
-  );
+  return isNo(file.bidOpened) && isDateBeforeToday(getEffectiveBidOpeningDate(file));
+}
+
+function isPreBidMeetingStatus(
+  file: FileRecord,
+  refloat: boolean,
+  state: "due" | "completed",
+  monthKey = "",
+) {
+  if (isCancelledFile(file)) return false;
+  const applies = refloat
+    ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
+    : isYes(file.preBidMeeting);
+  const date = refloat ? file.refloatPreBidMeetingDate : file.preBidMeetingDate;
+  if (!applies || !hasFilledString(date)) return false;
+  if (monthKey && getMonthKey(date) !== monthKey) return false;
+  return state === "completed" ? isDateBeforeToday(date) : !isDateBeforeToday(date);
 }
 
 function isLiveSupplyOrder(file: FileRecord) {
@@ -7068,22 +7704,48 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
   )
     return false;
   if (isYes(order.soCancelled)) return true;
-  const validityDate = getBgValidityDate(order, category);
   const normalizedCategory = normalizeMilestoneName(category);
   return (
     !isSupplyOrderCancelled(file, order) &&
     (normalizedCategory === "psb"
       ? isPsbReturnPurposeComplete(file, order)
-      : hasFilledString(order.paymentDate) &&
-        hasFilledString(validityDate) &&
-        isDateBeforeToday(validityDate))
+      : isWarrantyBgReturnPurposeComplete(file, order, normalizedCategory))
   );
+}
+
+function isWarrantyBgReturnPurposeComplete(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  category: string,
+) {
+  if (category !== "pwb" && category !== "psbpwb") return false;
+  if (!isBgCategoryApplicable(file, order, category)) return false;
+  if (!hasFilledString(order.warrantyPeriodDate)) return false;
+  return isDateBeforeToday(addDays(order.warrantyPeriodDate, 60));
+}
+
+function isWarrantyBgMismatchOrder(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  category: string,
+  bufferDays: number,
+) {
+  if (category !== "pwb" && category !== "psbpwb") return false;
+  if (!isBgCategoryApplicable(file, order, category)) return false;
+  if (!isBgReceivedOrder(order, category)) return false;
+  if (hasFilledString(getBgReturnDate(order, category))) return false;
+  const validityDate = getBgValidityDate(order, category);
+  if (!hasFilledString(order.warrantyPeriodDate) || !hasFilledString(validityDate)) return false;
+  const requiredValidityDate = addDays(order.warrantyPeriodDate, bufferDays);
+  return hasFilledString(requiredValidityDate) && validityDate < requiredValidityDate;
 }
 
 function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (!isDeliveryInspectionApplicable(file)) {
-    const dueDate = getDeliveryPeriodDate(order);
-    return hasFilledString(dueDate) && isDateBeforeToday(dueDate);
+    if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+      return order.stageDeliveries.every(isJobCompletionDone);
+    }
+    return isJobCompletionDone(order);
   }
   if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
     return order.stageDeliveries.every((stage) => hasPsbReturnCompletion(file, stage));
@@ -7092,19 +7754,13 @@ function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) 
 }
 
 function hasPaymentDueCompletion(file: FileRecord, order: SupplyOrderDetail) {
-  return hasFilledString(getPaymentDueCompletionDate(file, order));
-}
-
-function getPaymentDueCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.ir) ? order.materialReceiptDate : order.jobCompletionDate;
+  if (isDeliveryInspectionApplicable(file)) return hasFilledString(order.materialReceiptDate);
+  return isJobCompletionDone(order);
 }
 
 function hasPsbReturnCompletion(file: FileRecord, order: SupplyOrderDetail) {
-  return hasFilledString(getPsbReturnCompletionDate(file, order));
-}
-
-function getPsbReturnCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.ir) ? order.irReceiptDate : order.jobCompletionDate;
+  if (isDeliveryInspectionApplicable(file)) return hasFilledString(order.irReceiptDate);
+  return isJobCompletionDone(order);
 }
 
 function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
@@ -7128,49 +7784,125 @@ function isDpExpired(file: FileRecord) {
 }
 
 function isDeliveryOverdue(file: FileRecord) {
-  return isDeliveryActive(file) && fileSupplyOrders(file).some(isOverdueDeliveryOrder);
+  return (
+    !isCancelledFile(file) &&
+    isSupplyOrderPlaced(file) &&
+    fileSupplyOrders(file).some(
+      (order) => !isSupplyOrderCancelled(file, order) && isOverdueDeliveryOrder(file, order),
+    )
+  );
 }
 
 function isDeliveryCompleted(file: FileRecord) {
-  return isDeliveryActive(file) && fileSupplyOrders(file).some(isCompletedDeliveryOrder);
+  return (
+    isSupplyOrderPlaced(file) &&
+    fileSupplyOrders(file).some(
+      (order) => !isSupplyOrderCancelled(file, order) && isCompletedDeliveryOrder(file, order),
+    )
+  );
 }
 
 function isDeliveryDue(file: FileRecord) {
   if (isCancelledFile(file)) return false;
-  return isDeliveryActive(file) && fileSupplyOrders(file).some(isPendingDeliveryOrder);
+  return (
+    isSupplyOrderPlaced(file) &&
+    fileSupplyOrders(file).some(
+      (order) => !isSupplyOrderCancelled(file, order) && isPendingDeliveryOrder(file, order),
+    )
+  );
 }
 
 function isDeliveryActive(file: FileRecord) {
   return isDeliveryInspectionApplicable(file) && isSupplyOrderPlaced(file);
 }
 
-function isDeliveryInspectionApplicable(file: FileRecord) {
-  const fileType = (file.fileType ?? "").trim().toLowerCase();
-  return fileType !== "amc" && fileType !== "mpc" && fileType !== "cars" && fileType !== "o&m";
+function isPhysicalDeliveryWorkflow(file: FileRecord) {
+  return isDeliveryInspectionApplicable(file);
 }
 
-function isCompletedDeliveryOrder(order: SupplyOrderDetail) {
+function isJobCompletionWorkflow(file: FileRecord) {
+  return !isPhysicalDeliveryWorkflow(file);
+}
+
+function isJobCompletionCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
+  if (!hasSupplyOrderDate(order) || !isJobCompletionWorkflow(file) || isJobCompletionDone(order)) {
+    return false;
+  }
+  const current = normalizeMilestoneName(order.currentMilestone);
+  return current === "jobcompletion" || isDateBeforeToday(getDeliveryPeriodDate(order));
+}
+
+function isDeliveryInspectionApplicable(file: FileRecord) {
+  const fileType = (file.fileType ?? "").trim().toLowerCase();
   return (
-    hasSupplyOrderDate(order) &&
-    (hasFilledString(order.materialReceiptDate) || hasFilledString(order.jobCompletionDate))
+    !isNo(file.ir) &&
+    fileType !== "amc" &&
+    fileType !== "mpc" &&
+    fileType !== "cars" &&
+    fileType !== "o&m"
   );
 }
 
-function isDueDeliveryOrder(order: SupplyOrderDetail) {
+function isCompletedDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
   return (
     hasSupplyOrderDate(order) &&
-    !hasFilledString(order.materialReceiptDate) &&
-    !hasFilledString(order.jobCompletionDate) &&
+    isPhysicalDeliveryWorkflow(file) &&
+    hasFilledString(order.materialReceiptDate)
+  );
+}
+
+function isJobCompletionLive(file: FileRecord) {
+  if (isCancelledFile(file)) return false;
+  return (
+    isSupplyOrderPlaced(file) &&
+    effectiveSupplyOrderEntries([file]).some(
+      ({ file: entryFile, order }) =>
+        !isSupplyOrderCancelled(entryFile, order) && isJobCompletionCurrentOrder(entryFile, order),
+    )
+  );
+}
+
+function isJobCompletionCompleted(file: FileRecord) {
+  if (isCancelledFile(file) || !isJobCompletionWorkflow(file)) return false;
+  return (
+    isSupplyOrderPlaced(file) &&
+    fileSupplyOrders(file).some(
+      (order) => !isSupplyOrderCancelled(file, order) && hasSupplyOrderDate(order) && isJobCompletionDone(order),
+    )
+  );
+}
+
+function isJobCompletionPeriodOver(file: FileRecord) {
+  if (isCancelledFile(file)) return false;
+  return (
+    isSupplyOrderPlaced(file) &&
+    fileSupplyOrders(file).some(
+      (order) =>
+        !isSupplyOrderCancelled(file, order) &&
+        hasSupplyOrderDate(order) &&
+        isJobCompletionWorkflow(file) &&
+        !isJobCompletionDone(order) &&
+        isDateBeforeToday(getDeliveryPeriodDate(order)),
+    )
+  );
+}
+
+function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    hasSupplyOrderDate(order) &&
+    isPhysicalDeliveryWorkflow(file) &&
+    !isCompletedDeliveryOrder(file, order) &&
     !isYes(order.soCancelled)
   );
 }
 
-function isPendingDeliveryOrder(order: SupplyOrderDetail) {
-  return isDueDeliveryOrder(order) && hasFilledString(getDeliveryDueDate(order));
+function isPendingDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
+  const dueDate = getDeliveryDueDate(order);
+  return isDueDeliveryOrder(file, order) && hasFilledString(dueDate) && !isDateBeforeToday(dueDate);
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {
-  return getLaterDate(order.dpDate, order.revisedDp);
+  return order.revisedDp || order.dpDate;
 }
 
 function isCurrentDeliveryPeriodOrder(order: SupplyOrderDetail) {
@@ -7182,8 +7914,8 @@ function isCurrentDeliveryPeriodOrder(order: SupplyOrderDetail) {
   );
 }
 
-function isOverdueDeliveryOrder(order: SupplyOrderDetail) {
-  return isDueDeliveryOrder(order) && isDateBeforeToday(getDeliveryDueDate(order));
+function isOverdueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
+  return isDueDeliveryOrder(file, order) && isDateBeforeToday(getDeliveryDueDate(order));
 }
 
 function isDeliveryPeriodValid(file: FileRecord) {
@@ -7255,11 +7987,11 @@ function isFinancialSanctionCompletedOrder(order: SupplyOrderDetail) {
 }
 
 function getDeliveryPeriodDate(order: SupplyOrderDetail) {
-  return getLaterDate(order.dpDate, order.revisedDp);
+  return order.revisedDp || order.dpDate;
 }
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
-  if (isDeliveryInspectionApplicable(file)) return getPaymentDueCompletionDate(file, order);
+  if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
   return addDays(getDeliveryPeriodDate(order), 1);
 }
 
@@ -7313,9 +8045,13 @@ type FinanceFirmTypeDistributionExportRow = {
 };
 
 const dashboardFilterTitles: Record<string, string> = {
-  deliveryCompleted: "Delivery - Completed",
-  deliveryDue: "Delivery - Pending",
-  deliveryOverdue: "Delivery - Overdue",
+  deliveryCompleted: "Delivery Completed",
+  deliveryDue: "Delivery Pending",
+  deliveryOverdue: "Delivery Overdue",
+  jobCompletionCompleted: "Job Completion Done",
+  jobCompletionDue: "Job Completion Due",
+  jobCompletionLive: "Job Completion Due",
+  jobCompletionPeriodOver: "Milestone Period Over",
   deliveryPeriodValid: "Delivery Period / Milestone - Valid",
   deliveryPeriodExpired: "Delivery Period / Milestone - Expired",
   deliveryPeriodExtended: "Delivery Period / Milestone - Extended",
@@ -7324,6 +8060,10 @@ const dashboardFilterTitles: Record<string, string> = {
   irCompleted: "IR - Completed",
   liveBids: "Bidding - Live",
   bidOverdue: "Bidding - Opening overdue",
+  "preBidMeeting:due": "Pre-Bid Meeting - Due",
+  "preBidMeeting:completed": "Pre-Bid Meeting - Completed",
+  "refloatPreBidMeeting:due": "Refloat Pre-Bid Meeting - Due",
+  "refloatPreBidMeeting:completed": "Refloat Pre-Bid Meeting - Completed",
   liveSupplyOrders: "Supply Order - Live",
   bgReceived: "PSB - Received",
   bgToBeReceived: "PSB - Pending",
@@ -7431,25 +8171,40 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
     return effectiveSupplyOrderEntries([file]).some(
       ({ file: entryFile, order }) =>
-        isDeliveryInspectionApplicable(entryFile) &&
         !isSupplyOrderCancelled(entryFile, order) &&
-        getMonthKey(order.materialReceiptDate) === monthKey,
+        getMonthKey(getDeliveryCompletionMonthDate(entryFile, order)) === monthKey,
     );
   }
   if (filter.startsWith("bgExpiryMonth:")) {
     const [, category = "all", monthKey = ""] = filter.split(":");
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
     const categories = category === "all" ? ["psb", "pwb", "psbpwb"] : [category];
-    return effectiveSupplyOrderEntries([file]).some(({ file: entryFile, order }) => {
-      if (isSupplyOrderCancelled(entryFile, order)) return false;
-      return categories.some(
+    return rawSupplyOrderEntries([file]).some(({ file: entryFile, order }) =>
+      categories.some(
         (item) =>
           isBgMilestoneKey(item) &&
           isBgCategoryApplicable(entryFile, order, item) &&
+          isBgReceivedOrder(order, item) &&
+          !hasFilledString(getBgReturnDate(order, item)) &&
           getMonthKey(getBgValidityDate(order, item)) === monthKey,
-      );
-    });
+      ),
+    );
   }
+  if (filter.startsWith("warrantyBgMismatch:")) {
+    const [, category = "all", rawDays = "60"] = filter.split(":");
+    const days = Number.parseInt(rawDays, 10);
+    const normalizedDays = Number.isInteger(days) && days >= 0 ? days : 60;
+    const categories = category === "all" ? ["pwb", "psbpwb"] : [category];
+    return rawSupplyOrderEntries([file]).some(({ file: entryFile, order }) =>
+      categories.some(
+        (item) =>
+          isBgMilestoneKey(item) &&
+          isWarrantyBgMismatchOrder(entryFile, order, item, normalizedDays),
+      ),
+    );
+  }
+  if (filter.startsWith("tcecStatus:")) return matchesTcecStatusFilter(file, filter);
+  if (filter.startsWith("cncSummary:")) return matchesCncSummaryFilter(file, filter);
   if (filter.startsWith("mode:")) {
     return (
       (file.mode ?? "").trim().toUpperCase() ===
@@ -7483,6 +8238,20 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "ifaConcurrence") return isYes(file.ifa);
   if (filter === "liveBids") return isFileTenderLive(file);
   if (filter === "bidOverdue") return isBidOverdue(file);
+  if (filter.startsWith("preBidMeeting:") || filter.startsWith("refloatPreBidMeeting:")) {
+    const [kind = "", state = "all", monthKey = ""] = filter.split(":");
+    const refloat = kind === "refloatPreBidMeeting";
+    if (state === "all") {
+      return (
+        isPreBidMeetingStatus(file, refloat, "due", monthKey) ||
+        isPreBidMeetingStatus(file, refloat, "completed", monthKey)
+      );
+    }
+    if (state === "due" || state === "completed") {
+      return isPreBidMeetingStatus(file, refloat, state, monthKey);
+    }
+    return false;
+  }
   if (filter === "supplyOrders") return hasAny(file, ["soDate"]);
   if (filter === "liveSupplyOrders") return isLiveSupplyOrder(file);
   if (filter === "bgReceived") return isBgReceived(file, "psb");
@@ -7507,6 +8276,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryOverdue") return isDeliveryOverdue(file);
   if (filter === "deliveryCompleted") return isDeliveryCompleted(file);
   if (filter === "deliveryDue") return isDeliveryDue(file);
+  if (filter === "jobCompletionCompleted") return isJobCompletionCompleted(file);
+  if (filter === "jobCompletionDue" || filter === "jobCompletionLive")
+    return isJobCompletionLive(file);
+  if (filter === "jobCompletionPeriodOver") return isJobCompletionPeriodOver(file);
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
@@ -7553,10 +8326,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestoneUnderProcess:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(22));
     if (milestone?.key === "supplyOrder") {
-      return (
-        countExpectedSupplyOrderRows(file) > 0 &&
-        !hasOrderFinancialSanctionCompleted(file)
-      );
+      return countExpectedSupplyOrderRows(file) > 0 && !hasOrderFinancialSanctionCompleted(file);
     }
     return milestone
       ? isMilestoneApplicable(file, milestone) && !isEligibleMilestone(file, milestone)
@@ -7605,6 +8375,44 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   return true;
 }
 
+function matchesTcecStatusFilter(file: FileRecord, filter: string) {
+  const [, rawStage = "pre", rawMetric = "reviewed", rawCommittee = "", rawMeetingDate = ""] =
+    filter.split(":");
+  const stage = decodeStatusFilterPart(rawStage) === "post" ? "post" : "pre";
+  const metric = decodeStatusFilterPart(rawMetric);
+  if (metric !== "reviewed" && metric !== "signed" && metric !== "pending") return false;
+  const committee = decodeStatusFilterPart(rawCommittee).trim().toLowerCase();
+  if (!committee) return false;
+  const meetingDate = decodeStatusFilterPart(rawMeetingDate).trim();
+  const fileCommittee =
+    stage === "pre" ? file.preTcecCommitteeNo?.trim() : file.postTcecCommitteeNumber?.trim();
+  if ((fileCommittee ?? "").toLowerCase() !== committee) return false;
+  const minutesDate = stage === "pre" ? file.preTcecMinutesDate : file.postTcecMinutesDate;
+  const fileMeetingDate = stage === "pre" ? file.preTcecDate : file.postTcecDate;
+  if (metric === "signed" && !hasFilledString(minutesDate)) return false;
+  if (metric === "pending" && hasFilledString(minutesDate)) return false;
+  if (meetingDate && fileMeetingDate !== meetingDate) return false;
+  return true;
+}
+
+function matchesCncSummaryFilter(file: FileRecord, filter: string) {
+  const [, rawMetric = "reviewed", rawCncDate = ""] = filter.split(":");
+  const metric = decodeStatusFilterPart(rawMetric);
+  const cncDate = decodeStatusFilterPart(rawCncDate).trim();
+  if (!cncDate || file.cncDate !== cncDate) return false;
+  const approved = hasFilledString(file.cncApprovalDate);
+  const financialSanctionSigned = hasOrderFinancialSanctionCompleted(file);
+  const supplyOrderPlaced = hasPlacedSupplyOrder(file);
+  if (metric === "name" || metric === "reviewed") return true;
+  if (metric === "approved") return approved;
+  if (metric === "financialSanctionSigned") return financialSanctionSigned;
+  if (metric === "supplyOrderPlaced") return supplyOrderPlaced;
+  if (metric === "approvalPending") return !approved;
+  if (metric === "financialSanctionPending") return approved && !financialSanctionSigned;
+  if (metric === "supplyOrderPending") return financialSanctionSigned && !supplyOrderPlaced;
+  return false;
+}
+
 function isCancellationDashboardFilter(filter: string) {
   return filter === "miscDemandCancelled" || filter === "miscSoCancelled";
 }
@@ -7629,7 +8437,8 @@ function hasOrderFinancialSanctionCompleted(file: FileRecord) {
 }
 
 function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, stageLabel: string) {
-  const milestoneKey = normalizeMilestoneName(milestoneLabel);
+  const rawMilestoneKey = normalizeMilestoneName(milestoneLabel);
+  const milestoneKey = rawMilestoneKey === "deliveryjob" ? "delivery" : rawMilestoneKey;
   const stageKey = normalizeStatusStage(stageLabel);
 
   if (milestoneKey === "supplyorder") {
@@ -7673,10 +8482,21 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
   }
 
   if (milestoneKey === "delivery") {
-    if (!isDeliveryInspectionApplicable(file)) return false;
     if (stageKey === "completed") return isDeliveryCompleted(file);
     if (stageKey === "pending") return matchesDeliveryPendingStatus(file);
     if (stageKey === "overdue") return matchesDeliveryOverdueStatus(file);
+  }
+
+  if (milestoneKey === "jobcompletion") {
+    if (stageKey === "due" || stageKey === "livemilestone") return isJobCompletionLive(file);
+    if (stageKey === "done" || stageKey === "completed") return isJobCompletionCompleted(file);
+  }
+
+  if (milestoneKey === "prebidmeeting") {
+    if (stageKey === "due") return isPreBidMeetingStatus(file, false, "due");
+    if (stageKey === "completed") return isPreBidMeetingStatus(file, false, "completed");
+    if (stageKey === "refloatdue") return isPreBidMeetingStatus(file, true, "due");
+    if (stageKey === "refloatcompleted") return isPreBidMeetingStatus(file, true, "completed");
   }
 
   if (milestoneKey === "payment") {
@@ -8239,11 +9059,54 @@ function getDashboardFilterTitle(filter: string) {
       category === "all" ? "All BG" : category === "psbpwb" ? "PSB+PWB" : category.toUpperCase();
     return `BG Expiry ${categoryLabel} - ${formatMonthKeyLabel(monthKey)}`;
   }
+  if (filter.startsWith("bgReceiptDelay:")) {
+    const [, category = "all", days = ""] = filter.split(":");
+    const categoryLabel =
+      category === "all" ? "All BG" : category === "psbpwb" ? "PSB+PWB" : category.toUpperCase();
+    return `BG Receipt Delay ${categoryLabel} - > ${days} days`;
+  }
+  if (filter.startsWith("warrantyBgMismatch:")) {
+    const [, category = "all", days = ""] = filter.split(":");
+    const categoryLabel =
+      category === "all" ? "Warranty BG" : category === "psbpwb" ? "PSB+PWB" : category.toUpperCase();
+    return `Warranty / BG mismatch ${categoryLabel} - +${days} days`;
+  }
   if (filter.startsWith("mode:")) {
     return `Bidding Mode - ${decodeURIComponent(filter.slice("mode:".length))}`;
   }
   if (filter.startsWith("valueThreshold:")) {
     return `File Value Threshold - ${decodeURIComponent(filter.slice("valueThreshold:".length))}`;
+  }
+  if (filter.startsWith("tcecStatus:")) {
+    const [, rawStage = "pre", rawMetric = "reviewed", rawCommittee = "", rawDate = ""] =
+      filter.split(":");
+    const stage = decodeStatusFilterPart(rawStage) === "post" ? "Post-TCEC" : "Pre-TCEC";
+    const metric = decodeStatusFilterPart(rawMetric);
+    const metricLabel =
+      metric === "signed" ? "Minutes signed" : metric === "pending" ? "Minutes pending" : "Files reviewed";
+    const committee = decodeStatusFilterPart(rawCommittee);
+    const date = decodeStatusFilterPart(rawDate);
+    return `${stage} ${metricLabel}${committee ? ` - ${committee}` : ""}${date ? ` - ${date}` : ""}`;
+  }
+  if (filter.startsWith("cncSummary:")) {
+    const [, rawMetric = "reviewed", rawDate = ""] = filter.split(":");
+    const metric = decodeStatusFilterPart(rawMetric);
+    const date = decodeStatusFilterPart(rawDate);
+    const metricLabel =
+      metric === "approved"
+        ? "CNC approved"
+        : metric === "financialSanctionSigned"
+          ? "Financial sanction signed"
+          : metric === "supplyOrderPlaced"
+            ? "S.O. placed"
+            : metric === "approvalPending"
+              ? "Approval pending"
+              : metric === "financialSanctionPending"
+                ? "Financial sanction pending"
+                : metric === "supplyOrderPending"
+                  ? "S.O. pending"
+                  : "Cases reviewed";
+    return `CNC Summary ${metricLabel}${date ? ` - ${date}` : ""}`;
   }
   return dashboardFilterTitles[filter] ?? "Status export";
 }

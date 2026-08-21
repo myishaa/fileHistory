@@ -4,6 +4,7 @@ import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
 import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 import {
+  isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
   isFileVisibleForYear,
   normalizeFinancialYearLabel,
@@ -58,12 +59,16 @@ export type FileRecord = {
   gemUndertakingDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
+  preBidMeeting?: string;
+  preBidMeetingDate?: string;
   tenderLive?: string;
   bidNumber?: string;
   bidDate?: string;
   bidOpeningDate?: string;
   bidOpened?: string;
   refloat?: string;
+  refloatPreBidMeeting?: string;
+  refloatPreBidMeetingDate?: string;
   postTcecDate?: string;
   postTcecMinutesDate?: string;
   postTcecCommitteeNumber?: string;
@@ -110,6 +115,7 @@ export type FileRecord = {
   markers?: FileMarker[];
   currentMilestone?: string;
   completedMilestones?: string[];
+  fileClosureDate?: string;
   createdAt: string;
 };
 
@@ -176,6 +182,7 @@ export type SupplyOrderDetail = {
   combinedBgReceivedDate?: string;
   combinedBgValidityDate?: string;
   combinedBgReturnDate?: string;
+  warrantyPeriodDate?: string;
   soNo?: string;
   gemSoNo?: string;
   soDate?: string;
@@ -337,6 +344,10 @@ export type DemandProcessingDayRange = {
   minDays?: string;
   maxDays?: string;
 };
+export type SpecialFileMarker = {
+  code: string;
+  description: string;
+};
 export type AppSettings = {
   financialYear: string;
   selectedYear: string;
@@ -358,6 +369,8 @@ export type AppSettings = {
   mmgSummaryFields?: MmgSummaryFieldConfig[];
   demandProcessingPresets?: DemandProcessingPreset[];
   demandProcessingDayRanges?: DemandProcessingDayRange[];
+  bgReceiptDelayDays?: number[];
+  specialFileMarkers?: SpecialFileMarker[];
   activeUserId?: string;
 };
 
@@ -368,7 +381,7 @@ function currentYear() {
 
 const defaultSettings: AppSettings = {
   financialYear: currentYear(),
-  selectedYear: currentYear(),
+  selectedYear: "__active_plus_current_fy_closed__",
   financialYears: [currentYear()],
   yearSelectionLocked: false,
   theme: "light",
@@ -391,6 +404,8 @@ const defaultSettings: AppSettings = {
     { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
     { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
   ],
+  bgReceiptDelayDays: [10, 30, 60],
+  specialFileMarkers: [],
 };
 
 const defaultUsers: AppUser[] = [];
@@ -475,7 +490,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function divisionsPath(year?: string, includeInactive = false) {
   const params = new URLSearchParams();
-  const divisionYear = isAllActiveFilesYear(year) ? state.settings.financialYear : year;
+  const divisionYear =
+    isAllActiveFilesYear(year) || isActivePlusCurrentFyClosedYear(year)
+      ? state.settings.financialYear
+      : year;
   if (divisionYear) params.set("year", divisionYear);
   if (includeInactive) params.set("includeInactive", "true");
   const query = params.toString();
@@ -493,14 +511,18 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
   const financialYear =
     normalizeFinancialYearLabel(settings.financialYear) ||
     normalizeFinancialYearLabel(defaultSettings.financialYear);
-  const selectedYear = isAllActiveFilesYear(settings.selectedYear)
-    ? settings.selectedYear
-    : normalizeFinancialYearLabel(settings.selectedYear) || financialYear;
+  const selectedYear =
+    isAllActiveFilesYear(settings.selectedYear) ||
+    isActivePlusCurrentFyClosedYear(settings.selectedYear)
+      ? settings.selectedYear
+      : normalizeFinancialYearLabel(settings.selectedYear) || financialYear;
   const financialYears = Array.from(
     new Set(
       [financialYear, selectedYear, ...(settings.financialYears ?? [])]
         .map((year) =>
-          isAllActiveFilesYear(year) ? undefined : normalizeFinancialYearLabel(year),
+          isAllActiveFilesYear(year) || isActivePlusCurrentFyClosedYear(year)
+            ? undefined
+            : normalizeFinancialYearLabel(year),
         )
         .filter((year): year is string => Boolean(year)),
     ),
@@ -684,6 +706,13 @@ export const store = {
       }>;
     }>("/api/dashboard/suspected-anomalies/acceptances");
   },
+  async countSuspectedAnomalies(selectedYear: string) {
+    const params = new URLSearchParams({ selectedYear });
+    const payload = await request<{ rows: Array<{ signature: string }> }>(
+      `/api/dashboard/suspected-anomalies?${params.toString()}`,
+    );
+    return payload.rows.length;
+  },
   acceptSuspectedAnomaly(signature: string, reason: string) {
     return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances", {
       method: "POST",
@@ -812,7 +841,9 @@ export const store = {
     const selectedYear = store.getSettings().selectedYear;
     const financialYear =
       financialYearOverride ||
-      (isAllActiveFilesYear(selectedYear) ? store.getSettings().financialYear : selectedYear) ||
+      (isAllActiveFilesYear(selectedYear) || isActivePlusCurrentFyClosedYear(selectedYear)
+        ? store.getSettings().financialYear
+        : selectedYear) ||
       store.getSettings().financialYear;
     runMutation(() =>
       request("/api/divisions", {
@@ -1124,7 +1155,9 @@ export function useAccessibleFiles() {
   const accessibleDivisions = useAccessibleDivisions();
   const activeUser = useActiveUser();
   const yearFilteredFiles = settings.selectedYear
-    ? files.filter((file) => isFileVisibleForYear(file, settings.selectedYear))
+    ? files.filter((file) =>
+        isFileVisibleForYear(file, settings.selectedYear, settings.financialYear),
+      )
     : files;
   if (!activeUser || activeUser.role === "admin" || activeUser.role === "sub_admin") {
     return yearFilteredFiles;

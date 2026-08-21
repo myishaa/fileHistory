@@ -10,6 +10,7 @@ import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 export const liveRouter = Router();
 
 const allActiveFilesYear = "__all_active_files__";
+const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const trialMmgLiveOptions = new Set(["status1", "status2", "finance"]);
 
 type SettingsRow = {
@@ -43,7 +44,12 @@ function mapSettings(row: SettingsRow): AppSettings {
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
-    financialYears: [row.financial_year, row.selected_year].filter(Boolean),
+    financialYears: [row.financial_year, row.selected_year].filter(
+      (year) =>
+        Boolean(year) &&
+        year !== "__all_active_files__" &&
+        year !== "__active_plus_current_fy_closed__",
+    ),
     yearSelectionLocked: row.year_selection_locked,
     theme: row.theme,
     themeTint: row.theme_tint,
@@ -110,16 +116,44 @@ async function loadActiveDivisions(financialYear: string) {
   });
 }
 
-function getSelectedYearWhere(selectedYear: string) {
-  if (selectedYear === allActiveFilesYear) {
-    return {
-      whereSql: `where not exists (
+function fileClosedExpression() {
+  return `exists (
           select 1 from file_completed_milestones completed
           where completed.file_id = f.id
             and regexp_replace(lower(coalesce(completed.milestone, '')), '[^a-z0-9]+', '', 'g') = 'fileclosed'
-        )
-        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'`,
+        )`;
+}
+
+function activeFilesExpression() {
+  return `not ${fileClosedExpression()}
+        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'`;
+}
+
+function getFinancialYearDateRange(financialYear: string | undefined) {
+  const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  if (!match) return undefined;
+  const startYear = Number(match[1]);
+  return {
+    start: `${startYear}-04-01`,
+    end: `${startYear + 1}-03-31`,
+  };
+}
+
+function getSelectedYearWhere(selectedYear: string, currentFinancialYear: string) {
+  if (selectedYear === allActiveFilesYear) {
+    return {
+      whereSql: `where ${activeFilesExpression()}`,
       values: [],
+    };
+  }
+  if (selectedYear === activePlusCurrentFyClosedYear) {
+    const range = getFinancialYearDateRange(currentFinancialYear);
+    if (!range) return { whereSql: `where ${activeFilesExpression()}`, values: [] };
+    return {
+      whereSql: `where (${activeFilesExpression()} or (${fileClosedExpression()}
+        and f.file_closure_date between $1::date and $2::date
+        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'))`,
+      values: [range.start, range.end],
     };
   }
 
@@ -138,8 +172,10 @@ liveRouter.get(
     const settings = await loadSettings();
     const selectedYear = settings.selectedYear || settings.financialYear;
     const divisionYear =
-      selectedYear === allActiveFilesYear ? settings.financialYear : selectedYear;
-    const selectedYearWhere = getSelectedYearWhere(selectedYear);
+      selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
+        ? settings.financialYear
+        : selectedYear;
+    const selectedYearWhere = getSelectedYearWhere(selectedYear, settings.financialYear);
     const [divisions, files] = await Promise.all([
       loadActiveDivisions(divisionYear),
       loadFiles(selectedYearWhere.whereSql, selectedYearWhere.values),

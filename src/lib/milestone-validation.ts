@@ -301,9 +301,38 @@ function getApplicablePaymentStages(order: SupplyOrderDetail) {
 }
 
 function isStagePaymentApplicable(stage: StageDeliveryDetail) {
-  const effectiveDpDate = getLaterDate(stage.dpDate, stage.revisedDp);
+  if (hasStagePaymentWorkflowState(stage)) return true;
+
+  const effectiveDpDate = stage.revisedDp || stage.dpDate;
   const dueDate = getNextLocalDate(effectiveDpDate);
   return hasFilledString(dueDate) && dueDate! <= formatLocalDate(new Date());
+}
+
+function hasStagePaymentWorkflowState(stage: StageDeliveryDetail) {
+  return (
+    hasFilledString(stage.materialReceiptDate) ||
+    hasFilledString(stage.jobCompletionDate) ||
+    hasFilledString(stage.irReceiptDate) ||
+    hasFilledString(stage.billPreparationDate) ||
+    hasFilledString(stage.billSentForPaymentDate) ||
+    hasFilledString(stage.paymentDate) ||
+    hasFilledString(stage.paymentMode) ||
+    hasFilledString(stage.actualPaymentCapital) ||
+    hasFilledString(stage.actualPaymentRevenue) ||
+    ["jobcompletion", "delivery", "irreceipt", "billpreparation", "billsentforpayment", "payment"].includes(
+      normalizeMilestoneName(stage.currentMilestone ?? ""),
+    ) ||
+    (stage.completedMilestones ?? []).some((milestone) =>
+      [
+        "jobcompletion",
+        "delivery",
+        "irreceipt",
+        "billpreparation",
+        "billsentforpayment",
+        "payment",
+      ].includes(normalizeMilestoneName(milestone)),
+    )
+  );
 }
 
 function getLaterDate(first: string | undefined, second: string | undefined) {
