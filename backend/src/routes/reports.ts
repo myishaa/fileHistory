@@ -138,6 +138,7 @@ const reportMilestoneDefinitions = [
     key: "ad",
     label: "AD",
     totalLabel: "Total cases",
+    reviewedColumn: "f.ad_sent_date",
     currentColumn: "f.ad_vetting_date",
     appliesColumn: "f.ad",
   },
@@ -145,6 +146,7 @@ const reportMilestoneDefinitions = [
     key: "rqa",
     label: "R&QA",
     totalLabel: "Total cases",
+    reviewedColumn: "f.rqa_sent_date",
     currentColumn: "f.rqa_approval_date",
     appliesColumn: "f.rqa",
   },
@@ -1824,9 +1826,11 @@ function lastFilledDateExpression() {
     (f.imms_date),
     (f.high_value_meeting_date),
     (f.high_value_minutes_date),
+    (f.ad_sent_date),
     (f.pre_tcec_date),
     (f.pre_tcec_minutes_date),
     (f.ad_vetting_date),
+    (f.rqa_sent_date),
     (f.rqa_approval_date),
     (f.ifa_sent_date),
     (f.ifa_final_date),
@@ -1944,12 +1948,12 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
       coalesce(${financialSanctionDate}, ${priorMainTimelineDate}) as psb_start_date,
       ${materialReceiptDate} as pwb_start_date,
       coalesce(${financialSanctionDate}, ${priorMainTimelineDate}) as psb_pwb_start_date,
-      coalesce(${soDate}, ${financialSanctionDate}, ${priorMainTimelineDate}) as delivery_start_date,
+      ${effectiveDpDate} as delivery_start_date,
       ${materialReceiptDate} as material_receipt_date,
       ${jobCompletionDone} as job_completion_done,
       case
         when ${nonDeliveryFileTypeExpression("f")} and ${effectiveDpDate} is not null
-        then (${effectiveDpDate} + interval '1 day')::date
+        then ${effectiveDpDate}
         else null::date
       end as job_completion_start_date,
       case
@@ -1996,9 +2000,11 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
         (f.imms_date),
         (f.high_value_meeting_date),
         (f.high_value_minutes_date),
+        (f.ad_sent_date),
         (f.pre_tcec_date),
         (f.pre_tcec_minutes_date),
         (f.ad_vetting_date),
+        (f.rqa_sent_date),
         (f.rqa_approval_date),
         (f.ifa_sent_date),
         (f.ifa_final_date),

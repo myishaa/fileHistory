@@ -71,6 +71,7 @@ export type AppSettings = {
   demandProcessingDayRanges?: unknown[];
   bgReceiptDelayDays?: number[];
   specialFileMarkers?: SpecialFileMarker[];
+  firmUniqueNoLabel?: string;
   activeUserId?: string;
 };
 
@@ -132,6 +133,9 @@ export type SupplyOrderDetail = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmUniqueNo?: string;
+  firmContactNo?: string;
+  firmCity?: string;
   firmType?: string;
   firmTypeOther?: string;
   dpExtension?: string;
@@ -204,7 +208,24 @@ export type StageDeliveryDetail = {
 export type FirmDetail = {
   firmName?: string;
   city?: string;
+  address?: string;
   emailId?: string;
+  firmUniqueNo?: string;
+  contactNo?: string;
+};
+
+export type MasterFirm = {
+  id: string;
+  firmName?: string;
+  emailId?: string;
+  city?: string;
+  address?: string;
+  firmUniqueNo?: string;
+  contactNo?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type FileRecord = {
@@ -244,10 +265,12 @@ export type FileRecord = {
   rfpVetting?: string;
   highValueMeetingDate?: string;
   highValueMinutesDate?: string;
+  adSentDate?: string;
   preTcecDate?: string;
   preTcecMinutesDate?: string;
   preTcecCommitteeNo?: string;
   adVettingDate?: string;
+  rqaSentDate?: string;
   rqaApprovalDate?: string;
   ifaSentDate?: string;
   ifaFinalDate?: string;
@@ -283,6 +306,9 @@ export type FileRecord = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmUniqueNo?: string;
+  firmContactNo?: string;
+  firmCity?: string;
   firmType?: string;
   firmTypeOther?: string;
   dpExtension?: string;

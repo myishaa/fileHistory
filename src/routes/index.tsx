@@ -84,6 +84,7 @@ type AnalyticsPanelKey =
   | "biddingMode"
   | "fileValueThresholds"
   | "paymentPending"
+  | "preBidMeetings"
   | "tcecStatus"
   | "cncSummary"
   | "suspectedAnomaly"
@@ -111,6 +112,9 @@ type AnalyticsSearchTarget = {
   division?: string;
   analyticsType?: "firm" | "indentor";
   analyticsNames?: string[];
+  focusSection?: string;
+  focusMilestone?: string;
+  focusTarget?: string;
 };
 type TcecStatusStage = "pre" | "post";
 type SummarySubMetric = { label: string; value: number | string; searchFilter?: string };
@@ -120,6 +124,15 @@ type DelayStatusSummary = {
   averageDays: number;
   longestDays: number;
   byMilestone: Array<{ key: string; label: string; count: number }>;
+};
+type PreBidMeetingRow = {
+  name: string;
+  monthKey: string;
+  count: number;
+  preBidDue: number;
+  preBidCompleted: number;
+  refloatPreBidDue: number;
+  refloatPreBidCompleted: number;
 };
 type SuspectedAnomalyRow = {
   signature: string;
@@ -263,7 +276,11 @@ async function fetchDashboardStatusSummary(query: string, signal: AbortSignal) {
     throw new Error(body?.error ?? `Status summary request failed: ${response.status}`);
   }
   return (await response.json()) as {
-    summary: { statusSummaryGroups: StatusSummaryTableGroup[]; delaySummary: DelayStatusSummary };
+    summary: {
+      statusSummaryGroups: StatusSummaryTableGroup[];
+      delaySummary: DelayStatusSummary;
+      preBidMeetingRows: PreBidMeetingRow[];
+    };
   };
 }
 
@@ -302,6 +319,7 @@ const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
   "biddingMode",
   "fileValueThresholds",
   "paymentPending",
+  "preBidMeetings",
   "tcecStatus",
   "cncSummary",
   "suspectedAnomaly",
@@ -462,6 +480,7 @@ export function Dashboard() {
   const [dashboardSummaryError, setDashboardSummaryError] = useState<string | undefined>();
   const [status3Groups, setStatus3Groups] = useState<StatusSummaryTableGroup[]>([]);
   const [analyticsDelaySummary, setAnalyticsDelaySummary] = useState<DelayStatusSummary>();
+  const [analyticsPreBidRows, setAnalyticsPreBidRows] = useState<PreBidMeetingRow[]>([]);
   const [suspectedAnomalyRows, setSuspectedAnomalyRows] = useState<SuspectedAnomalyRow[]>([]);
   const [suspectedAnomalyLoading, setSuspectedAnomalyLoading] = useState(false);
   const [suspectedAnomalyError, setSuspectedAnomalyError] = useState<string | undefined>();
@@ -677,6 +696,20 @@ export function Dashboard() {
         if (controller.signal.aborted) return;
         console.error(error);
         setAnalyticsDelaySummary(undefined);
+      });
+
+    return () => controller.abort();
+  }, [activeAnalyticsPanel, activeDashboardTab, analyticsDelayQuery]);
+
+  useEffect(() => {
+    if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "preBidMeetings") return;
+    const controller = new AbortController();
+    fetchDashboardStatusSummary(analyticsDelayQuery, controller.signal)
+      .then((payload) => setAnalyticsPreBidRows(payload.summary.preBidMeetingRows ?? []))
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error(error);
+        setAnalyticsPreBidRows([]);
       });
 
     return () => controller.abort();
@@ -1204,6 +1237,13 @@ export function Dashboard() {
       ),
     },
     {
+      key: "preBidMeetings",
+      title: "Pre-Bid Meetings",
+      subtitle: "Month-wise Pre-Bid Meeting schedule",
+      columns: getPreBidMeetingAnalyticsColumns(),
+      rows: analyticsPreBidRows.map((row) => ({ ...row, name: row.monthKey })),
+    },
+    {
       key: "tcecStatus",
       title: "TCEC summary",
       subtitle:
@@ -1402,6 +1442,9 @@ export function Dashboard() {
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
           : undefined,
+        focusSection: target.focusSection,
+        focusMilestone: target.focusMilestone,
+        focusTarget: target.focusTarget,
       },
     });
   };
@@ -2814,6 +2857,7 @@ function hideStatus3PendingColumn(groups: StatusSummaryTableGroup[]) {
     "PWB",
     "PSB+PWB",
     "Financial Sanction",
+    "Supply Order",
   ]);
   return groups.map((group) => ({
     ...group,
@@ -3930,6 +3974,22 @@ function getMonthCountAnalyticsColumns(): AnalyticsTableColumn[] {
   ];
 }
 
+function getPreBidMeetingAnalyticsColumns(): AnalyticsTableColumn[] {
+  return [
+    {
+      key: "name",
+      label: "Month",
+      align: "left",
+      format: (value) => formatMonthKeyLabel(String(value)),
+    },
+    { key: "count", label: "Total" },
+    { key: "preBidDue", label: "Due" },
+    { key: "preBidCompleted", label: "Completed" },
+    { key: "refloatPreBidDue", label: "Refloat Due" },
+    { key: "refloatPreBidCompleted", label: "Refloat Completed" },
+  ];
+}
+
 function withRankAnalyticsColumns(columns: AnalyticsTableColumn[]) {
   return [{ key: "rank", label: "Rank" }, ...columns];
 }
@@ -4385,7 +4445,7 @@ function getAnalyticsSearchTarget(
   if (
     !name ||
     columnKey === "rank" ||
-    (columnKey === "name" && panelKey !== "cncSummary") ||
+    (columnKey === "name" && panelKey !== "cncSummary" && panelKey !== "preBidMeetings") ||
     columnKey === "range"
   )
     return undefined;
@@ -4395,6 +4455,22 @@ function getAnalyticsSearchTarget(
   if (panelKey === "paymentPending" && columnKey === "count") {
     return { dashboardFilter: "paymentDue", division: name };
   }
+  if (panelKey === "preBidMeetings") {
+    const monthKey = String(row.monthKey ?? row.name ?? "").trim();
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return undefined;
+    const filterByColumn: Record<string, string> = {
+      name: `preBidMeeting:all:${monthKey}`,
+      count: `preBidMeeting:all:${monthKey}`,
+      preBidDue: `preBidMeeting:due:${monthKey}`,
+      preBidCompleted: `preBidMeeting:completed:${monthKey}`,
+      refloatPreBidDue: `refloatPreBidMeeting:due:${monthKey}`,
+      refloatPreBidCompleted: `refloatPreBidMeeting:completed:${monthKey}`,
+    };
+    const dashboardFilter = filterByColumn[columnKey];
+    return dashboardFilter
+      ? { dashboardFilter, focusSection: "Bidding details" }
+      : undefined;
+  }
   if (
     panelKey === "tcecStatus" &&
     (columnKey === "reviewed" || columnKey === "signed" || columnKey === "pending")
@@ -4402,10 +4478,16 @@ function getAnalyticsSearchTarget(
     const stage = String(row.stage ?? "pre") === "post" ? "post" : "pre";
     return {
       dashboardFilter: getTcecStatusDashboardFilter(stage, columnKey, name),
+      focusSection: "TCEC block",
     };
   }
   if (panelKey === "cncSummary" && isCncSummaryMetric(columnKey)) {
-    return { dashboardFilter: getCncSummaryDashboardFilter(columnKey, name) };
+    const cncDate = String(row.cncDate ?? row.name ?? "").trim();
+    if (!cncDate) return undefined;
+    return {
+      dashboardFilter: getCncSummaryDashboardFilter(columnKey, cncDate),
+      focusSection: "Approval block",
+    };
   }
   if (panelKey === "topFirms" && columnKey === "value") {
     return { analyticsType: "firm", analyticsNames: [name] };
@@ -4422,9 +4504,18 @@ function getAnalyticsSearchTarget(
   if (panelKey === "fileValueThresholds" && columnKey === "count") {
     return { dashboardFilter: `valueThreshold:${encodeURIComponent(name)}` };
   }
-  if (panelKey === "suspectedAnomaly" && columnKey === "fileRef") {
+  if (
+    panelKey === "suspectedAnomaly" &&
+    columnKey !== "action" &&
+    columnKey !== "rank"
+  ) {
     const fileId = String(row.fileId ?? "").trim();
-    return fileId ? { dashboardFilter: `anomalyFile:${encodeURIComponent(fileId)}` } : undefined;
+    return fileId
+      ? {
+          dashboardFilter: `anomalyFile:${encodeURIComponent(fileId)}`,
+          ...getSuspectedAnomalySearchFocus(row),
+        }
+      : undefined;
   }
   if (panelKey === "milestoneClearingTable" && columnKey === "sampleSize") {
     return getMilestoneClearingSearchTarget(name);
@@ -4446,7 +4537,85 @@ function getTcecMeetingSearchTarget(
   const metric = columnKey === "name" ? "reviewed" : columnKey;
   return {
     dashboardFilter: getTcecStatusDashboardFilter(stage, metric, committee, meetingDate),
+    focusSection: "TCEC block",
   };
+}
+
+function getSuspectedAnomalySearchFocus(row: Record<string, number | string>) {
+  const block = normalizeMilestoneName(String(row.block ?? ""));
+  const rule = normalizeMilestoneName(String(row.rule ?? ""));
+  const previousField = normalizeMilestoneName(String(row.previousField ?? ""));
+  const laterField = normalizeMilestoneName(String(row.laterField ?? ""));
+  const source = `${block} ${rule} ${previousField} ${laterField}`;
+
+  if (block === "datacompleteness") {
+    return { focusSection: "File details" };
+  }
+  if (
+    block === "bidding" ||
+    block === "prebidmeeting" ||
+    block === "refloat" ||
+    block === "refloatprebidmeeting"
+  ) {
+    return { focusSection: "Bidding details" };
+  }
+  if (block === "tcec") return { focusSection: "TCEC block" };
+  if (block === "scrutiny" || block === "control") {
+    return { focusSection: "Scrutiny and control" };
+  }
+  if (block === "closure") {
+    return { focusSection: "Milestones", focusMilestone: "File Closed" };
+  }
+  if (
+    block === "highvalue" ||
+    block === "ad" ||
+    block === "rqa" ||
+    block === "ifa" ||
+    block === "cfa" ||
+    block === "cnc"
+  ) {
+    return { focusSection: "Approval block" };
+  }
+  if (block === "cancellation" && !source.includes("so")) {
+    return { focusSection: "File details" };
+  }
+
+  const supplyOrderTarget = getSuspectedAnomalySupplyOrderFocusTarget(source);
+  if (supplyOrderTarget) {
+    return { focusSection: "Supply order and payment", focusTarget: supplyOrderTarget };
+  }
+  if (source.includes("division") || source.includes("description") || source.includes("indentor")) {
+    return { focusSection: "File details" };
+  }
+  return { focusSection: "Timeline" };
+}
+
+function getSuspectedAnomalySupplyOrderFocusTarget(source: string) {
+  const paddedSource = ` ${source} `;
+  if (source.includes("psbpwb") || source.includes("combinedbg")) return "psbpwb:any";
+  if (source.includes("pwb")) return "pwb:any";
+  if (source.includes("psb")) return "psb:any";
+  if (source.includes("bankguarantee") || source.includes("bg")) return "securitybg:any";
+  if (source.includes("deliveryperiod") || source.includes("reviseddp") || source.includes("dp")) {
+    return "deliveryperiod:any";
+  }
+  if (source.includes("stagedelivery")) return "stagedelivery:any";
+  if (source.includes("stagepayment")) return "stagepayment:any";
+  if (source.includes("advancepayment")) return "advancepayment:yes";
+  if (source.includes("jobcompletion")) return "jobcompletion:any";
+  if (source.includes("delivery") || source.includes("materialreceipt")) return "delivery:any";
+  if (source.includes("irpreparation")) return "irpreparation:any";
+  if (source.includes("irreceipt") || paddedSource.includes(" ir ")) return "irreceipt:any";
+  if (source.includes("billpreparation")) return "billpreparation:any";
+  if (source.includes("billsentforpayment")) return "billsentforpayment:any";
+  if (source.includes("actualpayment")) return "actualpayment:yes";
+  if (source.includes("payment")) return "payment:any";
+  if (source.includes("financialsanction")) return "financialsanction:any";
+  if (source.includes("firmtype")) return "firmtype:any";
+  if (source.includes("firm") || source.includes("supplyorder") || source.includes("so")) {
+    return "supplyorder:any";
+  }
+  return undefined;
 }
 
 function getCncSummaryDashboardFilter(metric: string, cncDate: string) {
@@ -6398,12 +6567,12 @@ const milestoneClearingDefinitions = [
   },
   {
     name: "AD",
-    getStartDate: (file: FileRecord) => file.preTcecMinutesDate ?? file.receivedDate,
+    getStartDate: (file: FileRecord) => file.adSentDate,
     getEndDate: (file: FileRecord) => file.adVettingDate,
   },
   {
     name: "R&QA",
-    getStartDate: (file: FileRecord) => file.receivedDate,
+    getStartDate: (file: FileRecord) => file.rqaSentDate,
     getEndDate: (file: FileRecord) => file.rqaApprovalDate,
   },
   {
@@ -6635,6 +6804,7 @@ const milestoneDefinitions = [
     key: "ad",
     label: "AD",
     totalLabel: "Total cases",
+    reviewed: "adSentDate",
     current: "adVettingDate",
     applies: (file) => isYes(file.ad),
   },
@@ -6642,6 +6812,7 @@ const milestoneDefinitions = [
     key: "rqa",
     label: "R&QA",
     totalLabel: "Total cases",
+    reviewed: "rqaSentDate",
     current: "rqaApprovalDate",
     applies: (file) => isYes(file.rqa),
   },

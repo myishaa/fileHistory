@@ -316,7 +316,7 @@ function hasStagePaymentWorkflowState(stage: StageDeliveryDetail) {
     hasFilledString(stage.billPreparationDate) ||
     hasFilledString(stage.billSentForPaymentDate) ||
     hasFilledString(stage.paymentDate) ||
-    hasFilledString(stage.paymentMode) ||
+    hasSelectablePaymentMode(stage.paymentMode) ||
     hasFilledString(stage.actualPaymentCapital) ||
     hasFilledString(stage.actualPaymentRevenue) ||
     ["jobcompletion", "delivery", "irreceipt", "billpreparation", "billsentforpayment", "payment"].includes(
@@ -384,6 +384,11 @@ function isDeliveryInspectionApplicable(file: Partial<FileRecord>) {
 
 function hasFilledString(value: string | undefined) {
   return Boolean(value?.trim());
+}
+
+function hasSelectablePaymentMode(value: string | undefined) {
+  const normalized = value?.trim();
+  return Boolean(normalized && normalized.toLowerCase() !== "select");
 }
 
 function isYes(value: string | undefined) {

@@ -1083,7 +1083,7 @@ function getMilestoneFlow(files: FileRecord[]) {
   const withPreBid =
     biddingIndex === -1
       ? [...flow, preBidMeeting]
-      : [...flow.slice(0, biddingIndex), preBidMeeting, ...flow.slice(biddingIndex)];
+      : [...flow.slice(0, biddingIndex + 1), preBidMeeting, ...flow.slice(biddingIndex + 1)];
   const delivery = {
     key: "delivery",
     label: "Delivery",

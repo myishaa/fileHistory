@@ -148,6 +148,7 @@ const milestoneDefinitions = [
     key: "ad",
     label: "AD",
     totalLabel: "Total cases",
+    reviewed: "adSentDate",
     current: "adVettingDate",
     applies: (file: FileRecord) => isYes(file.ad),
   },
@@ -155,6 +156,7 @@ const milestoneDefinitions = [
     key: "rqa",
     label: "R&QA",
     totalLabel: "Total cases",
+    reviewed: "rqaSentDate",
     current: "rqaApprovalDate",
     applies: (file: FileRecord) => isYes(file.rqa),
   },
@@ -543,7 +545,8 @@ function getBgReceiptDelayRows(files: FileRecord[], thresholds: number[]): BgRec
   ).sort((a, b) => a - b);
   const days = normalizedThresholds.length ? normalizedThresholds : [10, 30, 60];
   const categories = ["psb", "pwb", "psbpwb"] as const;
-  return days.map((thresholdDays) => {
+  return days.map((thresholdDays, index) => {
+    const nextThresholdDays = days[index + 1];
     const counts = { psb: 0, pwb: 0, psbPwb: 0, count: 0 };
     rawSupplyOrderEntries(files).forEach(({ file, order }) => {
       if (isCancelledFile(file) || isSupplyOrderCancelled(file, order)) return;
@@ -552,8 +555,9 @@ function getBgReceiptDelayRows(files: FileRecord[], thresholds: number[]): BgRec
         if (isBgReceivedOrder(order, category)) return;
         const baseDate = getBgReceiptDelayBaseDate(file, order, category);
         if (!hasFilledString(baseDate)) return;
-        const delayDate = addDays(baseDate, thresholdDays);
-        if (!isDateBeforeToday(delayDate)) return;
+        const delayDays = getDaysSinceDate(baseDate);
+        if (delayDays === undefined || delayDays <= thresholdDays) return;
+        if (nextThresholdDays !== undefined && delayDays > nextThresholdDays) return;
         if (category === "psb") counts.psb += 1;
         if (category === "pwb") counts.pwb += 1;
         if (category === "psbpwb") counts.psbPwb += 1;
@@ -1022,9 +1026,11 @@ function isWorkflowNotStartedFile(file: FileRecord) {
     "immsDate",
     "highValueMeetingDate",
     "highValueMinutesDate",
+    "adSentDate",
     "preTcecDate",
     "preTcecMinutesDate",
     "adVettingDate",
+    "rqaSentDate",
     "rqaApprovalDate",
     "ifaSentDate",
     "ifaFinalDate",
@@ -1119,17 +1125,18 @@ const orderDelayMilestones = [
     key: "delivery",
     label: "Delivery",
     current: "delivery",
-    start: (file: FileRecord, order: SupplyOrderDetail) =>
-      order.soDate || order.financialSanctionDate || getMainTimelineLastFilledDateValue(file),
+    start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
     complete: (_file: FileRecord, order: SupplyOrderDetail) => order.materialReceiptDate,
+    applies: (file: FileRecord) => isDeliveryInspectionApplicable(file),
   },
   {
     key: "jobCompletion",
     label: "Job Completion",
     current: "jobcompletion",
-    start: (_file: FileRecord, order: SupplyOrderDetail) => addDays(getDeliveryPeriodDate(order), 1),
+    start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
     complete: (_file: FileRecord, order: SupplyOrderDetail) =>
       isJobCompletionDone(order) ? "9999-12-31" : undefined,
+    applies: (file: FileRecord) => isJobCompletionWorkflow(file),
   },
   {
     key: "irPreparation",
@@ -1197,6 +1204,7 @@ function getCurrentOrderMilestoneDelayRows(
         : fileSupplyOrders(file);
     return rows.flatMap((order, index) => {
       if (isSupplyOrderCancelled(file, order)) return [];
+      if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return [];
       if (milestone.key === "advancePayment") {
         if (!isAdvancePaymentPending(order)) return [];
       } else if (
@@ -1221,7 +1229,7 @@ function getCurrentOrderMilestoneDelayRows(
           daysInStage,
           lastFilledDate: getLastFilledDateValue(file) ?? "",
           focusSection: "Supply order and payment",
-          focusTarget: `${milestone.current}:pending`,
+          focusTarget: `${milestone.current}:pending:${index}`,
         },
       ];
     });
@@ -1285,9 +1293,11 @@ function getMainTimelineLastFilledDateValue(file: FileRecord) {
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -1318,9 +1328,11 @@ function getLastFilledDateValue(file: FileRecord) {
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -1373,9 +1385,11 @@ function getOrderTimelineLastFilledDateValue(file: FileRecord, order: SupplyOrde
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -1621,9 +1635,9 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
     biddingIndex === -1
       ? [...withDeliveryPeriod, ...preBidRows]
       : [
-          ...withDeliveryPeriod.slice(0, biddingIndex),
+          ...withDeliveryPeriod.slice(0, biddingIndex + 1),
           ...preBidRows,
-          ...withDeliveryPeriod.slice(biddingIndex),
+          ...withDeliveryPeriod.slice(biddingIndex + 1),
         ];
   const advancePaymentRows = [
     {

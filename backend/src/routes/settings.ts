@@ -47,6 +47,7 @@ type SettingsRow = {
   demand_processing_day_ranges: unknown;
   bg_receipt_delay_days: unknown;
   special_file_markers: unknown;
+  firm_unique_no_label: string;
   active_user_id: string | null;
 };
 
@@ -187,7 +188,10 @@ async function ensureFinancialYear(label: string, client: PoolClient | typeof po
   }
   if (!isKnownFinancialYear(years, label)) {
     if (!isFinancialYearLabel(label)) {
-      throw new HttpError(400, "New financial year must be entered in YYYY-YY format, like 2026-27.");
+      throw new HttpError(
+        400,
+        "New financial year must be entered in YYYY-YY format, like 2026-27.",
+      );
     }
     validateContinuousFinancialYear(years, label);
   }
@@ -273,9 +277,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     new Set(
       [row.financial_year, row.selected_year, ...financialYears]
         .filter(Boolean)
-        .filter(
-          (year) => year !== allActiveFilesYear && year !== activePlusCurrentFyClosedYear,
-        ),
+        .filter((year) => year !== allActiveFilesYear && year !== activePlusCurrentFyClosedYear),
     ),
   ).sort((a, b) => b.localeCompare(a));
   const globalPresets = tagPresets(row.table_field_presets, "global");
@@ -319,6 +321,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     ),
     bgReceiptDelayDays: normalizeBgReceiptDelayDays(fromDbJsonArray(row.bg_receipt_delay_days)),
     specialFileMarkers: normalizeSpecialFileMarkers(fromDbJsonArray(row.special_file_markers)),
+    firmUniqueNoLabel: fromDbText(row.firm_unique_no_label) || "Firm Unique No.",
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -403,7 +406,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
-              bg_receipt_delay_days, special_file_markers, active_user_id
+              bg_receipt_delay_days, special_file_markers, firm_unique_no_label, active_user_id
        from app_settings
        where id = true`,
     );
@@ -471,7 +474,9 @@ function normalizeSpecialFileMarkers(value: unknown) {
   for (const item of source) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const record = item as Record<string, unknown>;
-    const code = String(record.code ?? "").trim().toUpperCase();
+    const code = String(record.code ?? "")
+      .trim()
+      .toUpperCase();
     if (!code || seen.has(code)) continue;
     seen.add(code);
     rows.push({
@@ -686,6 +691,8 @@ settingsRouter.patch(
         JSON.stringify(readSpecialFileMarkers(body.specialFileMarkers)),
         "::jsonb",
       );
+    if ("firmUniqueNoLabel" in body)
+      addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",
@@ -728,7 +735,8 @@ settingsRouter.patch(
       !("liveStatusLockedFields" in body) &&
       !("mmgSummaryFields" in body) &&
       !("bgReceiptDelayDays" in body) &&
-      !("specialFileMarkers" in body)
+      !("specialFileMarkers" in body) &&
+      !("firmUniqueNoLabel" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }

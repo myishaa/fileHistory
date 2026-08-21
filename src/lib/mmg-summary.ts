@@ -80,7 +80,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     label: "TCEC files with MMG for conducting meeting",
     group: "Scrutiny and vetting",
   },
-  { key: "highValueDemands", label: "High value demands (>3Cr)", group: "Scrutiny and vetting" },
+  { key: "highValueDemands", label: "High value demands", group: "Scrutiny and vetting" },
   {
     key: "highValueReviewCompleted",
     label: "High value review completed",
@@ -123,7 +123,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     group: "Bidding and S.O.",
   },
   { key: "postTcecCompleted", label: "Post TCEC completed", group: "Bidding and S.O." },
-  { key: "cncDue", label: "CNC due", group: "Bidding and S.O." },
+  { key: "cncDue", label: "CNC in progress", group: "Bidding and S.O." },
   { key: "cncCompleted", label: "CNC completed", group: "Bidding and S.O." },
   {
     key: "financialSanctionCompleted",
@@ -305,9 +305,10 @@ export function normalizeMmgSummaryFields(
     const candidate = item as Record<string, unknown>;
     if (typeof candidate.key !== "string" || !optionByKey.has(candidate.key)) return;
     const option = optionByKey.get(candidate.key);
+    const customLabel = typeof candidate.label === "string" ? candidate.label.trim() : "";
     byKey.set(candidate.key, {
       key: candidate.key,
-      label: option?.label ?? candidate.key,
+      label: customLabel || option?.label || candidate.key,
       enabled: candidate.enabled !== false,
     });
   });
@@ -557,21 +558,14 @@ function getMmgSummaryValues(
     ),
     cncDue: countFiles(
       nonCancelledFiles,
-      (file) =>
-        isYes(file.tcec) &&
-        !hasFilledString(file.cncDate) &&
-        !hasFilledString(file.cncApprovalDate),
+      (file) => hasFilledString(file.cncDate) && !hasFilledString(file.cncApprovalDate),
     ),
     cncCompleted: countFiles(nonCancelledFiles, (file) => hasFilledString(file.cncApprovalDate)),
     financialSanctionCompleted: formatCount(
       rawActiveOrders.filter(({ order }) => isFinancialSanctionCompleted(order)).length,
     ),
     financialSanctionPending: formatCount(
-      rawActiveOrders.filter(
-        ({ order }) =>
-          normalizeMilestoneName(order.currentMilestone) === "financialsanction" &&
-          !isFinancialSanctionCompleted(order),
-      ).length,
+      rawActiveOrders.filter(({ file, order }) => isFinancialSanctionPending(file, order)).length,
     ),
     soTotal: formatCount(
       rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
@@ -1134,6 +1128,18 @@ function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
     isFinancialSanctionCompleted(order) &&
     !isSupplyOrderTabComplete(file, order)
   );
+}
+
+function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    !isCancelledOrder(file, order) &&
+    isFinancialSanctionReached(file) &&
+    !isFinancialSanctionCompleted(order)
+  );
+}
+
+function isFinancialSanctionReached(file: FileRecord) {
+  return isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate));
 }
 
 function isBgCategoryApplicable(file: FileRecord, order: SupplyOrderDetail, category: string) {

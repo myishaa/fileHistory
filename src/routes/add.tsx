@@ -9,7 +9,9 @@ import {
   useState,
 } from "react";
 import {
+  createMasterFirm,
   fetchFile,
+  fetchMasterFirms,
   fetchNextUniqueCode,
   fetchIndentors,
   store,
@@ -19,6 +21,7 @@ import {
   type FileRecord,
   type FileRemark,
   type FirmDetail,
+  type MasterFirm,
   type SpecialFileMarker,
   type AdvancePaymentDetail,
   type StageDeliveryDetail,
@@ -45,6 +48,7 @@ import {
   isAllActiveFilesYear,
 } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 
 export const Route = createFileRoute("/add")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -94,10 +98,12 @@ const empty = {
   rfpVetting: "No",
   highValueMeetingDate: "",
   highValueMinutesDate: "",
+  adSentDate: "",
   preTcecDate: "",
   preTcecMinutesDate: "",
   preTcecCommitteeNo: "",
   adVettingDate: "",
+  rqaSentDate: "",
   rqaApprovalDate: "",
   ifaSentDate: "",
   ifaFinalDate: "",
@@ -238,6 +244,23 @@ type SupplyOrderKey = keyof SupplyOrderDetail;
 type AdvancePaymentKey = keyof AdvancePaymentDetail;
 type StageDeliveryKey = keyof StageDeliveryDetail;
 
+function getEditFileHeading(form: FormState, file: FileRecord | undefined) {
+  return (
+    [
+      form.demandDescription,
+      file?.demandDescription,
+      form.fileNo,
+      file?.fileNo,
+      form.uniqueCode,
+      file?.uniqueCode,
+      form.imms,
+      file?.imms,
+    ]
+      .map((value) => value?.trim())
+      .find((value): value is string => Boolean(value)) ?? "Edit file details"
+  );
+}
+
 function createEmptyForm(financialYear: string): FormState {
   return { ...empty, year: financialYear };
 }
@@ -354,10 +377,21 @@ function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>
     rows
       ?.map((row) => ({
         firmName: row.firmName ?? "",
-        city: row.city ?? "",
+        firmUniqueNo: row.firmUniqueNo ?? "",
         emailId: row.emailId ?? "",
+        address: row.address ?? "",
+        city: row.city ?? "",
+        contactNo: row.contactNo ?? "",
       }))
-      .filter((row) => row.firmName || row.city || row.emailId) ?? [];
+      .filter(
+        (row) =>
+          row.firmName ||
+          row.firmUniqueNo ||
+          row.emailId ||
+          row.address ||
+          row.city ||
+          row.contactNo,
+      ) ?? [];
   return normalized;
 }
 
@@ -378,7 +412,6 @@ const tcecDisabledKeys: FieldKey[] = [
   "preTcecDate",
   "preTcecMinutesDate",
   "preTcecCommitteeNo",
-  "adVettingDate",
   "postTcecDate",
   "postTcecMinutesDate",
   "postTcecCommitteeNumber",
@@ -389,7 +422,7 @@ const tcecDisabledKeys: FieldKey[] = [
 const gemDisabledKeys: FieldKey[] = ["gemUndertakingDate", "gemSoNo"];
 const rfpVettingDisabledKeys: FieldKey[] = ["rfpVettingInitiationDate", "rfpVettingApprovalDate"];
 const highValueDisabledKeys: FieldKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
-const rqaDisabledKeys: FieldKey[] = ["rqaApprovalDate"];
+const rqaDisabledKeys: FieldKey[] = ["rqaSentDate", "rqaApprovalDate"];
 const ifaDisabledKeys: FieldKey[] = ["ifaSentDate", "ifaFinalDate"];
 const bgDisabledKeys: FieldKey[] = [];
 const preBidMeetingDisabledKeys: FieldKey[] = ["preBidMeetingDate"];
@@ -413,14 +446,38 @@ const yesNoCaps = ["YES", "NO"];
 const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
 const defaultFileTypeOptions = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
-const paymentModeOptions = ["Online", "Offline"];
+const paymentModeOptions = ["Select", "Online", "Offline"];
 const bgCoverageTypeOptions = ["None", "PSB", "PWB", "PSB+PWB", "PSB and PWB separately"];
 type FirmDetailsState = {
   invitedFirms: FirmDetail[];
   bidderFirms: FirmDetail[];
 };
 
-const emptyFirmDetail: Required<FirmDetail> = { firmName: "", city: "", emailId: "" };
+const emptyFirmDetail: Required<FirmDetail> = {
+  firmName: "",
+  city: "",
+  address: "",
+  emailId: "",
+  firmUniqueNo: "",
+  contactNo: "",
+};
+
+function firmNameOption(firm: MasterFirm) {
+  return firm.firmName?.trim() || "";
+}
+
+function firmUniqueNoOption(firm: MasterFirm) {
+  return firm.firmUniqueNo?.trim() || "";
+}
+
+function numericOnly(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function isValidEmailFormat(value: string | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}
 const emptySupplyOrder: Required<SupplyOrderDetail> = {
   currentMilestone: "",
   completedMilestones: [],
@@ -450,6 +507,9 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   soValueRevenue: "",
   dpDate: "",
   firm: "",
+  firmUniqueNo: "",
+  firmContactNo: "",
+  firmCity: "",
   firmType: "",
   firmTypeOther: "",
   dpExtension: "No",
@@ -524,6 +584,9 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "soValueCapital", label: "S.O. value" },
   { key: "dpDate", label: "D.P. date", type: "date" },
   { key: "firm", label: "Firm" },
+  { key: "firmUniqueNo", label: "Firm Unique No." },
+  { key: "firmContactNo", label: "Contact No.", type: "number" },
+  { key: "firmCity", label: "City" },
   { key: "firmType", label: "Firm type" },
   { key: "psbApplicable", label: "PSB applicable", options: yesNo },
   { key: "bgCoverageType", label: "BG coverage type", options: bgCoverageTypeOptions },
@@ -600,6 +663,9 @@ const supplyOrderSubviewFields = {
     "soDate",
     "soValueCapital",
     "firm",
+    "firmUniqueNo",
+    "firmContactNo",
+    "firmCity",
     "firmType",
     "firmTypeOther",
     "stageDelivery",
@@ -654,6 +720,9 @@ const supplyOrderFieldPrerequisites = {
   soDate: ["soNo"],
   soValueCapital: ["soDate"],
   firm: ["soDate"],
+  firmUniqueNo: ["soDate"],
+  firmContactNo: ["firm"],
+  firmCity: ["firm"],
   firmType: ["firm"],
   firmTypeOther: ["firmType"],
   stageDelivery: ["firm"],
@@ -775,7 +844,9 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     fields: [
       { key: "highValueMeetingDate", label: "High value meeting date", type: "date" },
       { key: "highValueMinutesDate", label: "High value minutes date", type: "date" },
+      { key: "adSentDate", label: "AD sent date", type: "date" },
       { key: "adVettingDate", label: "AD Vetting date", type: "date" },
+      { key: "rqaSentDate", label: "R&QA sent date", type: "date" },
       { key: "rqaApprovalDate", label: "R&QA approval date", type: "date" },
       { key: "ifaSentDate", label: "IFA sent date", type: "date" },
       { key: "ifaFinalDate", label: "IFA final date", type: "date" },
@@ -820,6 +891,17 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     fields: [],
   },
 ];
+
+const cfaApprovalGatedSectionTitles = new Set([
+  "Bidding details",
+  "Supply order and payment",
+  "Firm details",
+]);
+const cfaApprovalGatedFieldKeys = new Set<FieldKey>(
+  extraSections
+    .filter((section) => cfaApprovalGatedSectionTitles.has(section.title))
+    .flatMap((section) => section.fields.map((field) => field.key)),
+);
 
 const timelineFields = extraSections
   .flatMap((section) => section.fields)
@@ -867,8 +949,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const effectiveFinancialYear =
     isAllActiveFilesYear(settings.selectedYear) ||
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
-    ? settings.financialYear
-    : settings.selectedYear || settings.financialYear;
+      ? settings.financialYear
+      : settings.selectedYear || settings.financialYear;
   const { fileId, section, milestone, focusTarget, quickFocus } = Route.useSearch();
   const navigate = useNavigate();
   const [loadedFile, setLoadedFile] = useState<FileRecord | undefined>();
@@ -1070,6 +1152,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }),
     [form, generatedUniqueCode, originYear],
   );
+  const uniqueCodeGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.uniqueCode);
+  const cfaApprovalGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.cfaDate);
   const activeYearOptions = useMemo(
     () => getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
     [effectiveFinancialYear, settings.financialYears],
@@ -1117,7 +1201,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const preBidMeetingIsNo = isNo(formWithLockedYear.preBidMeeting);
   const refloatIsNo = isNo(formWithLockedYear.refloat);
   const refloatPreBidMeetingIsNo = isNo(formWithLockedYear.refloatPreBidMeeting);
-  const adVettingDisabled = isDivisionAdNo(formWithLockedYear.division, divisions);
+  const adDisabledByDivision = isDivisionAdNo(formWithLockedYear.division, divisions);
   const milestoneOptions = useMemo(
     () => getConfiguredMilestones(settings.milestones),
     [settings.milestones],
@@ -1224,6 +1308,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const activeSectionIndex = extraSections.findIndex(
     (section) => section.title === activeBoardSection,
   );
+  const activeSectionCfaApprovalLocked = Boolean(
+    activeSection &&
+    cfaApprovalGateLocked &&
+    cfaApprovalGatedSectionTitles.has(activeSection.title),
+  );
   const activeSectionMessages =
     editingFile && activeSection
       ? messages.filter(
@@ -1296,6 +1385,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const update = (k: keyof typeof form, v: string) => {
     if (readOnlyMode) return;
     if (k === "year") return;
+    if (uniqueCodeGateLocked && k !== "division") return;
+    if (cfaApprovalGateLocked && cfaApprovalGatedFieldKeys.has(k)) return;
     if (k === "demandCancelled" && isYes(v) && hasPlacedSupplyOrderRows(supplyOrders)) {
       alert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
@@ -1309,16 +1400,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         return;
       }
       setForm((f) => ({ ...f, noOfSo: String(count) }));
-      setSupplyOrders((current) => resizeSupplyOrders(current, count));
+      setSupplyOrders((current) => resizeSupplyOrders(current, count, formWithLockedYear));
       return;
     }
     if (k === "gem") {
       setSupplyOrders((current) =>
-        current.map((order) =>
-          isNo(v)
-            ? { ...order, gemSoNo: "", paymentMode: "" }
-            : { ...order, paymentMode: order.paymentMode || "Online" },
-        ),
+        current.map((order) => (isNo(v) ? { ...order, gemSoNo: "", paymentMode: "" } : order)),
       );
     }
     if (k === "bg" && isNo(v)) {
@@ -1344,6 +1431,15 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           combinedBgValidityDate: "",
           combinedBgReturnDate: "",
         })),
+      );
+    }
+    if (k === "bg" && isYes(v)) {
+      setSupplyOrders((current) =>
+        current.map((order) =>
+          !hasFilledValue(order.bgCoverageType) || order.bgCoverageType === "None"
+            ? { ...order, bgCoverageType: "PWB" }
+            : order,
+        ),
       );
     }
     if (k === "ir" && isNo(v)) {
@@ -1405,20 +1501,19 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       if (k === "currency" && isInr(v)) {
         patch.exchangeRate = "1";
       }
-      if (k === "gem" && isYes(v)) {
-        patch.paymentMode = "Online";
-      }
       if (k === "division") {
         if (f.division.trim().toLowerCase() !== v.trim().toLowerCase()) {
           patch.indentor = "";
         }
       }
       const next = applyConditionalRules({ ...f, ...patch });
-      return isDivisionAdNo(next.division, divisions) ? { ...next, adVettingDate: "" } : next;
+      return isDivisionAdNo(next.division, divisions)
+        ? { ...next, ad: "No", adSentDate: "", adVettingDate: "" }
+        : next;
     });
   };
   const updateSupplyOrder = (index: number, key: SupplyOrderKey, value: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     let autofilled = false;
     let rejectedMessage = "";
     setSupplyOrders((current) =>
@@ -1473,8 +1568,18 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       }, 100);
     }
   };
+  const patchSupplyOrder = (index: number, patch: Partial<SupplyOrderDetail>) => {
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    setSupplyOrders((current) =>
+      current.map((order, orderIndex) =>
+        orderIndex === index
+          ? applySupplyOrderRules({ ...order, ...patch }, formWithLockedYear)
+          : order,
+      ),
+    );
+  };
   const updateSupplyOrderCurrentMilestone = (index: number, milestone: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, orderIndex) => {
         if (orderIndex !== index) return order;
@@ -1484,7 +1589,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
   };
   const updateSupplyOrderCompletedMilestones = (index: number, milestones: string[]) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, orderIndex) =>
         orderIndex === index
@@ -1498,7 +1603,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     stageIndex: number,
     milestone: string,
   ) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, index) => {
         if (index !== orderIndex) return order;
@@ -1523,7 +1628,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     stageIndex: number,
     milestones: string[],
   ) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, index) => {
         if (index !== orderIndex) return order;
@@ -1552,7 +1657,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     key: StageDeliveryKey,
     value: string,
   ) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, index) => {
         if (index !== orderIndex) return order;
@@ -1588,7 +1693,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
   };
   const updateAdvancePayment = (orderIndex: number, key: AdvancePaymentKey, value: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, index) => {
         if (index !== orderIndex) return order;
@@ -1611,7 +1716,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     orderIndex: number,
     patch: Pick<AdvancePaymentDetail, "currentMilestone">,
   ) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
       current.map((order, index) => {
         if (index !== orderIndex) return order;
@@ -1625,7 +1730,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
   };
   const toggleSectionLock = (sectionTitle: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
+    if (cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle)) return;
     setUnlockedSections((current) => {
       const next = new Set(current);
       if (next.has(sectionTitle)) {
@@ -1642,7 +1748,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     key: keyof FirmDetail,
     value: string,
   ) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: current[group].map((row, rowIndex) =>
@@ -1650,22 +1756,35 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ),
     }));
   };
+  const patchFirmDetail = (
+    group: keyof FirmDetailsState,
+    index: number,
+    patch: Partial<FirmDetail>,
+  ) => {
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    setFirmDetails((current) => ({
+      ...current,
+      [group]: current[group].map((row, rowIndex) =>
+        rowIndex === index ? { ...row, ...patch } : row,
+      ),
+    }));
+  };
   const addFirmDetail = (group: keyof FirmDetailsState) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: [...current[group], { ...emptyFirmDetail }],
     }));
   };
   const deleteFirmDetail = (group: keyof FirmDetailsState, index: number) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setFirmDetails((current) => ({
       ...current,
       [group]: current[group].filter((_, rowIndex) => rowIndex !== index),
     }));
   };
   const deleteSelectedFirmDetails = (group: keyof FirmDetailsState, indexes: number[]) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     const selected = new Set(indexes);
     setFirmDetails((current) => ({
       ...current,
@@ -1673,7 +1792,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }));
   };
   const addRemark = (sectionTitle: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
+    if (cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle)) return;
     setFileRemarks((current) => [
       ...current,
       {
@@ -1685,23 +1805,47 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     ]);
   };
   const updateRemark = (remarkId: string, text: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
+    if (
+      cfaApprovalGateLocked &&
+      fileRemarks.some(
+        (remark) => remark.id === remarkId && cfaApprovalGatedSectionTitles.has(remark.section),
+      )
+    ) {
+      return;
+    }
     setFileRemarks((current) =>
       current.map((remark) => (remark.id === remarkId ? { ...remark, text } : remark)),
     );
   };
   const updateRemarkDate = (remarkId: string, date: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
+    if (
+      cfaApprovalGateLocked &&
+      fileRemarks.some(
+        (remark) => remark.id === remarkId && cfaApprovalGatedSectionTitles.has(remark.section),
+      )
+    ) {
+      return;
+    }
     setFileRemarks((current) =>
       current.map((remark) => (remark.id === remarkId ? { ...remark, createdAt: date } : remark)),
     );
   };
   const deleteRemark = (remarkId: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
+    if (
+      cfaApprovalGateLocked &&
+      fileRemarks.some(
+        (remark) => remark.id === remarkId && cfaApprovalGatedSectionTitles.has(remark.section),
+      )
+    ) {
+      return;
+    }
     setFileRemarks((current) => current.filter((remark) => remark.id !== remarkId));
   };
   const addMarker = (code: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
     const trimmed = code.trim().toUpperCase();
     if (!trimmed) return;
     setFileMarkers((current) => [
@@ -1714,7 +1858,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     ]);
   };
   const updateMarker = (markerId: string, text: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
     const trimmed = text.trim().toUpperCase();
     setFileMarkers((current) => [
       ...current.filter(
@@ -1726,7 +1870,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     ]);
   };
   const deleteMarker = (markerId: string) => {
-    if (readOnlyMode) return;
+    if (readOnlyMode || uniqueCodeGateLocked) return;
     setFileMarkers((current) => current.filter((marker) => marker.id !== markerId));
   };
   const firmDetailsLocked = isEditing && !unlockedSections.has("Firm details");
@@ -1735,6 +1879,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const milestonesLocked = isEditing && !unlockedSections.has("Milestones");
   const renderSectionUnlockButton = (sectionTitle: string) => {
     if (!isEditing || readOnlyMode) return null;
+    if (cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle)) return null;
 
     return (
       <span className="flex flex-col items-end gap-1">
@@ -1762,6 +1907,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const renderSectionFields = (section: (typeof extraSections)[number]) => (
     <div className="grid grid-cols-1 gap-4">
       {section.fields.map((field) => {
+        const sectionCfaApprovalLocked =
+          cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(section.title);
         const renderedField =
           field.key === "division"
             ? {
@@ -1818,7 +1965,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 settings.valueThresholdLevels,
                 formWithLockedYear,
               )}
-              disabled={fieldReadOnly}
+              disabled={fieldReadOnly || uniqueCodeGateLocked || sectionCfaApprovalLocked}
               lockFilledFields={lockFilledFields}
               lockedSelectionFilled={
                 hasFileValueForLock(savedFormForLocks, "valueCapital") ||
@@ -1829,7 +1976,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 hasFileValueForLock(savedFormForLocks, "valueRevenue")
               }
               onChange={(patch) => {
-                if (readOnlyMode) return;
+                if (readOnlyMode || uniqueCodeGateLocked || sectionCfaApprovalLocked) return;
                 const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
                 setSupplyOrders((current) =>
@@ -1859,14 +2006,14 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               revenueSelected={formWithLockedYear.valueRevenueSelected === "Yes"}
               capitalValue={formWithLockedYear.soValueCapital}
               revenueValue={formWithLockedYear.soValueRevenue}
-              disabled={fieldReadOnly}
+              disabled={fieldReadOnly || uniqueCodeGateLocked || sectionCfaApprovalLocked}
               lockFilledFields={lockFilledFields}
               lockedValueFilled={
                 hasFileValueForLock(savedFormForLocks, "soValueCapital") ||
                 hasFileValueForLock(savedFormForLocks, "soValueRevenue")
               }
               onChange={(patch) => {
-                if (readOnlyMode) return;
+                if (readOnlyMode || uniqueCodeGateLocked || sectionCfaApprovalLocked) return;
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
               }}
             />
@@ -1878,8 +2025,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           field.key === "uniqueCode" ||
           field.key === "tenderLive" ||
           fieldReadOnly ||
+          (uniqueCodeGateLocked && field.key !== "division") ||
+          sectionCfaApprovalLocked ||
           (lockFilledFields && hasFileValueForLock(savedFormForLocks, field.key)) ||
-          (field.key === "adVettingDate" && adVettingDisabled) ||
+          (["ad", "adSentDate", "adVettingDate"].includes(field.key) && adDisabledByDivision) ||
           (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
           (gemIsNo && gemDisabledKeys.includes(field.key)) ||
           (highValueIsNo && highValueDisabledKeys.includes(field.key)) ||
@@ -1925,7 +2074,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               <button
                 type="button"
                 onClick={unlockDemandCancelled}
-                disabled={demandCancelledUnlocked}
+                disabled={demandCancelledUnlocked || uniqueCodeGateLocked}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {demandCancelledUnlocked ? (
@@ -1950,6 +2099,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
 
   const save = async (options?: { returnToQuickEntry?: boolean }) => {
     if (readOnlyMode) return;
+    if (uniqueCodeGateLocked) {
+      alert(
+        "Select Division and wait for Unique code generation before entering or saving file details.",
+      );
+      return;
+    }
     const requestedSupplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
     const requestedSupplyOrders = resizeSupplyOrders(supplyOrders, requestedSupplyOrderCount);
     const useSupplyOrderMilestonesForSave = shouldUseSupplyOrderMilestones(
@@ -2207,7 +2362,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             {readOnlyMode
               ? "View file details"
               : isEditing
-                ? "Edit file details"
+                ? getEditFileHeading(formWithLockedYear, editingFile)
                 : "Add a new file"}
           </h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -2222,6 +2377,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         <SectionBoard active={activeBoardSection} onOpen={setActiveBoardSection} />
 
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {uniqueCodeGateLocked ? (
+            <div className="md:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Select Division and wait for Unique code generation to activate the remaining fields.
+            </div>
+          ) : null}
+          {activeSectionCfaApprovalLocked ? (
+            <div className="md:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Enter CFA approval date in Approval block to activate this section.
+            </div>
+          ) : null}
           {activeBoardSection === "Timeline" && (
             <TimelineBlock
               form={formWithLockedYear}
@@ -2249,7 +2414,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               milestoneDisplayLabels={mainMilestoneDisplayLabels}
               inactiveMilestones={inactiveMainMilestones}
               focusedMilestone={focusedMilestone}
-              disabled={readOnlyMode}
+              disabled={readOnlyMode || uniqueCodeGateLocked}
               lockFilledFields={milestonesLocked}
               fileClosureDate={formWithLockedYear.fileClosureDate}
               lockControl={renderSectionUnlockButton("Milestones")}
@@ -2274,11 +2439,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 <FirmDetailsBlock
                   details={firmDetails}
                   lockedDetails={savedFirmDetailsForLocks}
-                  disabled={readOnlyMode}
+                  disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
                   lockFilledFields={firmDetailsLocked}
+                  firmUniqueNoLabel={settings.firmUniqueNoLabel || "Firm Unique No."}
                   quickFocus={Boolean(quickFocus && activeSection.title === "Firm details")}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
+                  onPatch={patchFirmDetail}
                   onDelete={deleteFirmDetail}
                   onDeleteSelected={deleteSelectedFirmDetails}
                 />
@@ -2286,7 +2453,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 <FileMarkersBlock
                   markers={fileMarkers}
                   markerOptions={settings.specialFileMarkers ?? []}
-                  disabled={readOnlyMode}
+                  disabled={readOnlyMode || uniqueCodeGateLocked}
                   lockFilledFields={fileMarkersLocked}
                   onAdd={addMarker}
                   onChange={updateMarker}
@@ -2298,8 +2465,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   lockedForm={savedFormForLocks}
                   orders={supplyOrders}
                   lockedOrders={savedSupplyOrdersForLocks}
-                  disabled={readOnlyMode}
+                  disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
                   lockFilledFields={supplyOrdersLocked}
+                  firmUniqueNoLabel={settings.firmUniqueNoLabel || "Firm Unique No."}
                   firmTypeOptions={firmTypeOptions}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
@@ -2314,6 +2482,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                       : (value) => update("noOfSo", value)
                   }
                   onOrderChange={updateSupplyOrder}
+                  onOrderPatch={patchSupplyOrder}
                   onOrderCurrentMilestoneChange={updateSupplyOrderCurrentMilestone}
                   onOrderCompletedMilestonesChange={updateSupplyOrderCompletedMilestones}
                   onStageCurrentMilestoneChange={updateStageDeliveryCurrentMilestone}
@@ -2344,7 +2513,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onChange={updateRemark}
                   onDateChange={updateRemarkDate}
                   onDelete={deleteRemark}
-                  disabled={readOnlyMode}
+                  disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
                 />
               ) : null}
               {editingFile && activeSection.title !== "File Markers" ? (
@@ -2398,7 +2567,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   })
                 }
                 data-testid="add-save"
-                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+                disabled={uniqueCodeGateLocked}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
               </button>
@@ -2954,9 +3124,11 @@ function FirmDetailsBlock({
   lockedDetails,
   disabled,
   lockFilledFields,
+  firmUniqueNoLabel,
   quickFocus,
   onAdd,
   onChange,
+  onPatch,
   onDelete,
   onDeleteSelected,
 }: {
@@ -2964,6 +3136,7 @@ function FirmDetailsBlock({
   lockedDetails: FirmDetailsState;
   disabled: boolean;
   lockFilledFields: boolean;
+  firmUniqueNoLabel: string;
   quickFocus?: boolean;
   onAdd: (group: keyof FirmDetailsState) => void;
   onChange: (
@@ -2972,11 +3145,14 @@ function FirmDetailsBlock({
     key: keyof FirmDetail,
     value: string,
   ) => void;
+  onPatch: (group: keyof FirmDetailsState, index: number, patch: Partial<FirmDetail>) => void;
   onDelete: (group: keyof FirmDetailsState, index: number) => void;
   onDeleteSelected: (group: keyof FirmDetailsState, indexes: number[]) => void;
 }) {
   const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("invitedFirms");
   const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
+  const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
+  const [firmSaveMessage, setFirmSaveMessage] = useState<string | undefined>();
   const tabs: { key: keyof FirmDetailsState; label: string }[] = [
     { key: "invitedFirms", label: "Invited" },
     { key: "bidderFirms", label: "Bidders" },
@@ -2990,10 +3166,46 @@ function FirmDetailsBlock({
     bidderFirms: details.bidderFirms.length,
   };
   const selectedIndexes = [...selectedRows].filter((index) => index < rows.length);
+  const firmNameOptionMap = useMemo(() => {
+    const map = new Map<string, MasterFirm>();
+    for (const firm of masterFirms) {
+      const option = firmNameOption(firm);
+      if (option) map.set(option, firm);
+    }
+    return map;
+  }, [masterFirms]);
+  const firmUniqueNoOptionMap = useMemo(() => {
+    const map = new Map<string, MasterFirm>();
+    for (const firm of masterFirms) {
+      const option = firmUniqueNoOption(firm);
+      if (option) map.set(option, firm);
+    }
+    return map;
+  }, [masterFirms]);
+  const firmNameOptions = useMemo(() => Array.from(firmNameOptionMap.keys()), [firmNameOptionMap]);
+  const firmUniqueNoOptions = useMemo(
+    () => Array.from(firmUniqueNoOptionMap.keys()),
+    [firmUniqueNoOptionMap],
+  );
+
+  const loadMasterFirms = () => {
+    fetchMasterFirms({ pageSize: 500 })
+      .then((result) => setMasterFirms(result.firms))
+      .catch((error) => {
+        console.error(error);
+        setFirmSaveMessage(
+          error instanceof Error ? error.message : "Failed to load firm database.",
+        );
+      });
+  };
 
   useEffect(() => {
     setSelectedRows(new Set());
   }, [activeTab, rows.length]);
+
+  useEffect(() => {
+    loadMasterFirms();
+  }, []);
 
   useEffect(() => {
     latestFirmRowsRef.current = rows;
@@ -3013,7 +3225,14 @@ function FirmDetailsBlock({
       }
 
       for (const [index, row] of currentRows.entries()) {
-        for (const key of ["firmName", "city", "emailId"] as const) {
+        for (const key of [
+          "firmName",
+          "firmUniqueNo",
+          "emailId",
+          "address",
+          "city",
+          "contactNo",
+        ] as const) {
           if (!hasFilledValue(row[key])) {
             firmInputRefs.current[`${index}:${key}`]?.focus();
             firmQuickFocusAppliedRef.current = focusKey;
@@ -3045,6 +3264,45 @@ function FirmDetailsBlock({
     if (!selectedIndexes.length) return;
     onDeleteSelected(activeTab, selectedIndexes);
     setSelectedRows(new Set());
+  };
+
+  const applyMasterFirm = (group: keyof FirmDetailsState, index: number, firm: MasterFirm) => {
+    onPatch(group, index, {
+      firmName: firm.firmName ?? "",
+      emailId: firm.emailId ?? "",
+      firmUniqueNo: firm.firmUniqueNo ?? "",
+      city: firm.city ?? "",
+      address: firm.address ?? "",
+      contactNo: firm.contactNo ?? "",
+    });
+  };
+
+  const addRowToFirmDatabase = async (index: number, row: FirmDetail) => {
+    const payload = {
+      firmName: row.firmName?.trim() || undefined,
+      emailId: row.emailId?.trim() || undefined,
+      firmUniqueNo: row.firmUniqueNo?.trim() || undefined,
+      city: row.city?.trim() || undefined,
+      address: row.address?.trim() || undefined,
+      contactNo: row.contactNo?.trim() || undefined,
+    };
+    if (!payload.firmName && !payload.emailId && !payload.firmUniqueNo) return;
+    if (!isValidEmailFormat(payload.emailId)) {
+      setFirmSaveMessage("Enter a valid email id.");
+      return;
+    }
+    try {
+      setFirmSaveMessage(undefined);
+      const result = await createMasterFirm(payload);
+      applyMasterFirm(activeTab, index, result.firm);
+      setMasterFirms((current) => [
+        result.firm,
+        ...current.filter((firm) => firm.id !== result.firm.id),
+      ]);
+      setFirmSaveMessage("Firm added to database.");
+    } catch (error) {
+      setFirmSaveMessage(error instanceof Error ? error.message : "Failed to add firm.");
+    }
   };
 
   return (
@@ -3090,18 +3348,39 @@ function FirmDetailsBlock({
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-muted-foreground">{selectedIndexes.length} selected</div>
-        <button
-          type="button"
-          onClick={deleteSelectedFirms}
-          disabled={disabled || selectedIndexes.length === 0}
-          className={
-            "inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10" +
-            disabledCls(disabled || selectedIndexes.length === 0)
-          }
-        >
-          <Trash2 className="size-3.5" /> Delete selected
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => exportFirmDetails(details, "pdf")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+          >
+            <Printer className="size-3.5" /> Export PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => exportFirmDetails(details, "excel")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+          >
+            <Save className="size-3.5" /> Export Excel
+          </button>
+          <button
+            type="button"
+            onClick={deleteSelectedFirms}
+            disabled={disabled || selectedIndexes.length === 0}
+            className={
+              "inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10" +
+              disabledCls(disabled || selectedIndexes.length === 0)
+            }
+          >
+            <Trash2 className="size-3.5" /> Delete selected
+          </button>
+        </div>
       </div>
+      {firmSaveMessage ? (
+        <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+          {firmSaveMessage}
+        </div>
+      ) : null}
 
       <div className="space-y-3">
         {rows.map((row, index) => {
@@ -3109,13 +3388,27 @@ function FirmDetailsBlock({
           const rowHasValue =
             hasFilledValue(lockedRow?.firmName) ||
             hasFilledValue(lockedRow?.city) ||
-            hasFilledValue(lockedRow?.emailId);
+            hasFilledValue(lockedRow?.address) ||
+            hasFilledValue(lockedRow?.emailId) ||
+            hasFilledValue(lockedRow?.firmUniqueNo) ||
+            hasFilledValue(lockedRow?.contactNo);
           const firmNameDisabled =
             disabled || (lockFilledFields && hasFilledValue(lockedRow?.firmName));
           const cityDisabled = disabled || (lockFilledFields && hasFilledValue(lockedRow?.city));
+          const addressDisabled =
+            disabled || (lockFilledFields && hasFilledValue(lockedRow?.address));
           const emailDisabled =
             disabled || (lockFilledFields && hasFilledValue(lockedRow?.emailId));
+          const firmUniqueNoDisabled =
+            disabled || (lockFilledFields && hasFilledValue(lockedRow?.firmUniqueNo));
+          const contactNoDisabled =
+            disabled || (lockFilledFields && hasFilledValue(lockedRow?.contactNo));
           const rowActionDisabled = disabled || (lockFilledFields && rowHasValue);
+          const addFirmDisabled =
+            disabled ||
+            (!hasFilledValue(row.firmName) &&
+              !hasFilledValue(row.emailId) &&
+              !hasFilledValue(row.firmUniqueNo));
           return (
             <div
               key={index}
@@ -3133,14 +3426,75 @@ function FirmDetailsBlock({
               </label>
               <label className="block">
                 <div className="mb-1.5 text-xs font-medium">Firm name</div>
-                <input
-                  ref={(element) => {
+                <SearchableDropdown
+                  inputRef={(element) => {
                     firmInputRefs.current[`${index}:firmName`] = element;
                   }}
                   value={row.firmName ?? ""}
-                  onChange={(event) => onChange(activeTab, index, "firmName", event.target.value)}
+                  onChange={(value) => {
+                    const selectedFirm = firmNameOptionMap.get(value);
+                    if (selectedFirm) {
+                      applyMasterFirm(activeTab, index, selectedFirm);
+                    } else {
+                      onChange(activeTab, index, "firmName", value);
+                    }
+                  }}
+                  options={firmNameOptions}
+                  placeholder="Firm name"
                   disabled={firmNameDisabled}
                   className={inputCls + disabledCls(firmNameDisabled)}
+                />
+              </label>
+              <label className="block">
+                <div className="mb-1.5 text-xs font-medium">{firmUniqueNoLabel}</div>
+                <SearchableDropdown
+                  inputRef={(element) => {
+                    firmInputRefs.current[`${index}:firmUniqueNo`] = element;
+                  }}
+                  value={row.firmUniqueNo ?? ""}
+                  onChange={(value) => {
+                    const selectedFirm = firmUniqueNoOptionMap.get(value);
+                    if (selectedFirm) {
+                      applyMasterFirm(activeTab, index, selectedFirm);
+                    } else {
+                      onChange(activeTab, index, "firmUniqueNo", value);
+                    }
+                  }}
+                  options={firmUniqueNoOptions}
+                  placeholder={firmUniqueNoLabel}
+                  disabled={firmUniqueNoDisabled}
+                  className={inputCls + disabledCls(firmUniqueNoDisabled)}
+                />
+              </label>
+              <label className="block">
+                <div className="mb-1.5 text-xs font-medium">Email id</div>
+                <input
+                  ref={(element) => {
+                    firmInputRefs.current[`${index}:emailId`] = element;
+                  }}
+                  type="email"
+                  value={row.emailId ?? ""}
+                  onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
+                  pattern="[^\s@]+@[^\s@]+\.[^\s@]+"
+                  aria-invalid={!isValidEmailFormat(row.emailId)}
+                  disabled={emailDisabled}
+                  className={
+                    inputCls +
+                    disabledCls(emailDisabled) +
+                    (!isValidEmailFormat(row.emailId) ? " border-destructive" : "")
+                  }
+                />
+              </label>
+              <label className="block">
+                <div className="mb-1.5 text-xs font-medium">Address</div>
+                <input
+                  ref={(element) => {
+                    firmInputRefs.current[`${index}:address`] = element;
+                  }}
+                  value={row.address ?? ""}
+                  onChange={(event) => onChange(activeTab, index, "address", event.target.value)}
+                  disabled={addressDisabled}
+                  className={inputCls + disabledCls(addressDisabled)}
                 />
               </label>
               <label className="block">
@@ -3156,31 +3510,48 @@ function FirmDetailsBlock({
                 />
               </label>
               <label className="block">
-                <div className="mb-1.5 text-xs font-medium">Email id</div>
+                <div className="mb-1.5 text-xs font-medium">Contact No.</div>
                 <input
                   ref={(element) => {
-                    firmInputRefs.current[`${index}:emailId`] = element;
+                    firmInputRefs.current[`${index}:contactNo`] = element;
                   }}
-                  type="email"
-                  value={row.emailId ?? ""}
-                  onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
-                  disabled={emailDisabled}
-                  className={inputCls + disabledCls(emailDisabled)}
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={row.contactNo ?? ""}
+                  onChange={(event) =>
+                    onChange(activeTab, index, "contactNo", numericOnly(event.target.value))
+                  }
+                  disabled={contactNoDisabled}
+                  className={inputCls + disabledCls(contactNoDisabled)}
                 />
               </label>
-              <button
-                type="button"
-                onClick={() => deleteFirm(index)}
-                disabled={rowActionDisabled}
-                aria-label="Delete firm"
-                title="Delete firm"
-                className={
-                  "inline-flex size-9 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10 md:self-end" +
-                  disabledCls(rowActionDisabled)
-                }
-              >
-                <Trash2 className="size-4" />
-              </button>
+              <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => void addRowToFirmDatabase(index, row)}
+                  disabled={addFirmDisabled}
+                  className={
+                    "inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent" +
+                    disabledCls(addFirmDisabled)
+                  }
+                >
+                  <Plus className="size-3.5" /> Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteFirm(index)}
+                  disabled={rowActionDisabled}
+                  aria-label="Delete firm"
+                  title="Delete firm"
+                  className={
+                    "inline-flex size-9 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10" +
+                    disabledCls(rowActionDisabled)
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
             </div>
           );
         })}
@@ -3211,6 +3582,7 @@ function SupplyOrdersBlock({
   lockedOrders,
   disabled,
   lockFilledFields,
+  firmUniqueNoLabel,
   firmTypeOptions,
   gemDisabled,
   bgDisabled,
@@ -3219,6 +3591,7 @@ function SupplyOrdersBlock({
   focusTarget,
   onCountChange,
   onOrderChange,
+  onOrderPatch,
   onOrderCurrentMilestoneChange,
   onOrderCompletedMilestonesChange,
   onStageCurrentMilestoneChange,
@@ -3233,6 +3606,7 @@ function SupplyOrdersBlock({
   lockedOrders: SupplyOrderDetail[];
   disabled: boolean;
   lockFilledFields: boolean;
+  firmUniqueNoLabel: string;
   firmTypeOptions: string[];
   gemDisabled: boolean;
   bgDisabled: boolean;
@@ -3241,6 +3615,7 @@ function SupplyOrdersBlock({
   focusTarget?: string;
   onCountChange: (value: string) => void;
   onOrderChange: (index: number, key: SupplyOrderKey, value: string) => void;
+  onOrderPatch: (index: number, patch: Partial<SupplyOrderDetail>) => void;
   onOrderCurrentMilestoneChange: (index: number, milestone: string) => void;
   onOrderCompletedMilestonesChange: (index: number, milestones: string[]) => void;
   onStageCurrentMilestoneChange: (
@@ -3271,6 +3646,8 @@ function SupplyOrdersBlock({
   const focusAppliedRef = useRef("");
   const latestOrdersRef = useRef(orders);
   const [activeSubview, setActiveSubview] = useState<SupplyOrderSubviewKey>("supplyOrder");
+  const [downstreamOverrideUnlocked, setDownstreamOverrideUnlocked] = useState(false);
+  const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
   const deliveryInspectionInactive = isDeliveryInspectionInactive(form);
   const effectiveIrDisabled = irDisabled || deliveryInspectionInactive;
   const focusConfig = useMemo(() => parseSupplyOrderFocusTarget(focusTarget), [focusTarget]);
@@ -3281,6 +3658,27 @@ function SupplyOrdersBlock({
   );
   const focusBlockKeySet = useMemo(() => new Set(focusBlockKeys), [focusBlockKeys]);
   const useOrderMilestones = shouldUseSupplyOrderMilestones(orders);
+  const firmNameOptionMap = useMemo(() => {
+    const map = new Map<string, MasterFirm>();
+    for (const firm of masterFirms) {
+      const option = firmNameOption(firm);
+      if (option) map.set(option, firm);
+    }
+    return map;
+  }, [masterFirms]);
+  const firmUniqueNoOptionMap = useMemo(() => {
+    const map = new Map<string, MasterFirm>();
+    for (const firm of masterFirms) {
+      const option = firmUniqueNoOption(firm);
+      if (option) map.set(option, firm);
+    }
+    return map;
+  }, [masterFirms]);
+  const firmNameOptions = useMemo(() => Array.from(firmNameOptionMap.keys()), [firmNameOptionMap]);
+  const firmUniqueNoOptions = useMemo(
+    () => Array.from(firmUniqueNoOptionMap.keys()),
+    [firmUniqueNoOptionMap],
+  );
   const activeSubviewSupplyOrderFields = supplyOrderSubviewFields[
     activeSubview
   ] as readonly SupplyOrderKey[];
@@ -3298,8 +3696,29 @@ function SupplyOrdersBlock({
   }, [effectiveFocusSubview]);
 
   useEffect(() => {
+    fetchMasterFirms({ pageSize: 500 })
+      .then((result) => setMasterFirms(result.firms))
+      .catch((error) => console.error(error));
+  }, []);
+
+  useEffect(() => {
     latestOrdersRef.current = orders;
   });
+
+  const unlockDownstreamOverride = async () => {
+    if (disabled || downstreamOverrideUnlocked) return;
+    const allowed = await requestDeletionPassword("unlock downstream delivery/payment fields");
+    if (allowed) setDownstreamOverrideUnlocked(true);
+  };
+
+  const applyMasterFirmToOrder = (index: number, firm: MasterFirm) => {
+    onOrderPatch(index, {
+      firm: firm.firmName ?? "",
+      firmUniqueNo: firm.firmUniqueNo ?? "",
+      firmContactNo: firm.contactNo ?? "",
+      firmCity: firm.city ?? "",
+    });
+  };
 
   useEffect(() => {
     if (!focusConfig || activeSubview !== effectiveFocusSubview) return;
@@ -3392,6 +3811,36 @@ function SupplyOrdersBlock({
         </div>
       ) : null}
 
+      {isDownstreamSubview(activeSubview) &&
+      orders.some((order) => !isSupplyOrderAndDpComplete(order, form)) ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div>
+            <div className="font-medium">
+              Complete Supply Order and D.P. details before editing this tab.
+            </div>
+            <div className="text-xs">
+              Incomplete orders stay locked unless you unlock these downstream fields.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={unlockDownstreamOverride}
+            disabled={disabled || downstreamOverrideUnlocked}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 text-xs font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {downstreamOverrideUnlocked ? (
+              <>
+                <Unlock className="size-3.5" /> Downstream unlocked
+              </>
+            ) : (
+              <>
+                <Lock className="size-3.5" /> Unlock with password
+              </>
+            )}
+          </button>
+        </div>
+      ) : null}
+
       {activeSubviewFields.length || activeSubviewMilestones.length
         ? orders.map((order, index) => {
             const lockedOrder = lockedOrders[index];
@@ -3413,12 +3862,12 @@ function SupplyOrdersBlock({
               isYes(order.advancePayment ?? "");
             const showOrderMilestoneControls = useOrderMilestones || activeSubview === "bg";
             const orderMilestones = showOrderMilestoneControls
-	              ? getApplicableSupplyOrderMilestones(order, {
-	                  bgDisabled,
-	                  irDisabled: irDisabled || deliveryInspectionInactive,
-	                  fileType: form.fileType,
-	                  ir: form.ir,
-	                }).filter((milestone) => activeSubviewMilestones.includes(milestone))
+              ? getApplicableSupplyOrderMilestones(order, {
+                  bgDisabled,
+                  irDisabled: irDisabled || deliveryInspectionInactive,
+                  fileType: form.fileType,
+                  ir: form.ir,
+                }).filter((milestone) => activeSubviewMilestones.includes(milestone))
               : [];
             const fieldsToRender = activeSubviewFields.filter((field) =>
               shouldShowSupplyOrderField(field.key as SupplyOrderKey, order),
@@ -3445,6 +3894,10 @@ function SupplyOrdersBlock({
               : childFocusMatch
                 ? " border-primary/70"
                 : "";
+            const downstreamLocked =
+              isDownstreamSubview(activeSubview) &&
+              !downstreamOverrideUnlocked &&
+              !isSupplyOrderAndDpComplete(order, form);
 
             return (
               <details
@@ -3496,7 +3949,7 @@ function SupplyOrdersBlock({
                     <SupplyOrderMilestonesBlock
                       milestones={orderMilestones}
                       order={order}
-                      disabled={disabled}
+                      disabled={disabled || downstreamLocked}
                       lockFilledFields={lockFilledFields}
                       lockedOrder={lockedOrder}
                       fileType={form.fileType}
@@ -3529,7 +3982,7 @@ function SupplyOrdersBlock({
                           <AdvancePaymentMilestonesBlock
                             advance={advancePaymentDetail}
                             lockedAdvance={lockedOrder?.advancePaymentDetail}
-                            disabled={disabled}
+                            disabled={disabled || downstreamLocked}
                             lockFilledFields={lockFilledFields}
                             onCurrentChange={() =>
                               onAdvancePaymentMilestoneChange(index, {
@@ -3554,7 +4007,7 @@ function SupplyOrdersBlock({
                                     revenueSelected={form.valueRevenueSelected === "Yes"}
                                     capitalValue={advancePaymentDetail.stageAmountCapital ?? ""}
                                     revenueValue={advancePaymentDetail.stageAmountRevenue ?? ""}
-                                    disabled={disabled}
+                                    disabled={disabled || downstreamLocked}
                                     lockFilledFields={lockFilledFields}
                                     testId={`add-field-supplyOrder-${index}-advance-stageAmountCapital`}
                                     lockedValueFilled={
@@ -3593,7 +4046,7 @@ function SupplyOrdersBlock({
                                     revenueSelected={form.valueRevenueSelected === "Yes"}
                                     capitalValue={advancePaymentDetail.actualPaymentCapital ?? ""}
                                     revenueValue={advancePaymentDetail.actualPaymentRevenue ?? ""}
-                                    disabled={disabled}
+                                    disabled={disabled || downstreamLocked}
                                     lockFilledFields={lockFilledFields}
                                     testId={`add-field-supplyOrder-${index}-advance-actualPaymentCapital`}
                                     lockedValueFilled={
@@ -3631,6 +4084,7 @@ function SupplyOrdersBlock({
                                   radioName={`supplyOrder-${index}-advance-${key}`}
                                   disabled={
                                     disabled ||
+                                    downstreamLocked ||
                                     (lockFilledFields && hasFilledValue(String(lockedValue ?? "")))
                                   }
                                   onChange={(value) => onAdvancePaymentChange(index, key, value)}
@@ -3645,11 +4099,11 @@ function SupplyOrdersBlock({
                       ) : null}
                       {stageDeliveries.map((stage, stageIndex) => {
                         const stageMilestones = getStageDeliveryMilestonesForSubview(
-	                          activeSubview,
-	                          order,
-	                          form.fileType,
-	                          form.ir,
-	                        );
+                          activeSubview,
+                          order,
+                          form.fileType,
+                          form.ir,
+                        );
                         const stageCompletion = getSingleStageCompletion({
                           activeSubview,
                           stageFields: stageFields ?? [],
@@ -3704,12 +4158,12 @@ function SupplyOrdersBlock({
                                 }
                                 aria-hidden="true"
                               />
-	                              <span className="min-w-0 flex-1">
-	                                <span className="block truncate">
-	                                  {deliveryInspectionInactive
-	                                    ? `Delivery Period-${stageIndex + 1}`
-	                                    : `Delivery-${stageIndex + 1}`}
-	                                </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">
+                                  {deliveryInspectionInactive
+                                    ? `Delivery Period-${stageIndex + 1}`
+                                    : `Delivery-${stageIndex + 1}`}
+                                </span>
                                 <span className="mt-0.5 block truncate text-xs font-medium text-muted-foreground">
                                   {stagePeriodLabel}
                                 </span>
@@ -3742,7 +4196,7 @@ function SupplyOrdersBlock({
                                   }
                                   milestones={stageMilestones}
                                   order={effectiveStageMilestoneRow}
-                                  disabled={disabled}
+                                  disabled={disabled || downstreamLocked}
                                   lockFilledFields={lockFilledFields}
                                   lockedOrder={lockedOrder?.stageDeliveries?.[stageIndex]}
                                   fileType={form.fileType}
@@ -3773,7 +4227,7 @@ function SupplyOrdersBlock({
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.stageAmountCapital ?? ""}
                                       revenueValue={stage.stageAmountRevenue ?? ""}
-                                      disabled={disabled}
+                                      disabled={disabled || downstreamLocked}
                                       lockFilledFields={lockFilledFields}
                                       testId={`add-field-supplyOrder-${index}-stage-${stageIndex}-stageAmountCapital`}
                                       lockedValueFilled={
@@ -3816,7 +4270,7 @@ function SupplyOrdersBlock({
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.actualPaymentCapital ?? ""}
                                       revenueValue={stage.actualPaymentRevenue ?? ""}
-                                      disabled={disabled}
+                                      disabled={disabled || downstreamLocked}
                                       lockFilledFields={lockFilledFields}
                                       testId={`add-field-supplyOrder-${index}-stage-${stageIndex}-actualPaymentCapital`}
                                       lockedValueFilled={
@@ -3866,9 +4320,10 @@ function SupplyOrdersBlock({
                                         radioName={`supplyOrder-${index}-stage-${stageIndex}-${key}`}
                                         disabled={
                                           disabled ||
+                                          downstreamLocked ||
                                           (lockFilledFields &&
                                             hasFilledValue(String(lockedValue ?? ""))) ||
-                                          isDpExtensionFieldInactive(form, key)
+                                          isDpExtensionFieldInactive(form, key, stage)
                                         }
                                         onChange={(value) =>
                                           onStageDeliveryChange(index, stageIndex, key, value)
@@ -3883,7 +4338,11 @@ function SupplyOrdersBlock({
                                         <LdDetailField
                                           ldType={stage.ldType ?? ""}
                                           ldPercentage={stage.ldPercentage ?? ""}
-                                          disabled={disabled || (lockFilledFields && detailLocked)}
+                                          disabled={
+                                            disabled ||
+                                            downstreamLocked ||
+                                            (lockFilledFields && detailLocked)
+                                          }
                                           onTypeChange={(value) =>
                                             onStageDeliveryChange(
                                               index,
@@ -3913,9 +4372,10 @@ function SupplyOrdersBlock({
                                     radioName={`supplyOrder-${index}-stage-${stageIndex}-${key}`}
                                     disabled={
                                       disabled ||
+                                      downstreamLocked ||
                                       (lockFilledFields &&
                                         hasFilledValue(String(lockedValue ?? ""))) ||
-                                      isDpExtensionFieldInactive(form, key) ||
+                                      isDpExtensionFieldInactive(form, key, stage) ||
                                       (effectiveIrDisabled &&
                                         (supplyOrderIrDisabledKeys as readonly string[]).includes(
                                           key,
@@ -3943,13 +4403,25 @@ function SupplyOrdersBlock({
                       {fieldsToRender.map((field) => {
                         const key = field.key as SupplyOrderKey;
                         const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(key, order);
+                        const fieldDisabled =
+                          disabled ||
+                          downstreamLocked ||
+                          sequentiallyLocked ||
+                          (lockFilledFields && hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
+                          (gemDisabled && key === "gemSoNo") ||
+                          (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
+                          (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
+                          (!effectiveIrDisabled && key === "jobCompletionDate") ||
+                          isDpExtensionFieldInactive(form, key, order);
                         const renderedField =
                           key === "firmType"
                             ? {
                                 ...field,
                                 options: mergeOptions(firmTypeOptions, order.firmType),
                               }
-                            : field;
+                            : key === "firmUniqueNo"
+                              ? { ...field, label: firmUniqueNoLabel }
+                              : field;
 
                         if (field.key === "soValueCapital") {
                           return (
@@ -3959,7 +4431,7 @@ function SupplyOrdersBlock({
                               revenueSelected={form.valueRevenueSelected === "Yes"}
                               capitalValue={order.soValueCapital ?? ""}
                               revenueValue={order.soValueRevenue ?? ""}
-                              disabled={disabled || sequentiallyLocked}
+                              disabled={disabled || downstreamLocked || sequentiallyLocked}
                               lockFilledFields={lockFilledFields}
                               testId={`add-field-supplyOrder-${index}-soValueCapital`}
                               lockedValueFilled={
@@ -3986,6 +4458,37 @@ function SupplyOrdersBlock({
                           );
                         }
 
+                        if (key === "firm" || key === "firmUniqueNo") {
+                          const value = String(order[key] ?? "");
+                          const options = key === "firm" ? firmNameOptions : firmUniqueNoOptions;
+                          const optionMap =
+                            key === "firm" ? firmNameOptionMap : firmUniqueNoOptionMap;
+                          return (
+                            <label key={field.key} className="block">
+                              <div className="mb-1.5 text-xs font-medium">
+                                {renderedField.label}
+                              </div>
+                              <SearchableDropdown
+                                value={value}
+                                onChange={(nextValue) => {
+                                  const selectedFirm = optionMap.get(nextValue);
+                                  if (selectedFirm) {
+                                    applyMasterFirmToOrder(index, selectedFirm);
+                                  } else {
+                                    onOrderChange(index, key, nextValue);
+                                  }
+                                }}
+                                options={options}
+                                disabled={fieldDisabled}
+                                className={inputCls + disabledCls(fieldDisabled)}
+                                inputRef={(element) => {
+                                  orderFieldRefs.current[`${index}:${key}`] = element;
+                                }}
+                              />
+                            </label>
+                          );
+                        }
+
                         if (field.key === "actualPaymentCapital") {
                           return (
                             <AmountByValueTypeField
@@ -3995,7 +4498,7 @@ function SupplyOrdersBlock({
                               revenueSelected={form.valueRevenueSelected === "Yes"}
                               capitalValue={order.actualPaymentCapital ?? ""}
                               revenueValue={order.actualPaymentRevenue ?? ""}
-                              disabled={disabled || sequentiallyLocked}
+                              disabled={disabled || downstreamLocked || sequentiallyLocked}
                               lockFilledFields={lockFilledFields}
                               testId={`add-field-supplyOrder-${index}-actualPaymentCapital`}
                               lockedValueFilled={
@@ -4024,13 +4527,7 @@ function SupplyOrdersBlock({
                                 field={renderedField}
                                 value={String(order[key] ?? "")}
                                 radioName={`supplyOrder-${index}-${field.key}`}
-                                disabled={
-                                  disabled ||
-                                  sequentiallyLocked ||
-                                  (lockFilledFields &&
-                                    hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
-                                  isDpExtensionFieldInactive(form, key)
-                                }
+                                disabled={fieldDisabled}
                                 onChange={(value) => onOrderChange(index, key, value)}
                                 inputRef={(element) => {
                                   orderFieldRefs.current[`${index}:${key}`] = element;
@@ -4042,6 +4539,7 @@ function SupplyOrdersBlock({
                                   ldPercentage={order.ldPercentage ?? ""}
                                   disabled={
                                     disabled ||
+                                    downstreamLocked ||
                                     sequentiallyLocked ||
                                     (lockFilledFields && detailLocked)
                                   }
@@ -4061,18 +4559,14 @@ function SupplyOrdersBlock({
                             field={renderedField}
                             value={String(order[key] ?? "")}
                             radioName={`supplyOrder-${index}-${field.key}`}
-                            disabled={
-                              disabled ||
-                              sequentiallyLocked ||
-                              (lockFilledFields &&
-                                hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
-                              (gemDisabled && key === "gemSoNo") ||
-                              (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
-                              (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
-                              (!effectiveIrDisabled && key === "jobCompletionDate") ||
-                              isDpExtensionFieldInactive(form, key)
+                            disabled={fieldDisabled}
+                            onChange={(value) =>
+                              onOrderChange(
+                                index,
+                                key,
+                                key === "firmContactNo" ? numericOnly(value) : value,
+                              )
                             }
-                            onChange={(value) => onOrderChange(index, key, value)}
                             inputRef={(element) => {
                               orderFieldRefs.current[`${index}:${key}`] = element;
                             }}
@@ -4127,12 +4621,19 @@ function parseFocusIndex(value: string) {
 }
 
 function getSupplyOrderFocusSubview(kind: string, state = ""): SupplyOrderSubviewKey | undefined {
-  if (kind === "financialsanction" || kind === "supplyorder") return "supplyOrder";
+  if (kind === "financialsanction" || kind === "supplyorder" || kind === "firmtype")
+    return "supplyOrder";
   if (kind === "stagedelivery" || kind === "stagepayment") return "supplyOrder";
   if (kind === "advancepayment" && state === "yes") return "supplyOrder";
   if (kind === "securitybg" || kind === "bankguarantee" || isBgFocusKind(kind)) return "bg";
   if (kind === "deliveryperiod" || kind === "dpextension" || kind === "ld") return "dp";
-  if (kind === "delivery" || kind === "jobcompletion" || kind === "irpreparation" || kind === "irreceipt") return "delivery";
+  if (
+    kind === "delivery" ||
+    kind === "jobcompletion" ||
+    kind === "irpreparation" ||
+    kind === "irreceipt"
+  )
+    return "delivery";
   if (kind === "socancelled") return "miscellaneous";
   if (
     kind === "billpreparation" ||
@@ -4261,9 +4762,9 @@ function getEffectiveStageFocusRow(
   const useStagePayment = isYes(parentOrder.stagePayment);
   const useCommonPayment = !useStagePayment && stageIndex === siblingStages.length - 1;
   const previousStage = stageIndex > 0 ? siblingStages[stageIndex - 1] : undefined;
-    const previousDeliveryPeriodDate = previousStage
-      ? previousStage.revisedDp || previousStage.dpDate
-      : undefined;
+  const previousDeliveryPeriodDate = previousStage
+    ? previousStage.revisedDp || previousStage.dpDate
+    : undefined;
 
   return {
     ...parentOrder,
@@ -4327,6 +4828,10 @@ function isFocusRowMatch(
     return current || !hasFilledValue(row.soDate);
   }
 
+  if (config.kind === "firmtype") {
+    return hasFilledValue(row.firmType) || hasFilledValue(row.firmTypeOther);
+  }
+
   if (config.kind === "financialsanction") {
     if (state === "completed") return completed || hasFilledValue(row.financialSanctionDate);
     return current || !hasFilledValue(row.financialSanctionDate);
@@ -4383,9 +4888,9 @@ function isFocusRowMatch(
     return isYes(row.ld ?? "");
   }
 
-	  if (config.kind === "delivery") {
-	    if (isJobCompletionWorkflow(form.fileType, form.ir)) {
-	      if (state === "completed" || state === "received") return isJobCompletionDone(row);
+  if (config.kind === "delivery") {
+    if (isJobCompletionWorkflow(form.fileType, form.ir)) {
+      if (state === "completed" || state === "received") return isJobCompletionDone(row);
       if (state === "overdue")
         return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
       return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
@@ -4400,14 +4905,14 @@ function isFocusRowMatch(
         effectiveDp! < formatLocalDate(new Date())
       );
     }
-	    return getDerivedDeliveryMilestoneState(row, form.fileType, form.ir).current;
-	  }
+    return getDerivedDeliveryMilestoneState(row, form.fileType, form.ir).current;
+  }
 
-	  if (config.kind === "jobcompletion") {
-	    if (!isJobCompletionWorkflow(form.fileType, form.ir)) return false;
-	    if (state === "completed" || state === "received") return isJobCompletionDone(row);
-	    return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
-	  }
+  if (config.kind === "jobcompletion") {
+    if (!isJobCompletionWorkflow(form.fileType, form.ir)) return false;
+    if (state === "completed" || state === "received") return isJobCompletionDone(row);
+    return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
+  }
 
   if (config.kind === "irpreparation") {
     if (isNo(form.ir)) return false;
@@ -4619,6 +5124,59 @@ type CompletionCount = {
   filled: number;
   total: number;
 };
+
+function isDownstreamSubview(activeSubview: SupplyOrderSubviewKey) {
+  return activeSubview === "delivery" || activeSubview === "payment";
+}
+
+function isSupplyOrderAndDpComplete(order: SupplyOrderDetail, form: FormState) {
+  return isSupplyOrderTabComplete(order, form) && isDpDetailsComplete(order, form);
+}
+
+function isDpDetailsComplete(order: SupplyOrderDetail, form: FormState) {
+  if (isYes(order.stageDelivery ?? "")) {
+    const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
+    if (stageCount <= 0) return false;
+    const stages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
+    return stages.every((stage) => isStageDpDetailsComplete(stage, form));
+  }
+
+  return isOrderDpDetailsComplete(order);
+}
+
+function isOrderDpDetailsComplete(order: SupplyOrderDetail) {
+  if (!isCompleteDateValue(order.dpDate ?? "")) return false;
+  if (isYes(order.dpExtension ?? "")) {
+    if (!hasFilledValue(order.dpExtensionCount)) return false;
+    if (!isCompleteDateValue(order.revisedDp ?? "")) return false;
+  }
+  if (isYes(order.ld ?? "")) {
+    if (!hasFilledValue(order.ldType)) return false;
+    if (!hasFilledValue(order.ldPercentage)) return false;
+  }
+  return true;
+}
+
+function isStageDpDetailsComplete(stage: StageDeliveryDetail, form: FormState) {
+  if (!hasStageAmount(stage, form)) return false;
+  if (!isCompleteDateValue(stage.deliveryPeriodStartDate ?? "")) return false;
+  if (!isCompleteDateValue(stage.dpDate ?? "")) return false;
+  if (isYes(stage.dpExtension ?? "")) {
+    if (!hasFilledValue(stage.dpExtensionCount)) return false;
+    if (!isCompleteDateValue(stage.revisedDp ?? "")) return false;
+  }
+  if (isYes(stage.ld ?? "")) {
+    if (!hasFilledValue(stage.ldType)) return false;
+    if (!hasFilledValue(stage.ldPercentage)) return false;
+  }
+  return true;
+}
+
+function hasStageAmount(stage: StageDeliveryDetail, form: FormState) {
+  if (form.valueCapitalSelected === "Yes") return hasFilledValue(stage.stageAmountCapital);
+  if (form.valueRevenueSelected === "Yes") return hasFilledValue(stage.stageAmountRevenue);
+  return hasFilledValue(stage.stageAmountCapital) || hasFilledValue(stage.stageAmountRevenue);
+}
 
 function getSupplyOrderSubviewCompletion({
   activeSubview,
@@ -4922,7 +5480,7 @@ function hasMeaningfulSupplyOrderValue(
   if (["stageDelivery", "stagePayment", "advancePayment"].includes(key)) {
     return isYes(normalized) || isNo(normalized);
   }
-  if (amountKind && key === "paymentMode") return hasFilledValue(normalized);
+  if (amountKind && key === "paymentMode") return hasSelectablePaymentMode(normalized);
   return true;
 }
 
@@ -5005,7 +5563,8 @@ function getDerivedJobCompletionMilestoneState(
   ir?: string,
 ) {
   const completed = isJobCompletionWorkflow(fileType, ir) && isJobCompletionDone(row);
-  const manualCurrent = normalizeMilestoneName(String(row.currentMilestone ?? "")) === "jobcompletion";
+  const manualCurrent =
+    normalizeMilestoneName(String(row.currentMilestone ?? "")) === "jobcompletion";
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const autoCurrent =
     isJobCompletionWorkflow(fileType, ir) &&
@@ -5014,7 +5573,8 @@ function getDerivedJobCompletionMilestoneState(
     isCompleteDateValue(String(row.soDate ?? "")) &&
     isCompleteDateValue(effectiveDp ?? "") &&
     effectiveDp! < formatLocalDate(new Date());
-  const current = isJobCompletionWorkflow(fileType, ir) && !completed && (manualCurrent || autoCurrent);
+  const current =
+    isJobCompletionWorkflow(fileType, ir) && !completed && (manualCurrent || autoCurrent);
   return { current, completed, manualCurrent, autoCurrent };
 }
 
@@ -5188,7 +5748,7 @@ function SupplyOrderMilestonesBlock({
             ? completedSet.has(milestone)
             : isDateDrivenMilestone
               ? milestone === "Supply Order"
-              ? isSupplyOrderTabComplete(order, completionForm)
+                ? isSupplyOrderTabComplete(order, completionForm)
                 : isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped })
               : completedSet.has(milestone);
         const lockedValueFilled =
@@ -5210,10 +5770,7 @@ function SupplyOrderMilestonesBlock({
             !isCompleteDateValue(String(order.financialSanctionDate ?? ""))) ||
           isCompleted;
         const completedDisabled =
-          disabled ||
-          lockFilledFields ||
-          isDeliveryMilestone ||
-          isDateDrivenMilestone;
+          disabled || lockFilledFields || isDeliveryMilestone || isDateDrivenMilestone;
         return (
           <div
             key={milestone}
@@ -5502,10 +6059,17 @@ function TimelineBlock({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => printTimelineReport(form, filledItems)}
+            onClick={() => exportTimelineReport(form, filledItems, "pdf")}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
           >
-            <Printer className="size-3.5" /> Print
+            <Printer className="size-3.5" /> Export PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => exportTimelineReport(form, filledItems, "excel")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+          >
+            <Save className="size-3.5" /> Export Excel
           </button>
           <div className="inline-flex rounded-md border border-border bg-background p-0.5">
             <button
@@ -6057,7 +6621,11 @@ function getRemarkTime(value: string) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
+function exportTimelineReport(
+  form: FormState,
+  filledItems: TimelineItem[],
+  format: "excel" | "pdf",
+) {
   const details = [
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
@@ -6080,9 +6648,11 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
   });
 
   void downloadBackendExport({
-    format: "pdf",
+    format,
     title: "File Timeline",
-    fileName: `${getExportFileName(form.imms || form.uniqueCode || "timeline")}.pdf`,
+    fileName: `${getExportFileName(form.imms || form.uniqueCode || "timeline")}.${
+      format === "excel" ? "xls" : "pdf"
+    }`,
     tables: [
       {
         title: "File details",
@@ -6093,6 +6663,56 @@ function printTimelineReport(form: FormState, filledItems: TimelineItem[]) {
         title: "Timeline",
         headers: ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
         rows: timelineRows.length ? timelineRows : [["No timeline fields are filled."]],
+      },
+    ],
+  });
+}
+
+function exportFirmDetails(details: FirmDetailsState, format: "excel" | "pdf") {
+  const firmUniqueNoLabel = store.getSettings().firmUniqueNoLabel || "Firm Unique No.";
+  const firmRows = (rows: FirmDetail[]) =>
+    rows.length
+      ? rows.map((row, index) => [
+          index + 1,
+          row.firmName || "Not set",
+          row.firmUniqueNo || "Not set",
+          row.emailId || "Not set",
+          row.address || "Not set",
+          row.city || "Not set",
+          row.contactNo || "Not set",
+        ])
+      : [["No firm rows found."]];
+
+  void downloadBackendExport({
+    format,
+    title: "Firm Details",
+    fileName: `${getExportFileName("firm-details")}.${format === "excel" ? "xls" : "pdf"}`,
+    tables: [
+      {
+        title: "Invited firms",
+        headers: [
+          "S.No.",
+          "Firm name",
+          firmUniqueNoLabel,
+          "Email",
+          "Address",
+          "City",
+          "Contact No.",
+        ],
+        rows: firmRows(details.invitedFirms),
+      },
+      {
+        title: "Bidder firms",
+        headers: [
+          "S.No.",
+          "Firm name",
+          firmUniqueNoLabel,
+          "Email",
+          "Address",
+          "City",
+          "Contact No.",
+        ],
+        rows: firmRows(details.bidderFirms),
       },
     ],
   });
@@ -6192,9 +6812,15 @@ function cleanFirmRows(rows: FirmDetail[]) {
     .map((row) => ({
       firmName: row.firmName?.trim() || undefined,
       city: row.city?.trim() || undefined,
+      address: row.address?.trim() || undefined,
       emailId: row.emailId?.trim() || undefined,
+      firmUniqueNo: row.firmUniqueNo?.trim() || undefined,
+      contactNo: row.contactNo?.trim() || undefined,
     }))
-    .filter((row) => row.firmName || row.city || row.emailId);
+    .filter(
+      (row) =>
+        row.firmName || row.city || row.address || row.emailId || row.firmUniqueNo || row.contactNo,
+    );
   return cleaned.length ? cleaned : undefined;
 }
 
@@ -6593,7 +7219,8 @@ function getApplicableSupplyOrderMilestones(
 ) {
   return supplyOrderMilestoneNames.filter((milestone) => {
     if (milestone === "Delivery") return !isJobCompletionWorkflow(options.fileType, options.ir);
-    if (milestone === "Job Completion") return isJobCompletionWorkflow(options.fileType, options.ir);
+    if (milestone === "Job Completion")
+      return isJobCompletionWorkflow(options.fileType, options.ir);
     if (milestone === "PSB")
       return (
         isYes(order.psbApplicable ?? "") &&
@@ -6850,10 +7477,10 @@ function getApplicableOrdersForMilestone(
     if (milestone === "Supply Order") return true;
     if (milestone === "PSB" || milestone === "PWB" || milestone === "PSB+PWB") {
       return getApplicableSupplyOrderMilestones(order, {
-	        bgDisabled: isNo(form.bg),
-	        irDisabled: isNo(form.ir),
-	        fileType: form.fileType,
-	        ir: form.ir,
+        bgDisabled: isNo(form.bg),
+        irDisabled: isNo(form.ir),
+        fileType: form.fileType,
+        ir: form.ir,
       }).includes(milestone);
     }
     if (!isCompleteDateValue(order.soDate ?? "")) return false;
@@ -7037,7 +7664,7 @@ function cleanSupplyOrderRows(
     billPreparationDate: row.billPreparationDate || undefined,
     billSentForPaymentDate: row.billSentForPaymentDate || undefined,
     paymentDate: row.paymentDate || undefined,
-    paymentMode: row.paymentMode || undefined,
+    paymentMode: cleanPaymentModeValue(row.paymentMode) || undefined,
     actualPaymentCapital: row.actualPaymentCapital || undefined,
     actualPaymentRevenue: row.actualPaymentRevenue || undefined,
     soCancelled: row.soCancelled || undefined,
@@ -7518,7 +8145,7 @@ function cleanAdvancePaymentDetail(row: AdvancePaymentDetail | undefined) {
     billPreparationDate: normalized.billPreparationDate || undefined,
     billSentForPaymentDate: normalized.billSentForPaymentDate || undefined,
     paymentDate: normalized.paymentDate || undefined,
-    paymentMode: normalized.paymentMode || undefined,
+    paymentMode: cleanPaymentModeValue(normalized.paymentMode) || undefined,
     actualPaymentCapital: normalized.actualPaymentCapital || undefined,
     actualPaymentRevenue: normalized.actualPaymentRevenue || undefined,
   };
@@ -7565,7 +8192,7 @@ function cleanStageDeliveryRows(
       billPreparationDate: normalized.billPreparationDate || undefined,
       billSentForPaymentDate: normalized.billSentForPaymentDate || undefined,
       paymentDate: normalized.paymentDate || undefined,
-      paymentMode: normalized.paymentMode || undefined,
+      paymentMode: cleanPaymentModeValue(normalized.paymentMode) || undefined,
       actualPaymentCapital: normalized.actualPaymentCapital || undefined,
       actualPaymentRevenue: normalized.actualPaymentRevenue || undefined,
     };
@@ -7653,10 +8280,22 @@ function emptyFirstSupplyOrderMirrorPatch() {
   };
 }
 
-function resizeSupplyOrders(rows: SupplyOrderDetail[], count: number) {
-  return Array.from({ length: count }, (_, index) =>
-    applySupplyOrderRules({ ...emptySupplyOrder, ...(rows[index] ?? {}) }, undefined),
-  );
+function resizeSupplyOrders(
+  rows: SupplyOrderDetail[],
+  count: number,
+  form?: Pick<
+    FormState,
+    "bg" | "valueCapitalSelected" | "valueRevenueSelected" | "ir" | "fileType"
+  >,
+) {
+  return Array.from({ length: count }, (_, index) => {
+    const existingRow = rows[index];
+    const baseOrder =
+      !existingRow && isYes(form?.bg ?? "")
+        ? { ...emptySupplyOrder, bgCoverageType: "PWB" }
+        : { ...emptySupplyOrder, ...(existingRow ?? {}) };
+    return applySupplyOrderRules(baseOrder, form);
+  });
 }
 
 function resizeStageDeliveries(rows: StageDeliveryDetail[], count: number) {
@@ -7721,7 +8360,6 @@ function applyConditionalRules(form: FormState) {
       preTcecDate: "",
       preTcecMinutesDate: "",
       preTcecCommitteeNo: "",
-      adVettingDate: "",
       postTcecDate: "",
       postTcecMinutesDate: "",
       postTcecCommitteeNumber: "",
@@ -7743,15 +8381,10 @@ function applyConditionalRules(form: FormState) {
       highValueMinutesDate: "",
     };
   }
-  if (isYes(next.gem) && !next.paymentMode) {
-    next = {
-      ...next,
-      paymentMode: "Online",
-    };
-  }
   if (isNo(next.rqa)) {
     next = {
       ...next,
+      rqaSentDate: "",
       rqaApprovalDate: "",
     };
   }
@@ -7826,10 +8459,11 @@ function applyConditionalRules(form: FormState) {
       dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount),
     };
   }
-  if (isNo(next.dpExtension)) {
+  if (!isYes(next.dpExtension)) {
     next = {
       ...next,
       dpExtensionCount: "",
+      revisedDp: "",
     };
   }
   next = {
@@ -7919,8 +8553,8 @@ function applySupplyOrderRules(
   if (isYes(next.dpExtension ?? "")) {
     next = { ...next, dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount ?? "") };
   }
-  if (isNo(next.dpExtension ?? "")) {
-    next = { ...next, dpExtensionCount: "" };
+  if (!isYes(next.dpExtension ?? "")) {
+    next = { ...next, dpExtensionCount: "", revisedDp: "" };
   }
   if (!isYes(next.ld ?? "")) {
     next = { ...next, ldType: "", ldPercentage: "" };
@@ -8233,7 +8867,7 @@ function normalizeSupplyOrderMilestoneState(
                       ? paymentMilestone!
                       : billSentForPaymentMovesToPayment
                         ? paymentMilestone!
-                          : paymentRollsBackToJobCompletion &&
+                        : paymentRollsBackToJobCompletion &&
                             jobCompletionState.manualCurrent &&
                             jobCompletionMilestone
                           ? jobCompletionMilestone
@@ -8408,8 +9042,8 @@ function applyStageDeliveryRules(
   if (isYes(next.dpExtension ?? "")) {
     next = { ...next, dpExtensionCount: getInitialExtensionCount(next.dpExtensionCount ?? "") };
   }
-  if (isNo(next.dpExtension ?? "")) {
-    next = { ...next, dpExtensionCount: "" };
+  if (!isYes(next.dpExtension ?? "")) {
+    next = { ...next, dpExtensionCount: "", revisedDp: "" };
   }
   return next;
 }
@@ -8565,7 +9199,14 @@ function isDpExtensionInactiveFileType(fileType: string | undefined) {
   return false;
 }
 
-function isDpExtensionFieldInactive(form: Pick<FormState, "fileType">, key: string) {
+function isDpExtensionFieldInactive(
+  form: Pick<FormState, "fileType">,
+  key: string,
+  row?: Pick<SupplyOrderDetail | StageDeliveryDetail, "dpExtension">,
+) {
+  if ((key === "dpExtensionCount" || key === "revisedDp") && !isYes(row?.dpExtension ?? "")) {
+    return true;
+  }
   return (
     isDpExtensionInactiveFileType(form.fileType) &&
     (key === "dpExtension" || key === "dpExtensionCount" || key === "revisedDp")
@@ -8709,7 +9350,9 @@ function isDivisionAdNo(divisionName: string, divisions: ReturnType<typeof useDi
 }
 
 function clearDivisionDisabledFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
-  return isDivisionAdNo(form.division, divisions) ? { ...form, adVettingDate: "" } : form;
+  return isDivisionAdNo(form.division, divisions)
+    ? { ...form, ad: "No", adSentDate: "", adVettingDate: "" }
+    : form;
 }
 
 function getEnabledTimelineFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
@@ -8722,7 +9365,8 @@ function isTimelineFieldDisabled(
   divisions: ReturnType<typeof useDivisions>,
 ) {
   return (
-    (key === "adVettingDate" && isDivisionAdNo(form.division, divisions)) ||
+    (["ad", "adSentDate", "adVettingDate"].includes(key) &&
+      isDivisionAdNo(form.division, divisions)) ||
     (isNo(form.tcec) && tcecDisabledKeys.includes(key)) ||
     (isNo(form.gem) && gemDisabledKeys.includes(key)) ||
     (isNo(form.highValue) && highValueDisabledKeys.includes(key)) ||
@@ -9053,24 +9697,18 @@ function DynamicField({
   }
 
   if (field.typeahead && field.options) {
-    const listId = `${field.key}-options`;
     return (
       <Field label={field.label}>
-        <input
-          ref={inputRef}
+        <SearchableDropdown
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={onChange}
+          options={field.options}
           disabled={disabled}
           placeholder={field.placeholder}
-          list={listId}
+          inputRef={inputRef as (element: HTMLInputElement | null) => void}
           data-testid={testId}
           className={inputCls + disabledCls(disabled)}
         />
-        <datalist id={listId}>
-          {field.options.map((option) => (
-            <option key={option} value={option} />
-          ))}
-        </datalist>
       </Field>
     );
   }
@@ -9087,11 +9725,13 @@ function DynamicField({
           className={inputCls + disabledCls(disabled)}
         >
           <option value="">Select</option>
-          {field.options.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
+          {field.options
+            .filter((option) => option.trim().toLowerCase() !== "select")
+            .map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
         </select>
       </Field>
     );
@@ -9212,6 +9852,15 @@ function disabledCls(disabled: boolean) {
 
 function hasFilledValue(value: unknown) {
   return Boolean(String(value ?? "").trim());
+}
+
+function hasSelectablePaymentMode(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  return Boolean(normalized && normalized.toLowerCase() !== "select");
+}
+
+function cleanPaymentModeValue(value: unknown) {
+  return hasSelectablePaymentMode(value) ? String(value ?? "").trim() : "";
 }
 
 function hasFileValueForLock(form: FormState, key: FieldKey) {

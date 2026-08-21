@@ -1114,18 +1114,17 @@ const reportModes = [
   { key: "itemsDeliveredBillsPending", label: "Delivery/Job Complete, Bill Pending" },
   { key: "itemsDeliveredBillsPrepared", label: "Delivery/Job Complete, Bill Prepared" },
   { key: "billsSubmitted", label: "Bills Submitted, Payment Pending" },
-  { key: "expectedCashOutgoFy", label: "D.P.-Based Expected Cash Outgo" },
-  { key: "spentTillDateFy", label: "Actual Cash Outgo Till Date" },
-  { key: "billsPaidInMonth", label: "Bills Paid In Month" },
-  { key: "cashOutgoForMonth", label: "Cash Outgo For Month" },
-  { key: "expectedExpenditureTillMonth", label: "Expected Expenditure Till Month" },
+  { key: "expectedCashOutgoFy", label: "Expected Cash Outgo by D.P." },
+  { key: "spentTillDateFy", label: "Actual Paid Outgo Till Date" },
+  { key: "billsPaidInMonth", label: "Bills Paid in Selected Month" },
+  { key: "cashOutgoForMonth", label: "Expected Cash Outgo for Selected Month" },
+  { key: "expectedExpenditureTillMonth", label: "Expected Expenditure Till Selected Month" },
   { key: "currentMonthLiability", label: "Current Month Liability" },
   { key: "monthlyFileInflow", label: "Monthly file inflow" },
   { key: "monthWiseSupplyOrder", label: "Month-wise Supply Order" },
   { key: "monthWiseDeliverySchedule", label: "Month-wise Delivery Schedule" },
   { key: "monthWiseCompletedDeliveries", label: "Month-wise completed deliveries" },
   { key: "monthWiseBgExpiry", label: "Month-wise BG expiry" },
-  { key: "preBidMeetings", label: "Pre-Bid Meetings" },
   { key: "bgReceiptDelay", label: "BG receipt delay" },
   { key: "warrantyBgMismatch", label: "Warranty / BG mismatch" },
   { key: "delayStatus", label: "Delay Status" },
@@ -1271,13 +1270,13 @@ function getEightReportTitle(
     return `Delivery/Job Complete, Bill Prepared as on ${asOnDate}`;
   }
   if (mode === "billsSubmitted") return `Bills Submitted, Payment Pending as on ${asOnDate}`;
-  if (mode === "expectedCashOutgoFy") return `D.P.-Based Expected Cash Outgo for FY ${fyLabel}`;
+  if (mode === "expectedCashOutgoFy") return `Expected Cash Outgo by D.P. for FY ${fyLabel}`;
   if (mode === "spentTillDateFy") {
-    return `Actual Cash Outgo Till ${asOnDate}`;
+    return `Actual Paid Outgo Till ${asOnDate}`;
   }
-  if (mode === "billsPaidInMonth") return `Bills Paid In ${monthLabel}`;
+  if (mode === "billsPaidInMonth") return `Bills Paid in ${monthLabel}`;
   if (mode === "currentMonthLiability") return `Current Month Liability till ${monthLabel}`;
-  if (mode === "cashOutgoForMonth") return `Cash Outgo For ${monthLabel}`;
+  if (mode === "cashOutgoForMonth") return `Expected Cash Outgo for ${monthLabel}`;
   if (mode === "expectedExpenditureTillMonth") {
     return `Expected Expenditure Till ${monthLabel}`;
   }
@@ -2923,7 +2922,7 @@ function MonthlyOperationalReport({
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{title}</h2>
-          <p className="text-xs text-muted-foreground">{description}</p>
+          <ReportDescription description={description} />
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -3186,9 +3185,7 @@ function CashOutgoReport({
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">{title}</h2>
-          {description ? (
-            <p className="whitespace-pre-line text-xs text-muted-foreground">{description}</p>
-          ) : null}
+          {description ? <ReportDescription description={description} /> : null}
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
           {controls}
@@ -3284,6 +3281,25 @@ function CashOutgoReport({
       </div>
     </div>
   );
+}
+
+function ReportDescription({ description }: { description: string }) {
+  const lines = description
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length > 1) {
+    return (
+      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+        {lines.map((line) => (
+          <li key={line}>{line.replace(/^[-*]\s+/, "")}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  return <p className="text-xs text-muted-foreground">{description}</p>;
 }
 
 function CashOutgoTable({
@@ -4349,9 +4365,11 @@ function isWorkflowNotStartedFile(file: FileRecord) {
     "immsDate",
     "highValueMeetingDate",
     "highValueMinutesDate",
+    "adSentDate",
     "preTcecDate",
     "preTcecMinutesDate",
     "adVettingDate",
+    "rqaSentDate",
     "rqaApprovalDate",
     "ifaSentDate",
     "ifaFinalDate",
@@ -4441,16 +4459,17 @@ const orderDelayMilestones = [
     key: "delivery",
     label: "Delivery",
     current: "delivery",
-    start: (file: FileRecord, order: SupplyOrderDetail) =>
-      order.soDate || order.financialSanctionDate || getMainTimelineLastFilledDateValue(file),
+    start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
     complete: (order: SupplyOrderDetail) => order.materialReceiptDate,
+    applies: (file: FileRecord) => isDeliveryInspectionApplicable(file),
   },
   {
     key: "jobCompletion",
     label: "Job Completion",
     current: "jobcompletion",
-    start: (_file: FileRecord, order: SupplyOrderDetail) => addDays(getDeliveryPeriodDate(order), 1),
+    start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
     complete: (order: SupplyOrderDetail) => isJobCompletionDone(order) ? "9999-12-31" : undefined,
+    applies: (file: FileRecord) => isJobCompletionWorkflow(file),
   },
   {
     key: "irPreparation",
@@ -4507,6 +4526,7 @@ function getCurrentOrderMilestoneDelayRows(
         : fileSupplyOrders(file);
     return rows.flatMap((order, index) => {
       if (isSupplyOrderCancelled(file, order)) return [];
+      if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return [];
       if (milestone.key === "advancePayment") {
         if (!isAdvancePaymentPending(order)) return [];
       } else if (!isOrderCurrentForMilestone(file, order, normalizeMilestoneName(milestone.current))) {
@@ -4529,7 +4549,7 @@ function getCurrentOrderMilestoneDelayRows(
           daysInStage,
           lastFilledDate: getLastFilledDateValue(file) ?? "",
           focusSection: "Supply order and payment",
-          focusTarget: `${milestone.current}:pending`,
+          focusTarget: `${milestone.current}:pending:${index}`,
         },
       ];
     });
@@ -4593,9 +4613,11 @@ function getMainTimelineLastFilledDateValue(file: FileRecord) {
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -4626,9 +4648,11 @@ function getLastFilledDateValue(file: FileRecord) {
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -4681,9 +4705,11 @@ function getOrderTimelineLastFilledDateValue(file: FileRecord, order: SupplyOrde
     file.immsDate,
     file.highValueMeetingDate,
     file.highValueMinutesDate,
+    file.adSentDate,
     file.preTcecDate,
     file.preTcecMinutesDate,
     file.adVettingDate,
+    file.rqaSentDate,
     file.rqaApprovalDate,
     file.ifaSentDate,
     file.ifaFinalDate,
@@ -4974,6 +5000,7 @@ const milestoneDefinitions = [
     key: "ad",
     label: "AD",
     totalLabel: "Total cases",
+    reviewed: "adSentDate",
     current: "adVettingDate",
     applies: (file) => isYes(file.ad),
   },
@@ -4981,6 +5008,7 @@ const milestoneDefinitions = [
     key: "rqa",
     label: "R&QA",
     totalLabel: "Total cases",
+    reviewed: "rqaSentDate",
     current: "rqaApprovalDate",
     applies: (file) => isYes(file.rqa),
   },
@@ -5269,9 +5297,9 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
     biddingIndex === -1
       ? [...withDeliveryPeriod, ...preBidRows]
       : [
-          ...withDeliveryPeriod.slice(0, biddingIndex),
+          ...withDeliveryPeriod.slice(0, biddingIndex + 1),
           ...preBidRows,
-          ...withDeliveryPeriod.slice(biddingIndex),
+          ...withDeliveryPeriod.slice(biddingIndex + 1),
         ];
   const advancePaymentRows = [
     {

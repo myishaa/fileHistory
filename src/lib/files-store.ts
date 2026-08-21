@@ -47,10 +47,12 @@ export type FileRecord = {
   rfpVetting?: string;
   highValueMeetingDate?: string;
   highValueMinutesDate?: string;
+  adSentDate?: string;
   preTcecDate?: string;
   preTcecMinutesDate?: string;
   preTcecCommitteeNo?: string;
   adVettingDate?: string;
+  rqaSentDate?: string;
   rqaApprovalDate?: string;
   ifaSentDate?: string;
   ifaFinalDate?: string;
@@ -86,6 +88,9 @@ export type FileRecord = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmUniqueNo?: string;
+  firmContactNo?: string;
+  firmCity?: string;
   firmType?: string;
   firmTypeOther?: string;
   dpExtension?: string;
@@ -190,6 +195,9 @@ export type SupplyOrderDetail = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  firmUniqueNo?: string;
+  firmContactNo?: string;
+  firmCity?: string;
   firmType?: string;
   firmTypeOther?: string;
   dpExtension?: string;
@@ -259,7 +267,10 @@ export type StageDeliveryDetail = {
 export type FirmDetail = {
   firmName?: string;
   city?: string;
+  address?: string;
   emailId?: string;
+  firmUniqueNo?: string;
+  contactNo?: string;
 };
 
 export type Division = {
@@ -290,6 +301,25 @@ export type Indentor = {
 };
 export type IndentorSearchResult = {
   indentors: Indentor[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+export type MasterFirm = {
+  id: string;
+  firmName?: string;
+  emailId?: string;
+  city?: string;
+  address?: string;
+  firmUniqueNo?: string;
+  contactNo?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type MasterFirmSearchResult = {
+  firms: MasterFirm[];
   total: number;
   page: number;
   pageSize: number;
@@ -371,6 +401,7 @@ export type AppSettings = {
   demandProcessingDayRanges?: DemandProcessingDayRange[];
   bgReceiptDelayDays?: number[];
   specialFileMarkers?: SpecialFileMarker[];
+  firmUniqueNoLabel?: string;
   activeUserId?: string;
 };
 
@@ -406,6 +437,7 @@ const defaultSettings: AppSettings = {
   ],
   bgReceiptDelayDays: [10, 30, 60],
   specialFileMarkers: [],
+  firmUniqueNoLabel: "Firm Unique No.",
 };
 
 const defaultUsers: AppUser[] = [];
@@ -1017,6 +1049,42 @@ export function fetchIndentors({
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
   return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`);
+}
+
+export function fetchMasterFirms({
+  q,
+  page = 1,
+  pageSize = 50,
+}: {
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const params = new URLSearchParams();
+  if (q?.trim()) params.set("q", q.trim());
+  params.set("page", String(page));
+  params.set("pageSize", String(pageSize));
+  return request<MasterFirmSearchResult>(`/api/firms?${params.toString()}`);
+}
+
+export function createMasterFirm(payload: Partial<MasterFirm>) {
+  return request<{ firm: MasterFirm }>("/api/firms", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateMasterFirm(id: string, payload: Partial<MasterFirm>) {
+  return request<{ firm: MasterFirm }>(`/api/firms/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteMasterFirm(id: string) {
+  return request<{ deleted: true; firm: MasterFirm }>(`/api/firms/${id}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchFile(id: string) {

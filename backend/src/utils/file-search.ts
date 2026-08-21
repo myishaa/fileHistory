@@ -33,6 +33,9 @@ export type FileSearchParams = {
   revenueOnly?: boolean;
   description?: string;
   firm?: string;
+  firmUniqueNo?: string;
+  firmContactNo?: string;
+  firmCity?: string;
   selectedModes?: string[];
   selectedFirmTypes?: string[];
   selectedFileTypes?: string[];
@@ -422,6 +425,28 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     if (
       params.firm &&
       !fileSupplyOrders(file).some((order) => includesText(order.firm, params.firm ?? ""))
+    ) {
+      return false;
+    }
+    if (
+      params.firmUniqueNo &&
+      !fileSupplyOrders(file).some((order) =>
+        includesText(order.firmUniqueNo, params.firmUniqueNo ?? ""),
+      )
+    ) {
+      return false;
+    }
+    if (
+      params.firmContactNo &&
+      !fileSupplyOrders(file).some((order) =>
+        includesText(order.firmContactNo, params.firmContactNo ?? ""),
+      )
+    ) {
+      return false;
+    }
+    if (
+      params.firmCity &&
+      !fileSupplyOrders(file).some((order) => includesText(order.firmCity, params.firmCity ?? ""))
     ) {
       return false;
     }
@@ -1398,7 +1423,10 @@ function isJobCompletionCompleted(file: FileRecord) {
   return (
     isSupplyOrderPlaced(file) &&
     fileSupplyOrders(file).some(
-      (order) => !isSupplyOrderCancelled(file, order) && hasSupplyOrderDate(order) && isJobCompletionDone(order),
+      (order) =>
+        !isSupplyOrderCancelled(file, order) &&
+        hasSupplyOrderDate(order) &&
+        isJobCompletionDone(order),
     )
   );
 }
@@ -1485,7 +1513,8 @@ function isDeliveryPeriodExtended(file: FileRecord) {
     isDeliveryPeriodActive(file) &&
     normalizedSupplyOrderEntries([file]).some(
       ({ file: entryFile, order }) =>
-        !isSupplyOrderCancelled(entryFile, order) && isExtendedDeliveryPeriodEntry(entryFile, order),
+        !isSupplyOrderCancelled(entryFile, order) &&
+        isExtendedDeliveryPeriodEntry(entryFile, order),
     )
   );
 }
@@ -1652,7 +1681,9 @@ function isDateToday(date: string | undefined) {
 }
 
 function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMilestoneKey: string) {
-  const milestone = milestoneDefinitions.find((item) => isManualActiveMilestone(file, item));
+  const milestone = milestoneDefinitions
+    .filter((item) => !isSupplyOrderDrivenDelayMilestoneKey(item.key))
+    .find((item) => isManualActiveMilestone(file, item));
   const mainMatch = (() => {
     if (!milestone) return false;
     if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return false;
@@ -1665,6 +1696,17 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
   return mainMatch || isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey);
 }
 
+function isSupplyOrderDrivenDelayMilestoneKey(key: string) {
+  return (
+    key === "financialSanction" ||
+    key === "supplyOrder" ||
+    key === "psb" ||
+    key === "pwb" ||
+    key === "psbPwb" ||
+    key === "payment"
+  );
+}
+
 function isOrderDelayStatusMatch(
   file: FileRecord,
   thresholdDays: number,
@@ -1675,6 +1717,7 @@ function isOrderDelayStatusMatch(
     .some((milestone) =>
       supplyOrderMilestoneRows(file, milestone.current).some((order) => {
         if (isSupplyOrderCancelled(file, order)) return false;
+        if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return false;
         if (getOrderDelayCurrentMilestone(file, order, milestone.current) !== milestone.current)
           return false;
         if (hasDate(milestone.complete(order))) return false;
@@ -1705,19 +1748,21 @@ function getOrderDelayMilestones() {
       start: (_file: FileRecord, order: SupplyOrderDetail) => order.soDate,
       complete: (order: SupplyOrderDetail) => order.advancePaymentDetail?.paymentDate,
     },
-	    {
-	      key: "delivery",
-	      current: "delivery",
-	      start: (file: FileRecord, order: SupplyOrderDetail) =>
-	        order.soDate || order.financialSanctionDate || getMainTimelineLastFilledDateValue(file),
-	      complete: (order: SupplyOrderDetail) => order.materialReceiptDate,
-	    },
-	    {
-	      key: "jobCompletion",
-	      current: "jobcompletion",
-	      start: (_file: FileRecord, order: SupplyOrderDetail) => addDays(getDeliveryPeriodDate(order), 1),
-	      complete: (order: SupplyOrderDetail) => isJobCompletionDone(order) ? "9999-12-31" : undefined,
-	    },
+    {
+      key: "delivery",
+      current: "delivery",
+      start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
+      complete: (order: SupplyOrderDetail) => order.materialReceiptDate,
+      applies: (file: FileRecord) => isDeliveryInspectionApplicable(file),
+    },
+    {
+      key: "jobCompletion",
+      current: "jobcompletion",
+      start: (_file: FileRecord, order: SupplyOrderDetail) => getDeliveryPeriodDate(order),
+      complete: (order: SupplyOrderDetail) =>
+        isJobCompletionDone(order) ? "9999-12-31" : undefined,
+      applies: (file: FileRecord) => isJobCompletionWorkflow(file),
+    },
     {
       key: "irPreparation",
       current: "irpreparation",
@@ -1743,17 +1788,17 @@ function getOrderDelayMilestones() {
       start: (_file: FileRecord, order: SupplyOrderDetail) => order.billPreparationDate,
       complete: (order: SupplyOrderDetail) => order.billSentForPaymentDate,
     },
-	    {
-	      key: "payment",
-	      current: "payment",
-	      start: (file: FileRecord, order: SupplyOrderDetail) =>
-	        isDeliveryInspectionApplicable(file)
-	          ? order.materialReceiptDate || order.billSentForPaymentDate
-	          : isJobCompletionDone(order)
-	            ? addDays(getDeliveryPeriodDate(order), 1)
-	            : order.billSentForPaymentDate,
-	      complete: (order: SupplyOrderDetail) => order.paymentDate,
-	    },
+    {
+      key: "payment",
+      current: "payment",
+      start: (file: FileRecord, order: SupplyOrderDetail) =>
+        isDeliveryInspectionApplicable(file)
+          ? order.materialReceiptDate || order.billSentForPaymentDate
+          : isJobCompletionDone(order)
+            ? addDays(getDeliveryPeriodDate(order), 1)
+            : order.billSentForPaymentDate,
+      complete: (order: SupplyOrderDetail) => order.paymentDate,
+    },
   ];
 }
 
@@ -2455,7 +2500,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryDeliveredLate") return isDeliveryDeliveredLate(file);
   if (filter === "deliveryDue") return isDeliveryDue(file);
   if (filter === "jobCompletionCompleted") return isJobCompletionCompleted(file);
-  if (filter === "jobCompletionDue" || filter === "jobCompletionLive") return isJobCompletionLive(file);
+  if (filter === "jobCompletionDue" || filter === "jobCompletionLive")
+    return isJobCompletionLive(file);
   if (filter === "jobCompletionPeriodOver") return isJobCompletionPeriodOver(file);
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
@@ -2781,7 +2827,8 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   if (current === "jobcompletion" && isJobCompletionCurrentOrder(file, order)) {
     return "jobcompletion";
   }
-  if (current && current !== "jobcompletion" && isOrderMilestoneApplicable(file, current)) return current;
+  if (current && current !== "jobcompletion" && isOrderMilestoneApplicable(file, current))
+    return current;
   if (isJobCompletionCurrentOrder(file, order)) return "jobcompletion";
   if (isDueDeliveryOrder(file, order)) return "delivery";
   if (
@@ -2959,8 +3006,8 @@ function isOrderMilestoneApplicable(file: FileRecord, normalizedMilestone: strin
       isBgCategoryApplicable(file, order, normalizedMilestone),
     );
   }
-	  if (normalizedMilestone === "delivery") return isDeliveryInspectionApplicable(file);
-	  if (normalizedMilestone === "jobcompletion") return isJobCompletionWorkflow(file);
+  if (normalizedMilestone === "delivery") return isDeliveryInspectionApplicable(file);
+  if (normalizedMilestone === "jobcompletion") return isJobCompletionWorkflow(file);
   if (normalizedMilestone === "irpreparation" || normalizedMilestone === "irreceipt") {
     return isYes(file.ir);
   }

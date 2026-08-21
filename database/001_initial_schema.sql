@@ -47,8 +47,27 @@ create table app_settings (
   demand_processing_day_ranges jsonb not null default '[{"id":"0-90","label":"0-90","minDays":"0","maxDays":"90"},{"id":"91-180","label":"91-180","minDays":"91","maxDays":"180"},{"id":"181-365","label":"181-365","minDays":"181","maxDays":"365"},{"id":"365-plus","label":"365 and above","minDays":"366","maxDays":""}]'::jsonb,
   bg_receipt_delay_days jsonb not null default '[10, 30, 60]'::jsonb,
   special_file_markers jsonb not null default '[]'::jsonb,
+  firm_unique_no_label text not null default 'Firm Unique No.',
   active_user_id uuid references app_users(id) on delete set null,
   updated_at timestamptz not null default now()
+);
+
+create table master_firms (
+  id uuid primary key default gen_random_uuid(),
+  firm_name text,
+  email_id text,
+  city text,
+  address text,
+  firm_unique_no text,
+  contact_no text,
+  created_by uuid references app_users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (
+    nullif(btrim(coalesce(firm_name, '')), '') is not null or
+    nullif(btrim(coalesce(email_id, '')), '') is not null or
+    nullif(btrim(coalesce(firm_unique_no, '')), '') is not null
+  )
 );
 
 create table files (
@@ -161,7 +180,10 @@ create table file_firms (
   firm_type text not null check (firm_type in ('invited', 'bidder')),
   firm_name text,
   city text,
+  address text,
   email_id text,
+  firm_unique_no text,
+  contact_no text,
   sort_order integer not null default 0
 );
 
@@ -178,6 +200,9 @@ create table supply_orders (
   so_value_revenue numeric(14, 2),
   dp_date date,
   firm text,
+  firm_unique_no text,
+  firm_contact_no text,
+  firm_city text,
   psb_applicable text,
   bg_coverage_type text,
   psb_bg_no text,
@@ -265,6 +290,10 @@ create trigger app_settings_set_updated_at
 before update on app_settings
 for each row execute function set_updated_at();
 
+create trigger master_firms_set_updated_at
+before update on master_firms
+for each row execute function set_updated_at();
+
 create index files_year_idx on files(year);
 create index files_division_id_idx on files(division_id);
 create unique index files_unique_code_key on files(unique_code)
@@ -281,6 +310,16 @@ create index files_imms_trgm_idx on files using gin (imms gin_trgm_ops);
 create index files_demand_description_trgm_idx on files using gin (demand_description gin_trgm_ops);
 create index file_firms_file_id_idx on file_firms(file_id);
 create index file_firms_name_trgm_idx on file_firms using gin (firm_name gin_trgm_ops);
+create index file_firms_email_trgm_idx on file_firms using gin (email_id gin_trgm_ops);
+create index file_firms_unique_no_trgm_idx on file_firms using gin (firm_unique_no gin_trgm_ops);
+create index file_firms_contact_no_trgm_idx on file_firms using gin (contact_no gin_trgm_ops);
+create unique index master_firms_unique_no_idx
+on master_firms (lower(btrim(firm_unique_no)))
+where nullif(btrim(firm_unique_no), '') is not null;
+create index master_firms_name_trgm_idx on master_firms using gin (firm_name gin_trgm_ops);
+create index master_firms_email_trgm_idx on master_firms using gin (email_id gin_trgm_ops);
+create index master_firms_unique_no_trgm_idx on master_firms using gin (firm_unique_no gin_trgm_ops);
+create index master_firms_contact_no_trgm_idx on master_firms using gin (contact_no gin_trgm_ops);
 create index supply_orders_file_id_idx on supply_orders(file_id);
 create index supply_orders_firm_trgm_idx on supply_orders using gin (firm gin_trgm_ops);
 create index supply_orders_firm_type_other_trgm_idx on supply_orders using gin (firm_type_other gin_trgm_ops);

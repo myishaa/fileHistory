@@ -3,9 +3,13 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
 import {
+  createMasterFirm,
+  deleteMasterFirm,
   fetchFilesForYear,
   fetchIndentors,
+  fetchMasterFirms,
   store,
+  updateMasterFirm,
   useActiveUser,
   useDivisions,
   useSettings,
@@ -15,6 +19,7 @@ import {
   type DemandProcessingDayRange,
   type FileRecord,
   type Indentor,
+  type MasterFirm,
   type SpecialFileMarker,
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
@@ -110,7 +115,9 @@ function insertFinancialSanctionMilestone(milestones: string[]) {
   const hasFinancialSanction = milestones.some(
     (milestone) => normalize(milestone) === "financialsanction",
   );
-  const supplyOrderIndex = milestones.findIndex((milestone) => normalize(milestone) === "supplyorder");
+  const supplyOrderIndex = milestones.findIndex(
+    (milestone) => normalize(milestone) === "supplyorder",
+  );
   if (hasFinancialSanction || supplyOrderIndex === -1) return milestones;
   return [
     ...milestones.slice(0, supplyOrderIndex),
@@ -207,6 +214,7 @@ function SettingsPage() {
           <TabsList aria-label="Settings sections">
             <TabsTrigger value="user">User</TabsTrigger>
             <TabsTrigger value="indentors">Indentors</TabsTrigger>
+            <TabsTrigger value="firms">Firm Database</TabsTrigger>
             <TabsTrigger value="presets">Preset table fields</TabsTrigger>
             {canEditMmgSummary ? <TabsTrigger value="mmgSummary">MMG Summary</TabsTrigger> : null}
           </TabsList>
@@ -215,6 +223,9 @@ function SettingsPage() {
           </TabsContent>
           <TabsContent value="indentors">
             <IndentorSettings />
+          </TabsContent>
+          <TabsContent value="firms">
+            <FirmDatabaseSettings />
           </TabsContent>
           <TabsContent value="presets">
             <TableFieldPresetSettings />
@@ -251,6 +262,7 @@ function SettingsPage() {
     },
     { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
     { key: "indentors", label: "Indentors", content: <IndentorSettings /> },
+    { key: "firms", label: "Firm Database", content: <FirmDatabaseSettings /> },
     { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
     { key: "modes", label: "Modes", content: <ModeSettings /> },
     { key: "firmTypes", label: "Firm Types", content: <FirmTypeSettings /> },
@@ -366,7 +378,9 @@ function LockedAdminSection({
       </div>
       <fieldset
         disabled={!unlocked}
-        className={!unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined}
+        className={
+          !unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined
+        }
       >
         {section.content}
       </fieldset>
@@ -542,15 +556,13 @@ function WorkspaceSettings() {
   const selectedFinancialYear =
     isAllActiveFilesYear(settings.selectedYear) ||
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
-    ? settings.financialYear
-    : settings.selectedYear;
+      ? settings.financialYear
+      : settings.selectedYear;
   const financialYears = Array.from(
     new Set(
       [settings.financialYear, selectedFinancialYear, ...settings.financialYears]
         .filter(Boolean)
-        .filter(
-          (year) => !isAllActiveFilesYear(year) && !isActivePlusCurrentFyClosedYear(year),
-        ),
+        .filter((year) => !isAllActiveFilesYear(year) && !isActivePlusCurrentFyClosedYear(year)),
     ),
   ).sort((a, b) => b.localeCompare(a));
   const suggestedFinancialYear = getNextFinancialYearLabel(financialYears);
@@ -957,9 +969,7 @@ function ModeSettings() {
                     disabled={protectedMode}
                     className={
                       "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-                      (protectedMode
-                        ? "bg-secondary/50 text-muted-foreground"
-                        : "bg-background")
+                      (protectedMode ? "bg-secondary/50 text-muted-foreground" : "bg-background")
                     }
                   />
                   {protectedMode ? (
@@ -1240,9 +1250,7 @@ function normalizeModes(values: string[] | undefined) {
 
 function isDefaultFileType(fileType: string | undefined) {
   const normalized = fileType?.trim().toLowerCase();
-  return Boolean(
-    normalized && defaultFileTypes.some((item) => item.toLowerCase() === normalized),
-  );
+  return Boolean(normalized && defaultFileTypes.some((item) => item.toLowerCase() === normalized));
 }
 
 function isDefaultMode(mode: string | undefined) {
@@ -1272,8 +1280,8 @@ function ValueThresholdSettings() {
   const selectedYear =
     isAllActiveFilesYear(settings.selectedYear) ||
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
-    ? settings.financialYear
-    : settings.selectedYear;
+      ? settings.financialYear
+      : settings.selectedYear;
   const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>
     formatThresholdLevels(settings.valueThresholdLevels ?? []),
   );
@@ -1868,109 +1876,109 @@ function DemandProcessingPresetSettings() {
 
   return (
     <div className="space-y-4">
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold mb-1">Demand processing presets</h2>
-          <p className="text-xs text-muted-foreground">
-            Create shared presets for the Demand processing analysis report.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={addPreset}
-          className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
-        >
-          <Plus className="size-4" /> Add preset
-        </button>
-      </div>
-
-      {presets.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-          No custom presets added yet. Built-in presets are always available in Reports.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="rounded-md border border-border bg-secondary/20 p-2">
-            <div className="space-y-1">
-              {presets.map((preset) => (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => setSelectedPresetId(preset.id)}
-                  className={
-                    "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                    (selectedPreset?.id === preset.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                  }
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="truncate">{preset.name}</span>
-                    {preset.active === false ? (
-                      <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-                        Hidden
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
-              ))}
-            </div>
+      <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold mb-1">Demand processing presets</h2>
+            <p className="text-xs text-muted-foreground">
+              Create shared presets for the Demand processing analysis report.
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={addPreset}
+            className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          >
+            <Plus className="size-4" /> Add preset
+          </button>
+        </div>
 
-          {selectedPreset ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto]">
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  <span>Preset name</span>
-                  <input
-                    value={selectedPreset.name}
-                    onChange={(event) => updateSelectedPreset({ name: event.target.value })}
-                    className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-                  />
-                </label>
-                <label className="flex h-10 items-center gap-2 self-end rounded-md border border-input bg-background px-3 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={selectedPreset.active !== false}
-                    onChange={(event) => updateSelectedPreset({ active: event.target.checked })}
-                    className="size-4 rounded border-input"
-                  />
-                  Visible
-                </label>
-                <button
-                  type="button"
-                  onClick={removePreset}
-                  className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
-                >
-                  Delete
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                <SettingsDemandDateSelector
-                  label="From date"
-                  value={selectedPreset.fromFieldId}
-                  onChange={(fromFieldId) => updateSelectedPreset({ fromFieldId })}
-                />
-                <SettingsDemandDateSelector
-                  label="To date"
-                  value={selectedPreset.toFieldId}
-                  onChange={(toFieldId) => updateSelectedPreset({ toFieldId })}
-                />
+        {presets.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            No custom presets added yet. Built-in presets are always available in Reports.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
+            <div className="rounded-md border border-border bg-secondary/20 p-2">
+              <div className="space-y-1">
+                {presets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => setSelectedPresetId(preset.id)}
+                    className={
+                      "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                      (selectedPreset?.id === preset.id
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                    }
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="truncate">{preset.name}</span>
+                      {preset.active === false ? (
+                        <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                          Hidden
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                ))}
               </div>
             </div>
-          ) : null}
-        </div>
-      )}
-    </div>
-    <DemandProcessingDayRangeSettings
-      ranges={dayRanges}
-      onAdd={addDayRange}
-      onReset={resetDayRanges}
-      onUpdate={updateDayRange}
-      onRemove={removeDayRange}
-    />
+
+            {selectedPreset ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto]">
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>Preset name</span>
+                    <input
+                      value={selectedPreset.name}
+                      onChange={(event) => updateSelectedPreset({ name: event.target.value })}
+                      className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                    />
+                  </label>
+                  <label className="flex h-10 items-center gap-2 self-end rounded-md border border-input bg-background px-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedPreset.active !== false}
+                      onChange={(event) => updateSelectedPreset({ active: event.target.checked })}
+                      className="size-4 rounded border-input"
+                    />
+                    Visible
+                  </label>
+                  <button
+                    type="button"
+                    onClick={removePreset}
+                    className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                  >
+                    Delete
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <SettingsDemandDateSelector
+                    label="From date"
+                    value={selectedPreset.fromFieldId}
+                    onChange={(fromFieldId) => updateSelectedPreset({ fromFieldId })}
+                  />
+                  <SettingsDemandDateSelector
+                    label="To date"
+                    value={selectedPreset.toFieldId}
+                    onChange={(toFieldId) => updateSelectedPreset({ toFieldId })}
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+      <DemandProcessingDayRangeSettings
+        ranges={dayRanges}
+        onAdd={addDayRange}
+        onReset={resetDayRanges}
+        onUpdate={updateDayRange}
+        onRemove={removeDayRange}
+      />
     </div>
   );
 }
@@ -2420,7 +2428,9 @@ function DivisionSettings() {
                           <button
                             type="button"
                             onClick={async () => {
-                              if (await requestDeletionPassword(`delete division "${division.name}"`)) {
+                              if (
+                                await requestDeletionPassword(`delete division "${division.name}"`)
+                              ) {
                                 store.deleteDivision(division.id);
                               }
                             }}
@@ -2446,6 +2456,483 @@ type IndentorDraft = Pick<
   Indentor,
   "divisionId" | "name" | "sfId" | "designation" | "mobileNo" | "landlineNo" | "email"
 >;
+
+type FirmDraft = Pick<
+  MasterFirm,
+  "firmName" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
+>;
+
+const emptyFirmDraft: FirmDraft = {
+  firmName: "",
+  emailId: "",
+  city: "",
+  address: "",
+  firmUniqueNo: "",
+  contactNo: "",
+};
+
+function cleanFirmDraft(draft: FirmDraft): FirmDraft {
+  return {
+    firmName: draft.firmName?.trim() || "",
+    emailId: draft.emailId?.trim() || "",
+    city: draft.city?.trim() || "",
+    address: draft.address?.trim() || "",
+    firmUniqueNo: draft.firmUniqueNo?.trim() || "",
+    contactNo: draft.contactNo?.trim() || "",
+  };
+}
+
+function numericOnly(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function isValidEmailFormat(value: string | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}
+
+function FirmDatabaseSettings() {
+  const activeUser = useActiveUser();
+  const settings = useSettings();
+  const canManage =
+    activeUser?.role === "admin" ||
+    activeUser?.role === "sub_admin" ||
+    activeUser?.role === "editor";
+  const [draft, setDraft] = useState<FirmDraft>(emptyFirmDraft);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [firms, setFirms] = useState<MasterFirm[]>([]);
+  const [firmTotal, setFirmTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<string | undefined>();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
+  const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
+  const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
+
+  useEffect(() => {
+    setLabelDraft(firmUniqueNoLabel);
+  }, [firmUniqueNoLabel]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [search]);
+
+  const loadFirms = () => {
+    setLoading(true);
+    setMessage(undefined);
+    fetchMasterFirms({ q: debouncedSearch, page, pageSize })
+      .then((result) => {
+        setFirms(result.firms);
+        setFirmTotal(result.total);
+        if (result.page !== page) setPage(result.page);
+        if (result.pageSize !== pageSize) setPageSize(result.pageSize);
+      })
+      .catch((error) => {
+        console.error(error);
+        setMessage(error instanceof Error ? error.message : "Failed to load firms.");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadFirms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, page, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(firmTotal / pageSize));
+  const firstResultNumber = firmTotal === 0 ? 0 : (page - 1) * pageSize + 1;
+  const lastResultNumber = Math.min(firmTotal, (page - 1) * pageSize + firms.length);
+  const isComplete = (value: FirmDraft) => {
+    const cleaned = cleanFirmDraft(value);
+    return Boolean(cleaned.firmName || cleaned.emailId || cleaned.firmUniqueNo);
+  };
+
+  const updateDraft = (key: keyof FirmDraft, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+  const updateEditDraft = (key: keyof FirmDraft, value: string) => {
+    setEditDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const addFirm = async () => {
+    const cleaned = cleanFirmDraft(draft);
+    if (!canManage || !isComplete(cleaned)) return;
+    if (!isValidEmailFormat(cleaned.emailId)) {
+      setMessage("Enter a valid email id.");
+      return;
+    }
+    try {
+      await createMasterFirm(cleaned);
+      setDraft(emptyFirmDraft);
+      setPage(1);
+      loadFirms();
+      setMessage("Firm added.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to add firm.");
+    }
+  };
+
+  const startEdit = (firm: MasterFirm) => {
+    setEditingId(firm.id);
+    setEditDraft({
+      firmName: firm.firmName ?? "",
+      emailId: firm.emailId ?? "",
+      city: firm.city ?? "",
+      address: firm.address ?? "",
+      firmUniqueNo: firm.firmUniqueNo ?? "",
+      contactNo: firm.contactNo ?? "",
+    });
+  };
+
+  const saveEdit = async (id: string) => {
+    const cleaned = cleanFirmDraft(editDraft);
+    if (!canManage || !isComplete(cleaned)) return;
+    if (!isValidEmailFormat(cleaned.emailId)) {
+      setMessage("Enter a valid email id.");
+      return;
+    }
+    try {
+      await updateMasterFirm(id, cleaned);
+      setEditingId(null);
+      loadFirms();
+      setMessage("Firm updated.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to update firm.");
+    }
+  };
+
+  const removeFirm = async (id: string) => {
+    if (!canManage) return;
+    try {
+      await deleteMasterFirm(id);
+      if (firms.length === 1 && page > 1) {
+        setPage((current) => Math.max(1, current - 1));
+      } else {
+        loadFirms();
+      }
+      setMessage("Firm deleted.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to delete firm.");
+    }
+  };
+
+  const saveFirmUniqueNoLabel = async () => {
+    if (activeUser?.role !== "admin") return;
+    await store.updateSettings({ firmUniqueNoLabel: labelDraft.trim() || "Firm Unique No." });
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold mb-1">Firm Database</h2>
+          <p className="text-xs text-muted-foreground">
+            Save reusable firm records for future file firm details.
+          </p>
+        </div>
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={`Search firm, email, ${firmUniqueNoLabel}`}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 sm:max-w-md"
+        />
+      </div>
+
+      {activeUser?.role === "admin" ? (
+        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+          <DivisionInput
+            value={labelDraft}
+            onChange={setLabelDraft}
+            placeholder="Firm Unique No. label"
+          />
+          <button
+            type="button"
+            onClick={() => void saveFirmUniqueNoLabel()}
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent"
+          >
+            <Check className="size-4" /> Save label
+          </button>
+        </div>
+      ) : null}
+
+      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_0.85fr_1fr_1fr_0.8fr_0.9fr_auto]">
+        <DivisionInput
+          value={draft.firmName ?? ""}
+          onChange={(value) => updateDraft("firmName", value)}
+          placeholder="Firm name"
+        />
+        <DivisionInput
+          value={draft.firmUniqueNo ?? ""}
+          onChange={(value) => updateDraft("firmUniqueNo", value)}
+          placeholder={firmUniqueNoLabel}
+        />
+        <FirmInput
+          value={draft.emailId ?? ""}
+          onChange={(value) => updateDraft("emailId", value)}
+          placeholder="Email id"
+          type="email"
+          invalid={!isValidEmailFormat(draft.emailId)}
+        />
+        <DivisionInput
+          value={draft.address ?? ""}
+          onChange={(value) => updateDraft("address", value)}
+          placeholder="Address"
+        />
+        <DivisionInput
+          value={draft.city ?? ""}
+          onChange={(value) => updateDraft("city", value)}
+          placeholder="City"
+        />
+        <FirmInput
+          value={draft.contactNo ?? ""}
+          onChange={(value) => updateDraft("contactNo", numericOnly(value))}
+          placeholder="Contact No."
+          type="tel"
+        />
+        <button
+          type="button"
+          onClick={() => void addFirm()}
+          disabled={!canManage || !isComplete(draft)}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Plus className="size-4" /> Add firm
+        </button>
+      </div>
+
+      {message ? (
+        <div className="mt-4 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+          {message}
+        </div>
+      ) : null}
+
+      <div className="mt-5 overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[1260px] table-fixed text-sm">
+          <colgroup>
+            <col className="w-[17%]" />
+            <col className="w-[14%]" />
+            <col className="w-[17%]" />
+            <col className="w-[23%]" />
+            <col className="w-[13%]" />
+            <col className="w-[10%]" />
+            <col className="w-[6%]" />
+          </colgroup>
+          <thead className="bg-secondary text-xs text-muted-foreground">
+            <tr>
+              <th className="px-4 py-2.5 text-left font-medium">Firm name</th>
+              <th className="px-4 py-2.5 text-left font-medium">{firmUniqueNoLabel}</th>
+              <th className="px-4 py-2.5 text-left font-medium">Email</th>
+              <th className="px-4 py-2.5 text-left font-medium">Address</th>
+              <th className="px-4 py-2.5 text-left font-medium">City</th>
+              <th className="px-4 py-2.5 text-left font-medium">Contact No.</th>
+              <th className="px-4 py-2.5 text-right font-medium">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {firms.length === 0 ? (
+              <tr className="border-t border-border">
+                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={7}>
+                  {loading ? "Loading firms..." : "No firms found."}
+                </td>
+              </tr>
+            ) : (
+              firms.map((firm) => {
+                const isEditing = editingId === firm.id;
+                return (
+                  <tr key={firm.id} className="border-t border-border align-top">
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.firmName : firm.firmName}
+                      onChange={(value) => updateEditDraft("firmName", value)}
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.firmUniqueNo : firm.firmUniqueNo}
+                      onChange={(value) => updateEditDraft("firmUniqueNo", value)}
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.emailId : firm.emailId}
+                      onChange={(value) => updateEditDraft("emailId", value)}
+                      type="email"
+                      invalid={!isValidEmailFormat(isEditing ? editDraft.emailId : firm.emailId)}
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.address : firm.address}
+                      onChange={(value) => updateEditDraft("address", value)}
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.city : firm.city}
+                      onChange={(value) => updateEditDraft("city", value)}
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.contactNo : firm.contactNo}
+                      onChange={(value) => updateEditDraft("contactNo", numericOnly(value))}
+                      type="tel"
+                    />
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1">
+                        {isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void saveEdit(firm.id)}
+                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10"
+                            >
+                              <Check className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingId(null)}
+                              className="size-8 grid place-items-center rounded-md hover:bg-accent"
+                            >
+                              <X className="size-4" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(firm)}
+                              disabled={!canManage}
+                              className="size-8 grid place-items-center rounded-md hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Pencil className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeFirm(firm.id)}
+                              disabled={!canManage}
+                              className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          Showing {firstResultNumber}-{lastResultNumber} of {firmTotal}
+        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={pageSize}
+            onChange={(event) => {
+              setPageSize(Number(event.target.value));
+              setPage(1);
+            }}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {[25, 50, 100, 200].map((size) => (
+              <option key={size} value={size}>
+                {size} / page
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={page <= 1}
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <span>
+            Page {page} of {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={page >= totalPages}
+            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FirmCell({
+  editing,
+  value,
+  onChange,
+  type = "text",
+  invalid = false,
+}: {
+  editing: boolean;
+  value?: string;
+  onChange: (value: string) => void;
+  type?: string;
+  invalid?: boolean;
+}) {
+  return (
+    <td className="px-4 py-3 text-muted-foreground">
+      {editing ? (
+        <FirmInput
+          value={value ?? ""}
+          onChange={onChange}
+          placeholder=""
+          type={type}
+          invalid={invalid}
+        />
+      ) : (
+        value || "Not set"
+      )}
+    </td>
+  );
+}
+
+function FirmInput({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  invalid = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  type?: string;
+  invalid?: boolean;
+}) {
+  return (
+    <input
+      value={value}
+      type={type}
+      inputMode={type === "tel" ? "numeric" : undefined}
+      pattern={
+        type === "tel" ? "[0-9]*" : type === "email" ? "[^\\s@]+@[^\\s@]+\\.[^\\s@]+" : undefined
+      }
+      aria-invalid={invalid || undefined}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      className={
+        "w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40" +
+        (invalid ? " border-destructive" : "")
+      }
+    />
+  );
+}
 
 const emptyIndentorDraft: IndentorDraft = {
   divisionId: "",

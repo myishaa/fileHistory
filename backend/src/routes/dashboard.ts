@@ -124,12 +124,14 @@ const statusMilestoneDefinitions = [
   {
     key: "ad",
     label: "AD",
+    reviewedColumn: "f.ad_sent_date",
     currentColumn: "f.ad_vetting_date",
     appliesColumn: "f.ad",
   },
   {
     key: "rqa",
     label: "R&QA",
+    reviewedColumn: "f.rqa_sent_date",
     currentColumn: "f.rqa_approval_date",
     appliesColumn: "f.rqa",
   },
@@ -512,6 +514,8 @@ function getSuspectedAnomalyRows(
       addIssue("Cancellation", "Cancelled demand still has active milestone", "Current milestone", "Blank", "Current milestone", file.currentMilestone!);
     }
 
+    addPreControlReceivedDateAnomalies(file, fileReceivedDate, addPair);
+
     addPair(
       "Scrutiny",
       "Received date should not be after scrutiny date",
@@ -654,11 +658,11 @@ function getSuspectedAnomalyRows(
     );
     addPair(
       "Pre-Bid Meeting",
-      "Pre-Bid Meeting date should not be after bid date",
-      "Pre-Bid Meeting date",
-      file.preBidMeetingDate,
+      "Pre-Bid Meeting date should not be before bid date",
       "Bid date",
       file.bidDate,
+      "Pre-Bid Meeting date",
+      file.preBidMeetingDate,
     );
     addPair(
       "Pre-Bid Meeting",
@@ -700,11 +704,11 @@ function getSuspectedAnomalyRows(
     }
     addPair(
       "Refloat Pre-Bid Meeting",
-      "Refloat Pre-Bid Meeting date should not be after refloat bid date",
-      "Refloat Pre-Bid Meeting date",
-      file.refloatPreBidMeetingDate,
+      "Refloat Pre-Bid Meeting date should not be before refloat bid date",
       "Refloat bid date",
       file.refloatBiddingDate,
+      "Refloat Pre-Bid Meeting date",
+      file.refloatPreBidMeetingDate,
     );
     addPair(
       "Refloat Pre-Bid Meeting",
@@ -772,6 +776,7 @@ function getSuspectedAnomalyRows(
       const rawStageRows = rawOrder.stageDeliveries ?? [];
       const expectedStageCount = readPositiveInteger(rawOrder.stageDeliveryCount);
       const bgFieldsFilled = hasAnyBgField(rawOrder);
+      const orderBgMarkedYes = isYes(rawOrder.psbApplicable) || bgFieldsFilled;
 
       if (hasSoDate && !hasFilledString(rawOrder.financialSanctionDate)) {
         addIssue("Supply Order", "S.O. date exists but Financial Sanction date is blank", "Financial Sanction date", "Filled", "S.O. date", rawOrder.soDate!, rawContext);
@@ -794,6 +799,68 @@ function getSuspectedAnomalyRows(
       }
       if (isYes(rawOrder.dpExtension) && !hasFilledString(rawOrder.revisedDp)) {
         addIssue("Delivery Period", "D.P. Extension is Yes but Revised D.P. is blank", "Revised D.P.", "Filled", "D.P. Extension", "Yes", rawContext);
+      }
+      if (hasSoDate && !isYes(rawOrder.soCancelled)) {
+        if (isYes(rawOrder.stageDelivery)) {
+          rawStageRows.forEach((stage, stageIndex) => {
+            const stageContext = `${rawContext}:stage:${stageIndex + 1}`;
+            const stageLabel = `Stage ${stageIndex + 1}`;
+            if (!isIsoDate(stage.deliveryPeriodStartDate)) {
+              addIssue(
+                "Delivery Period",
+                "Supply Order placed but stage D.P. start date is blank",
+                `${stageLabel} D.P. start date`,
+                "Filled",
+                "S.O. date",
+                rawOrder.soDate!,
+                stageContext,
+              );
+            }
+            if (!isIsoDate(stage.dpDate)) {
+              addIssue(
+                "Delivery Period",
+                "Supply Order placed but stage D.P. date is blank",
+                `${stageLabel} D.P. date`,
+                "Filled",
+                "S.O. date",
+                rawOrder.soDate!,
+                stageContext,
+              );
+            }
+            if (isYes(stage.dpExtension) && !hasFilledString(stage.dpExtensionCount)) {
+              addIssue(
+                "Delivery Period",
+                "Stage D.P. Extension is Yes but extension count is blank",
+                `${stageLabel} D.P. Extension count`,
+                "Filled",
+                "D.P. Extension",
+                "Yes",
+                stageContext,
+              );
+            }
+            if (isYes(stage.dpExtension) && !isIsoDate(stage.revisedDp)) {
+              addIssue(
+                "Delivery Period",
+                "Stage D.P. Extension is Yes but Revised D.P. is blank",
+                `${stageLabel} Revised D.P.`,
+                "Filled",
+                "D.P. Extension",
+                "Yes",
+                stageContext,
+              );
+            }
+          });
+        } else if (!isIsoDate(rawOrder.dpDate)) {
+          addIssue(
+            "Delivery Period",
+            "Supply Order placed but D.P. date is blank",
+            "D.P. date",
+            "Filled",
+            "S.O. date",
+            rawOrder.soDate!,
+            rawContext,
+          );
+        }
       }
       if (isNo(rawOrder.dpExtension) && hasFilledString(rawOrder.revisedDp)) {
         addIssue("Delivery Period", "Revised D.P. is filled while D.P. Extension is No", "Revised D.P.", "Blank", "Revised D.P.", rawOrder.revisedDp!, rawContext);
@@ -850,7 +917,11 @@ function getSuspectedAnomalyRows(
       if (isNo(file.bg) && bgFieldsFilled) {
         addIssue("Bank Guarantee", "BG is No but PSB/PWB/PSB+PWB fields are filled", "BG fields", "Blank", "BG fields", "Filled", rawContext);
       }
-      if (isYes(file.bg) && (!hasFilledString(rawOrder.bgCoverageType) || rawOrder.bgCoverageType === "None")) {
+      if (
+        isYes(file.bg) &&
+        orderBgMarkedYes &&
+        (!hasFilledString(rawOrder.bgCoverageType) || rawOrder.bgCoverageType === "None")
+      ) {
         addIssue("Bank Guarantee", "BG is Yes but coverage type is blank or None", "BG coverage type", "Selected", "BG coverage type", rawOrder.bgCoverageType || "Blank", rawContext);
       }
       if (isNo(file.bg) && hasFilledString(rawOrder.bgCoverageType) && rawOrder.bgCoverageType !== "None") {
@@ -1222,7 +1293,8 @@ function getSuspectedAnomalyRows(
           context,
         );
       }
-      if (hasFilledString(order.paymentDate) && !hasFilledString(order.paymentMode)) {
+      const paymentModeFilled = hasSelectablePaymentMode(order.paymentMode);
+      if (hasFilledString(order.paymentDate) && !paymentModeFilled) {
         addIssue(
           "Payment",
           "Payment mode is blank while payment date exists",
@@ -1233,7 +1305,11 @@ function getSuspectedAnomalyRows(
           context,
         );
       }
-      if (!hasFilledString(order.paymentDate) && hasFilledString(order.paymentMode)) {
+      if (
+        !hasFilledString(order.paymentDate) &&
+        paymentModeFilled &&
+        hasPaymentDetailApartFromMode(order)
+      ) {
         addIssue(
           "Payment",
           "Payment mode is filled while payment date is blank",
@@ -1424,6 +1500,42 @@ type AddAnomalyIssue = (
   foundValue: string,
   context?: string,
 ) => void;
+
+function addPreControlReceivedDateAnomalies(
+  file: FileRecord,
+  fileReceivedDate: string | undefined,
+  addPair: AddAnomalyPair,
+) {
+  const preControlDates: Array<{
+    block: string;
+    field: string;
+    date: string | undefined;
+  }> = [
+    { block: "Scrutiny", field: "Scrutiny date", date: file.scrutinyDate },
+    { block: "Scrutiny", field: "Scrutiny response date", date: file.scrutinyResponseDate },
+    { block: "Scrutiny", field: "Scrutiny completion date", date: file.scrutinyCompletionDate },
+    { block: "High Value", field: "High value meeting date", date: file.highValueMeetingDate },
+    { block: "High Value", field: "High value minutes date", date: file.highValueMinutesDate },
+    { block: "TCEC", field: "Pre-TCEC date", date: file.preTcecDate },
+    { block: "TCEC", field: "Pre-TCEC minutes date", date: file.preTcecMinutesDate },
+    { block: "AD", field: "AD sent date", date: file.adSentDate },
+    { block: "AD", field: "AD vetting date", date: file.adVettingDate },
+    { block: "R&QA", field: "R&QA sent date", date: file.rqaSentDate },
+    { block: "R&QA", field: "R&QA approval date", date: file.rqaApprovalDate },
+    { block: "Control", field: "Control date", date: file.immsDate },
+  ];
+
+  preControlDates.forEach(({ block, field, date }) => {
+    addPair(
+      block,
+      `${field} should not be before demand received date`,
+      "Demand received date",
+      fileReceivedDate,
+      field,
+      date,
+    );
+  });
+}
 
 function addBgAnomalies({
   kind,
@@ -1750,7 +1862,7 @@ function hasStagePaymentOrBillWorkflow(stage: Pick<SupplyOrderDetail, "billPrepa
 
 function hasStagePaymentOrAmountFields(stage: Pick<SupplyOrderDetail, "billPreparationDate" | "billSentForPaymentDate" | "paymentDate" | "paymentMode" | "actualPaymentCapital" | "actualPaymentRevenue">) {
   return hasStagePaymentOrBillWorkflow(stage) ||
-    hasFilledString(stage.paymentMode) ||
+    hasSelectablePaymentMode(stage.paymentMode) ||
     hasPaymentAmount(stage);
 }
 
@@ -1787,7 +1899,7 @@ function isAdvancePaymentWorkflowComplete(order: Pick<SupplyOrderDetail, "advanc
     hasFilledString(advance.billPreparationDate) &&
     hasFilledString(advance.billSentForPaymentDate) &&
     hasFilledString(advance.paymentDate) &&
-    hasFilledString(advance.paymentMode) &&
+    hasSelectablePaymentMode(advance.paymentMode) &&
     hasPaymentAmount(advance)
   );
 }
@@ -2013,6 +2125,27 @@ function isNo(value: string | undefined) {
 
 function hasFilledString(value: string | undefined) {
   return Boolean(value?.trim());
+}
+
+function hasSelectablePaymentMode(value: string | undefined) {
+  const normalized = value?.trim();
+  return Boolean(normalized && normalized.toLowerCase() !== "select");
+}
+
+function hasPaymentDetailApartFromMode(
+  order: Pick<
+    SupplyOrderDetail,
+    | "billPreparationDate"
+    | "billSentForPaymentDate"
+    | "actualPaymentCapital"
+    | "actualPaymentRevenue"
+  >,
+) {
+  return (
+    hasFilledString(order.billPreparationDate) ||
+    hasFilledString(order.billSentForPaymentDate) ||
+    hasPaymentAmount(order)
+  );
 }
 
 function isInactiveFile(
@@ -3379,10 +3512,10 @@ async function loadAnalyticsSqlSlice({
     { name: "Pre-TCEC", start: "f.pre_tcec_date", end: "f.pre_tcec_minutes_date" },
     {
       name: "AD",
-      start: "coalesce(f.pre_tcec_minutes_date, f.received_date)",
+      start: "f.ad_sent_date",
       end: "f.ad_vetting_date",
     },
-    { name: "R&QA", start: "f.received_date", end: "f.rqa_approval_date" },
+    { name: "R&QA", start: "f.rqa_sent_date", end: "f.rqa_approval_date" },
     { name: "Controlling", start: "f.received_date", end: "f.imms_date" },
     { name: "IFA", start: "f.ifa_sent_date", end: "f.ifa_final_date" },
     { name: "CFA", start: "f.cfa_sent_date", end: "f.cfa_date" },

@@ -82,6 +82,7 @@ const statusSummaryMilestones = [
     key: "ad",
     label: "AD",
     totalLabel: "Total cases",
+    reviewedColumn: "f.ad_sent_date",
     currentColumn: "f.ad_vetting_date",
     appliesColumn: "f.ad",
   },
@@ -89,6 +90,7 @@ const statusSummaryMilestones = [
     key: "rqa",
     label: "R&QA",
     totalLabel: "Total cases",
+    reviewedColumn: "f.rqa_sent_date",
     currentColumn: "f.rqa_approval_date",
     appliesColumn: "f.rqa",
   },
@@ -212,10 +214,12 @@ const fileFields = {
   rfpVetting: ["rfp_vetting", "text"],
   highValueMeetingDate: ["high_value_meeting_date", "date"],
   highValueMinutesDate: ["high_value_minutes_date", "date"],
+  adSentDate: ["ad_sent_date", "date"],
   preTcecDate: ["pre_tcec_date", "date"],
   preTcecMinutesDate: ["pre_tcec_minutes_date", "date"],
   preTcecCommitteeNo: ["pre_tcec_committee_no", "text"],
   adVettingDate: ["ad_vetting_date", "date"],
+  rqaSentDate: ["rqa_sent_date", "date"],
   rqaApprovalDate: ["rqa_approval_date", "date"],
   ifaSentDate: ["ifa_sent_date", "date"],
   ifaFinalDate: ["ifa_final_date", "date"],
@@ -314,6 +318,9 @@ const supplyOrderFields = {
   soValueRevenue: ["so_value_revenue", "number"],
   dpDate: ["dp_date", "date"],
   firm: ["firm", "text"],
+  firmUniqueNo: ["firm_unique_no", "text"],
+  firmContactNo: ["firm_contact_no", "text"],
+  firmCity: ["firm_city", "text"],
   firmType: ["firm_type", "text"],
   firmTypeOther: ["firm_type_other", "text"],
   dpExtension: ["dp_extension", "text"],
@@ -499,9 +506,12 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
     firm_type: "invited" | "bidder";
     firm_name: string | null;
     city: string | null;
+    address: string | null;
     email_id: string | null;
+    firm_unique_no: string | null;
+    contact_no: string | null;
   }>(
-    `select file_id, firm_type, firm_name, city, email_id
+    `select file_id, firm_type, firm_name, city, address, email_id, firm_unique_no, contact_no
      from file_firms
      where file_id = any($1::uuid[])
      order by sort_order asc, id asc`,
@@ -511,7 +521,10 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
     const firm = {
       firmName: fromDbText(row.firm_name),
       city: fromDbText(row.city),
+      address: fromDbText(row.address),
       emailId: fromDbText(row.email_id),
+      firmUniqueNo: fromDbText(row.firm_unique_no),
+      contactNo: fromDbText(row.contact_no),
     };
     const map = row.firm_type === "invited" ? children.invitedFirms : children.bidderFirms;
     map.set(row.file_id, [...(map.get(row.file_id) ?? []), firm]);
@@ -673,9 +686,11 @@ const fileExportDateFields = [
   ["immsDate", "Controlling"],
   ["highValueMeetingDate", "High Value meeting"],
   ["highValueMinutesDate", "High Value minutes"],
+  ["adSentDate", "AD sent"],
   ["preTcecDate", "Pre-TCEC"],
   ["preTcecMinutesDate", "Pre-TCEC minutes"],
   ["adVettingDate", "AD vetting"],
+  ["rqaSentDate", "R&QA sent"],
   ["rqaApprovalDate", "R&QA approval"],
   ["ifaSentDate", "IFA sent"],
   ["ifaFinalDate", "IFA final"],
@@ -741,6 +756,8 @@ function getFileExportValue(file: FileRecord, key: string) {
   if (key === "lastDate") return getLastFilledDate(file)?.value ?? "";
   if (key === "invitedFirms") return String(getFirmCount(file.invitedFirms));
   if (key === "bidderFirms") return String(getFirmCount(file.bidderFirms));
+  const firmDetailValue = getFirmDetailExportValue(file, key);
+  if (firmDetailValue !== undefined) return firmDetailValue;
   if (key === "noOfSo") return String(file.noOfSo || file.supplyOrders?.length || "");
   if (key in supplyOrderFields || advancePaymentDetailExportKeys.has(key)) {
     return getRawSupplyOrders(file)
@@ -749,6 +766,30 @@ function getFileExportValue(file: FileRecord, key: string) {
       .join("; ");
   }
   return String((file as Record<string, unknown>)[key] ?? "");
+}
+
+function getFirmDetailExportValue(file: FileRecord, key: string) {
+  const fieldKey = firmDetailExportFieldKey(key);
+  if (!fieldKey) return undefined;
+  const rows = key.startsWith("invited") ? file.invitedFirms : file.bidderFirms;
+  return (rows ?? [])
+    .map((firm, index, allRows) => {
+      const value = String((firm as Record<string, unknown>)[fieldKey] ?? "").trim();
+      if (!value) return "";
+      return allRows.length > 1 ? `${index + 1}. ${value}` : value;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function firmDetailExportFieldKey(key: string) {
+  if (!/^(invited|bidder)Firm/.test(key)) return undefined;
+  if (key.endsWith("Names")) return "firmName";
+  if (key.endsWith("UniqueNos")) return "firmUniqueNo";
+  if (key.endsWith("Emails")) return "emailId";
+  if (key.endsWith("Cities")) return "city";
+  if (key.endsWith("ContactNos")) return "contactNo";
+  return undefined;
 }
 
 function buildFileSearchExportColumns(files: FileRecord[], columns: ExportColumn[]) {
@@ -825,7 +866,9 @@ function getRawSupplyOrders(file: FileRecord) {
 
 function getFirmCount(rows: FirmDetail[] | undefined) {
   return (rows ?? []).filter((row) =>
-    [row.firmName, row.city, row.emailId].some((value) => String(value ?? "").trim()),
+    [row.firmName, row.city, row.address, row.emailId, row.firmUniqueNo, row.contactNo].some(
+      (value) => String(value ?? "").trim(),
+    ),
   ).length;
 }
 
@@ -891,6 +934,9 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     revenueOnly: readQueryBoolean(query.revenueOnly),
     description: readQueryString(query.description),
     firm: readQueryString(query.firm),
+    firmUniqueNo: readQueryString(query.firmUniqueNo),
+    firmContactNo: readQueryString(query.firmContactNo),
+    firmCity: readQueryString(query.firmCity),
     selectedModes: readQueryList(query.selectedModes),
     selectedFirmTypes: readQueryList(query.selectedFirmTypes),
     selectedFileTypes: readQueryList(query.selectedFileTypes),
@@ -1096,7 +1142,7 @@ function supplyOrderExists(condition: string) {
 const demandProcessingFileDateColumns: Record<string, string> = {
   receivedDate: "received_date",
   date: "date",
-    demandCancelledDate: "demand_cancelled_date",
+  demandCancelledDate: "demand_cancelled_date",
   fileClosureDate: "file_closure_date",
   scrutinyDate: "scrutiny_date",
   scrutinyResponseDate: "scrutiny_response_date",
@@ -1108,7 +1154,9 @@ const demandProcessingFileDateColumns: Record<string, string> = {
   preTcecMinutesDate: "pre_tcec_minutes_date",
   postTcecDate: "post_tcec_date",
   postTcecMinutesDate: "post_tcec_minutes_date",
+  adSentDate: "ad_sent_date",
   adVettingDate: "ad_vetting_date",
+  rqaSentDate: "rqa_sent_date",
   rqaApprovalDate: "rqa_approval_date",
   ifaSentDate: "ifa_sent_date",
   ifaFinalDate: "ifa_final_date",
@@ -1427,7 +1475,7 @@ function freeSearchTextExpression() {
       where so.file_id = f.id
     ), ''),
     coalesce((
-      select string_agg(concat_ws(' ', ff.firm_name, ff.city, ff.email_id), ' ' order by ff.sort_order, ff.id)
+      select string_agg(concat_ws(' ', ff.firm_name, ff.city, ff.address, ff.email_id, ff.firm_unique_no, ff.contact_no), ' ' order by ff.sort_order, ff.id)
       from file_firms ff
       where ff.file_id = f.id
     ), ''),
@@ -1489,10 +1537,12 @@ const fileSearchColumns = {
   rfpVetting: "f.rfp_vetting",
   highValueMeetingDate: "f.high_value_meeting_date",
   highValueMinutesDate: "f.high_value_minutes_date",
+  adSentDate: "f.ad_sent_date",
   preTcecDate: "f.pre_tcec_date",
   preTcecMinutesDate: "f.pre_tcec_minutes_date",
   preTcecCommitteeNo: "f.pre_tcec_committee_no",
   adVettingDate: "f.ad_vetting_date",
+  rqaSentDate: "f.rqa_sent_date",
   rqaApprovalDate: "f.rqa_approval_date",
   ifaSentDate: "f.ifa_sent_date",
   ifaFinalDate: "f.ifa_final_date",
@@ -1556,6 +1606,9 @@ const supplyOrderSearchColumns = {
   soValueRevenue: "so_value_revenue",
   dpDate: "dp_date",
   firm: "firm",
+  firmUniqueNo: "firm_unique_no",
+  firmContactNo: "firm_contact_no",
+  firmCity: "firm_city",
   dpExtension: "dp_extension",
   dpExtensionCount: "dp_extension_count",
   ld: "ld",
@@ -1582,9 +1635,11 @@ const dateSearchColumns = [
   "f.imms_date",
   "f.high_value_meeting_date",
   "f.high_value_minutes_date",
+  "f.ad_sent_date",
   "f.pre_tcec_date",
   "f.pre_tcec_minutes_date",
   "f.ad_vetting_date",
+  "f.rqa_sent_date",
   "f.rqa_approval_date",
   "f.ifa_sent_date",
   "f.ifa_final_date",
@@ -1766,9 +1821,7 @@ function deliveryJobFilterSql(state: "completed" | "pending" | "overdue") {
            select 1
            from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as delivery_stage(stage)
            where ${
-             state === "completed"
-               ? stageCompleted
-               : `not (${stageCompleted}) and ${stagePeriod}`
+             state === "completed" ? stageCompleted : `not (${stageCompleted}) and ${stagePeriod}`
            }
          )
        )
@@ -1833,7 +1886,7 @@ function jobCompletionFilterSql(state: "live" | "periodOver") {
          and ${orderCondition}
        )
      )`,
-	  )}`;
+  )}`;
 }
 
 function jobCompletionCompletedFilterSql() {
@@ -1919,10 +1972,10 @@ function isSupplyOrderDrivenMilestoneName(value: string) {
     "psb",
     "pwb",
     "psbpwb",
-	    "financialsanction",
-	    "delivery",
-	    "jobcompletion",
-	    "irpreparation",
+    "financialsanction",
+    "delivery",
+    "jobcompletion",
+    "irpreparation",
     "irreceipt",
     "billpreparation",
     "billsentforpayment",
@@ -2164,7 +2217,8 @@ function cncSummaryFilterSql(filter: string, values: unknown[]) {
   else if (metric === "financialSanctionSigned") conditions.push(fsSigned);
   else if (metric === "supplyOrderPlaced") conditions.push(soPlaced);
   else if (metric === "approvalPending") conditions.push(`not ${approved}`);
-  else if (metric === "financialSanctionPending") conditions.push(`${approved} and not (${fsSigned})`);
+  else if (metric === "financialSanctionPending")
+    conditions.push(`${approved} and not (${fsSigned})`);
   else if (metric === "supplyOrderPending") conditions.push(`${fsSigned} and not (${soPlaced})`);
   else return "false";
   return conditions.join(" and ");
@@ -2248,7 +2302,8 @@ function preBidMeetingFilterSql(refloat: boolean, state: "due" | "completed") {
     ? `${isYesSql("f.refloat")} and ${isYesSql("f.refloat_pre_bid_meeting")}`
     : isYesSql("f.pre_bid_meeting");
   const dateColumn = refloat ? "f.refloat_pre_bid_meeting_date" : "f.pre_bid_meeting_date";
-  const dateState = state === "completed" ? `${dateColumn} < current_date` : `${dateColumn} >= current_date`;
+  const dateState =
+    state === "completed" ? `${dateColumn} < current_date` : `${dateColumn} >= current_date`;
   return `not ${isCancelledFileSql()}
     and ${applies}
     and ${hasTextSql(dateColumn)}
@@ -2301,7 +2356,7 @@ function completedStageMilestoneSql(orderAlias: string, normalizedMilestone: str
 }
 
 function currentStageMilestoneSql(orderAlias: string, normalizedMilestoneSql: string) {
-	  return `exists (
+  return `exists (
 	    select 1
 	    from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
 	    where ${normalizedSql("stage_row.stage ->> 'currentMilestone'")} = ${normalizedMilestoneSql}
@@ -2743,8 +2798,7 @@ const orderDelayMilestones = [
     current: "delivery",
     completeColumn: "material_receipt_date",
     start: "delivery",
-    applies: () =>
-      `${isYesSql("f.ir")} and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`,
+    applies: () => deliveryInspectionApplicableSql(),
   },
   {
     key: "jobCompletion",
@@ -2842,10 +2896,10 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     case "pwb":
       return effectiveOrderDateSql("material_receipt_date", "materialReceiptDate");
     case "delivery":
-      return `coalesce(${soDate}, ${financialSanctionDate}, ${financialSanctionStart})`;
+      return effectiveDpDate;
     case "jobCompletion":
       return `case
-        when ${nonDeliveryFileType} and ${effectiveDpDate} is not null then (${effectiveDpDate} + interval '1 day')::date
+        when ${nonDeliveryFileType} and ${effectiveDpDate} is not null then ${effectiveDpDate}
         else null
       end`;
     case "irPreparation":
@@ -2885,10 +2939,10 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
           ? `nullif(so.advance_payment_detail ->> 'paymentDate', '')::date`
           : milestone.key === "jobCompletion"
             ? `case when ${jobCompletionDoneForDelay} then '9999-12-31'::date else null end`
-          : effectiveOrderDateSql(
-              milestone.completeColumn,
-              dateColumnToJsonKey(milestone.completeColumn),
-            );
+            : effectiveOrderDateSql(
+                milestone.completeColumn,
+                dateColumnToJsonKey(milestone.completeColumn),
+              );
       const applies = "applies" in milestone && milestone.applies ? milestone.applies() : "true";
       const includeStages =
         milestone.key !== "financialSanction" &&
@@ -2905,11 +2959,15 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
             (not (not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')) and ${hasTextSql("so.material_receipt_date")})
             or ((not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')) and ${completedOrderMilestoneSql("so", "jobcompletion")})
           )))`
-        : milestone.key === "payment"
-          ? `${orderDelayStartSql("payment")} is not null`
-          : milestone.key === "jobCompletion"
-            ? `${startDate} is not null`
-          : `${currentMilestone} = '${milestone.current}'`;
+        : milestone.key === "supplyOrder"
+          ? supplyOrderPendingOrderSql("so")
+          : milestone.key === "payment"
+            ? `${orderDelayStartSql("payment")} is not null`
+            : milestone.key === "delivery"
+              ? hasTextSql("so.so_date")
+              : milestone.key === "jobCompletion"
+                ? `${startDate} is not null`
+                : `${currentMilestone} = '${milestone.current}'`;
       return `exists (
         select 1
         from supply_orders so
@@ -2963,7 +3021,11 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
       : "false";
   const clauses = statusSummaryMilestones
     .map((milestone, index) => ({ milestone, index }))
-    .filter(({ milestone }) => milestoneKey === "all" || milestone.key === milestoneKey)
+    .filter(
+      ({ milestone }) =>
+        !("supplyOrderDate" in milestone && milestone.supplyOrderDate) &&
+        (milestoneKey === "all" || milestone.key === milestoneKey),
+    )
     .map(({ milestone, index }) => {
       const startDate = milestoneStageStartSql(milestone, index);
       return `(${statusActiveSql(milestone)}
@@ -3800,9 +3862,11 @@ function workflowNotStartedSql() {
     "imms_date",
     "high_value_meeting_date",
     "high_value_minutes_date",
+    "ad_sent_date",
     "pre_tcec_date",
     "pre_tcec_minutes_date",
     "ad_vetting_date",
+    "rqa_sent_date",
     "rqa_approval_date",
     "ifa_sent_date",
     "ifa_final_date",
@@ -4181,8 +4245,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   }
   if (filter === "dpExtension") return isYesSql("f.dp_extension");
   if (filter === "dpExpired") return supplyOrderExists(`${effectiveDpDateSql("so")} < ${today}`);
-  if (filter === "deliveryOverdue")
-    return deliveryJobFilterSql("overdue");
+  if (filter === "deliveryOverdue") return deliveryJobFilterSql("overdue");
   if (filter === "deliveryDueToday")
     return `${deliveryInspectionApplicableSql()} and ${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
       `${effectiveDpDateSql("so")} = current_date`,
@@ -4191,20 +4254,16 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     return `${deliveryInspectionApplicableSql()} and ${supplyOrderPlacedSql()} and ${deliveryDueOrderSql(
       `${effectiveDpDateSql("so")} > current_date`,
     )}`;
-  if (filter === "deliveryCompleted")
-    return deliveryJobFilterSql("completed");
+  if (filter === "deliveryCompleted") return deliveryJobFilterSql("completed");
   if (filter === "deliveryDeliveredLate")
     return `${deliveryInspectionApplicableSql()} and ${supplyOrderPlacedSql()} and ${supplyOrderExists(
       `${hasTextSql("so.so_date")} and ${hasTextSql("so.material_receipt_date")} and ${effectiveDpDateSql("so")} is not null and so.material_receipt_date > ${effectiveDpDateSql("so")}`,
     )}`;
-  if (filter === "deliveryDue")
-    return deliveryJobFilterSql("pending");
-  if (filter === "jobCompletionCompleted")
-    return jobCompletionCompletedFilterSql();
+  if (filter === "deliveryDue") return deliveryJobFilterSql("pending");
+  if (filter === "jobCompletionCompleted") return jobCompletionCompletedFilterSql();
   if (filter === "jobCompletionDue" || filter === "jobCompletionLive")
     return jobCompletionFilterSql("live");
-  if (filter === "jobCompletionPeriodOver")
-    return jobCompletionFilterSql("periodOver");
+  if (filter === "jobCompletionPeriodOver") return jobCompletionFilterSql("periodOver");
   if (filter === "deliveryPeriodValid") return deliveryPeriodBucketSql("valid");
   if (filter === "deliveryPeriodExpired")
     return `not ${isCancelledFileSql()} and ${supplyOrderExists(
@@ -4224,12 +4283,9 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
        )`,
     )}`;
   if (filter === "deliveryPeriodExtended") return deliveryPeriodBucketSql("extended");
-  if (filter === "irPreparationPending")
-    return irStatusFilterSql("preparationPending");
-  if (filter === "irReceiptPending")
-    return irStatusFilterSql("receiptPending");
-  if (filter === "irCompleted")
-    return irStatusFilterSql("completed");
+  if (filter === "irPreparationPending") return irStatusFilterSql("preparationPending");
+  if (filter === "irReceiptPending") return irStatusFilterSql("receiptPending");
+  if (filter === "irCompleted") return irStatusFilterSql("completed");
   if (filter === "paymentDue") return paymentPendingSql();
   if (filter === "advancePaid")
     return supplyOrderExists(
@@ -4287,7 +4343,9 @@ function getSortSql(sortColumnKey: string | undefined, direction: "asc" | "desc"
     const type = sortColumnKey === "invitedFirms" ? "invited" : "bidder";
     return `(select count(*) from file_firms ff where ff.file_id = f.id and ff.firm_type = '${type}' and (${hasTextSql(
       "ff.firm_name",
-    )} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.email_id")})) ${dir}`;
+    )} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.address")} or ${hasTextSql(
+      "ff.email_id",
+    )} or ${hasTextSql("ff.firm_unique_no")} or ${hasTextSql("ff.contact_no")})) ${dir}`;
   }
   const supplyColumn =
     supplyOrderSearchColumns[sortColumnKey as keyof typeof supplyOrderSearchColumns];
@@ -4364,6 +4422,22 @@ function buildSearchSql(
     conditions.push(
       `(${supplyOrderExists(`lower(coalesce(so.firm, '')) like ${placeholder}`)} or lower(coalesce(f.firm, '')) like ${placeholder})`,
     );
+  }
+  if (params.firmUniqueNo?.trim()) {
+    const placeholder = addSqlValue(values, sqlLike(params.firmUniqueNo));
+    conditions.push(
+      supplyOrderExists(`lower(coalesce(so.firm_unique_no, '')) like ${placeholder}`),
+    );
+  }
+  if (params.firmContactNo?.trim()) {
+    const placeholder = addSqlValue(values, sqlLike(params.firmContactNo));
+    conditions.push(
+      supplyOrderExists(`lower(coalesce(so.firm_contact_no, '')) like ${placeholder}`),
+    );
+  }
+  if (params.firmCity?.trim()) {
+    const placeholder = addSqlValue(values, sqlLike(params.firmCity));
+    conditions.push(supplyOrderExists(`lower(coalesce(so.firm_city, '')) like ${placeholder}`));
   }
   if (selectedModes.length) {
     const placeholder = addSqlValue(
@@ -4549,12 +4623,7 @@ function buildSearchSql(
       params.preTcecMinutesTo,
       values,
     ),
-    fileDateRangeSql(
-      "f.rqa_approval_date",
-      params.rqaApprovalFrom,
-      params.rqaApprovalTo,
-      values,
-    ),
+    fileDateRangeSql("f.rqa_approval_date", params.rqaApprovalFrom, params.rqaApprovalTo, values),
     fileDateRangeSql("f.ifa_final_date", params.ifaFinalFrom, params.ifaFinalTo, values),
     fileDateRangeSql("f.cfa_date", params.cfaApprovalFrom, params.cfaApprovalTo, values),
     fileDateRangeSql(
@@ -4854,14 +4923,17 @@ async function replaceFirms(
   let sortOrder = 0;
   for (const row of rows.filter(hasFilledValue)) {
     await client.query(
-      `insert into file_firms (file_id, firm_type, firm_name, city, email_id, sort_order)
-       values ($1, $2, $3, $4, $5, $6)`,
+      `insert into file_firms (file_id, firm_type, firm_name, city, address, email_id, firm_unique_no, contact_no, sort_order)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         fileId,
         firmType,
         toDbText(row.firmName),
         toDbText(row.city),
+        toDbText(row.address),
         toDbText(row.emailId),
+        toDbText(row.firmUniqueNo),
+        toDbText(row.contactNo),
         sortOrder++,
       ],
     );
