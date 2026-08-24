@@ -1,6 +1,7 @@
 export type AppUserRole = "admin" | "sub_admin" | "division_user" | "editor" | "viewer";
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
+export type FileTypeGroup = "goodsServices" | "contract";
 
 export type Division = {
   id: string;
@@ -59,6 +60,7 @@ export type AppSettings = {
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
+  fileTypeGroups: FileTypeGroupSetting[];
   modes: string[];
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
@@ -72,7 +74,23 @@ export type AppSettings = {
   bgReceiptDelayDays?: number[];
   specialFileMarkers?: SpecialFileMarker[];
   firmUniqueNoLabel?: string;
+  firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
+};
+
+export type FirmRatingField = {
+  id: string;
+  label: string;
+  weight?: string;
+};
+
+export type FileTypeGroupSetting = {
+  fileType: string;
+  group: FileTypeGroup;
+};
+
+export type FirmRatingConfig = {
+  fields: FirmRatingField[];
 };
 
 export type SpecialFileMarker = {
@@ -133,6 +151,7 @@ export type SupplyOrderDetail = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  bqBasis?: string;
   firmUniqueNo?: string;
   firmContactNo?: string;
   firmCity?: string;
@@ -157,6 +176,8 @@ export type SupplyOrderDetail = {
   demandCancelled?: string;
   soCancelled?: string;
   soCancelledDate?: string;
+  shortclosure?: string;
+  shortclosureDate?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -165,6 +186,7 @@ export type SupplyOrderDetail = {
   deliveryPeriodStartDate?: string;
   stageDeliveryLabel?: string;
   stageDeliveries?: StageDeliveryDetail[];
+  firmRatingValues?: Record<string, string>;
 };
 
 export type AdvancePaymentDetail = {
@@ -222,6 +244,7 @@ export type MasterFirm = {
   address?: string;
   firmUniqueNo?: string;
   contactNo?: string;
+  firmRating?: string;
   createdBy?: string;
   createdByName?: string;
   createdAt: string;
@@ -253,8 +276,10 @@ export type FileRecord = {
   gte?: string;
   tcec?: string;
   fileType?: string;
+  fileTypeGroup?: FileTypeGroup;
   mode?: string;
   gem?: string;
+  gemBiddingMode?: string;
   highValue?: string;
   ad?: string;
   rqa?: string;
@@ -328,6 +353,9 @@ export type FileRecord = {
   demandCancelledDate?: string;
   soCancelled?: string;
   soCancelledDate?: string;
+  shortclosure?: string;
+  shortclosureDate?: string;
+  bqFirms?: FirmDetail[];
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
   supplyOrders?: SupplyOrderDetail[];

@@ -5,12 +5,15 @@ import type {
   AppSettings,
   AppTheme,
   AppThemeTint,
+  FirmRatingConfig,
+  FileTypeGroupSetting,
   ValueThresholdAppliesTo,
   ValueThresholdLevel,
 } from "../types.js";
 import { requireAuth, type AuthRequest } from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
+import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
 import {
   asyncHandler,
   HttpError,
@@ -37,6 +40,7 @@ type SettingsRow = {
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
+  file_type_groups: unknown;
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
@@ -48,7 +52,16 @@ type SettingsRow = {
   bg_receipt_delay_days: unknown;
   special_file_markers: unknown;
   firm_unique_no_label: string;
+  firm_rating_config: unknown;
   active_user_id: string | null;
+};
+
+const defaultFirmRatingConfig: FirmRatingConfig = {
+  fields: [
+    { id: "delivery", label: "Delivery", weight: "1" },
+    { id: "quality", label: "Quality", weight: "1" },
+    { id: "afterSalesService", label: "After Sales Service", weight: "1" },
+  ],
 };
 
 function tagPresets(value: unknown, owner: "global" | "personal", ownerUserId?: string) {
@@ -257,6 +270,18 @@ async function ensureUserLiveStatusPreferencesTable() {
   );
 }
 
+async function ensureUserReportPreferencesTable() {
+  await pool.query(
+    `create table if not exists user_report_preferences (
+       user_id uuid not null references app_users(id) on delete cascade,
+       report_key text not null,
+       preferences jsonb not null default '{}'::jsonb,
+       updated_at timestamptz not null default now(),
+       primary key (user_id, report_key)
+     )`,
+  );
+}
+
 async function loadUserLiveStatusFields(ownerKey: string) {
   await ensureUserLiveStatusPreferencesTable();
   return getCached(`settings:live-status-fields:${ownerKey}`, cacheTtl.settingsMs, async () => {
@@ -269,6 +294,15 @@ async function loadUserLiveStatusFields(ownerKey: string) {
       (key): key is string => typeof key === "string",
     );
   });
+}
+
+async function loadUserReportPreferences(userId: string, reportKey: string) {
+  await ensureUserReportPreferencesTable();
+  const result = await pool.query<{ preferences: unknown }>(
+    "select preferences from user_report_preferences where user_id = $1 and report_key = $2",
+    [userId, reportKey],
+  );
+  return result.rows[0]?.preferences ?? {};
 }
 
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
@@ -302,6 +336,10 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     fileTypes: fromDbJsonArray(row.file_types).filter(
       (fileType): fileType is string => typeof fileType === "string",
     ),
+    fileTypeGroups: normalizeFileTypeGroups(
+      row.file_type_groups,
+      fromDbJsonArray(row.file_types).filter((fileType): fileType is string => typeof fileType === "string"),
+    ),
     modes: fromDbJsonArray(row.modes).filter((mode): mode is string => typeof mode === "string"),
     valueThresholdLevels: await loadValueThresholdLevels(row.selected_year),
     milestones: fromDbJsonArray(row.milestones) as string[],
@@ -322,6 +360,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     bgReceiptDelayDays: normalizeBgReceiptDelayDays(fromDbJsonArray(row.bg_receipt_delay_days)),
     specialFileMarkers: normalizeSpecialFileMarkers(fromDbJsonArray(row.special_file_markers)),
     firmUniqueNoLabel: fromDbText(row.firm_unique_no_label) || "Firm Unique No.",
+    firmRatingConfig: normalizeFirmRatingConfig(row.firm_rating_config),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -404,9 +443,9 @@ async function getSettings(user?: AuthRequest["authUser"]) {
   return getCached(key, cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
+              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
-              bg_receipt_delay_days, special_file_markers, firm_unique_no_label, active_user_id
+              bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id
        from app_settings
        where id = true`,
     );
@@ -522,6 +561,21 @@ function readStringArray(value: unknown, field: string) {
   return readArrayValue(value, field).filter((item): item is string => typeof item === "string");
 }
 
+function readFileTypeGroups(value: unknown): FileTypeGroupSetting[] {
+  return readArrayValue(value, "fileTypeGroups")
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+      const candidate = item as Record<string, unknown>;
+      const fileType = toDbText(candidate.fileType);
+      if (!fileType) return undefined;
+      return {
+        fileType,
+        group: candidate.group === "contract" ? "contract" : "goodsServices",
+      } satisfies FileTypeGroupSetting;
+    })
+    .filter((item): item is FileTypeGroupSetting => Boolean(item));
+}
+
 function readMmgSummaryFields(value: unknown) {
   return readArrayValue(value, "mmgSummaryFields")
     .map((item) => {
@@ -537,6 +591,35 @@ function readMmgSummaryFields(value: unknown) {
     .filter(Boolean);
 }
 
+function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
+  const normalized = fields.reduce<FirmRatingConfig["fields"]>((result, item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return result;
+      const candidate = item as Record<string, unknown>;
+      const label = toDbText(candidate.label) || `Rating ${index + 1}`;
+      const rawId = toDbText(candidate.id) || label;
+      const id =
+        rawId
+          .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
+          .replace(/^[^a-zA-Z]+/, "")
+          .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+      const weightText = toDbText(candidate.weight);
+      const parsedWeight = Number.parseFloat(weightText ?? "");
+      result.push({
+        id,
+        label,
+        weight: Number.isFinite(parsedWeight) && parsedWeight > 0 ? String(parsedWeight) : "1",
+      });
+      return result;
+    }, []);
+
+  return { fields: normalized.length ? normalized : defaultFirmRatingConfig.fields };
+}
+
 async function replaceUserLiveStatusFields(ownerKey: string, fieldKeys: string[]) {
   await ensureUserLiveStatusPreferencesTable();
   await pool.query(
@@ -545,6 +628,21 @@ async function replaceUserLiveStatusFields(ownerKey: string, fieldKeys: string[]
      on conflict (owner_key)
      do update set field_keys = excluded.field_keys, updated_at = now()`,
     [ownerKey, JSON.stringify(fieldKeys)],
+  );
+}
+
+async function replaceUserReportPreferences(
+  userId: string,
+  reportKey: string,
+  preferences: Record<string, unknown>,
+) {
+  await ensureUserReportPreferencesTable();
+  await pool.query(
+    `insert into user_report_preferences (user_id, report_key, preferences)
+     values ($1, $2, $3::jsonb)
+     on conflict (user_id, report_key)
+     do update set preferences = excluded.preferences, updated_at = now()`,
+    [userId, reportKey, JSON.stringify(preferences)],
   );
 }
 
@@ -563,6 +661,27 @@ settingsRouter.get(
               activeUserId: user?.id,
             },
     });
+  }),
+);
+
+settingsRouter.get(
+  "/report-preferences/:reportKey",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const reportKey = requireParam(request.params.reportKey, "reportKey");
+    const preferences = await loadUserReportPreferences(user.id, reportKey);
+    response.json({ preferences });
+  }),
+);
+
+settingsRouter.put(
+  "/report-preferences/:reportKey",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const reportKey = requireParam(request.params.reportKey, "reportKey");
+    const body = requireObjectBody(request.body);
+    await replaceUserReportPreferences(user.id, reportKey, body);
+    response.json({ preferences: await loadUserReportPreferences(user.id, reportKey) });
   }),
 );
 
@@ -652,6 +771,12 @@ settingsRouter.patch(
         JSON.stringify(readStringArray(body.fileTypes, "fileTypes")),
         "::jsonb",
       );
+    if ("fileTypeGroups" in body)
+      addField(
+        "file_type_groups",
+        JSON.stringify(readFileTypeGroups(body.fileTypeGroups)),
+        "::jsonb",
+      );
     if ("modes" in body)
       addField("modes", JSON.stringify(readStringArray(body.modes, "modes")), "::jsonb");
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
@@ -693,6 +818,12 @@ settingsRouter.patch(
       );
     if ("firmUniqueNoLabel" in body)
       addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
+    if ("firmRatingConfig" in body)
+      addField(
+        "firm_rating_config",
+        JSON.stringify(normalizeFirmRatingConfig(body.firmRatingConfig)),
+        "::jsonb",
+      );
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",

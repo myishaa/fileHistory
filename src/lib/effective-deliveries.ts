@@ -1,4 +1,5 @@
 import type { FileRecord, SupplyOrderDetail } from "@/lib/files-store";
+import { isContractFileType } from "@/lib/file-type-groups";
 
 function getBaseSupplyOrderRows(file: FileRecord) {
   return file.supplyOrders?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
@@ -93,20 +94,20 @@ export function isAdvancePaymentPending(order: SupplyOrderDetail) {
 
 export function getAdvancePaymentCapital(order: SupplyOrderDetail) {
   const advance = order.advancePaymentDetail;
-  return advance?.actualPaymentCapital || advance?.stageAmountCapital || "";
+  return advance?.actualPaymentCapital || "";
 }
 
 export function getAdvancePaymentRevenue(order: SupplyOrderDetail) {
   const advance = order.advancePaymentDetail;
-  return advance?.actualPaymentRevenue || advance?.stageAmountRevenue || "";
+  return advance?.actualPaymentRevenue || "";
 }
 
 export function getActualPaymentCapital(order: SupplyOrderDetail) {
-  return order.actualPaymentCapital || order.soValueCapital;
+  return order.actualPaymentCapital || "";
 }
 
 export function getActualPaymentRevenue(order: SupplyOrderDetail) {
-  return order.actualPaymentRevenue || order.soValueRevenue;
+  return order.actualPaymentRevenue || "";
 }
 
 export function isValidDeliveryPeriodEntry(file: FileRecord, order: SupplyOrderDetail) {
@@ -186,12 +187,12 @@ function expandSupplyOrderStages(order: SupplyOrderDetail) {
       actualPaymentCapital: useStagePayment
         ? (stage.actualPaymentCapital ?? "")
         : useCommonPayment
-          ? order.actualPaymentCapital || order.soValueCapital
+          ? order.actualPaymentCapital
           : "",
       actualPaymentRevenue: useStagePayment
         ? (stage.actualPaymentRevenue ?? "")
         : useCommonPayment
-          ? order.actualPaymentRevenue || order.soValueRevenue
+          ? order.actualPaymentRevenue
           : "",
       stageDeliveries: undefined,
       stageDeliveryLabel: `Delivery-${index + 1}`,
@@ -218,8 +219,8 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     billSentForPaymentDate: advance.billSentForPaymentDate ?? "",
     paymentDate: advance.paymentDate ?? "",
     paymentMode: advance.paymentMode ?? "",
-    actualPaymentCapital: advance.actualPaymentCapital || advance.stageAmountCapital || "",
-    actualPaymentRevenue: advance.actualPaymentRevenue || advance.stageAmountRevenue || "",
+    actualPaymentCapital: advance.actualPaymentCapital || "",
+    actualPaymentRevenue: advance.actualPaymentRevenue || "",
     currentMilestone: "",
     completedMilestones: [],
     stageDeliveries: undefined,
@@ -250,6 +251,7 @@ function isDefaultNoField(key: string, value: string) {
       "dpExtension",
       "ld",
       "soCancelled",
+      "shortclosure",
       "stageDelivery",
       "stagePayment",
     ].includes(key)
@@ -294,6 +296,7 @@ function isActiveDeliveryPeriodEntry(
     Boolean(deliveryPeriodDate) &&
     !isYes(file.demandCancelled) &&
     !isYes(order.soCancelled) &&
+    !isYes(order.shortclosure) &&
     !isDateAfterToday(getDeliveryPeriodStartDate(order)) &&
     !isDeliveryPeriodComplete(file, order)
   );
@@ -306,16 +309,11 @@ function isDeliveryPeriodComplete(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isJobCompletionDone(order: SupplyOrderDetail) {
-  return normalizeCompletedMilestones(order.completedMilestones).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+  return hasFilledString(order.jobCompletionDate);
 }
 
 function isPaymentDrivenFileType(file: FileRecord) {
-  return (
-    isNo(file.ir) ||
-    ["amc", "mpc", "cars", "o&m"].includes((file.fileType ?? "").trim().toLowerCase())
-  );
+  return isNo(file.ir) || isContractFileType(file);
 }
 
 function isExtendedDeliveryPeriodOrder(order: SupplyOrderDetail) {

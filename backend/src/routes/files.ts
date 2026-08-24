@@ -35,6 +35,7 @@ import {
 } from "../utils/db-values.js";
 import { clearDashboardReportCaches } from "../utils/cache.js";
 import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../utils/http.js";
+import { isBiddingApplicableForFile } from "../utils/file-type-groups.js";
 
 export const filesRouter = Router();
 const allActiveFilesYear = "__all_active_files__";
@@ -175,6 +176,32 @@ const statusSummaryMilestones = [
     appliesColumn: "f.bg",
     supplyOrderDate: "combined_bg_received_date",
   },
+  {
+    key: "irPreparation",
+    label: "IR Preparation",
+    totalLabel: "Total files",
+    appliesColumn: "f.ir",
+    supplyOrderDate: "ir_preparation_date",
+  },
+  {
+    key: "irReceipt",
+    label: "IR Receipt",
+    totalLabel: "Total files",
+    appliesColumn: "f.ir",
+    supplyOrderDate: "ir_receipt_date",
+  },
+  {
+    key: "billPreparation",
+    label: "Bill preparation",
+    totalLabel: "Total files",
+    supplyOrderDate: "bill_preparation_date",
+  },
+  {
+    key: "billSentForPayment",
+    label: "Bill sent for payment",
+    totalLabel: "Total files",
+    supplyOrderDate: "bill_sent_for_payment_date",
+  },
   { key: "payment", label: "Payment", totalLabel: "Total files", supplyOrderDate: "payment_date" },
 ] as const;
 
@@ -202,8 +229,10 @@ const fileFields = {
   gte: ["gte", "text"],
   tcec: ["tcec", "text"],
   fileType: ["file_type", "text"],
+  fileTypeGroup: ["file_type_group", "text"],
   mode: ["mode", "text"],
   gem: ["gem", "text"],
+  gemBiddingMode: ["gem_bidding_mode", "text"],
   highValue: ["high_value", "text"],
   ad: ["ad", "text"],
   rqa: ["rqa", "text"],
@@ -255,6 +284,7 @@ const fileFields = {
   soValueRevenue: ["so_value_revenue", "number"],
   dpDate: ["dp_date", "date"],
   firm: ["firm", "text"],
+  bqBasis: ["bq_basis", "text"],
   dpExtension: ["dp_extension", "text"],
   dpExtensionCount: ["dp_extension_count", "integer"],
   ld: ["ld", "text"],
@@ -270,6 +300,8 @@ const fileFields = {
   demandCancelledDate: ["demand_cancelled_date", "date"],
   soCancelled: ["so_cancelled", "text"],
   soCancelledDate: ["so_cancelled_date", "date"],
+  shortclosure: ["shortclosure", "text"],
+  shortclosureDate: ["shortclosure_date", "date"],
   currentMilestone: ["current_milestone", "text"],
   fileClosureDate: ["file_closure_date", "date"],
 } as const satisfies Record<string, readonly [string, ValueKind]>;
@@ -287,6 +319,11 @@ type SearchSql = {
 type ExportColumn = {
   key: string;
   label: string;
+};
+type FileSearchExportLayout = "columnwise" | "rowwise";
+type FileSearchExportTable = {
+  headers: string[];
+  rows: string[][];
 };
 
 const supplyOrderFields = {
@@ -342,12 +379,15 @@ const supplyOrderFields = {
   demandCancelled: ["demand_cancelled", "text"],
   soCancelled: ["so_cancelled", "text"],
   soCancelledDate: ["so_cancelled_date", "date"],
+  shortclosure: ["shortclosure", "text"],
+  shortclosureDate: ["shortclosure_date", "date"],
   stageDelivery: ["stage_delivery", "text"],
   stageDeliveryCount: ["stage_delivery_count", "integer"],
   stagePayment: ["stage_payment", "text"],
   advancePayment: ["advance_payment", "text"],
   advancePaymentDetail: ["advance_payment_detail", "jsonObject"],
   stageDeliveries: ["stage_deliveries", "jsonArray"],
+  firmRatingValues: ["firm_rating_values", "jsonObject"],
 } as const satisfies Record<string, readonly [string, ValueKind]>;
 
 const stagedSupplyOrderExportKeys = new Set<string>([
@@ -382,6 +422,7 @@ type FileRow = Record<string, unknown> & {
 };
 
 type FileChildren = {
+  bqFirms: Map<string, FirmDetail[]>;
   invitedFirms: Map<string, FirmDetail[]>;
   bidderFirms: Map<string, FirmDetail[]>;
   supplyOrders: Map<string, SupplyOrderDetail[]>;
@@ -473,6 +514,7 @@ function mapFile(row: FileRow, children: FileChildren): FileRecord {
     division: fromDbText(row.division),
     createdAt:
       row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    bqFirms: children.bqFirms.get(row.id) ?? [],
     invitedFirms: children.invitedFirms.get(row.id) ?? [],
     bidderFirms: children.bidderFirms.get(row.id) ?? [],
     supplyOrders: children.supplyOrders.get(row.id) ?? [],
@@ -491,6 +533,7 @@ function mapFile(row: FileRow, children: FileChildren): FileRecord {
 
 async function loadChildren(fileIds: string[]): Promise<FileChildren> {
   const children: FileChildren = {
+    bqFirms: new Map(),
     invitedFirms: new Map(),
     bidderFirms: new Map(),
     supplyOrders: new Map(),
@@ -503,7 +546,7 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
 
   const firmRows = await pool.query<{
     file_id: string;
-    firm_type: "invited" | "bidder";
+    firm_type: "bq" | "invited" | "bidder";
     firm_name: string | null;
     city: string | null;
     address: string | null;
@@ -526,7 +569,12 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
       firmUniqueNo: fromDbText(row.firm_unique_no),
       contactNo: fromDbText(row.contact_no),
     };
-    const map = row.firm_type === "invited" ? children.invitedFirms : children.bidderFirms;
+    const map =
+      row.firm_type === "bq"
+        ? children.bqFirms
+        : row.firm_type === "invited"
+          ? children.invitedFirms
+          : children.bidderFirms;
     map.set(row.file_id, [...(map.get(row.file_id) ?? []), firm]);
   }
 
@@ -679,7 +727,7 @@ async function loadSearchFiles(searchSql: SearchSql) {
 }
 
 const fileExportDateFields = [
-  ["receivedDate", "Received"],
+  ["receivedDate", "Demand received date"],
   ["scrutinyDate", "Scrutiny"],
   ["scrutinyResponseDate", "Scrutiny response"],
   ["scrutinyCompletionDate", "Scrutiny completion"],
@@ -718,6 +766,7 @@ const supplyOrderExportDateFields = [
   ["billSentForPaymentDate", "Bill sent for payment"],
   ["paymentDate", "Payment"],
   ["soCancelledDate", "S.O. cancelled date"],
+  ["shortclosureDate", "Shortclosure date"],
 ] as const;
 
 function readDateTime(value: unknown) {
@@ -754,6 +803,7 @@ function getLastFilledDate(file: FileRecord) {
 function getFileExportValue(file: FileRecord, key: string) {
   if (key === "lastDateDescription") return getLastFilledDate(file)?.label ?? "";
   if (key === "lastDate") return getLastFilledDate(file)?.value ?? "";
+  if (key === "bqFirms") return String(getFirmCount(file.bqFirms));
   if (key === "invitedFirms") return String(getFirmCount(file.invitedFirms));
   if (key === "bidderFirms") return String(getFirmCount(file.bidderFirms));
   const firmDetailValue = getFirmDetailExportValue(file, key);
@@ -771,7 +821,12 @@ function getFileExportValue(file: FileRecord, key: string) {
 function getFirmDetailExportValue(file: FileRecord, key: string) {
   const fieldKey = firmDetailExportFieldKey(key);
   if (!fieldKey) return undefined;
-  const rows = key.startsWith("invited") ? file.invitedFirms : file.bidderFirms;
+  if (!isBiddingApplicableForFile(file)) return "";
+  const rows = key.startsWith("bq")
+    ? file.bqFirms
+    : key.startsWith("invited")
+      ? file.invitedFirms
+      : file.bidderFirms;
   return (rows ?? [])
     .map((firm, index, allRows) => {
       const value = String((firm as Record<string, unknown>)[fieldKey] ?? "").trim();
@@ -783,7 +838,7 @@ function getFirmDetailExportValue(file: FileRecord, key: string) {
 }
 
 function firmDetailExportFieldKey(key: string) {
-  if (!/^(invited|bidder)Firm/.test(key)) return undefined;
+  if (!/^(bq|invited|bidder)Firm/.test(key)) return undefined;
   if (key.endsWith("Names")) return "firmName";
   if (key.endsWith("UniqueNos")) return "firmUniqueNo";
   if (key.endsWith("Emails")) return "emailId";
@@ -826,6 +881,83 @@ function buildFileSearchExportColumns(files: FileRecord[], columns: ExportColumn
       return [mainColumn, ...stageColumns];
     }).flat();
   });
+}
+
+function buildFileSearchExportTable(
+  files: FileRecord[],
+  columns: ExportColumn[],
+  layout: FileSearchExportLayout,
+): FileSearchExportTable {
+  if (layout === "rowwise") return buildRowwiseFileSearchExportTable(files, columns);
+  const exportColumns = buildFileSearchExportColumns(files, columns);
+  return {
+    headers: ["S.No.", ...exportColumns.map((column) => column.label)],
+    rows: files.map((file, index) => [
+      String(index + 1),
+      ...exportColumns.map((column) => column.getValue(file)),
+    ]),
+  };
+}
+
+function buildRowwiseFileSearchExportTable(
+  files: FileRecord[],
+  columns: ExportColumn[],
+): FileSearchExportTable {
+  const fileColumns = columns.filter((column) => !isSupplyOrderExportKey(column.key));
+  const supplyOrderColumns = columns.filter((column) => isSupplyOrderExportKey(column.key));
+  const maxStageCount = Math.max(
+    0,
+    ...files.flatMap((file) =>
+      getRawSupplyOrders(file).map((order) => order.stageDeliveries?.length ?? 0),
+    ),
+  );
+  const headers = [
+    "S.No.",
+    ...fileColumns.map((column) => column.label),
+    "S.O. No.",
+    ...supplyOrderColumns.flatMap((column) => {
+      if (!stagedSupplyOrderExportKeys.has(column.key)) return [column.label];
+      return [
+        column.label,
+        ...Array.from(
+          { length: maxStageCount },
+          (_, index) => `Delivery-${index + 1} ${column.label}`,
+        ),
+      ];
+    }),
+  ];
+  const rows: string[][] = [];
+  files.forEach((file) => {
+    const orders = getRawSupplyOrders(file);
+    const rowsForFile = orders.length ? orders : [undefined];
+    rowsForFile.forEach((order, orderIndex) => {
+      rows.push([
+        String(rows.length + 1),
+        ...fileColumns.map((column) => getFileExportValue(file, column.key) || "Not set"),
+        order ? String(orderIndex + 1) : "",
+        ...supplyOrderColumns.flatMap((column) => {
+          if (!order) {
+            return stagedSupplyOrderExportKeys.has(column.key)
+              ? Array.from({ length: maxStageCount + 1 }, () => "")
+              : [""];
+          }
+          const mainValue = getSupplyOrderExportValue(order, column.key);
+          if (!stagedSupplyOrderExportKeys.has(column.key)) return [mainValue || "Not set"];
+          return [
+            mainValue || "",
+            ...Array.from({ length: maxStageCount }, (_, stageIndex) =>
+              getStageSupplyOrderExportValue(file, column.key, orderIndex, stageIndex),
+            ),
+          ];
+        }),
+      ]);
+    });
+  });
+  return { headers, rows };
+}
+
+function isSupplyOrderExportKey(key: string) {
+  return key in supplyOrderFields || advancePaymentDetailExportKeys.has(key);
 }
 
 function getMainSupplyOrderExportValue(file: FileRecord, key: string, orderIndex: number) {
@@ -884,6 +1016,14 @@ function readExportColumns(value: unknown): ExportColumn[] {
     .filter((column): column is ExportColumn => Boolean(column));
 }
 
+function readFileSearchExportLayout(value: unknown): FileSearchExportLayout {
+  return value === "rowwise" ? "rowwise" : "columnwise";
+}
+
+function formatFileSearchExportLayout(layout: FileSearchExportLayout) {
+  return layout === "rowwise" ? "Rowwise" : "Columnwise";
+}
+
 function readQueryString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
@@ -937,7 +1077,9 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     firmUniqueNo: readQueryString(query.firmUniqueNo),
     firmContactNo: readQueryString(query.firmContactNo),
     firmCity: readQueryString(query.firmCity),
+    firmSearchScopes: readQueryList(query.firmSearchScopes),
     selectedModes: readQueryList(query.selectedModes),
+    selectedGemBiddingModes: readQueryList(query.selectedGemBiddingModes),
     selectedFirmTypes: readQueryList(query.selectedFirmTypes),
     selectedFileTypes: readQueryList(query.selectedFileTypes),
     selectedBgCoverageTypes: readQueryList(query.selectedBgCoverageTypes),
@@ -967,8 +1109,8 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     tcec: readQueryBoolean(query.tcec),
     dpFrom: readQueryString(query.dpFrom),
     dpTo: readQueryString(query.dpTo),
-    demandDateFrom: readQueryString(query.demandDateFrom),
-    demandDateTo: readQueryString(query.demandDateTo),
+    demandReceiptFrom: readQueryString(query.demandReceiptFrom),
+    demandReceiptTo: readQueryString(query.demandReceiptTo),
     demandControlFrom: readQueryString(query.demandControlFrom),
     demandControlTo: readQueryString(query.demandControlTo),
     highValueMinutesFrom: readQueryString(query.highValueMinutesFrom),
@@ -1004,6 +1146,7 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     rstFilter: readQueryBoolean(query.rstFilter),
     demandCancelledFilter: readQueryBoolean(query.demandCancelledFilter),
     soCancelledFilter: readQueryBoolean(query.soCancelledFilter),
+    shortclosedSoFilter: readQueryBoolean(query.shortclosedSoFilter),
     freeText: readQueryString(query.freeText),
     freeDate: readQueryString(query.freeDate),
     dashboardFilter: readQueryString(query.dashboardFilter),
@@ -1079,7 +1222,7 @@ function bidOpeningOverdueSql(today = "current_date") {
   const openingDate = `(case when ${isYesSql(
     "f.refloat",
   )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end)`;
-  return `${isNoSql("f.bid_opened")} and ${openingDate} is not null and ${openingDate} < ${today}`;
+  return `${biddingApplicableSql()} and ${isNoSql("f.bid_opened")} and ${openingDate} is not null and ${openingDate} < ${today}`;
 }
 
 function normalizedSql(expression: string) {
@@ -1527,6 +1670,7 @@ const fileSearchColumns = {
   fileType: "f.file_type",
   mode: "f.mode",
   gem: "f.gem",
+  gemBiddingMode: "f.gem_bidding_mode",
   highValue: "f.high_value",
   ad: "f.ad",
   rqa: "f.rqa",
@@ -1578,6 +1722,7 @@ const fileSearchColumns = {
   soValueRevenue: "f.so_value_revenue",
   dpDate: "f.dp_date",
   firm: "f.firm",
+  bqBasis: "f.bq_basis",
   dpExtension: "f.dp_extension",
   dpExtensionCount: "f.dp_extension_count",
   ld: "f.ld",
@@ -1594,6 +1739,8 @@ const fileSearchColumns = {
   fileClosureDate: "f.file_closure_date",
   soCancelled: "f.so_cancelled",
   soCancelledDate: "f.so_cancelled_date",
+  shortclosure: "f.shortclosure",
+  shortclosureDate: "f.shortclosure_date",
   currentMilestone: "f.current_milestone",
 } as const;
 
@@ -1624,6 +1771,8 @@ const supplyOrderSearchColumns = {
   demandCancelled: "demand_cancelled",
   soCancelled: "so_cancelled",
   soCancelledDate: "so_cancelled_date",
+  shortclosure: "shortclosure",
+  shortclosureDate: "shortclosure_date",
 } as const;
 
 const dateSearchColumns = [
@@ -1688,7 +1837,18 @@ function isCancelledFileSql() {
 }
 
 function deliveryInspectionApplicableSql() {
-  return `${isYesSql("f.ir")} and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`;
+  const defaultGroup = `case
+    when lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m') then 'contract'
+    else 'goodsservices'
+  end`;
+  return `${isYesSql("f.ir")}
+    and lower(trim(coalesce(nullif(f.file_type_group, ''), ${defaultGroup}))) <> 'contract'`;
+}
+
+function biddingApplicableSql() {
+  return `upper(trim(coalesce(f.mode, ''))) <> 'LPC'
+    and lower(trim(coalesce(f.file_type, ''))) not in ('cars', 'capsi')
+    and not (${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = 'comparison')`;
 }
 
 function supplyOrderPlacedSql() {
@@ -1720,22 +1880,12 @@ function paymentPendingSql() {
   const nonDeliveryFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
   const childDeliveryCompletion = `(not ${nonDeliveryFileType} and ${hasTextSql("so.material_receipt_date")})`;
   const stageDeliveryCompletion = `(not ${nonDeliveryFileType} and coalesce(payment_stage.stage ->> 'materialReceiptDate', '') <> '')`;
-  const childPaymentStarted = `(${normalizedSql("so.current_milestone")} = 'payment'
-       or ${hasTextSql("so.bill_preparation_date")}
+  const childPaymentStarted = `(${hasTextSql("so.bill_preparation_date")}
        or ${hasTextSql("so.bill_sent_for_payment_date")})`;
-  const stagePaymentStarted = `(${normalizedSql("payment_stage.stage ->> 'currentMilestone'")} = 'payment'
-	       or coalesce(payment_stage.stage ->> 'billPreparationDate', '') <> ''
+  const stagePaymentStarted = `(coalesce(payment_stage.stage ->> 'billPreparationDate', '') <> ''
 	       or coalesce(payment_stage.stage ->> 'billSentForPaymentDate', '') <> '')`;
-  const stageJobCompletionDone = `exists (
-	       select 1
-	       from jsonb_array_elements_text(coalesce(payment_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_payment_stage(milestone)
-	       where ${normalizedSql("completed_payment_stage.milestone")} = 'jobcompletion'
-	     )`;
-  const childJobCompletionDone = `exists (
-	       select 1
-	       from jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) as completed_payment_order(milestone)
-	       where ${normalizedSql("completed_payment_order.milestone")} = 'jobcompletion'
-	     )`;
+  const stageJobCompletionDone = `coalesce(payment_stage.stage ->> 'jobCompletionDate', '') <> ''`;
+  const childJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
   const childPaymentPending = `${hasTextSql("so.so_date")}
      and (${childPaymentStarted}
 	       or (${nonDeliveryFileType} and ${childJobCompletionDone})
@@ -1842,29 +1992,21 @@ function jobCompletionFilterSql(state: "live" | "periodOver") {
     nullif(job_stage.stage ->> 'dpDate', '')::date
   )`;
   const orderDpDate = effectiveDpDateSql("so");
-  const stageJobCompletionDone = `exists (
-    select 1
-    from jsonb_array_elements_text(coalesce(job_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_job_stage(milestone)
-    where ${normalizedSql("completed_job_stage.milestone")} = 'jobcompletion'
-  )`;
+  const stageJobCompletionDone = `coalesce(job_stage.stage ->> 'jobCompletionDate', '') <> ''`;
   const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
   const stageCondition =
     state === "live"
       ? `not (${stageJobCompletionDone})
-        and (
-          ${normalizedSql("job_stage.stage ->> 'currentMilestone'")} = 'jobcompletion'
-          or (${stageDpDate} is not null and ${stageDpDate} < current_date)
-        )`
+        and ${stageDpDate} is not null
+        and ${stageDpDate} < current_date`
       : `not (${stageJobCompletionDone})
         and ${stageDpDate} is not null
         and ${stageDpDate} < current_date`;
   const orderCondition =
     state === "live"
       ? `not (${orderJobCompletionDone})
-        and (
-          ${normalizedSql("so.current_milestone")} = 'jobcompletion'
-          or (${orderDpDate} is not null and ${orderDpDate} < current_date)
-        )`
+        and ${orderDpDate} is not null
+        and ${orderDpDate} < current_date`
       : `not (${orderJobCompletionDone})
         and ${orderDpDate} is not null
         and ${orderDpDate} < current_date`;
@@ -1891,11 +2033,7 @@ function jobCompletionFilterSql(state: "live" | "periodOver") {
 
 function jobCompletionCompletedFilterSql() {
   const nonDeliveryFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
-  const stageJobCompletionDone = `exists (
-    select 1
-    from jsonb_array_elements_text(coalesce(job_completed_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_job_completed_stage(milestone)
-    where ${normalizedSql("completed_job_completed_stage.milestone")} = 'jobcompletion'
-  )`;
+  const stageJobCompletionDone = `coalesce(job_completed_stage.stage ->> 'jobCompletionDate', '') <> ''`;
   const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
   return `not ${isCancelledFileSql()} and ${supplyOrderExists(
     `${hasTextSql("so.so_date")}
@@ -1989,6 +2127,23 @@ function isBgStatusKey(value: string) {
 }
 
 function completedOrderMilestoneSql(orderAlias: string, normalizedMilestone: string) {
+  if (normalizeMilestoneName(normalizedMilestone) === "financialsanction") {
+    return hasTextSql(`${orderAlias}.financial_sanction_date`);
+  }
+  if (normalizeMilestoneName(normalizedMilestone) === "jobcompletion") {
+    return hasTextSql(`${orderAlias}.job_completion_date`);
+  }
+  const dateColumns: Record<string, string> = {
+    irpreparation: "ir_preparation_date",
+    irreceipt: "ir_receipt_date",
+    billpreparation: "bill_preparation_date",
+    billsentforpayment: "bill_sent_for_payment_date",
+    payment: "payment_date",
+  };
+  const dateColumn = dateColumns[normalizeMilestoneName(normalizedMilestone)];
+  if (dateColumn) {
+    return hasTextSql(`${orderAlias}.${dateColumn}`);
+  }
   return `exists (
     select 1
     from jsonb_array_elements_text(coalesce(${orderAlias}.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
@@ -2050,8 +2205,7 @@ function bgReceivedSql(category: string) {
 }
 
 function financialSanctionCompletedOrderSql(orderAlias: string) {
-  return `(${hasTextSql(`${orderAlias}.financial_sanction_date`)}
-    or ${completedOrderMilestoneSql(orderAlias, "financialsanction")})`;
+  return hasTextSql(`${orderAlias}.financial_sanction_date`);
 }
 
 function financialSanctionCompletedSql() {
@@ -2066,8 +2220,14 @@ function financialSanctionPreviousStageSql() {
     and not (${financialSanctionPendingSql()})
     and (
       (not ${isYesSql("f.tcec")}
-        and ${normalizedSql("f.current_milestone")} = 'bidding'
-        and not ${isYesSql("f.bidding_stage_over")})
+        and (
+          (${biddingApplicableSql()}
+            and ${normalizedSql("f.current_milestone")} = 'bidding'
+            and not ${isYesSql("f.bidding_stage_over")})
+          or (not ${biddingApplicableSql()}
+            and ${normalizedSql("f.current_milestone")} = 'cfa'
+            and not ${hasTextSql("f.cfa_date")})
+        ))
       or (${isYesSql("f.tcec")}
         and ${normalizedSql("f.current_milestone")} = 'cnc'
         and not ${hasTextSql("f.cnc_approval_date")})
@@ -2076,7 +2236,8 @@ function financialSanctionPreviousStageSql() {
 
 function financialSanctionReachedSql() {
   return `not ${isCancelledFileSql()}
-    and ${isYesSql("f.bidding_stage_over")}
+    and ((${biddingApplicableSql()} and ${isYesSql("f.bidding_stage_over")})
+      or (not ${biddingApplicableSql()} and ${hasTextSql("f.cfa_date")}))
     and (not ${isYesSql("f.tcec")} or ${hasTextSql("f.cnc_approval_date")})`;
 }
 
@@ -2111,11 +2272,7 @@ function bgReturnDueSql(category: string, today = "current_date") {
   )`;
   const allStagesHaveJobCompletion = `not exists (
     select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
-    where not exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(psb_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_psb_stage(milestone)
-      where ${normalizedSql("completed_psb_stage.milestone")} = 'jobcompletion'
-    )
+    where nullif(psb_stage.stage ->> 'jobCompletionDate', '')::date is null
   )`;
   const psbPurposeComplete = `((${nonDeliveryFileType} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${completedOrderMilestoneSql(
     "so",
@@ -2202,6 +2359,40 @@ function tcecStatusFilterSql(filter: string, values: unknown[]) {
   return conditions.join(" and ");
 }
 
+function fiscalYearDateCondition(dateColumn: string, fiscalYear: string, values: unknown[]) {
+  const match = fiscalYear.match(/^(\d{4})-\d{2}$/);
+  if (!match) return undefined;
+  const startYear = Number(match[1]);
+  const fromPlaceholder = addSqlValue(values, `${startYear}-04-01`);
+  const toPlaceholder = addSqlValue(values, `${startYear + 1}-03-31`);
+  return `${dateColumn} >= ${fromPlaceholder}::date and ${dateColumn} <= ${toPlaceholder}::date`;
+}
+
+function tcecStatusFyFilterSql(filter: string, values: unknown[]) {
+  const [, rawStage = "pre", rawMetric = "reviewed", rawFy = "", rawCommittee = ""] =
+    filter.split(":");
+  const stage = decodeStatusFilterPart(rawStage) === "post" ? "post" : "pre";
+  const metric = decodeStatusFilterPart(rawMetric);
+  if (metric !== "reviewed" && metric !== "signed" && metric !== "pending") return "false";
+  const fiscalYear = decodeStatusFilterPart(rawFy).trim();
+  const committee = decodeStatusFilterPart(rawCommittee).trim();
+  const committeeColumn =
+    stage === "pre" ? "f.pre_tcec_committee_no" : "f.post_tcec_committee_number";
+  const meetingDateColumn = stage === "pre" ? "f.pre_tcec_date" : "f.post_tcec_date";
+  const minutesDateColumn =
+    stage === "pre" ? "f.pre_tcec_minutes_date" : "f.post_tcec_minutes_date";
+  const fyCondition = fiscalYearDateCondition(meetingDateColumn, fiscalYear, values);
+  if (!fyCondition) return "false";
+  const conditions = [fyCondition, hasTextSql(meetingDateColumn)];
+  if (committee) {
+    const committeePlaceholder = addSqlValue(values, committee.toLowerCase());
+    conditions.push(`lower(trim(coalesce(${committeeColumn}, ''))) = ${committeePlaceholder}`);
+  }
+  if (metric === "signed") conditions.push(hasTextSql(minutesDateColumn));
+  if (metric === "pending") conditions.push(`not ${hasTextSql(minutesDateColumn)}`);
+  return conditions.join(" and ");
+}
+
 function cncSummaryFilterSql(filter: string, values: unknown[]) {
   const [, rawMetric = "reviewed", rawCncDate = ""] = filter.split(":");
   const metric = decodeStatusFilterPart(rawMetric);
@@ -2220,6 +2411,27 @@ function cncSummaryFilterSql(filter: string, values: unknown[]) {
   else if (metric === "financialSanctionPending")
     conditions.push(`${approved} and not (${fsSigned})`);
   else if (metric === "supplyOrderPending") conditions.push(`${fsSigned} and not (${soPlaced})`);
+  else return "false";
+  return conditions.join(" and ");
+}
+
+function cncSummaryFyFilterSql(filter: string, values: unknown[]) {
+  const [, rawMetric = "reviewed", rawFy = ""] = filter.split(":");
+  const metric = decodeStatusFilterPart(rawMetric);
+  const fiscalYear = decodeStatusFilterPart(rawFy).trim();
+  const fyCondition = fiscalYearDateCondition("f.cnc_date", fiscalYear, values);
+  if (!fyCondition) return "false";
+  const conditions = [fyCondition, hasTextSql("f.cnc_date")];
+  const approved = hasTextSql("f.cnc_approval_date");
+  const fsSigned = financialSanctionCompletedSql();
+  const soPlaced = supplyOrderPlacedSql();
+  if (metric === "name" || metric === "reviewed") return conditions.join(" and ");
+  if (metric === "approved") conditions.push(approved);
+  else if (metric === "financialSanctionSigned") conditions.push(fsSigned);
+  else if (metric === "supplyOrderPlaced") conditions.push(soPlaced);
+  else if (metric === "approvalPending") conditions.push(`not ${approved}`);
+  else if (metric === "financialSanctionPending") conditions.push(`${approved} and not ${fsSigned}`);
+  else if (metric === "supplyOrderPending") conditions.push(`${fsSigned} and not ${soPlaced}`);
   else return "false";
   return conditions.join(" and ");
 }
@@ -2305,6 +2517,7 @@ function preBidMeetingFilterSql(refloat: boolean, state: "due" | "completed") {
   const dateState =
     state === "completed" ? `${dateColumn} < current_date` : `${dateColumn} >= current_date`;
   return `not ${isCancelledFileSql()}
+    and ${biddingApplicableSql()}
     and ${applies}
     and ${hasTextSql(dateColumn)}
     and ${dateState}`;
@@ -2321,11 +2534,7 @@ function bgExpiredSql(category: string, today = "current_date") {
   )`;
   const allStagesHaveJobCompletion = `not exists (
     select 1 from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
-    where not exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(psb_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_psb_stage(milestone)
-      where ${normalizedSql("completed_psb_stage.milestone")} = 'jobcompletion'
-    )
+    where nullif(psb_stage.stage ->> 'jobCompletionDate', '')::date is null
   )`;
   const psbPurposeComplete = `((${nonDeliveryFileType} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${completedOrderMilestoneSql(
     "so",
@@ -2347,6 +2556,22 @@ function bgExpiredSql(category: string, today = "current_date") {
 }
 
 function completedStageMilestoneSql(orderAlias: string, normalizedMilestone: string) {
+  const dateFields: Record<string, string> = {
+    jobcompletion: "jobCompletionDate",
+    irpreparation: "irPreparationDate",
+    irreceipt: "irReceiptDate",
+    billpreparation: "billPreparationDate",
+    billsentforpayment: "billSentForPaymentDate",
+    payment: "paymentDate",
+  };
+  const dateField = dateFields[normalizeMilestoneName(normalizedMilestone)];
+  if (dateField) {
+    return `exists (
+      select 1
+      from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+      where ${hasTextSql(`stage_row.stage ->> '${dateField}'`)}
+    )`;
+  }
   return `exists (
     select 1
     from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
@@ -2357,18 +2582,26 @@ function completedStageMilestoneSql(orderAlias: string, normalizedMilestone: str
 
 function currentStageMilestoneSql(orderAlias: string, normalizedMilestoneSql: string) {
   return `exists (
-	    select 1
-	    from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
-	    where ${normalizedSql("stage_row.stage ->> 'currentMilestone'")} = ${normalizedMilestoneSql}
-	      and (
-	        ${normalizedMilestoneSql} <> 'jobcompletion'
-	        or not exists (
-	          select 1
-	          from jsonb_array_elements_text(coalesce(stage_row.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
-	          where ${normalizedSql("completed_stage.milestone")} = 'jobcompletion'
-	        )
-	      )
-	  )`;
+		    select 1
+		    from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+		    where (
+		      (${normalizedSql("stage_row.stage ->> 'currentMilestone'")} = ${normalizedMilestoneSql}
+		        and ${normalizedMilestoneSql} <> 'jobcompletion'
+		        and ${normalizedMilestoneSql} <> 'billpreparation'
+		        and ${normalizedMilestoneSql} <> 'billsentforpayment')
+		      or (${normalizedMilestoneSql} = 'billsentforpayment'
+		        and ${hasTextSql("stage_row.stage ->> 'billPreparationDate'")}
+		        and not ${hasTextSql("stage_row.stage ->> 'billSentForPaymentDate'")})
+		      or (${normalizedMilestoneSql} = 'billpreparation'
+		        and not ${hasTextSql("stage_row.stage ->> 'billPreparationDate'")}
+		        and (
+		          (${isYesSql("f.ir")} and ${hasTextSql("stage_row.stage ->> 'irReceiptDate'")})
+		          or ((not ${isYesSql("f.ir")}
+		            or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+		            and ${hasTextSql("stage_row.stage ->> 'jobCompletionDate'")})
+		        ))
+		    )
+		  )`;
 }
 
 function inferredOrderCurrentMilestoneSql(orderAlias: string) {
@@ -2444,6 +2677,19 @@ function inferredOrderCurrentMilestoneMatchesSql(
 	      and ${effectiveDpDateSql(orderAlias)} is not null
 	      and ${effectiveDpDateSql(orderAlias)} < current_date
 	      and not ${isYesSql(`${orderAlias}.so_cancelled`)})
+	    or (${normalizedMilestoneSql} = 'billsentforpayment'
+	      and ${hasTextSql(`${orderAlias}.bill_preparation_date`)}
+	      and not ${hasTextSql(`${orderAlias}.bill_sent_for_payment_date`)}
+	      and not ${isYesSql(`${orderAlias}.so_cancelled`)})
+	    or (${normalizedMilestoneSql} = 'billpreparation'
+	      and not ${hasTextSql(`${orderAlias}.bill_preparation_date`)}
+	      and (
+	        (${isYesSql("f.ir")} and ${hasTextSql(`${orderAlias}.ir_receipt_date`)})
+	        or ((not ${isYesSql("f.ir")}
+	          or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+	          and ${hasTextSql(`${orderAlias}.job_completion_date`)})
+	      )
+	      and not ${isYesSql(`${orderAlias}.so_cancelled`)})
 	  )`;
 }
 
@@ -2462,13 +2708,12 @@ function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: s
           or (
 	            ${normalizedMilestoneSql} <> 'supplyorder'
 	            and (
-	              (
-	                ${normalizedSql("so_current.current_milestone")} = ${normalizedMilestoneSql}
-	                and (
-	                  ${normalizedMilestoneSql} <> 'jobcompletion'
-	                  or not ${completedOrderMilestoneSql("so_current", "jobcompletion")}
-	                )
-	              )
+		              (
+		                ${normalizedSql("so_current.current_milestone")} = ${normalizedMilestoneSql}
+		                and ${normalizedMilestoneSql} <> 'jobcompletion'
+		                and ${normalizedMilestoneSql} <> 'billpreparation'
+		                and ${normalizedMilestoneSql} <> 'billsentforpayment'
+		              )
 	              or ${currentStageMilestoneSql("so_current", normalizedMilestoneSql)}
 	              or ${inferredOrderCurrentMilestoneMatchesSql("so_current", normalizedMilestoneSql)}
 	            )
@@ -2509,6 +2754,7 @@ function supplyOrderDrivenCompletedMilestoneConditionSql(normalizedMilestone: st
 }
 
 function statusAppliesSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  if (milestone.key === "bidding") return biddingApplicableSql();
   return "appliesColumn" in milestone && milestone.appliesColumn
     ? isYesSql(milestone.appliesColumn)
     : "true";
@@ -2805,8 +3051,7 @@ const orderDelayMilestones = [
     current: "jobcompletion",
     completeColumn: "job_completion",
     start: "jobCompletion",
-    applies: () =>
-      `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`,
+    applies: () => `not (${deliveryInspectionApplicableSql()})`,
   },
   {
     key: "irPreparation",
@@ -2874,12 +3119,8 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     nullif(so.revised_dp::text, '')::date,
     nullif(so.dp_date::text, '')::date
   )`;
-  const nonDeliveryFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
-  const stageJobCompletionDone = `exists (
-    select 1
-    from jsonb_array_elements_text(coalesce(stage_row.stage -> 'completedMilestones', '[]'::jsonb)) as completed_delay_stage(milestone)
-    where ${normalizedSql("completed_delay_stage.milestone")} = 'jobcompletion'
-  )`;
+  const nonDeliveryFileType = `not (${deliveryInspectionApplicableSql()})`;
+  const stageJobCompletionDone = `coalesce(stage_row.stage ->> 'jobCompletionDate', '') <> ''`;
   const jobCompletionDoneForDelay = `((stage_row.stage is not null and ${stageJobCompletionDone})
     or (stage_row.stage is null and ${completedOrderMilestoneSql("so", "jobcompletion")}))`;
   switch (start) {
@@ -2907,10 +3148,11 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     case "irReceipt":
       return effectiveOrderDateSql("ir_preparation_date", "irPreparationDate");
     case "billPreparation":
-      return `coalesce(${effectiveOrderDateSql(
-        "ir_receipt_date",
-        "irReceiptDate",
-      )}, ${effectiveOrderDateSql("material_receipt_date", "materialReceiptDate")})`;
+      return `case
+        when ${isYesSql("f.ir")} then ${effectiveOrderDateSql("ir_receipt_date", "irReceiptDate")}
+        when ${nonDeliveryFileType} then ${effectiveOrderDateSql("job_completion_date", "jobCompletionDate")}
+        else null
+      end`;
     case "billSentForPayment":
       return effectiveOrderDateSql("bill_preparation_date", "billPreparationDate");
     case "payment":
@@ -2923,11 +3165,8 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
 }
 
 function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string) {
-  const stageJobCompletionDone = `exists (
-    select 1
-    from jsonb_array_elements_text(coalesce(stage_row.stage -> 'completedMilestones', '[]'::jsonb)) as completed_delay_filter_stage(milestone)
-    where ${normalizedSql("completed_delay_filter_stage.milestone")} = 'jobcompletion'
-  )`;
+  const nonDeliveryFileType = `not (${deliveryInspectionApplicableSql()})`;
+  const stageJobCompletionDone = `coalesce(stage_row.stage ->> 'jobCompletionDate', '') <> ''`;
   const jobCompletionDoneForDelay = `((stage_row.stage is not null and ${stageJobCompletionDone})
     or (stage_row.stage is null and ${completedOrderMilestoneSql("so", "jobcompletion")}))`;
   const clauses = orderDelayMilestones
@@ -2956,8 +3195,8 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
       const currentCondition = isBgStatusKey(milestone.key)
         ? `(('${normalizedBgKey}' in ('psb', 'psbpwb') and ${financialSanctionCompletedOrderSql("so")})
           or ('${normalizedBgKey}' = 'pwb' and (
-            (not (not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')) and ${hasTextSql("so.material_receipt_date")})
-            or ((not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')) and ${completedOrderMilestoneSql("so", "jobcompletion")})
+            ((${deliveryInspectionApplicableSql()}) and ${hasTextSql("so.material_receipt_date")})
+            or (${nonDeliveryFileType} and ${completedOrderMilestoneSql("so", "jobcompletion")})
           )))`
         : milestone.key === "supplyOrder"
           ? supplyOrderPendingOrderSql("so")
@@ -2967,7 +3206,14 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
               ? hasTextSql("so.so_date")
               : milestone.key === "jobCompletion"
                 ? `${startDate} is not null`
-                : `${currentMilestone} = '${milestone.current}'`;
+                : milestone.key === "billPreparation"
+                  ? `not ${hasTextSql("coalesce(stage_row.stage ->> 'billPreparationDate', so.bill_preparation_date)")}
+                    and (
+                      (${isYesSql("f.ir")} and ${hasTextSql("coalesce(stage_row.stage ->> 'irReceiptDate', so.ir_receipt_date)")})
+                      or (${nonDeliveryFileType}
+                        and ${hasTextSql("coalesce(stage_row.stage ->> 'jobCompletionDate', so.job_completion_date)")})
+                    )`
+                  : `${currentMilestone} = '${milestone.current}'`;
       return `exists (
         select 1
         from supply_orders so
@@ -2983,6 +3229,63 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
       )`;
     });
   return clauses.length ? `(${clauses.join(" or ")})` : "false";
+}
+
+function biddingDelayStatusSql(breakupKey: string | undefined, thresholdPlaceholder: string) {
+  const refloatYes = isYesSql("f.refloat");
+  const bidDate = `(case when ${refloatYes} then f.refloat_bidding_date else f.bid_date end)`;
+  const bidOpeningDate = `(case when ${refloatYes} then f.refloat_bid_opening_date else f.bid_opening_date end)`;
+  const latestPrerequisiteDate = `greatest(
+    f.cfa_date,
+    coalesce(f.gem_undertaking_date, f.cfa_date),
+    coalesce(f.rfp_vetting_approval_date, f.cfa_date)
+  )`;
+  const base = `not ${isYesSql("f.demand_cancelled")}
+    and not ${completedMilestoneExists(`${normalizedSql("completed.milestone")} = 'fileclosed'`)}
+    and ${biddingApplicableSql()}
+    and ${hasTextSql("f.cfa_date")}
+    and not ${isYesSql("f.bidding_stage_over")}`;
+  const statusCases: Record<string, string> = {
+    gemUndertakingPending: `${base}
+      and ${isYesSql("f.gem")}
+      and not ${hasTextSql("f.gem_undertaking_date")}
+      and (current_date - f.cfa_date) > ${thresholdPlaceholder}::integer`,
+    rfpVettingInitiationPending: `${base}
+      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
+      and ${isYesSql("f.rfp_vetting")}
+      and not ${hasTextSql("f.rfp_vetting_initiation_date")}
+      and (current_date - (case when ${isYesSql("f.gem")} then coalesce(f.gem_undertaking_date, f.cfa_date) else f.cfa_date end)) > ${thresholdPlaceholder}::integer`,
+    rfpVettingApprovalPending: `${base}
+      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
+      and ${isYesSql("f.rfp_vetting")}
+      and ${hasTextSql("f.rfp_vetting_initiation_date")}
+      and not ${hasTextSql("f.rfp_vetting_approval_date")}
+      and (current_date - f.rfp_vetting_initiation_date) > ${thresholdPlaceholder}::integer`,
+    tenderLivePending: `${base}
+      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
+      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
+      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and not ${isYesSql("f.tender_live")}
+      and ${bidDate} is null
+      and (current_date - (${latestPrerequisiteDate})::date) > ${thresholdPlaceholder}::integer`,
+    bidOpeningOverdue: `${base}
+      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
+      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
+      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and ${bidOpeningDate} is not null
+      and ${bidOpeningDate} < current_date
+      and not ${isYesSql("f.bid_opened")}
+      and (current_date - (${bidOpeningDate})::date) > ${thresholdPlaceholder}::integer`,
+    biddingStageCompletionPending: `${base}
+      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
+      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
+      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and not (${bidOpeningDate} is not null and ${bidOpeningDate} < current_date and not ${isYesSql("f.bid_opened")})
+      and ${isYesSql("f.bid_opened")}
+      and (current_date - coalesce(${bidOpeningDate}, ${bidDate}, ${latestPrerequisiteDate})::date) > ${thresholdPlaceholder}::integer`,
+  };
+  if (breakupKey && statusCases[breakupKey]) return `(${statusCases[breakupKey]})`;
+  return `(${Object.values(statusCases).map((clause) => `(${clause})`).join(" or ")})`;
 }
 
 function dateColumnToJsonKey(column: string) {
@@ -3017,13 +3320,18 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
   const thresholdPlaceholder = addSqlValue(values, thresholdDays);
   const workflowNotStartedClause =
     milestoneKey === "all" || milestoneKey === "workflowNotStarted"
-      ? `(${workflowNotStartedSql()} and (current_date - coalesce(f.received_date, f.file_date, f.created_at::date)) > ${thresholdPlaceholder}::integer)`
+      ? `(${workflowNotStartedSql()} and (current_date - coalesce(f.received_date, f.created_at::date)) > ${thresholdPlaceholder}::integer)`
+      : "false";
+  const biddingClause =
+    milestoneKey === "all" || milestoneKey === "bidding"
+      ? biddingDelayStatusSql(undefined, thresholdPlaceholder)
       : "false";
   const clauses = statusSummaryMilestones
     .map((milestone, index) => ({ milestone, index }))
     .filter(
       ({ milestone }) =>
         !("supplyOrderDate" in milestone && milestone.supplyOrderDate) &&
+        milestone.key !== "bidding" &&
         (milestoneKey === "all" || milestone.key === milestoneKey),
     )
     .map(({ milestone, index }) => {
@@ -3035,8 +3343,8 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
     });
   const orderClause = orderDelayFilterSql(milestoneKey, thresholdPlaceholder);
   return clauses.length
-    ? `((${workflowNotStartedClause}) or (${clauses.join(" or ")}) or ${orderClause})`
-    : `((${workflowNotStartedClause}) or ${orderClause})`;
+    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${clauses.join(" or ")}) or ${orderClause})`
+    : `((${workflowNotStartedClause}) or (${biddingClause}) or ${orderClause})`;
 }
 
 function decodeStatusFilterPart(value: string | undefined) {
@@ -3131,6 +3439,23 @@ function statusSummaryFilterSql(filter: string) {
   const milestoneIndex = statusSummaryMilestones.findIndex((item) => item.label === milestoneName);
   const milestone = statusSummaryMilestones[milestoneIndex];
   if (!milestone) return "false";
+
+  const supplyOrderDrivenStatusKeys = new Set([
+    "irPreparation",
+    "irReceipt",
+    "billPreparation",
+    "billSentForPayment",
+  ]);
+  if (supplyOrderDrivenStatusKeys.has(milestone.key)) {
+    const normalizedMilestone = normalizeMilestoneName(milestone.label);
+    const completed = supplyOrderDrivenCompletedMilestoneConditionSql(normalizedMilestone);
+    const pending = supplyOrderDrivenCurrentMilestoneConditionSql(`'${normalizedMilestone}'`);
+    if (stage === "Completed") return `${base} and ${completed}`;
+    if (stage === "Pending") return `${base} and ${pending}`;
+    if (stage === "Total" || stage === milestone.totalLabel) {
+      return `${base} and ((${completed}) or (${pending}))`;
+    }
+  }
 
   const applies = statusAppliesSql(milestone);
   const process = `${applies} and not ${isCancelledFileSql()}`;
@@ -3327,11 +3652,7 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   const goodsServicesIrNo = `(not ${isYesSql("f.ir")} and not ${maintenanceFileType})`;
   const nonDeliveryFileType = `(${goodsServicesIrNo} or ${maintenanceFileType})`;
   const stageDpDate = `coalesce(nullif(stage_row.stage ->> 'revisedDp', '')::date, nullif(stage_row.stage ->> 'dpDate', '')::date)`;
-  const stageJobCompletionDone = `exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(stage_row.stage -> 'completedMilestones', '[]'::jsonb)) as completed_cash_outgo_stage(milestone)
-      where ${normalizedSql("completed_cash_outgo_stage.milestone")} = 'jobcompletion'
-    )`;
+  const stageJobCompletionDone = `coalesce(stage_row.stage ->> 'jobCompletionDate', '') <> ''`;
   const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
   const stageReportBaseDate = `case
       when ${maintenanceFileType} then (${stageDpDate} + interval '1 day')::date
@@ -3510,14 +3831,14 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
           and ${toDateOnOrBeforeSql(childBaseDate) ?? "true"}
           and ${toDateMissingOrAfterSql("so.bill_preparation_date") ?? `not ${hasTextSql("so.bill_preparation_date")}`}
           and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
-          and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childDate)}
+          and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childBaseDate)}
         )
         or ${stagePaymentRowExists(
           `${stageReportBaseDate} is not null
             and ${toDateOnOrBeforeSql(stageReportBaseDate) ?? "true"}
             and ${toDateMissingOrAfterSql(stageBillPreparationDate) ?? `${stageBillPreparationDate} is null`}
             and ${toDateMissingOrAfterSql(stagePaymentDate) ?? `${stagePaymentDate} is null`}
-            and ${monthMatchesSql(stageDate, monthPlaceholder)}${rangeSql(stageDate)}`,
+            and ${monthMatchesSql(stageDate, monthPlaceholder)}${rangeSql(stageReportBaseDate)}`,
         )}
       )`,
       `${legacyBaseDate} is not null
@@ -3525,7 +3846,7 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
        and ${toDateOnOrBeforeSql(legacyBaseDate) ?? "true"}
        and ${toDateMissingOrAfterSql("f.bill_preparation_date") ?? `not ${hasTextSql("f.bill_preparation_date")}`}
        and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
-       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyDate)}`,
+       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyBaseDate)}`,
     )}`;
   }
 
@@ -3747,11 +4068,7 @@ function getMonthEndDateFromMonthKey(monthKey: string) {
 }
 
 function stageJobCompletionDoneSql(stageAlias = "delivery_period_stage") {
-  return `exists (
-    select 1
-    from jsonb_array_elements_text(coalesce(${stageAlias}.stage -> 'completedMilestones', '[]'::jsonb)) as completed_delivery_period_stage(milestone)
-    where ${normalizedSql("completed_delivery_period_stage.milestone")} = 'jobcompletion'
-  )`;
+  return `coalesce(${stageAlias}.stage ->> 'jobCompletionDate', '') <> ''`;
 }
 
 function deliveryPeriodBucketSql(kind: "valid" | "expired" | "extended") {
@@ -3851,7 +4168,11 @@ function valueThresholdFilterSql(filter: string, values: unknown[]) {
 }
 
 function isCancellationDashboardFilter(filter: string) {
-  return filter === "miscDemandCancelled" || filter === "miscSoCancelled";
+  return (
+    filter === "miscDemandCancelled" ||
+    filter === "miscSoCancelled" ||
+    filter === "miscShortclosedSo"
+  );
 }
 
 function workflowNotStartedSql() {
@@ -3917,6 +4238,15 @@ function shouldShowDemandCancelledFiles(params: FileSearchParams) {
 function dashboardFilterSql(filter: string, values: unknown[]) {
   const today = "current_date";
   if (filter.startsWith("delayStatus:")) return delayStatusFilterSql(filter, values);
+  if (filter.startsWith("firmAnalysis:")) return firmAnalysisFilterSql(filter, values);
+  if (isFinanceCarryForwardDashboardFilter(filter)) return financeCarryForwardFilterSql(filter, values);
+  if (filter.startsWith("biddingDelay:")) {
+    const [, rawDays = "0", breakupKey = ""] = filter.split(":");
+    const thresholdDays = Number.parseInt(rawDays, 10);
+    if (!Number.isFinite(thresholdDays) || thresholdDays < 0) return "false";
+    const thresholdPlaceholder = addSqlValue(values, thresholdDays);
+    return biddingDelayStatusSql(breakupKey, thresholdPlaceholder);
+  }
   const dashboardMilestoneSql = dashboardMilestoneFilterSql(filter);
   if (dashboardMilestoneSql) return dashboardMilestoneSql;
   if (filter.startsWith("cashOutgoAny:")) return cashOutgoAnyFilterSql(filter, values);
@@ -3959,6 +4289,12 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     if (value === "no") return isNoSql(column);
     return "true";
   }
+  if (filter.startsWith("gemBiddingMode:")) {
+    const mode = decodeFilterPart(filter.slice("gemBiddingMode:".length)).trim().toLowerCase();
+    if (!mode) return "true";
+    const placeholder = addSqlValue(values, mode);
+    return `${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = ${placeholder}`;
+  }
   if (filter.startsWith("firmType:")) {
     const rawFirmType = filter.slice("firmType:".length);
     const firmType = decodeURIComponent(rawFirmType).trim().toUpperCase();
@@ -3985,13 +4321,40 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
        and not ${isYesSql("so.so_cancelled")}`,
     )}`;
   }
+  if (filter.startsWith("supplyOrderYear:")) {
+    const yearKey = filter.slice("supplyOrderYear:".length);
+    if (yearKey !== "all" && !/^\d{4}$/.test(yearKey)) return "true";
+    const dateCondition =
+      yearKey === "all"
+        ? hasTextSql("so.so_date")
+        : (() => {
+            const fromPlaceholder = addSqlValue(values, `${yearKey}-01-01`);
+            const toPlaceholder = addSqlValue(values, `${yearKey}-12-31`);
+            return `${hasTextSql("so.so_date")}
+       and so.so_date >= ${fromPlaceholder}::date
+       and so.so_date <= ${toPlaceholder}::date`;
+          })();
+    return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+      `${dateCondition}
+       and not ${isYesSql("so.so_cancelled")}`,
+    )}`;
+  }
   if (filter.startsWith("fileInflowMonth:")) {
     const monthKey = filter.slice("fileInflowMonth:".length);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return "true";
     const fromPlaceholder = addSqlValue(values, `${monthKey}-01`);
     const toPlaceholder = addSqlValue(values, getMonthEndDateFromMonthKey(monthKey));
-    return `coalesce(f.received_date, f.file_date) >= ${fromPlaceholder}::date
-      and coalesce(f.received_date, f.file_date) <= ${toPlaceholder}::date`;
+    return `f.received_date >= ${fromPlaceholder}::date
+      and f.received_date <= ${toPlaceholder}::date`;
+  }
+  if (filter.startsWith("fileInflowYear:")) {
+    const yearKey = filter.slice("fileInflowYear:".length);
+    if (yearKey === "all") return hasTextSql("f.received_date");
+    if (!/^\d{4}$/.test(yearKey)) return "true";
+    const fromPlaceholder = addSqlValue(values, `${yearKey}-01-01`);
+    const toPlaceholder = addSqlValue(values, `${yearKey}-12-31`);
+    return `f.received_date >= ${fromPlaceholder}::date
+      and f.received_date <= ${toPlaceholder}::date`;
   }
   if (filter.startsWith("preBidMeeting:") || filter.startsWith("refloatPreBidMeeting:")) {
     const [kind = "", state = "all", monthKey = ""] = filter.split(":");
@@ -4016,10 +4379,35 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
         })()
       : "";
     return `not ${isCancelledFileSql()}
+      and ${biddingApplicableSql()}
       and ${applies}
       and ${hasTextSql(dateColumn)}
       and ${stateCondition}
       ${monthCondition}`;
+  }
+  if (filter.startsWith("preBidMeetingFy:") || filter.startsWith("refloatPreBidMeetingFy:")) {
+    const [kind = "", state = "all", rawFy = ""] = filter.split(":");
+    if (!["all", "due", "completed"].includes(state)) return "true";
+    const fiscalYear = decodeStatusFilterPart(rawFy).trim();
+    const isRefloat = kind === "refloatPreBidMeetingFy";
+    const applies = isRefloat
+      ? `${isYesSql("f.refloat")} and ${isYesSql("f.refloat_pre_bid_meeting")}`
+      : isYesSql("f.pre_bid_meeting");
+    const dateColumn = isRefloat ? "f.refloat_pre_bid_meeting_date" : "f.pre_bid_meeting_date";
+    const fyCondition = fiscalYearDateCondition(dateColumn, fiscalYear, values);
+    if (!fyCondition) return "true";
+    const stateCondition =
+      state === "due"
+        ? `${dateColumn} >= current_date`
+        : state === "completed"
+          ? `${dateColumn} < current_date`
+          : "true";
+    return `not ${isCancelledFileSql()}
+      and ${biddingApplicableSql()}
+      and ${applies}
+      and ${hasTextSql(dateColumn)}
+      and ${stateCondition}
+      and ${fyCondition}`;
   }
   if (filter.startsWith("deliverySchedule:")) {
     const [, mode = "gross", monthKey = ""] = filter.split(":");
@@ -4031,18 +4419,8 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
       nullif(stage_delivery.stage ->> 'dpDate', '')::date
     )`;
     const nonMaterialReceiptFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
-    const stageJobCompletionDone = `exists (
-	        select 1
-	        from jsonb_array_elements_text(
-	          coalesce(stage_delivery.stage -> 'completedMilestones', '[]'::jsonb)
-	        ) as completed_stage_job(milestone)
-	        where ${normalizedSql("completed_stage_job.milestone")} = 'jobcompletion'
-	      )`;
-    const orderJobCompletionDone = `exists (
-	        select 1
-	        from jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) as completed_order_job(milestone)
-	        where ${normalizedSql("completed_order_job.milestone")} = 'jobcompletion'
-	      )`;
+    const stageJobCompletionDone = `coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''`;
+    const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
     const stageFructified = `((not ${nonMaterialReceiptFileType}
 	        and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> '')
 	      or (${nonMaterialReceiptFileType} and ${stageJobCompletionDone})
@@ -4080,6 +4458,59 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
       )`,
     )}`;
   }
+  if (filter.startsWith("deliveryScheduleYear:")) {
+    const [, mode = "gross", yearKey = ""] = filter.split(":");
+    if ((mode !== "gross" && mode !== "net") || (yearKey !== "all" && !/^\d{4}$/.test(yearKey))) {
+      return "true";
+    }
+    const stageDpDate = `coalesce(
+      nullif(stage_delivery.stage ->> 'revisedDp', '')::date,
+      nullif(stage_delivery.stage ->> 'dpDate', '')::date
+    )`;
+    const nonMaterialReceiptFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
+    const stageJobCompletionDone = `coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''`;
+    const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
+    const stageFructified = `((not ${nonMaterialReceiptFileType}
+	        and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> '')
+	      or (${nonMaterialReceiptFileType} and ${stageJobCompletionDone})
+	      or exists (
+        select 1
+        from jsonb_array_elements_text(
+          coalesce(stage_delivery.stage -> 'completedMilestones', '[]'::jsonb)
+        ) as completed_stage(milestone)
+        where ${normalizedSql("completed_stage.milestone")} = 'delivery'
+      ))`;
+    const orderDpDate = `coalesce(so.revised_dp, so.dp_date)`;
+    const orderFructified = `((not ${nonMaterialReceiptFileType}
+	        and ${hasTextSql("so.material_receipt_date")})
+	      or (${nonMaterialReceiptFileType} and ${orderJobCompletionDone})
+	      or ${completedOrderMilestoneSql("so", "delivery")})`;
+    const dateRangeCondition = (dateExpression: string) => {
+      if (yearKey === "all") return `${dateExpression} is not null`;
+      const fromPlaceholder = addSqlValue(values, `${yearKey}-01-01`);
+      const toPlaceholder = addSqlValue(values, `${yearKey}-12-31`);
+      return `${dateExpression} >= ${fromPlaceholder}::date and ${dateExpression} <= ${toPlaceholder}::date`;
+    };
+    const netStageCondition = mode === "net" ? ` and not ${stageFructified}` : "";
+    const netOrderCondition = mode === "net" ? ` and not ${orderFructified}` : "";
+    return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+      `not ${isYesSql("so.so_cancelled")} and (
+        exists (
+          select 1
+          from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_delivery(stage)
+          where ${isYesSql("so.stage_delivery")}
+            and ${dateRangeCondition(stageDpDate)}
+            ${netStageCondition}
+        )
+        or (
+          not (${isYesSql("so.stage_delivery")}
+            and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0)
+          and ${dateRangeCondition(orderDpDate)}
+          ${netOrderCondition}
+        )
+      )`,
+    )}`;
+  }
   if (filter.startsWith("completedDeliveryMonth:")) {
     const monthKey = filter.slice("completedDeliveryMonth:".length);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return "true";
@@ -4092,18 +4523,8 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
 	    )`;
     const orderDpDate = `coalesce(so.revised_dp, so.dp_date)`;
     const nonMaterialReceiptFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
-    const stageJobCompletionDone = `exists (
-	      select 1
-	      from jsonb_array_elements_text(
-	        coalesce(stage_delivery.stage -> 'completedMilestones', '[]'::jsonb)
-	      ) as completed_stage_job(milestone)
-	      where ${normalizedSql("completed_stage_job.milestone")} = 'jobcompletion'
-	    )`;
-    const orderJobCompletionDone = `exists (
-	      select 1
-	      from jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) as completed_order_job(milestone)
-	      where ${normalizedSql("completed_order_job.milestone")} = 'jobcompletion'
-	    )`;
+    const stageJobCompletionDone = `coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''`;
+    const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
     return `not ${isCancelledFileSql()}
 	      and ${supplyOrderExists(
           `not ${isYesSql("so.so_cancelled")} and (
@@ -4138,6 +4559,54 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
 	        )`,
         )}`;
   }
+  if (filter.startsWith("completedDeliveryYear:")) {
+    const yearKey = filter.slice("completedDeliveryYear:".length);
+    if (yearKey !== "all" && !/^\d{4}$/.test(yearKey)) return "true";
+    const stageMaterialReceiptDate = `nullif(stage_delivery.stage ->> 'materialReceiptDate', '')::date`;
+    const stageDpDate = `coalesce(
+	      nullif(stage_delivery.stage ->> 'revisedDp', '')::date,
+	      nullif(stage_delivery.stage ->> 'dpDate', '')::date
+	    )`;
+    const orderDpDate = `coalesce(so.revised_dp, so.dp_date)`;
+    const nonMaterialReceiptFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`;
+    const stageJobCompletionDone = `coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''`;
+    const orderJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
+    const dateRangeCondition = (dateExpression: string) => {
+      if (yearKey === "all") return `${dateExpression} is not null`;
+      const fromPlaceholder = addSqlValue(values, `${yearKey}-01-01`);
+      const toPlaceholder = addSqlValue(values, `${yearKey}-12-31`);
+      return `${dateExpression} >= ${fromPlaceholder}::date and ${dateExpression} <= ${toPlaceholder}::date`;
+    };
+    return `not ${isCancelledFileSql()}
+	      and ${supplyOrderExists(
+          `not ${isYesSql("so.so_cancelled")} and (
+	          exists (
+	            select 1
+	            from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_delivery(stage)
+	            where ${isYesSql("so.stage_delivery")}
+	              and (
+	                (not ${nonMaterialReceiptFileType}
+	                  and ${dateRangeCondition(stageMaterialReceiptDate)})
+	                or (${nonMaterialReceiptFileType}
+	                  and ${stageJobCompletionDone}
+	                  and ${dateRangeCondition(stageDpDate)})
+	              )
+	          )
+	          or (
+	            not (${isYesSql("so.stage_delivery")}
+	              and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0)
+	            and (
+	              (not ${nonMaterialReceiptFileType}
+	                and ${hasTextSql("so.material_receipt_date")}
+	                and ${dateRangeCondition("so.material_receipt_date")})
+	              or (${nonMaterialReceiptFileType}
+	                and ${orderJobCompletionDone}
+	                and ${dateRangeCondition(orderDpDate)})
+	            )
+	          )
+	        )`,
+        )}`;
+  }
   if (filter.startsWith("bgExpiryMonth:")) {
     const [, category = "all", monthKey = ""] = filter.split(":");
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return "true";
@@ -4152,6 +4621,28 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
           and not ${hasTextSql(`so.${returnColumn}`)}
           and so.${validityColumn} >= ${fromPlaceholder}::date
           and so.${validityColumn} <= ${toPlaceholder}::date)`;
+    });
+    if (!categoryConditions.length) return "true";
+    return supplyOrderExists(`(${categoryConditions.join(" or ")})`);
+  }
+  if (filter.startsWith("bgExpiryYear:")) {
+    const [, category = "all", yearKey = ""] = filter.split(":");
+    if (yearKey !== "all" && !/^\d{4}$/.test(yearKey)) return "true";
+    const categories = category === "all" ? ["psb", "pwb", "psbpwb"] : [category];
+    const dateRangeCondition = (validityColumn: string) => {
+      if (yearKey === "all") return `${hasTextSql(`so.${validityColumn}`)}`;
+      const fromPlaceholder = addSqlValue(values, `${yearKey}-01-01`);
+      const toPlaceholder = addSqlValue(values, `${yearKey}-12-31`);
+      return `so.${validityColumn} >= ${fromPlaceholder}::date
+          and so.${validityColumn} <= ${toPlaceholder}::date`;
+    };
+    const categoryConditions = categories.filter(isBgStatusKey).map((item) => {
+      const validityColumn = bgValidityColumn(item);
+      const returnColumn = bgReturnColumn(item);
+      return `(${bgCategorySql("so", item)}
+          and ${bgReceivedOrderSql("so", item)}
+          and not ${hasTextSql(`so.${returnColumn}`)}
+          and ${dateRangeCondition(validityColumn)})`;
     });
     if (!categoryConditions.length) return "true";
     return supplyOrderExists(`(${categoryConditions.join(" or ")})`);
@@ -4175,10 +4666,16 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
     const days = Number.parseInt(rawDays, 10);
     return warrantyBgMismatchSql(category, Number.isInteger(days) ? days : 60);
   }
+  if (filter.startsWith("tcecStatusFy:")) return tcecStatusFyFilterSql(filter, values);
   if (filter.startsWith("tcecStatus:")) return tcecStatusFilterSql(filter, values);
+  if (filter.startsWith("cncSummaryFy:")) return cncSummaryFyFilterSql(filter, values);
   if (filter.startsWith("cncSummary:")) return cncSummaryFilterSql(filter, values);
   if (filter.startsWith("fileCategory:")) {
     return fileCategorySql(normalizeFileCategories([filter.slice("fileCategory:".length)]));
+  }
+  if (filter.startsWith("fileType:")) {
+    const placeholder = addSqlValue(values, decodeURIComponent(filter.slice("fileType:".length)).trim().toLowerCase());
+    return `lower(trim(coalesce(f.file_type, ''))) = ${placeholder}`;
   }
   if (filter.startsWith("valueThreshold:")) return valueThresholdFilterSql(filter, values);
   if (filter.startsWith("mode:")) {
@@ -4222,7 +4719,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   if (filter === "adYes") return isYesSql("f.ad");
   if (filter === "rqaVetting") return isYesSql("f.rqa");
   if (filter === "ifaConcurrence") return isYesSql("f.ifa");
-  if (filter === "liveBids") return isYesSql("f.tender_live");
+  if (filter === "liveBids") return `${biddingApplicableSql()} and ${isYesSql("f.tender_live")}`;
   if (filter === "bidOverdue") return bidOpeningOverdueSql(today);
   if (filter === "supplyOrders") return supplyOrderPlacedSql();
   if (filter === "liveSupplyOrders") return liveSupplyOrderSql();
@@ -4305,6 +4802,7 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   if (filter === "miscLd") return supplyOrderExists(isYesSql("so.ld"));
   if (filter === "miscDemandCancelled") return isYesSql("f.demand_cancelled");
   if (filter === "miscSoCancelled") return supplyOrderExists(isYesSql("so.so_cancelled"));
+  if (filter === "miscShortclosedSo") return supplyOrderExists(isYesSql("so.shortclosure"));
   if (filter === "miscMultipleSupplyOrders")
     return `(select count(*) from supply_orders so where so.file_id = f.id) > 1`;
   if (filter === "scrutinyCompleted") return hasTextSql("f.scrutiny_completion_date");
@@ -4330,6 +4828,86 @@ function dashboardFilterSql(filter: string, values: unknown[]) {
   return "true";
 }
 
+function isFinanceCarryForwardDashboardFilter(filter: string | undefined) {
+  return filter?.trim().startsWith("financeCarryForward:") ?? false;
+}
+
+function financeCarryForwardFilterSql(filter: string, values: unknown[]) {
+  const [, mode = "", rawSelectedYear = "", rawSourceYear = ""] = filter.split(":");
+  const selectedYear = decodeFilterPart(rawSelectedYear).trim();
+  const sourceYear = decodeFilterPart(rawSourceYear).trim();
+  const selectedRange = getFinancialYearDateRange(selectedYear);
+  const sourceRange = getFinancialYearDateRange(sourceYear);
+  if (
+    !selectedRange ||
+    !sourceRange ||
+    ![
+      "carryForward",
+      "clearedCarryForward",
+      "previousCarryForward",
+      "futureClearedCarryForward",
+    ].includes(mode)
+  ) {
+    return "false";
+  }
+
+  let selectedStartPlaceholder: string | undefined;
+  let selectedEndPlaceholder: string | undefined;
+  let sourceStartPlaceholder: string | undefined;
+  let sourceEndPlaceholder: string | undefined;
+  const selectedStart = () =>
+    (selectedStartPlaceholder ??= `${addSqlValue(values, selectedRange.start)}::date`);
+  const selectedEnd = () =>
+    (selectedEndPlaceholder ??= `${addSqlValue(values, selectedRange.end)}::date`);
+  const sourceStart = () =>
+    (sourceStartPlaceholder ??= `${addSqlValue(values, sourceRange.start)}::date`);
+  const sourceEnd = () =>
+    (sourceEndPlaceholder ??= `${addSqlValue(values, sourceRange.end)}::date`);
+  const selectedYearStart = Number(selectedRange.start.slice(0, 4));
+  const sourceYearStart = Number(sourceRange.start.slice(0, 4));
+
+  const paymentCondition = (paymentDate: string) => {
+    if (mode === "carryForward") {
+      return `${sourceYearStart === selectedYearStart ? "true" : "false"}
+        and (${paymentDate} is null or ${paymentDate} > ${selectedEnd()})`;
+    }
+    if (mode === "clearedCarryForward") {
+      return `${sourceYearStart < selectedYearStart ? "true" : "false"}
+        and ${paymentDate} between ${selectedStart()} and ${selectedEnd()}`;
+    }
+    if (mode === "futureClearedCarryForward") {
+      return `${sourceYearStart > selectedYearStart ? "true" : "false"}
+        and ${paymentDate} between ${sourceStart()} and ${sourceEnd()}
+        and ${paymentDate} > ${selectedEnd()}`;
+    }
+    return `${sourceYearStart < selectedYearStart ? "true" : "false"}
+      and (${paymentDate} is null or ${paymentDate} > ${selectedEnd()})`;
+  };
+
+  const orderSourceYearCondition =
+    mode === "futureClearedCarryForward"
+      ? `so.so_date between ${selectedStart()} and ${selectedEnd()}`
+      : `so.so_date between ${sourceStart()} and ${sourceEnd()}`;
+  const orderPaymentDate = `so.payment_date`;
+  const stagePaymentDate = `nullif(stage_row.stage ->> 'paymentDate', '')::date`;
+
+  return supplyOrderExists(`not ${isYesSql("so.so_cancelled")} and (
+    (
+      not (${isYesSql("so.stage_delivery")} and ${isYesSql("so.stage_payment")})
+      and ${orderSourceYearCondition}
+      and ${paymentCondition(orderPaymentDate)}
+    )
+    or exists (
+      select 1
+      from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) with ordinality as stage_row(stage, ordinality)
+      where ${isYesSql("so.stage_delivery")}
+        and ${isYesSql("so.stage_payment")}
+        and ${orderSourceYearCondition}
+        and ${paymentCondition(stagePaymentDate)}
+    )
+  )`);
+}
+
 function getSortSql(sortColumnKey: string | undefined, direction: "asc" | "desc") {
   const dir = direction === "desc" ? "desc" : "asc";
   if (!sortColumnKey || sortColumnKey === "none") return "";
@@ -4339,8 +4917,9 @@ function getSortSql(sortColumnKey: string | undefined, direction: "asc" | "desc"
       "so.so_date",
     )}) ${dir}`;
   }
-  if (sortColumnKey === "invitedFirms" || sortColumnKey === "bidderFirms") {
-    const type = sortColumnKey === "invitedFirms" ? "invited" : "bidder";
+  if (sortColumnKey === "bqFirms" || sortColumnKey === "invitedFirms" || sortColumnKey === "bidderFirms") {
+    const type =
+      sortColumnKey === "bqFirms" ? "bq" : sortColumnKey === "invitedFirms" ? "invited" : "bidder";
     return `(select count(*) from file_firms ff where ff.file_id = f.id and ff.firm_type = '${type}' and (${hasTextSql(
       "ff.firm_name",
     )} or ${hasTextSql("ff.city")} or ${hasTextSql("ff.address")} or ${hasTextSql(
@@ -4355,6 +4934,139 @@ function getSortSql(sortColumnKey: string | undefined, direction: "asc" | "desc"
   return `lower(coalesce(${column}::text, '')) ${dir}`;
 }
 
+type FirmSearchScope = "bq" | "invited" | "bidder" | "so";
+
+const defaultFirmSearchScopes: FirmSearchScope[] = ["bq", "invited", "bidder", "so"];
+
+function normalizeFirmSearchScopes(scopes: string[] | undefined): FirmSearchScope[] {
+  const allowed = new Set<FirmSearchScope>(defaultFirmSearchScopes);
+  const normalized = (scopes ?? [])
+    .map((scope) => scope.trim().toLowerCase())
+    .filter((scope): scope is FirmSearchScope => allowed.has(scope as FirmSearchScope));
+  return normalized.length ? Array.from(new Set(normalized)) : defaultFirmSearchScopes;
+}
+
+function firmDetailsExists(type: "bq" | "invited" | "bidder", condition: string) {
+  return `exists (
+    select 1
+    from file_firms ff
+    where ff.file_id = f.id and ff.firm_type = '${type}' and ${condition}
+  )`;
+}
+
+function firmSearchSql(
+  scopes: FirmSearchScope[],
+  field: "firmName" | "firmUniqueNo" | "contactNo" | "city",
+  placeholder: string,
+) {
+  const firmColumns = {
+    firmName: "ff.firm_name",
+    firmUniqueNo: "ff.firm_unique_no",
+    contactNo: "ff.contact_no",
+    city: "ff.city",
+  };
+  const soColumns = {
+    firmName: "so.firm",
+    firmUniqueNo: "so.firm_unique_no",
+    contactNo: "so.firm_contact_no",
+    city: "so.firm_city",
+  };
+  const parts = scopes.flatMap((scope) => {
+    if (scope === "so") {
+      return [
+        supplyOrderExists(`lower(coalesce(${soColumns[field]}, '')) like ${placeholder}`),
+        field === "firmName" ? `lower(coalesce(f.firm, '')) like ${placeholder}` : "",
+      ].filter(Boolean);
+    }
+    return [
+      `${biddingApplicableSql()} and ${firmDetailsExists(
+        scope,
+        `lower(coalesce(${firmColumns[field]}, '')) like ${placeholder}`,
+      )}`,
+    ];
+  });
+  return parts.length ? `(${parts.join(" or ")})` : "false";
+}
+
+type FirmAnalysisRole = "bq" | "invited" | "participated" | "order";
+type FirmAnalysisOperator = "and" | "or";
+
+function isFirmAnalysisRole(value: string): value is FirmAnalysisRole {
+  return (
+    value === "bq" ||
+    value === "invited" ||
+    value === "participated" ||
+    value === "order"
+  );
+}
+
+function isFirmAnalysisOperator(value: string): value is FirmAnalysisOperator {
+  return value === "and" || value === "or";
+}
+
+function firmAnalysisRoleSql(role: FirmAnalysisRole, firmName: string, values: unknown[]) {
+  const placeholder = addSqlValue(values, firmName.trim().toLowerCase());
+  const firmDetailCondition = (type: "bq" | "invited" | "bidder") =>
+    `${biddingApplicableSql()} and ${firmDetailsExists(
+      type,
+      `lower(trim(coalesce(ff.firm_name, ''))) = ${placeholder}`,
+    )}`;
+  const orderCondition = supplyOrderExists(`lower(trim(coalesce(so.firm, ''))) = ${placeholder}`);
+  if (role === "bq") return firmDetailCondition("bq");
+  if (role === "invited") return firmDetailCondition("invited");
+  if (role === "participated") return firmDetailCondition("bidder");
+  return orderCondition;
+}
+
+function firmAnalysisPresenceSql(firmName: string, values: unknown[]) {
+  const roleSql = (["bq", "invited", "participated", "order"] as FirmAnalysisRole[]).map((role) =>
+    firmAnalysisRoleSql(role, firmName, values),
+  );
+  return `(${roleSql.join(" or ")})`;
+}
+
+function parseFirmAnalysisRoleToken(token: string) {
+  const negated = token.startsWith("not.");
+  const role = negated ? token.slice("not.".length) : token;
+  return isFirmAnalysisRole(role) ? { role, negated } : undefined;
+}
+
+function firmAnalysisExpressionSql(rawExpression: string, firmName: string, values: unknown[]) {
+  const tokens = rawExpression
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const first = parseFirmAnalysisRoleToken(tokens[0]);
+  if (!first) return "false";
+  const roleSql = (token: { role: FirmAnalysisRole; negated: boolean }) => {
+    const sql = firmAnalysisRoleSql(token.role, firmName, values);
+    return token.negated ? `(not ${sql})` : sql;
+  };
+  let sql = roleSql(first);
+  for (let index = 1; index < tokens.length; index += 2) {
+    const operator = tokens[index];
+    const role = parseFirmAnalysisRoleToken(tokens[index + 1] ?? "");
+    if (!isFirmAnalysisOperator(operator) || !role) break;
+    sql = `(${sql} ${operator} ${roleSql(role)})`;
+  }
+  return `(${firmAnalysisPresenceSql(firmName, values)} and ${sql})`;
+}
+
+function firmAnalysisFilterSql(filter: string, values: unknown[]) {
+  const [, rawMode = "or", rawRoles = "", rawFirm = ""] = filter.split(":");
+  const mode = rawMode === "and" ? "and" : "or";
+  const firmName = decodeFilterPart(rawFirm).trim();
+  if (!firmName) return "false";
+  if (rawMode === "expr") return firmAnalysisExpressionSql(rawRoles, firmName, values);
+  const roleSql = rawRoles
+    .split(",")
+    .map((role) => role.trim())
+    .filter(isFirmAnalysisRole)
+    .map((role) => firmAnalysisRoleSql(role, firmName, values));
+  if (!roleSql.length) return "false";
+  return `(${roleSql.join(mode === "and" ? " and " : " or ")})`;
+}
+
 function buildSearchSql(
   baseConditions: string[],
   baseValues: unknown[],
@@ -4364,7 +5076,9 @@ function buildSearchSql(
   const conditions = [...baseConditions];
   const values = [...baseValues];
   const selectedModes = params.selectedModes ?? [];
+  const selectedGemBiddingModes = params.selectedGemBiddingModes ?? [];
   const selectedFirmTypes = params.selectedFirmTypes ?? [];
+  const firmSearchScopes = normalizeFirmSearchScopes(params.firmSearchScopes);
   const selectedFileTypes = params.selectedFileTypes ?? [];
   const selectedBgCoverageTypes = params.selectedBgCoverageTypes ?? [];
   const fileCategories = params.fileCategories;
@@ -4419,25 +5133,19 @@ function buildSearchSql(
   }
   if (params.firm?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firm));
-    conditions.push(
-      `(${supplyOrderExists(`lower(coalesce(so.firm, '')) like ${placeholder}`)} or lower(coalesce(f.firm, '')) like ${placeholder})`,
-    );
+    conditions.push(firmSearchSql(firmSearchScopes, "firmName", placeholder));
   }
   if (params.firmUniqueNo?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firmUniqueNo));
-    conditions.push(
-      supplyOrderExists(`lower(coalesce(so.firm_unique_no, '')) like ${placeholder}`),
-    );
+    conditions.push(firmSearchSql(firmSearchScopes, "firmUniqueNo", placeholder));
   }
   if (params.firmContactNo?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firmContactNo));
-    conditions.push(
-      supplyOrderExists(`lower(coalesce(so.firm_contact_no, '')) like ${placeholder}`),
-    );
+    conditions.push(firmSearchSql(firmSearchScopes, "contactNo", placeholder));
   }
   if (params.firmCity?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firmCity));
-    conditions.push(supplyOrderExists(`lower(coalesce(so.firm_city, '')) like ${placeholder}`));
+    conditions.push(firmSearchSql(firmSearchScopes, "city", placeholder));
   }
   if (selectedModes.length) {
     const placeholder = addSqlValue(
@@ -4445,6 +5153,15 @@ function buildSearchSql(
       selectedModes.map((mode) => mode.trim().toUpperCase()),
     );
     conditions.push(`upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
+  }
+  if (selectedGemBiddingModes.length) {
+    const placeholder = addSqlValue(
+      values,
+      selectedGemBiddingModes.map((mode) => mode.trim().toLowerCase()),
+    );
+    conditions.push(
+      `${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = any(${placeholder}::text[])`,
+    );
   }
   if (selectedFirmTypes.length) {
     const normalizedFirmTypes = selectedFirmTypes.map((firmType) => firmType.trim().toUpperCase());
@@ -4543,6 +5260,7 @@ function buildSearchSql(
   if (params.rstFilter) conditions.push(isYesSql("f.rst"));
   if (params.demandCancelledFilter) conditions.push(isYesSql("f.demand_cancelled"));
   if (params.soCancelledFilter) conditions.push(supplyOrderExists(isYesSql("so.so_cancelled")));
+  if (params.shortclosedSoFilter) conditions.push(supplyOrderExists(isYesSql("so.shortclosure")));
 
   if (params.capitalOnly && params.revenueOnly) {
     conditions.push("(coalesce(f.value_capital, 0) <> 0 or coalesce(f.value_revenue, 0) <> 0)");
@@ -4609,7 +5327,7 @@ function buildSearchSql(
   }
 
   const dateRangeConditions = [
-    fileDateRangeSql("f.file_date", params.demandDateFrom, params.demandDateTo, values),
+    fileDateRangeSql("f.received_date", params.demandReceiptFrom, params.demandReceiptTo, values),
     fileDateRangeSql("f.imms_date", params.demandControlFrom, params.demandControlTo, values),
     fileDateRangeSql(
       "f.high_value_minutes_date",
@@ -4904,6 +5622,7 @@ function isDefaultNoValue(key: string, value: string) {
       "dpExtension",
       "ld",
       "soCancelled",
+      "shortclosure",
       "stageDelivery",
       "stagePayment",
     ].includes(key)
@@ -4913,7 +5632,7 @@ function isDefaultNoValue(key: string, value: string) {
 async function replaceFirms(
   client: PoolClient,
   fileId: string,
-  firmType: "invited" | "bidder",
+  firmType: "bq" | "invited" | "bidder",
   rows: Record<string, unknown>[],
 ) {
   await client.query("delete from file_firms where file_id = $1 and firm_type = $2", [
@@ -5073,8 +5792,34 @@ async function replaceNestedFileData(
   body: Record<string, unknown>,
   onlyProvided: boolean,
 ) {
+  const bqFirms = readArray(body.bqFirms, "bqFirms");
   const invitedFirms = readArray(body.invitedFirms, "invitedFirms");
   const bidderFirms = readArray(body.bidderFirms, "bidderFirms");
+  const existingBiddingContext =
+    typeof body.mode === "string" &&
+    typeof body.fileType === "string" &&
+    typeof body.gem === "string" &&
+    typeof body.gemBiddingMode === "string"
+      ? null
+      : await client.query<{
+          mode: string | null;
+          fileType: string | null;
+          gem: string | null;
+          gemBiddingMode: string | null;
+        }>(
+          `select mode, file_type as "fileType", gem, gem_bidding_mode as "gemBiddingMode" from files where id = $1`,
+          [fileId],
+        );
+  const existingFile = existingBiddingContext?.rows[0];
+  const biddingApplicable = isBiddingApplicableForFile({
+    mode: typeof body.mode === "string" ? body.mode : (existingFile?.mode ?? undefined),
+    fileType: typeof body.fileType === "string" ? body.fileType : (existingFile?.fileType ?? undefined),
+    gem: typeof body.gem === "string" ? body.gem : (existingFile?.gem ?? undefined),
+    gemBiddingMode:
+      typeof body.gemBiddingMode === "string"
+        ? body.gemBiddingMode
+        : (existingFile?.gemBiddingMode ?? undefined),
+  });
   const supplyOrders = readArray(body.supplyOrders, "supplyOrders");
   const trimmedSupplyOrders = trimRowsToSupplyOrderCount(supplyOrders, body.noOfSo);
   validateSupplyOrderChronology(body, trimmedSupplyOrders);
@@ -5083,9 +5828,10 @@ async function replaceNestedFileData(
   const completedMilestones = body.completedMilestones;
   const activeYears = readActiveYears(body);
 
+  if (!onlyProvided || bqFirms) await replaceFirms(client, fileId, "bq", biddingApplicable ? (bqFirms ?? []) : []);
   if (!onlyProvided || invitedFirms)
-    await replaceFirms(client, fileId, "invited", invitedFirms ?? []);
-  if (!onlyProvided || bidderFirms) await replaceFirms(client, fileId, "bidder", bidderFirms ?? []);
+    await replaceFirms(client, fileId, "invited", biddingApplicable ? (invitedFirms ?? []) : []);
+  if (!onlyProvided || bidderFirms) await replaceFirms(client, fileId, "bidder", biddingApplicable ? (bidderFirms ?? []) : []);
   if (!onlyProvided || trimmedSupplyOrders) {
     await replaceSupplyOrders(client, fileId, trimmedSupplyOrders ?? []);
   } else if ("noOfSo" in body) {
@@ -5158,21 +5904,23 @@ filesRouter.get(
       values.push(...scope.values);
     }
     if (categoryScope.sql) conditions.push(categoryScope.sql);
-    const selectedYear = normalizeFinancialYearLabel(readQueryString(request.query.selectedYear));
-    if (selectedYear === allActiveFilesYear) {
-      conditions.push(activeFilesSql());
-    } else if (selectedYear === activePlusCurrentFyClosedYear) {
-      conditions.push(activePlusCurrentFyClosedSql(values, await loadCurrentFinancialYear()));
-    } else if (selectedYear) {
-      values.push(selectedYear);
-      conditions.push(
-        `(f.year = $${values.length} or exists (
-          select 1 from file_year_activity a
-          where a.file_id = f.id and a.financial_year = $${values.length} and a.status = 'active'
-        ))`,
-      );
-    }
     const searchParams = readSearchParams(request.query);
+    const selectedYear = normalizeFinancialYearLabel(readQueryString(request.query.selectedYear));
+    if (!isFinanceCarryForwardDashboardFilter(searchParams.dashboardFilter)) {
+      if (selectedYear === allActiveFilesYear) {
+        conditions.push(activeFilesSql());
+      } else if (selectedYear === activePlusCurrentFyClosedYear) {
+        conditions.push(activePlusCurrentFyClosedSql(values, await loadCurrentFinancialYear()));
+      } else if (selectedYear) {
+        values.push(selectedYear);
+        conditions.push(
+          `(f.year = $${values.length} or exists (
+            select 1 from file_year_activity a
+            where a.file_id = f.id and a.financial_year = $${values.length} and a.status = 'active'
+          ))`,
+        );
+      }
+    }
     const page = readPositiveInteger(request.query.page, 1, 1_000_000);
     const pageSize = readPositiveInteger(request.query.pageSize, 100, 500);
 
@@ -5194,6 +5942,7 @@ filesRouter.post(
     const user = requireAuth(request as AuthRequest);
     const body = requireObjectBody(request.body);
     const format = body.format === "pdf" ? "pdf" : "excel";
+    const layout = readFileSearchExportLayout(body.layout);
     const title =
       typeof body.title === "string" && body.title.trim()
         ? body.title.trim()
@@ -5214,22 +5963,23 @@ filesRouter.post(
       values.push(...scope.values);
     }
     if (categoryScope.sql) conditions.push(categoryScope.sql);
-    const selectedYear = readQueryString(query.selectedYear)?.trim();
-    if (selectedYear === allActiveFilesYear) {
-      conditions.push(activeFilesSql());
-    } else if (selectedYear === activePlusCurrentFyClosedYear) {
-      conditions.push(activePlusCurrentFyClosedSql(values, await loadCurrentFinancialYear()));
-    } else if (selectedYear) {
-      values.push(selectedYear);
-      conditions.push(
-        `(f.year = $${values.length} or exists (
-          select 1 from file_year_activity a
-          where a.file_id = f.id and a.financial_year = $${values.length} and a.status = 'active'
-        ))`,
-      );
-    }
-
     const searchParams = readSearchParams(query);
+    const selectedYear = readQueryString(query.selectedYear)?.trim();
+    if (!isFinanceCarryForwardDashboardFilter(searchParams.dashboardFilter)) {
+      if (selectedYear === allActiveFilesYear) {
+        conditions.push(activeFilesSql());
+      } else if (selectedYear === activePlusCurrentFyClosedYear) {
+        conditions.push(activePlusCurrentFyClosedSql(values, await loadCurrentFinancialYear()));
+      } else if (selectedYear) {
+        values.push(selectedYear);
+        conditions.push(
+          `(f.year = $${values.length} or exists (
+            select 1 from file_year_activity a
+            where a.file_id = f.id and a.financial_year = $${values.length} and a.status = 'active'
+          ))`,
+        );
+      }
+    }
     const exportLimit = 5000;
     const results = await loadSearchFiles({
       ...buildSearchSql(conditions, values, searchParams, {
@@ -5242,17 +5992,14 @@ filesRouter.post(
       page: 1,
       pageSize: exportLimit,
     });
-    const exportColumns = buildFileSearchExportColumns(results.files, columns);
+    const exportTable = buildFileSearchExportTable(results.files, columns, layout);
     const document = {
       title,
-      description: `Files: ${results.total}${results.total > results.files.length ? ` (exported first ${results.files.length})` : ""}`,
+      description: `Files: ${results.total}${results.total > results.files.length ? ` (exported first ${results.files.length})` : ""}; Layout: ${formatFileSearchExportLayout(layout)}`,
       tables: [
         {
-          headers: ["S.No.", ...exportColumns.map((column) => column.label)],
-          rows: results.files.map((file, index) => [
-            String(index + 1),
-            ...exportColumns.map((column) => column.getValue(file)),
-          ]),
+          headers: exportTable.headers,
+          rows: exportTable.rows,
         },
       ],
     };

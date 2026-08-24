@@ -12,6 +12,10 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import {
+  isBiddingApplicableForFile,
+  isDeliveryInspectionApplicableByGroup,
+} from "@/lib/file-type-groups";
+import {
   advancePaymentEntries,
   countExpectedSupplyOrderRows,
   effectivePaymentEntries as normalizedPaymentEntries,
@@ -43,7 +47,8 @@ import {
 import { formatThousandsAndLakhs, getInrAmount, hasAmount, parseAmount } from "@/lib/money";
 import { isCancelledFile } from "@/lib/year-filter";
 import { formatIsoDateForDisplay } from "@/components/date-input";
-import { ArrowRight, FileSpreadsheet, FileText, Search } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { ArrowRight, FileSpreadsheet, FileText, Info, Search } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
@@ -73,12 +78,15 @@ type DivisionTotalValueSortKey =
   | "committedTotal";
 type DivisionValueMetricKey = "allocated" | "intended" | "booked" | "committed";
 type FinanceFirmTypeDistributionKey = "supplyOrderValue" | "actualPayment";
+type FirmAnalysisRoleKey = "bq" | "invited" | "participated" | "order";
+type FirmAnalysisOperator = "or" | "and";
 type AnalyticsPanelKey =
   | "divisionFiles"
   | "divisionValue"
   | "divisionTotalValue"
   | "divisionTurnaround"
   | "topFirms"
+  | "firmAnalysis"
   | "indentorsByFiles"
   | "indentorsByValue"
   | "biddingMode"
@@ -120,6 +128,11 @@ type TcecStatusStage = "pre" | "post";
 type SummarySubMetric = { label: string; value: number | string; searchFilter?: string };
 type FinanceSplitValue = { capital: string; revenue: string };
 type SummaryMetricValue = number | string | FinanceSplitValue | SummarySubMetric[];
+type FinanceCarryForwardTotal = { count: number; capital: number; revenue: number; total: number };
+type FinanceCarryForwardRow = FinanceCarryForwardTotal & {
+  year: string;
+  filter: string;
+};
 type DelayStatusSummary = {
   averageDays: number;
   longestDays: number;
@@ -143,18 +156,73 @@ type SuspectedAnomalyRow = {
   description: string;
   block: string;
   rule: string;
+  ruleKey?: string;
   previousField: string;
   previousDate: string;
   laterField: string;
   laterDate: string;
   accepted: "No";
+  requestStatus?: string;
+  userExplanation?: string;
+  adminMessage?: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  scope?: string;
 };
+type AnomalyAcceptanceRow = {
+  signature: string;
+  reason?: string;
+  ruleKey?: string;
+  ruleLabel?: string;
+  previousField?: string;
+  previousValue?: string;
+  laterField?: string;
+  laterValue?: string;
+  context?: string;
+  fileId?: string;
+  fileRef?: string;
+  status: string;
+  scope: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  acceptedByName?: string;
+  acceptedAt?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  revokedByName?: string;
+  revokedAt?: string;
+  adminMessage?: string;
+};
+type AnomalyRuleRow = {
+  id: string;
+  name: string;
+  description: string;
+  ruleType: string;
+  fieldA: string;
+  operator: string;
+  fieldB?: string;
+  fixedValue?: string;
+  thresholdDays?: number;
+  severity: string;
+  scope: string;
+  enabled: boolean;
+  createdByName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+type AnomalyRuleField = { key: string; label: string; scope: string };
 type SummaryStat = {
   label: string;
   value: SummaryMetricValue;
   hint?: string;
   searchFilter?: string;
 };
+
+function hasAnomalyAdminAccess(role?: string) {
+  return role === "admin" || role === "sub_admin";
+}
 
 const statusActionModes = [
   { key: "pdf", label: "PDF", icon: FileText },
@@ -173,6 +241,7 @@ type DashboardSummaryPayload = {
   dashboardFileCount: number;
   dashboardDivisions: Division[];
   modeCounts: ReturnType<typeof getModeCounts>;
+  gemBiddingModeCounts: ReturnType<typeof getGemBiddingModeCounts>;
   topSummaryStats: SummaryStat[];
   fileTypeStats: SummaryStat;
   firmTypeStats: SummaryStat;
@@ -194,8 +263,18 @@ type DashboardSummaryPayload = {
     spentRevenue: number;
     paidCapital: number;
     paidRevenue: number;
+    sameYearPaidCapital?: number;
+    sameYearPaidRevenue?: number;
     advanceCapital: number;
     advanceRevenue: number;
+    carryForward?: FinanceCarryForwardTotal;
+    clearedCarryForward?: FinanceCarryForwardTotal;
+    previousCarryForward?: FinanceCarryForwardTotal;
+    futureClearedCarryForward?: FinanceCarryForwardTotal;
+    carryForwardBreakup?: FinanceCarryForwardRow[];
+    clearedCarryForwardBreakup?: FinanceCarryForwardRow[];
+    previousCarryForwardBreakup?: FinanceCarryForwardRow[];
+    futureClearedCarryForwardBreakup?: FinanceCarryForwardRow[];
   };
   financeFirmTypeDistributions: Record<
     FinanceFirmTypeDistributionKey,
@@ -363,6 +442,12 @@ const financeFirmTypeDistributionOptions = [
   { key: "supplyOrderValue", label: "S.O. value by firm type" },
   { key: "actualPayment", label: "Actual payment by firm type" },
 ] satisfies Array<{ key: FinanceFirmTypeDistributionKey; label: string }>;
+const firmAnalysisRoleOptions = [
+  { key: "bq", label: "BQ" },
+  { key: "invited", label: "Invited" },
+  { key: "participated", label: "Participated" },
+  { key: "order", label: "Got order" },
+] satisfies Array<{ key: FirmAnalysisRoleKey; label: string }>;
 const fileClosedMilestone = "File Closed";
 const supplyOrderMilestoneNames = [
   "Financial Sanction",
@@ -391,6 +476,7 @@ function isAnalyticsPanelKey(value: unknown): value is AnalyticsPanelKey {
     value === "divisionTotalValue" ||
     value === "divisionTurnaround" ||
     value === "topFirms" ||
+    value === "firmAnalysis" ||
     value === "indentorsByFiles" ||
     value === "indentorsByValue" ||
     value === "biddingMode" ||
@@ -445,6 +531,12 @@ export function Dashboard() {
     if (isAnalyticsPanelKey(requestedPanel)) setActiveAnalyticsPanel(requestedPanel);
   }, [locationSearch.analyticsPanel, locationSearch.tab]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
+  const [selectedFirmAnalysisFirm, setSelectedFirmAnalysisFirm] = useState("");
+  const [firmAnalysisOperators, setFirmAnalysisOperators] = useState<Record<string, FirmAnalysisOperator>>({});
+  const [negatedFirmAnalysisRoles, setNegatedFirmAnalysisRoles] = useState<FirmAnalysisRoleKey[]>([]);
+  const [selectedFirmAnalysisRoles, setSelectedFirmAnalysisRoles] = useState<FirmAnalysisRoleKey[]>(
+    ["bq", "invited", "participated", "order"],
+  );
   const [financeFirmTypeDistributionKey, setFinanceFirmTypeDistributionKey] =
     useState<FinanceFirmTypeDistributionKey>("supplyOrderValue");
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
@@ -459,7 +551,10 @@ export function Dashboard() {
   const [analyticsDelayDays, setAnalyticsDelayDays] = useState("5");
   const [analyticsDelayMilestoneKey, setAnalyticsDelayMilestoneKey] = useState("all");
   const [tcecStatusStage, setTcecStatusStage] = useState<TcecStatusStage>("pre");
+  const [selectedPreBidFiscalYear, setSelectedPreBidFiscalYear] = useState("");
+  const [selectedTcecFiscalYear, setSelectedTcecFiscalYear] = useState("");
   const [selectedTcecCommittee, setSelectedTcecCommittee] = useState("");
+  const [selectedCncFiscalYear, setSelectedCncFiscalYear] = useState("");
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
@@ -484,6 +579,11 @@ export function Dashboard() {
   const [suspectedAnomalyRows, setSuspectedAnomalyRows] = useState<SuspectedAnomalyRow[]>([]);
   const [suspectedAnomalyLoading, setSuspectedAnomalyLoading] = useState(false);
   const [suspectedAnomalyError, setSuspectedAnomalyError] = useState<string | undefined>();
+  const [anomalyAcceptances, setAnomalyAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
+  const [anomalyRules, setAnomalyRules] = useState<AnomalyRuleRow[]>([]);
+  const [anomalyRuleFields, setAnomalyRuleFields] = useState<AnomalyRuleField[]>([]);
+  const [anomalyAdminLoading, setAnomalyAdminLoading] = useState(false);
+  const [anomalyAdminError, setAnomalyAdminError] = useState<string | undefined>();
   const [status3Loading, setStatus3Loading] = useState(false);
   const [status3Error, setStatus3Error] = useState<string | undefined>();
   const hasLoadedDashboardSummaryRef = useRef(false);
@@ -737,6 +837,33 @@ export function Dashboard() {
     return () => controller.abort();
   }, [activeAnalyticsPanel, activeDashboardTab, suspectedAnomalyQuery]);
 
+  useEffect(() => {
+    if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "suspectedAnomaly") return;
+    let cancelled = false;
+    setAnomalyAdminLoading(true);
+    setAnomalyAdminError(undefined);
+    Promise.all([store.listSuspectedAnomalyAcceptances(), store.listAnomalyRules()])
+      .then(([acceptancePayload, rulePayload]) => {
+        if (cancelled) return;
+        setAnomalyAcceptances(acceptancePayload.acceptances);
+        setAnomalyRules(rulePayload.rules);
+        setAnomalyRuleFields(rulePayload.fields);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        setAnomalyAdminError(
+          error instanceof Error ? error.message : "Anomaly admin data request failed.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setAnomalyAdminLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAnalyticsPanel, activeDashboardTab, suspectedAnomalyRows.length]);
+
   const needsLocalDashboardFallback = !dashboardSummary;
   const localModeCounts = needsLocalDashboardFallback
     ? getModeCounts(activeDashboardStatusFiles, settings.modes)
@@ -783,6 +910,9 @@ export function Dashboard() {
     () => getMonthWiseDeliverySchedule(filteredAnalyticsFiles),
     [filteredAnalyticsFiles],
   );
+  const localFinanceYear = getFinancialYearDateRange(settings.selectedYear)
+    ? settings.selectedYear
+    : settings.financialYear;
   const localFinanceTotals = needsLocalDashboardFallback
     ? {
         allocatedCapital: dashboardDivisions.reduce(
@@ -842,7 +972,9 @@ export function Dashboard() {
             sum +
             (isSupplyOrderCancelled(file, order)
               ? 0
-              : (getInrAmount(order.actualPaymentCapital, file) ?? 0)),
+              : getFinancialYearForDate(order.paymentDate) === localFinanceYear
+                ? (getInrAmount(order.actualPaymentCapital, file) ?? 0)
+                : 0),
           0,
         ),
         paidRevenue: effectivePaymentEntries(activeDashboardStatusFiles).reduce(
@@ -850,7 +982,31 @@ export function Dashboard() {
             sum +
             (isSupplyOrderCancelled(file, order)
               ? 0
-              : (getInrAmount(order.actualPaymentRevenue, file) ?? 0)),
+              : getFinancialYearForDate(order.paymentDate) === localFinanceYear
+                ? (getInrAmount(order.actualPaymentRevenue, file) ?? 0)
+                : 0),
+          0,
+        ),
+        sameYearPaidCapital: effectivePaymentEntries(activeDashboardStatusFiles).reduce(
+          (sum, { file, order }) =>
+            sum +
+            (isSupplyOrderCancelled(file, order)
+              ? 0
+              : getFinancialYearForDate(order.soDate) === localFinanceYear &&
+                  getFinancialYearForDate(order.paymentDate) === localFinanceYear
+                ? (getInrAmount(order.actualPaymentCapital, file) ?? 0)
+                : 0),
+          0,
+        ),
+        sameYearPaidRevenue: effectivePaymentEntries(activeDashboardStatusFiles).reduce(
+          (sum, { file, order }) =>
+            sum +
+            (isSupplyOrderCancelled(file, order)
+              ? 0
+              : getFinancialYearForDate(order.soDate) === localFinanceYear &&
+                  getFinancialYearForDate(order.paymentDate) === localFinanceYear
+                ? (getInrAmount(order.actualPaymentRevenue, file) ?? 0)
+                : 0),
           0,
         ),
         advanceCapital: advancePaymentEntries(activeDashboardStatusFiles).reduce(
@@ -875,6 +1031,9 @@ export function Dashboard() {
     dashboardSummary?.dashboardFileCount ?? activeDashboardStatusFiles.length;
   const dashboardDivisionsForView = dashboardSummary?.dashboardDivisions ?? dashboardDivisions;
   const modeCounts = dashboardSummary?.modeCounts ?? localModeCounts ?? [];
+  const gemBiddingModeCounts =
+    dashboardSummary?.gemBiddingModeCounts ??
+    (needsLocalDashboardFallback ? getGemBiddingModeCounts(activeDashboardStatusFiles) : []);
   const topSummaryStats =
     dashboardSummary?.topSummaryStats ??
     (needsLocalDashboardFallback ? getAttributeSummaryStats(activeDashboardStatusFiles) : []);
@@ -885,7 +1044,9 @@ export function Dashboard() {
       : null);
   const fileTypeStats =
     dashboardSummary?.fileTypeStats ??
-    (needsLocalDashboardFallback ? getFileTypeSummaryStats(activeDashboardStatusFiles) : null);
+    (needsLocalDashboardFallback
+      ? getFileTypeSummaryStats(activeDashboardStatusFiles, settings.fileTypes)
+      : null);
   const manualMilestoneFlow =
     dashboardSummary?.manualMilestoneFlow ?? localManualMilestoneFlow ?? [];
   const visibleLiveMilestoneNames =
@@ -907,6 +1068,7 @@ export function Dashboard() {
       ld: 0,
       demandCancelled: 0,
       soCancelled: 0,
+      shortclosedSo: 0,
       multipleSupplyOrders: 0,
     };
   const analytics = dashboardSummary?.analytics ??
@@ -915,6 +1077,7 @@ export function Dashboard() {
       divisionValueRanking: [],
       divisionTurnaroundRanking: [],
       topFirmSupplyOrders: [],
+      firmAnalysis: [],
       topIndentorsByFiles: [],
       topIndentorsByValue: [],
       milestoneClearingRanking: [],
@@ -942,13 +1105,27 @@ export function Dashboard() {
     spentRevenue: 0,
     paidCapital: 0,
     paidRevenue: 0,
+    sameYearPaidCapital: 0,
+    sameYearPaidRevenue: 0,
     advanceCapital: 0,
     advanceRevenue: 0,
+    carryForward: { count: 0, capital: 0, revenue: 0, total: 0 },
+    clearedCarryForward: { count: 0, capital: 0, revenue: 0, total: 0 },
+    previousCarryForward: { count: 0, capital: 0, revenue: 0, total: 0 },
+    futureClearedCarryForward: { count: 0, capital: 0, revenue: 0, total: 0 },
+    carryForwardBreakup: [],
+    clearedCarryForwardBreakup: [],
+    previousCarryForwardBreakup: [],
+    futureClearedCarryForwardBreakup: [],
   };
   const financeTotals = {
     ...financeTotalDefaults,
     ...(dashboardSummary?.financeTotals ?? localFinanceTotals),
   };
+  const selectedFinanceYear = getFinancialYearDateRange(settings.selectedYear)
+    ? settings.selectedYear
+    : settings.financialYear;
+  const selectedFinanceYearLabel = selectedFinanceYear || "selected FY";
   const financeFirmTypeDistributions = dashboardSummary?.financeFirmTypeDistributions ?? {
     supplyOrderValue: getSupplyOrderValueDistributionByFirmType(
       activeDashboardStatusFiles,
@@ -994,6 +1171,14 @@ export function Dashboard() {
   const revenueSpentPercent =
     dashboardSummary?.financePercents.revenueSpent ??
     getPercent(financeTotals.spentRevenue, financeTotals.allocatedRevenue);
+  const capitalSameYearPaidPercent = getPercent(
+    financeTotals.sameYearPaidCapital ?? 0,
+    financeTotals.spentCapital,
+  );
+  const revenueSameYearPaidPercent = getPercent(
+    financeTotals.sameYearPaidRevenue ?? 0,
+    financeTotals.spentRevenue,
+  );
   const biddingTypeSummaryStat: SummaryStat = {
     label: "Bidding Mode",
     value: modeCounts.map((mode) => ({
@@ -1002,6 +1187,15 @@ export function Dashboard() {
       searchFilter: `mode:${mode.name}`,
     })),
     hint: "Files grouped by bidding mode",
+  };
+  const gemBiddingModeSummaryStat: SummaryStat = {
+    label: "GeM bidding mode",
+    value: gemBiddingModeCounts.map((mode) => ({
+      label: mode.name,
+      value: mode.count,
+      searchFilter: `gemBiddingMode:${encodeURIComponent(mode.name)}`,
+    })),
+    hint: "GeM files grouped by bidding mode",
   };
 
   const compactSummaryStats: SummaryStat[] = [];
@@ -1032,6 +1226,14 @@ export function Dashboard() {
         revenue: formatPercent(revenueSpentPercent),
       },
       hint: "Capital / Revenue committed in INR",
+    },
+    {
+      label: "Paid",
+      value: {
+        capital: `${formatCurrency(financeTotals.sameYearPaidCapital ?? 0)} (${formatPercent(capitalSameYearPaidPercent)})`,
+        revenue: `${formatCurrency(financeTotals.sameYearPaidRevenue ?? 0)} (${formatPercent(revenueSameYearPaidPercent)})`,
+      },
+      hint: `Payment made in ${selectedFinanceYearLabel} only against S.O.s placed in ${selectedFinanceYearLabel}. Percent is against committed S.O. value shown for this selected FY view.`,
     },
   ];
   const financeBoxTitleClass = "text-sm font-extrabold text-foreground";
@@ -1071,16 +1273,46 @@ export function Dashboard() {
       )}`,
     },
     {
-      category: "Payment",
+      category: `Payment in ${selectedFinanceYearLabel}`,
       capital: formatCurrency(financeTotals.paidCapital),
       revenue: formatCurrency(financeTotals.paidRevenue),
-      notes: "Actual payment amount",
+      notes: `Actual payment amount with Payment Date in ${selectedFinanceYearLabel}.`,
+    },
+    {
+      category: "Paid",
+      capital: formatCurrency(financeTotals.sameYearPaidCapital ?? 0),
+      revenue: formatCurrency(financeTotals.sameYearPaidRevenue ?? 0),
+      notes: `Payment made in ${selectedFinanceYearLabel} against S.O.s placed in ${selectedFinanceYearLabel}.`,
     },
     {
       category: "Advance Payment",
       capital: formatCurrency(financeTotals.advanceCapital),
       revenue: formatCurrency(financeTotals.advanceRevenue),
       notes: "Actual advance amount where entered, otherwise planned advance amount.",
+    },
+    {
+      category: `Carry Forward from previous FYs as on ${selectedFinanceYearLabel} end`,
+      capital: formatCurrency(financeTotals.previousCarryForward?.capital ?? 0),
+      revenue: formatCurrency(financeTotals.previousCarryForward?.revenue ?? 0),
+      notes: `${financeTotals.previousCarryForward?.count ?? 0} older carry-forward rows still unpaid at ${selectedFinanceYearLabel} end.`,
+    },
+    {
+      category: `Cleared Carry Forward in ${selectedFinanceYearLabel}`,
+      capital: formatCurrency(financeTotals.clearedCarryForward?.capital ?? 0),
+      revenue: formatCurrency(financeTotals.clearedCarryForward?.revenue ?? 0),
+      notes: `${financeTotals.clearedCarryForward?.count ?? 0} previous-year carry-forward rows paid in ${selectedFinanceYearLabel}.`,
+    },
+    {
+      category: `Carry Forward of ${selectedFinanceYearLabel}`,
+      capital: formatCurrency(financeTotals.carryForward?.capital ?? 0),
+      revenue: formatCurrency(financeTotals.carryForward?.revenue ?? 0),
+      notes: `${financeTotals.carryForward?.count ?? 0} payment rows from S.O. placed in ${selectedFinanceYearLabel} and unpaid by FY end.`,
+    },
+    {
+      category: `Carry Forward of ${selectedFinanceYearLabel} cleared later`,
+      capital: formatCurrency(financeTotals.futureClearedCarryForward?.capital ?? 0),
+      revenue: formatCurrency(financeTotals.futureClearedCarryForward?.revenue ?? 0),
+      notes: `${financeTotals.futureClearedCarryForward?.count ?? 0} ${selectedFinanceYearLabel} carry-forward rows paid in later FYs.`,
     },
   ];
   const getAnalyticsSortDirection = (panelKey: AnalyticsPanelKey) =>
@@ -1100,6 +1332,41 @@ export function Dashboard() {
       getAnalyticsSortDirection("topFirms"),
     ),
   );
+  const firmAnalysisRows = divisionFilteredAnalytics.firmAnalysis ?? [];
+  const selectedFirmAnalysisRow =
+    firmAnalysisRows.find((row) => row.name === selectedFirmAnalysisFirm) ?? firmAnalysisRows[0];
+  useEffect(() => {
+    if (!selectedFirmAnalysisRow) {
+      if (selectedFirmAnalysisFirm) setSelectedFirmAnalysisFirm("");
+      return;
+    }
+    if (!selectedFirmAnalysisFirm || !firmAnalysisRows.some((row) => row.name === selectedFirmAnalysisFirm)) {
+      setSelectedFirmAnalysisFirm(String(selectedFirmAnalysisRow.name));
+    }
+  }, [firmAnalysisRows, selectedFirmAnalysisFirm, selectedFirmAnalysisRow]);
+  const selectedFirmAnalysisDisplayRows = selectedFirmAnalysisRow
+    ? [
+        {
+          ...selectedFirmAnalysisRow,
+          selectedRoles: getFirmAnalysisSelectedRoleCount(
+            selectedFirmAnalysisRow,
+            selectedFirmAnalysisRoles,
+            firmAnalysisOperators,
+            negatedFirmAnalysisRoles,
+          ),
+          selectedRolesExpression: getFirmAnalysisExpression(
+            selectedFirmAnalysisRoles,
+            firmAnalysisOperators,
+            negatedFirmAnalysisRoles,
+          ),
+          selectedRolesLabel: getFirmAnalysisExpressionLabel(
+            selectedFirmAnalysisRoles,
+            firmAnalysisOperators,
+            negatedFirmAnalysisRoles,
+          ),
+        },
+      ]
+    : [];
   const topIndentorsByFilesRankedRows = withAnalyticsRanks(
     sortAnalyticsRows(
       divisionFilteredAnalytics.topIndentorsByFiles,
@@ -1133,13 +1400,53 @@ export function Dashboard() {
     tcecStatusStage === "pre"
       ? divisionFilteredAnalytics.tcecStatus.pre
       : divisionFilteredAnalytics.tcecStatus.post;
-  const selectedTcecCommitteeExists = activeTcecStatus.committees.some(
+  const preBidFyRows = getFiscalYearSummaryRows(analyticsPreBidRows, "monthKey", [
+    "count",
+    "preBidDue",
+    "preBidCompleted",
+    "refloatPreBidDue",
+    "refloatPreBidCompleted",
+  ]);
+  const displayedPreBidRows = selectedPreBidFiscalYear
+    ? analyticsPreBidRows
+        .filter((row) => getFiscalYearForMonthKey(row.monthKey) === selectedPreBidFiscalYear)
+        .map((row) => ({ ...row, name: row.monthKey }))
+    : preBidFyRows;
+  const tcecFyRows = getFiscalYearSummaryRows(activeTcecStatus.meetings, "meetingDate", [
+    "reviewed",
+    "signed",
+    "pending",
+  ]).map((row) => ({ ...row, stage: tcecStatusStage }));
+  const activeTcecCommitteeRows = selectedTcecFiscalYear
+    ? getTcecCommitteeRowsForFiscalYear(activeTcecStatus.meetings, selectedTcecFiscalYear)
+    : activeTcecStatus.committees;
+  const selectedTcecCommitteeExists = activeTcecCommitteeRows.some(
     (row) => row.name === selectedTcecCommittee,
   );
   const activeTcecCommittee = selectedTcecCommitteeExists ? selectedTcecCommittee : "";
   const selectedTcecMeetingRows = activeTcecCommittee
     ? activeTcecStatus.meetings.filter((row) => row.committee === activeTcecCommittee)
+        .filter(
+          (row) =>
+            !selectedTcecFiscalYear ||
+            getFinancialYearForDate(row.meetingDate) === selectedTcecFiscalYear,
+        )
     : [];
+  const displayedTcecRows = selectedTcecFiscalYear ? activeTcecCommitteeRows : tcecFyRows;
+  const cncFyRows = getFiscalYearSummaryRows(divisionFilteredAnalytics.cncSummary, "cncDate", [
+    "reviewed",
+    "approved",
+    "financialSanctionSigned",
+    "supplyOrderPlaced",
+    "approvalPending",
+    "financialSanctionPending",
+    "supplyOrderPending",
+  ]);
+  const displayedCncRows = selectedCncFiscalYear
+    ? divisionFilteredAnalytics.cncSummary.filter(
+        (row) => getFinancialYearForDate(String(row.cncDate ?? "")) === selectedCncFiscalYear,
+      )
+    : cncFyRows;
   const analyticsPanels: AnalyticsPanel[] = [
     {
       key: "divisionFiles",
@@ -1177,7 +1484,7 @@ export function Dashboard() {
     {
       key: "divisionTurnaround",
       title: "Division turnaround ranking",
-      subtitle: "Average days from received date to first S.O.",
+      subtitle: "Average days from Demand received date to first S.O.",
       columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
         sortAnalyticsRows(
@@ -1192,6 +1499,15 @@ export function Dashboard() {
       subtitle: "Supply order value, capital plus revenue",
       columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Firm", "S.O. value")),
       rows: topFirmPagination.rows,
+    },
+    {
+      key: "firmAnalysis",
+      title: "Firm Analysis",
+      subtitle: selectedFirmAnalysisRow
+        ? `BQ, invited, tender participation, and order conversion for ${selectedFirmAnalysisRow.name}`
+        : "Select a firm to see BQ, invitation, tender participation, and order conversion.",
+      columns: getFirmAnalysisColumns(),
+      rows: selectedFirmAnalysisDisplayRows,
     },
     {
       key: "indentorsByFiles",
@@ -1239,26 +1555,40 @@ export function Dashboard() {
     {
       key: "preBidMeetings",
       title: "Pre-Bid Meetings",
-      subtitle: "Month-wise Pre-Bid Meeting schedule",
-      columns: getPreBidMeetingAnalyticsColumns(),
-      rows: analyticsPreBidRows.map((row) => ({ ...row, name: row.monthKey })),
+      subtitle: selectedPreBidFiscalYear
+        ? `Month-wise Pre-Bid Meeting schedule for FY ${selectedPreBidFiscalYear}`
+        : "FY-wise Pre-Bid Meeting schedule",
+      columns: selectedPreBidFiscalYear
+        ? getPreBidMeetingAnalyticsColumns()
+        : getFiscalPreBidMeetingAnalyticsColumns(setSelectedPreBidFiscalYear),
+      rows: displayedPreBidRows,
     },
     {
       key: "tcecStatus",
       title: "TCEC summary",
       subtitle:
-        tcecStatusStage === "pre"
-          ? "Pre-TCEC committee-wise review and minutes status"
-          : "Post-TCEC committee-wise review and minutes status",
-      columns: getTcecStatusColumns(tcecStatusStage, setSelectedTcecCommittee),
-      rows: activeTcecStatus.committees,
+        selectedTcecFiscalYear
+          ? tcecStatusStage === "pre"
+            ? `Pre-TCEC committee-wise status for FY ${selectedTcecFiscalYear}`
+            : `Post-TCEC committee-wise status for FY ${selectedTcecFiscalYear}`
+          : tcecStatusStage === "pre"
+            ? "Pre-TCEC FY-wise review and minutes status"
+            : "Post-TCEC FY-wise review and minutes status",
+      columns: selectedTcecFiscalYear
+        ? getTcecStatusColumns(tcecStatusStage, setSelectedTcecCommittee)
+        : getFiscalTcecStatusColumns(tcecStatusStage, setSelectedTcecFiscalYear),
+      rows: displayedTcecRows,
     },
     {
       key: "cncSummary",
       title: "CNC summary",
-      subtitle: "CNC meeting-date wise review, approval, financial sanction, and S.O. status",
-      columns: getCncSummaryColumns(),
-      rows: divisionFilteredAnalytics.cncSummary,
+      subtitle: selectedCncFiscalYear
+        ? `CNC date-wise review, approval, financial sanction, and S.O. status for FY ${selectedCncFiscalYear}`
+        : "FY-wise CNC review, approval, financial sanction, and S.O. status",
+      columns: selectedCncFiscalYear
+        ? getCncSummaryColumns()
+        : getFiscalCncSummaryColumns(setSelectedCncFiscalYear),
+      rows: displayedCncRows,
     },
     {
       key: "suspectedAnomaly",
@@ -1267,10 +1597,13 @@ export function Dashboard() {
         ? `Anomaly check unavailable: ${suspectedAnomalyError}`
         : suspectedAnomalyLoading
           ? "Checking suspected data issues..."
-          : `${suspectedAnomalyRows.length} unaccepted suspected data issue${
+          : `${suspectedAnomalyRows.length} active suspected data issue${
               suspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
-      columns: getSuspectedAnomalyColumns(acceptSuspectedAnomaly),
+      columns: getSuspectedAnomalyColumns(
+        acceptSuspectedAnomaly,
+        hasAnomalyAdminAccess(activeUser?.role) ? reviewSuspectedAnomaly : undefined,
+      ),
       rows: suspectedAnomalyRows.map((row) => ({ ...row, name: row.fileRef })),
     },
     {
@@ -1386,6 +1719,14 @@ export function Dashboard() {
           selectedAnalyticsPanel.key === "indentorsByValue"
         ? "indentor"
         : undefined;
+  const toggleFirmAnalysisRole = (role: FirmAnalysisRoleKey, checked: boolean) => {
+    setSelectedFirmAnalysisRoles((current) => {
+      const next = checked
+        ? Array.from(new Set([...current, role]))
+        : current.filter((item) => item !== role);
+      return next.length ? next : current;
+    });
+  };
 
   const openSearchFilter = (dashboardFilter: string) => {
     navigate({
@@ -1465,14 +1806,109 @@ export function Dashboard() {
   async function acceptSuspectedAnomaly(row: Record<string, number | string>) {
     const signature = String(row.signature ?? "");
     if (!signature) return;
-    const reason = window.prompt("Reason for accepting this anomaly:");
+    const reason = window.prompt("Message/reason to Admin for accepting this anomaly:");
     if (!reason?.trim()) return;
     try {
       await store.acceptSuspectedAnomaly(signature, reason.trim());
-      setSuspectedAnomalyRows((current) => current.filter((item) => item.signature !== signature));
+      const [acceptancePayload, rulePayload, anomalyPayload] = await Promise.all([
+        store.listSuspectedAnomalyAcceptances(),
+        store.listAnomalyRules(),
+        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
+      ]);
+      setAnomalyAcceptances(acceptancePayload.acceptances);
+      setAnomalyRules(rulePayload.rules);
+      setAnomalyRuleFields(rulePayload.fields);
+      setSuspectedAnomalyRows(anomalyPayload.rows);
     } catch (error) {
       console.error(error);
-      window.alert(error instanceof Error ? error.message : "Could not accept anomaly.");
+      window.alert(error instanceof Error ? error.message : "Could not request anomaly acceptance.");
+    }
+  }
+  async function reviewSuspectedAnomaly(signature: string, action: string) {
+    const adminMessage =
+      action === "reject"
+        ? window.prompt("Correction message to User explaining what should be fixed:")
+        : undefined;
+    if (action === "reject" && !adminMessage?.trim()) return;
+    try {
+      await store.reviewSuspectedAnomaly(signature, action, adminMessage?.trim());
+      const [acceptancePayload, anomalyPayload] = await Promise.all([
+        store.listSuspectedAnomalyAcceptances(),
+        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
+      ]);
+      setAnomalyAcceptances(acceptancePayload.acceptances);
+      setSuspectedAnomalyRows(anomalyPayload.rows);
+    } catch (error) {
+      console.error(error);
+      window.alert(error instanceof Error ? error.message : "Could not review anomaly.");
+    }
+  }
+  async function clearSelectedSuspectedAnomalies(signatures: string[]) {
+    if (!signatures.length) return;
+    const password = window.prompt("Enter your account password to clear selected anomalies:");
+    if (!password?.trim()) return;
+    try {
+      await store.clearSuspectedAnomalyHistory(password.trim(), signatures);
+      const acceptancePayload = await store.listSuspectedAnomalyAcceptances();
+      setAnomalyAcceptances(acceptancePayload.acceptances);
+    } catch (error) {
+      console.error(error);
+      window.alert(error instanceof Error ? error.message : "Could not clear anomaly history.");
+    }
+  }
+  async function toggleAnomalyRule(rule: AnomalyRuleRow) {
+    try {
+      await store.updateAnomalyRule(rule.id, { enabled: !rule.enabled });
+      const payload = await store.listAnomalyRules();
+      setAnomalyRules(payload.rules);
+      setAnomalyRuleFields(payload.fields);
+    } catch (error) {
+      console.error(error);
+      window.alert(error instanceof Error ? error.message : "Could not update anomaly rule.");
+    }
+  }
+  async function createAnomalyRuleFromPrompt() {
+    const name = window.prompt("Rule name:");
+    if (!name?.trim()) return;
+    const fieldA = window.prompt(
+      `Field A key:\n${anomalyRuleFields.map((field) => `${field.key} - ${field.label}`).join("\n")}`,
+    );
+    if (!fieldA?.trim()) return;
+    const ruleType = window.prompt("Rule type: date_order, required_field, delay_days", "date_order");
+    if (!ruleType?.trim()) return;
+    const fieldB = window.prompt("Field B key:");
+    if (!fieldB?.trim()) return;
+    const operator =
+      ruleType === "required_field"
+        ? "requires"
+        : window.prompt("Operator: not_before or not_after", "not_before");
+    if (!operator?.trim()) return;
+    const thresholdDays =
+      ruleType === "delay_days"
+        ? Number.parseInt(window.prompt("Threshold days:", "0") ?? "", 10)
+        : undefined;
+    try {
+      await store.createAnomalyRule({
+        name: name.trim(),
+        ruleType: ruleType.trim(),
+        fieldA: fieldA.trim(),
+        operator: operator.trim(),
+        fieldB: fieldB.trim(),
+        thresholdDays,
+        severity: "Medium",
+        scope: "all",
+        enabled: true,
+      });
+      const [rulePayload, anomalyPayload] = await Promise.all([
+        store.listAnomalyRules(),
+        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
+      ]);
+      setAnomalyRules(rulePayload.rules);
+      setAnomalyRuleFields(rulePayload.fields);
+      setSuspectedAnomalyRows(anomalyPayload.rows);
+    } catch (error) {
+      console.error(error);
+      window.alert(error instanceof Error ? error.message : "Could not create anomaly rule.");
     }
   }
   const toggleFileCategory = (category: FileCategoryKey, checked: boolean) => {
@@ -1604,6 +2040,10 @@ export function Dashboard() {
               })}
               <SummaryMetric
                 {...biddingTypeSummaryStat}
+                onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
+              />
+              <SummaryMetric
+                {...gemBiddingModeSummaryStat}
                 onSubMetricClick={(dashboardFilter) => openSearchFilter(dashboardFilter)}
               />
               {fileTypeStats ? (
@@ -1865,7 +2305,7 @@ export function Dashboard() {
               })}
               <StatusFlowNode
                 index={statusFlow.length}
-                title="Miscellaneous"
+                title="Cancellation"
                 isLast
                 items={[
                   {
@@ -1892,6 +2332,11 @@ export function Dashboard() {
                     label: "S.O. cancelled",
                     count: miscellaneousCounts.soCancelled,
                     onClick: () => handleStatusFilter("miscSoCancelled"),
+                  },
+                  {
+                    label: "Shortclosed S.O.",
+                    count: miscellaneousCounts.shortclosedSo,
+                    onClick: () => handleStatusFilter("miscShortclosedSo"),
                   },
                   {
                     label: "Multiple S.O.",
@@ -2103,22 +2548,107 @@ export function Dashboard() {
                     </label>
                   </div>
                 ) : null}
+                {displayedAnalyticsPanel.key === "firmAnalysis" ? (
+                  <FirmAnalysisControls
+                    firms={firmAnalysisRows.map((row) => String(row.name))}
+                    selectedFirm={selectedFirmAnalysisRow?.name ?? ""}
+                    operators={firmAnalysisOperators}
+                    negatedRoles={negatedFirmAnalysisRoles}
+                    selectedRoles={selectedFirmAnalysisRoles}
+                    onFirmChange={setSelectedFirmAnalysisFirm}
+                    onOperatorChange={(leftRole, rightRole, operator) =>
+                      setFirmAnalysisOperators((current) => ({
+                        ...current,
+                        [firmAnalysisOperatorKey(leftRole, rightRole)]: operator,
+                      }))
+                    }
+                    onToggleNot={(role, checked) =>
+                      setNegatedFirmAnalysisRoles((current) =>
+                        checked
+                          ? Array.from(new Set([...current, role]))
+                          : current.filter((item) => item !== role),
+                      )
+                    }
+                    onToggleRole={toggleFirmAnalysisRole}
+                  />
+                ) : null}
                 {displayedAnalyticsPanel.key === "tcecStatus" ? (
                   <TcecStatusControls
                     stage={tcecStatusStage}
                     selectedCommittee={activeTcecCommittee}
                     onStageChange={(stage) => {
                       setTcecStatusStage(stage);
+                      setSelectedTcecFiscalYear("");
                       setSelectedTcecCommittee("");
                     }}
                   />
                 ) : null}
-                <AnalyticsRankingTable
-                  columns={displayedAnalyticsPanel.columns}
-                  rows={displayedAnalyticsPanel.rows}
-                  getCellSearchTarget={getAnalyticsCellSearchTarget}
-                  onOpenSearchTarget={openAnalyticsSearchTarget}
-                />
+                {displayedAnalyticsPanel.key === "preBidMeetings" && selectedPreBidFiscalYear ? (
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPreBidFiscalYear("")}
+                      className="h-8 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                    >
+                      Back to FY summary
+                    </button>
+                  </div>
+                ) : null}
+                {displayedAnalyticsPanel.key === "tcecStatus" && selectedTcecFiscalYear ? (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTcecFiscalYear("");
+                        setSelectedTcecCommittee("");
+                      }}
+                      className="h-8 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                    >
+                      Back to FY summary
+                    </button>
+                    {activeTcecCommittee ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTcecCommittee("")}
+                        className="h-8 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                      >
+                        Back to committees
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {displayedAnalyticsPanel.key === "cncSummary" && selectedCncFiscalYear ? (
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCncFiscalYear("")}
+                      className="h-8 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                    >
+                      Back to FY summary
+                    </button>
+                  </div>
+                ) : null}
+                {displayedAnalyticsPanel.key === "suspectedAnomaly" ? (
+                  <SuspectedAnomalyGroupedView
+                    rows={suspectedAnomalyRows}
+                    acceptances={anomalyAcceptances}
+                    isAdmin={hasAnomalyAdminAccess(activeUser?.role)}
+                    onRequest={(row) => void acceptSuspectedAnomaly(row)}
+                    onAdminReview={(signature, action) => void reviewSuspectedAnomaly(signature, action)}
+                    onClearSelected={(signatures) => void clearSelectedSuspectedAnomalies(signatures)}
+                    onOpenRow={(row) => {
+                      const target = getAnalyticsSearchTarget("suspectedAnomaly", row, "fileRef");
+                      if (target) openAnalyticsSearchTarget(target);
+                    }}
+                  />
+                ) : (
+                  <AnalyticsRankingTable
+                    columns={displayedAnalyticsPanel.columns}
+                    rows={displayedAnalyticsPanel.rows}
+                    getCellSearchTarget={getAnalyticsCellSearchTarget}
+                    onOpenSearchTarget={openAnalyticsSearchTarget}
+                  />
+                )}
                 {displayedAnalyticsPanel.key === "tcecStatus" && activeTcecCommittee ? (
                   <div className="mt-4 space-y-2">
                     <div>
@@ -2149,6 +2679,7 @@ export function Dashboard() {
 
       {activeDashboardTab === "finance" ? (
         <section>
+          <TooltipProvider delayDuration={150}>
           <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
             <div className="flex items-center justify-between mb-5">
               <div>
@@ -2190,117 +2721,167 @@ export function Dashboard() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="rounded-lg border border-border bg-secondary/35 p-4">
-                <div className={financeBoxTitleClass}>Allocated</div>
+                <FinanceSectionTitle
+                  title="Allocated"
+                  help="Budget allocation for the selected financial year and selected division, split into Capital and Revenue."
+                />
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Capital</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.allocatedCapital)}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Revenue</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.allocatedRevenue)}
-                    </div>
-                  </div>
+                  <FinanceAmountTile
+                    label="Capital"
+                    value={financeTotals.allocatedCapital}
+                    help="Capital allocation entered in division/year setup for the selected financial year."
+                  />
+                  <FinanceAmountTile
+                    label="Revenue"
+                    value={financeTotals.allocatedRevenue}
+                    help="Revenue allocation entered in division/year setup for the selected financial year."
+                  />
                 </div>
               </div>
               <div className="rounded-lg border border-border bg-secondary/35 p-4">
-                <div className={financeBoxTitleClass}>Intended</div>
+                <FinanceSectionTitle
+                  title="Intended"
+                  help="Estimated value of live requirements where IMMS/booking is not yet filled. This shows likely future load against allocation."
+                />
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Capital</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.projectedCapital)}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Revenue</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.projectedRevenue)}
-                    </div>
-                  </div>
+                  <FinanceAmountTile
+                    label="Capital"
+                    value={financeTotals.projectedCapital}
+                    help="Capital intended amount from active files that are not booked through IMMS yet."
+                  />
+                  <FinanceAmountTile
+                    label="Revenue"
+                    value={financeTotals.projectedRevenue}
+                    help="Revenue intended amount from active files that are not booked through IMMS yet."
+                  />
                 </div>
               </div>
               <div className="rounded-lg border border-border bg-secondary/35 p-4">
-                <div className={financeBoxTitleClass}>Booked</div>
+                <FinanceSectionTitle
+                  title="Booked"
+                  help="Amount booked at file level through IMMS where no S.O./committed value has replaced it yet."
+                />
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Capital</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.bookedCapital)}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Revenue</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.bookedRevenue)}
-                    </div>
-                  </div>
+                  <FinanceAmountTile
+                    label="Capital"
+                    value={financeTotals.bookedCapital}
+                    help="Capital booking from IMMS/file value before committed S.O. value is available."
+                  />
+                  <FinanceAmountTile
+                    label="Revenue"
+                    value={financeTotals.bookedRevenue}
+                    help="Revenue booking from IMMS/file value before committed S.O. value is available."
+                  />
                 </div>
               </div>
               <div className="rounded-lg border border-border bg-secondary/35 p-4">
-                <div className={financeBoxTitleClass}>Committed</div>
+                <FinanceSectionTitle
+                  title="Committed"
+                  help="Committed value from effective supply orders, excluding cancelled S.O. rows."
+                />
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Capital</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.spentCapital)}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">Revenue</div>
-                    <div className="mt-1 text-lg font-semibold tracking-tight">
-                      {formatCurrency(financeTotals.spentRevenue)}
-                    </div>
-                  </div>
+                  <FinanceAmountTile
+                    label="Capital"
+                    value={financeTotals.spentCapital}
+                    help="Capital value committed through effective supply orders."
+                  />
+                  <FinanceAmountTile
+                    label="Revenue"
+                    value={financeTotals.spentRevenue}
+                    help="Revenue value committed through effective supply orders."
+                  />
                 </div>
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {financePercentStats.map((stat) => (
-                <SummaryMetric key={stat.label} {...stat} titleClassName={financeBoxTitleClass} />
+                <SummaryMetric
+                  key={stat.label}
+                  {...stat}
+                  help={stat.hint}
+                  titleClassName={financeBoxTitleClass}
+                />
               ))}
             </div>
             <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
-              <div className={financeBoxTitleClass}>Payment</div>
+              <FinanceSectionTitle
+                title={`Payment in ${selectedFinanceYearLabel}`}
+                help={`Actual final payment amount where Payment Date falls in ${selectedFinanceYearLabel}, excluding cancelled S.O. rows and advance payment rows.`}
+              />
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                  <div className="text-[11px] text-muted-foreground">Capital</div>
-                  <div className="mt-1 text-lg font-semibold tracking-tight">
-                    {formatCurrency(financeTotals.paidCapital)}
-                  </div>
-                </div>
-                <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                  <div className="text-[11px] text-muted-foreground">Revenue</div>
-                  <div className="mt-1 text-lg font-semibold tracking-tight">
-                    {formatCurrency(financeTotals.paidRevenue)}
-                  </div>
-                </div>
+                <FinanceAmountTile
+                  label="Capital"
+                  value={financeTotals.paidCapital}
+                  help={`Capital actual payment total from final payment rows paid in ${selectedFinanceYearLabel}.`}
+                />
+                <FinanceAmountTile
+                  label="Revenue"
+                  value={financeTotals.paidRevenue}
+                  help={`Revenue actual payment total from final payment rows paid in ${selectedFinanceYearLabel}.`}
+                />
+              </div>
+              <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-4">
+                <FinanceCarryForwardPanel
+                  title={`Carry Forward from previous FYs`}
+                  total={financeTotals.previousCarryForward}
+                  rows={financeTotals.previousCarryForwardBreakup}
+                  emptyText={`No older unpaid carry-forward rows as on ${selectedFinanceYearLabel} end.`}
+                  help={`Payment rows from FYs before ${selectedFinanceYearLabel} that are still unpaid by ${selectedFinanceYearLabel} end. Year buttons open the pending files/S.O.`}
+                  onOpenFilter={openSearchFilter}
+                />
+                <FinanceCarryForwardPanel
+                  title={`Cleared Carry Forward in ${selectedFinanceYearLabel}`}
+                  total={financeTotals.clearedCarryForward}
+                  rows={financeTotals.clearedCarryForwardBreakup}
+                  emptyText={`No previous-year carry-forward cleared in ${selectedFinanceYearLabel}.`}
+                  help={`Older carry-forward payment rows whose Payment Date falls inside ${selectedFinanceYearLabel}. Year buttons show which previous FY they came from.`}
+                  onOpenFilter={openSearchFilter}
+                />
+                <FinanceCarryForwardPanel
+                  title={`Carry Forward of ${selectedFinanceYearLabel}`}
+                  total={financeTotals.carryForward}
+                  rows={financeTotals.carryForwardBreakup}
+                  emptyText={`No ${selectedFinanceYearLabel} payment rows carried forward.`}
+                  help={`Payment rows from S.O. placed in ${selectedFinanceYearLabel} where Payment Date is blank or after ${selectedFinanceYearLabel} end. Year buttons open the contributing files/S.O.`}
+                  onOpenFilter={openSearchFilter}
+                />
+                <FinanceCarryForwardPanel
+                  title={`${selectedFinanceYearLabel} Carry Forward cleared later`}
+                  total={financeTotals.futureClearedCarryForward}
+                  rows={financeTotals.futureClearedCarryForwardBreakup}
+                  emptyText={`No ${selectedFinanceYearLabel} carry-forward cleared in later FYs.`}
+                  help={`Payment rows that became carry-forward at ${selectedFinanceYearLabel} end and were paid in a later FY. Year buttons show the future clearing FY.`}
+                  onOpenFilter={openSearchFilter}
+                />
               </div>
             </div>
             <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
-              <div className={financeBoxTitleClass}>Advance Payment</div>
+              <FinanceSectionTitle
+                title="Advance Payment"
+                help="Advance payment amount entered against advance payment rows. If actual advance amount is not entered, planned advance amount is used."
+              />
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                  <div className="text-[11px] text-muted-foreground">Capital</div>
-                  <div className="mt-1 text-lg font-semibold tracking-tight">
-                    {formatCurrency(financeTotals.advanceCapital)}
-                  </div>
-                </div>
-                <div className="rounded-md border border-border bg-card px-3 py-2.5">
-                  <div className="text-[11px] text-muted-foreground">Revenue</div>
-                  <div className="mt-1 text-lg font-semibold tracking-tight">
-                    {formatCurrency(financeTotals.advanceRevenue)}
-                  </div>
-                </div>
+                <FinanceAmountTile
+                  label="Capital"
+                  value={financeTotals.advanceCapital}
+                  help="Capital advance payment total, using actual amount where available."
+                />
+                <FinanceAmountTile
+                  label="Revenue"
+                  value={financeTotals.advanceRevenue}
+                  help="Revenue advance payment total, using actual amount where available."
+                />
               </div>
             </div>
             <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div className={financeBoxTitleClass}>Firm Type Distribution</div>
+                  <div className="flex items-center gap-2">
+                    <div className={financeBoxTitleClass}>Firm Type Distribution</div>
+                    <FloatingHelp label="Firm type distribution help">
+                      Splits S.O. value or actual payment value by firm type. Change the selector to compare commitment basis versus payment basis.
+                    </FloatingHelp>
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     {selectedFinanceFirmTypeDistributionLabel}
                   </p>
@@ -2326,6 +2907,7 @@ export function Dashboard() {
               <FinanceFirmTypeDistributionTable rows={financeFirmTypeDistributionRows} />
             </div>
           </div>
+          </TooltipProvider>
         </section>
       ) : null}
     </div>
@@ -2338,6 +2920,7 @@ function SummaryMetric({
   onClick,
   onSubMetricClick,
   titleClassName,
+  help,
   compact = false,
 }: {
   label: string;
@@ -2345,6 +2928,7 @@ function SummaryMetric({
   onClick?: () => void;
   onSubMetricClick?: (dashboardFilter: string) => void;
   titleClassName?: string;
+  help?: string;
   compact?: boolean;
 }) {
   const subMetrics = Array.isArray(value) ? value : undefined;
@@ -2352,6 +2936,7 @@ function SummaryMetric({
     <>
       <div className="flex items-center justify-between">
         <div className={titleClassName ?? "text-sm font-bold text-muted-foreground"}>{label}</div>
+        {help ? <FloatingHelp label={`${label} help`}>{help}</FloatingHelp> : null}
       </div>
       {subMetrics ? (
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -2427,6 +3012,111 @@ function SummaryMetric({
   return (
     <div className={"rounded-lg border border-border bg-secondary/35 " + (compact ? "p-3" : "p-4")}>
       {content}
+    </div>
+  );
+}
+
+function FloatingHelp({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Info className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function FinanceSectionTitle({ title, help }: { title: string; help: string }) {
+  return (
+    <div className="flex items-start justify-between gap-2">
+      <div className="text-sm font-extrabold text-foreground">{title}</div>
+      <FloatingHelp label={`${title} finance help`}>{help}</FloatingHelp>
+    </div>
+  );
+}
+
+function FinanceAmountTile({
+  label,
+  value,
+  help,
+}: {
+  label: string;
+  value: number;
+  help: string;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-card px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-muted-foreground">{label}</div>
+        <FloatingHelp label={`${label} amount help`}>{help}</FloatingHelp>
+      </div>
+      <div className="mt-1 text-lg font-semibold tracking-tight">{formatCurrency(value)}</div>
+    </div>
+  );
+}
+
+function FinanceCarryForwardPanel({
+  title,
+  total,
+  rows,
+  emptyText,
+  help,
+  onOpenFilter,
+}: {
+  title: string;
+  total?: FinanceCarryForwardTotal;
+  rows?: FinanceCarryForwardRow[];
+  emptyText: string;
+  help: string;
+  onOpenFilter: (filter: string) => void;
+}) {
+  const safeTotal = total ?? { count: 0, capital: 0, revenue: 0, total: 0 };
+  return (
+    <div className="rounded-md border border-border bg-card px-3 py-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-[11px] font-semibold text-foreground">{title}</div>
+            <FloatingHelp label={`${title} help`}>{help}</FloatingHelp>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">{safeTotal.count} rows</div>
+        </div>
+        <div className="text-right text-sm font-semibold">{formatCurrency(safeTotal.total)}</div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+        <div>Capital {formatCurrency(safeTotal.capital)}</div>
+        <div>Revenue {formatCurrency(safeTotal.revenue)}</div>
+      </div>
+      <div className="mt-3 space-y-1">
+        {rows?.length ? (
+          rows.map((row) => (
+            <button
+              key={`${title}-${row.year}`}
+              type="button"
+              onClick={() => onOpenFilter(row.filter)}
+              className="flex w-full items-center justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-left text-xs hover:bg-accent"
+            >
+              <span className="font-medium">{row.year}</span>
+              <span className="text-muted-foreground">
+                {row.count} / {formatCurrency(row.total)}
+              </span>
+            </button>
+          ))
+        ) : (
+          <div className="rounded border border-dashed border-border px-2 py-1.5 text-xs text-muted-foreground">
+            {emptyText}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3007,6 +3697,14 @@ function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string)
   if (isSupplyOrderDrivenMilestoneName(milestoneName)) {
     return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
   }
+  if (normalized === "bidding") {
+    return files.filter(
+      (file) =>
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        normalizeMilestoneName(file.currentMilestone) === "bidding",
+    ).length;
+  }
   return files.filter((file) => !isCancelledFile(file) && file.currentMilestone === milestoneName)
     .length;
 }
@@ -3025,7 +3723,7 @@ function shouldUseOrderMilestoneRows(file: FileRecord) {
 function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isCancelledFile(file) &&
-    isYes(file.biddingStageOver) &&
+    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }
@@ -3042,7 +3740,9 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   if (isFinancialSanctionPendingOrder(file, order)) return "financialsanction";
   if (isSupplyOrderPendingOrder(file, order)) return "supplyorder";
   const current = normalizeMilestoneName(order.currentMilestone);
-  if (current && isOrderMilestoneApplicable(file, current)) return current;
+  if (current && current !== "billpreparation" && isOrderMilestoneApplicable(file, current)) {
+    return current;
+  }
   if (isJobCompletionCurrentOrder(file, order)) return "jobcompletion";
   if (isDueDeliveryOrder(file, order)) return "delivery";
   if (isBgCurrentOrder(order, "psbpwb") && isBgCategoryApplicable(file, order, "psbpwb")) {
@@ -3065,6 +3765,7 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   ) {
     return "irreceipt";
   }
+  if (isBillPreparationCurrentOrder(file, order)) return "billpreparation";
   return "";
 }
 
@@ -3079,6 +3780,9 @@ function isOrderCurrentForMilestone(
   if (normalizedMilestone === "supplyorder") return isSupplyOrderPendingOrder(file, order);
   if (normalizedMilestone === "jobcompletion") {
     return isJobCompletionCurrentOrder(file, order);
+  }
+  if (normalizedMilestone === "billpreparation") {
+    return isBillPreparationCurrentOrder(file, order);
   }
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current === normalizedMilestone && isOrderMilestoneApplicable(file, current)) return true;
@@ -3930,6 +4634,307 @@ function TcecStatusControls({
   );
 }
 
+function AnomalyGovernancePanel({
+  acceptances,
+  rules,
+  fields,
+  loading,
+  error,
+  isAdmin,
+  onReview,
+  onToggleRule,
+  onCreateRule,
+}: {
+  acceptances: AnomalyAcceptanceRow[];
+  rules: AnomalyRuleRow[];
+  fields: AnomalyRuleField[];
+  loading: boolean;
+  error?: string;
+  isAdmin: boolean;
+  onReview: (signature: string, action: string) => void;
+  onToggleRule: (rule: AnomalyRuleRow) => void;
+  onCreateRule: () => void;
+}) {
+  const fieldLabel = (key?: string) =>
+    fields.find((field) => field.key === key)?.label ?? key ?? "";
+  const anomalySummary = (row: AnomalyAcceptanceRow) => ({
+    title: row.ruleLabel || humanizeCompactAnomalyLabel(row.ruleKey) || "Anomaly exception",
+    detail:
+      row.previousField || row.laterField
+        ? `${row.previousField || "Expected"}: ${row.previousValue || "-"}; ${row.laterField || "Found"}: ${row.laterValue || "-"}`
+        : row.context
+          ? `Context: ${row.context}`
+          : "",
+  });
+  const formatStatus = (status: string) =>
+    status
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">Anomaly exception workflow</h3>
+            <p className="text-xs text-muted-foreground">
+              User requests stay here for admin approval, rejection, or revocation.
+            </p>
+          </div>
+        </div>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {loading ? <p className="text-xs text-muted-foreground">Loading anomaly control...</p> : null}
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-secondary/60 text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Rule</th>
+                <th className="px-3 py-2">Message from User</th>
+                <th className="px-3 py-2">Requested by</th>
+                <th className="px-3 py-2">Reviewed by</th>
+                {isAdmin ? <th className="px-3 py-2">Action</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {acceptances.length ? (
+                acceptances.map((row) => {
+                  const summary = anomalySummary(row);
+                  return (
+                  <tr key={row.signature} className="border-t border-border align-top">
+                    <td className="px-3 py-2 font-medium">{formatStatus(row.status)}</td>
+                    <td className="px-3 py-2">
+                      <span className="font-medium">{summary.title}</span>
+                      {summary.detail ? (
+                        <span className="mt-1 block text-muted-foreground">{summary.detail}</span>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2">{row.reason || "-"}</td>
+                    <td className="px-3 py-2">
+                      {row.requestedByName || row.acceptedByName || "-"}
+                      <span className="block text-muted-foreground">
+                        {(row.requestedAt || row.acceptedAt || "").slice(0, 10)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      {row.reviewedByName || "-"}
+                      <span className="block text-muted-foreground">
+                        {(row.reviewedAt || row.revokedAt || "").slice(0, 10)}
+                      </span>
+                    </td>
+                    {isAdmin ? (
+                      <td className="space-x-1 px-3 py-2">
+                        <button className="rounded border border-border px-2 py-1 hover:bg-accent" type="button" onClick={() => onReview(row.signature, "approve_file")}>
+                          File
+                        </button>
+                        <button className="rounded border border-border px-2 py-1 hover:bg-accent" type="button" onClick={() => onReview(row.signature, "approve_universal")}>
+                          Universal
+                        </button>
+                        <button className="rounded border border-border px-2 py-1 hover:bg-accent" type="button" onClick={() => onReview(row.signature, "reject")}>
+                          Send correction to user
+                        </button>
+                        <button className="rounded border border-border px-2 py-1 hover:bg-accent" type="button" onClick={() => onReview(row.signature, "revoke")}>
+                          Revoke
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td className="px-3 py-3 text-muted-foreground" colSpan={isAdmin ? 6 : 5}>
+                    No anomaly exception requests yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
+            <p className="text-xs text-muted-foreground">
+              Admin-defined date order, required field, and delay checks.
+            </p>
+          </div>
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={onCreateRule}
+              className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-semibold hover:bg-accent"
+            >
+              Add rule
+            </button>
+          ) : null}
+        </div>
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-secondary/60 text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Rule</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2">Condition</th>
+                <th className="px-3 py-2">Severity</th>
+                <th className="px-3 py-2">Status</th>
+                {isAdmin ? <th className="px-3 py-2">Action</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rules.length ? (
+                rules.map((rule) => (
+                  <tr key={rule.id} className="border-t border-border align-top">
+                    <td className="px-3 py-2 font-medium">{rule.name}</td>
+                    <td className="px-3 py-2">{rule.ruleType}</td>
+                    <td className="px-3 py-2">
+                      {fieldLabel(rule.fieldA)} {rule.operator} {fieldLabel(rule.fieldB)}
+                      {rule.thresholdDays !== undefined ? ` (${rule.thresholdDays} days)` : ""}
+                    </td>
+                    <td className="px-3 py-2">{rule.severity}</td>
+                    <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
+                    {isAdmin ? (
+                      <td className="px-3 py-2">
+                        <button className="rounded border border-border px-2 py-1 hover:bg-accent" type="button" onClick={() => onToggleRule(rule)}>
+                          {rule.enabled ? "Disable" : "Enable"}
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td className="px-3 py-3 text-muted-foreground" colSpan={isAdmin ? 6 : 5}>
+                    No custom rules configured.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FirmAnalysisControls({
+  firms,
+  selectedFirm,
+  operators,
+  negatedRoles,
+  selectedRoles,
+  onFirmChange,
+  onOperatorChange,
+  onToggleNot,
+  onToggleRole,
+}: {
+  firms: string[];
+  selectedFirm: string;
+  operators: Record<string, FirmAnalysisOperator>;
+  negatedRoles: FirmAnalysisRoleKey[];
+  selectedRoles: FirmAnalysisRoleKey[];
+  onFirmChange: (firm: string) => void;
+  onOperatorChange: (
+    leftRole: FirmAnalysisRoleKey,
+    rightRole: FirmAnalysisRoleKey,
+    operator: FirmAnalysisOperator,
+  ) => void;
+  onToggleNot: (role: FirmAnalysisRoleKey, checked: boolean) => void;
+  onToggleRole: (role: FirmAnalysisRoleKey, checked: boolean) => void;
+}) {
+  const selectedOrderedRoles = firmAnalysisRoleOptions
+    .map((role) => role.key)
+    .filter((role) => selectedRoles.includes(role));
+  const roleColumnClass = "minmax(8.75rem, 1fr)";
+  return (
+    <div className="flex w-full max-w-5xl flex-col gap-2">
+      <label className="flex w-72 max-w-full flex-col gap-1 text-xs text-muted-foreground">
+        <span>Firm</span>
+        <select
+          value={selectedFirm}
+          onChange={(event) => onFirmChange(event.target.value)}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        >
+          {firms.length ? null : <option value="">No firm data</option>}
+          {firms.map((firm) => (
+            <option key={firm} value={firm}>
+              {firm}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div
+        className="grid min-h-[4.5rem] w-full items-center gap-2 rounded-md border border-border bg-secondary/20 px-3 py-2"
+        style={{
+          gridTemplateColumns: `${roleColumnClass} 5rem ${roleColumnClass} 5rem ${roleColumnClass} 5rem ${roleColumnClass}`,
+        }}
+      >
+        {firmAnalysisRoleOptions.map((role) => {
+          const isSelected = selectedRoles.includes(role.key);
+          const selectedIndex = selectedOrderedRoles.indexOf(role.key);
+          const nextRole = selectedIndex >= 0 ? selectedOrderedRoles[selectedIndex + 1] : undefined;
+          const shouldShowOperator = Boolean(isSelected && nextRole);
+          return (
+            <Fragment key={role.key}>
+              <div
+                className={
+                  "grid h-11 min-w-0 grid-cols-[4.25rem_minmax(0,1fr)] items-center overflow-hidden rounded-md border text-xs shadow-sm " +
+                  (isSelected
+                    ? "border-primary/50 bg-background text-foreground"
+                    : "border-border bg-background/50 text-muted-foreground")
+                }
+              >
+                <label
+                  className={
+                    "flex h-full items-center justify-center gap-1 border-r px-2 text-[11px] font-semibold " +
+                    (isSelected ? "border-primary/30 bg-primary/10" : "border-border bg-secondary/30")
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={negatedRoles.includes(role.key)}
+                    disabled={!isSelected}
+                    onChange={(event) => onToggleNot(role.key, event.target.checked)}
+                    className="size-3 rounded border-input disabled:opacity-40"
+                  />
+                  NOT
+                </label>
+                <button
+                  type="button"
+                  onClick={() => onToggleRole(role.key, !isSelected)}
+                  className="h-full min-w-0 truncate px-3 text-left text-xs font-semibold hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring/40"
+                  aria-pressed={isSelected}
+                >
+                  {role.label}
+                </button>
+              </div>
+              {role.key === "order" ? null : (
+                <div className="flex h-11 items-center justify-center">
+                  {shouldShowOperator && nextRole ? (
+                    <select
+                      value={operators[firmAnalysisOperatorKey(role.key, nextRole)] ?? "and"}
+                      onChange={(event) =>
+                        onOperatorChange(role.key, nextRole, event.target.value as FirmAnalysisOperator)
+                      }
+                      className="h-8 w-20 rounded-md border border-input bg-background px-2 text-center text-xs font-semibold uppercase text-foreground shadow-sm"
+                    >
+                      <option value="and">AND</option>
+                      <option value="or">OR</option>
+                    </select>
+                  ) : (
+                    <span className="block h-8 w-20" aria-hidden="true" />
+                  )}
+                </div>
+              )}
+            </Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsChartCard({
   title,
   subtitle,
@@ -3990,6 +4995,50 @@ function getPreBidMeetingAnalyticsColumns(): AnalyticsTableColumn[] {
   ];
 }
 
+function getFiscalPreBidMeetingAnalyticsColumns(
+  onFiscalYearClick: (fiscalYear: string) => void,
+): AnalyticsTableColumn[] {
+  return [
+    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    { key: "count", label: "Total" },
+    { key: "preBidDue", label: "Due" },
+    { key: "preBidCompleted", label: "Completed" },
+    { key: "refloatPreBidDue", label: "Refloat Due" },
+    { key: "refloatPreBidCompleted", label: "Refloat Completed" },
+  ];
+}
+
+function getFiscalTcecStatusColumns(
+  _stage: TcecStatusStage,
+  onFiscalYearClick: (fiscalYear: string) => void,
+): AnalyticsTableColumn[] {
+  return [
+    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    { key: "reviewed", label: "Files reviewed" },
+    { key: "signed", label: "Minutes signed" },
+    { key: "pending", label: "Minutes pending" },
+  ];
+}
+
+function getFiscalYearDrilldownColumn(
+  onFiscalYearClick: (fiscalYear: string) => void,
+): AnalyticsTableColumn {
+  return {
+    key: "name",
+    label: "FY",
+    align: "left",
+    render: (value) => (
+      <button
+        type="button"
+        onClick={() => onFiscalYearClick(String(value))}
+        className="rounded-md px-2 py-1 text-left font-semibold text-primary hover:bg-primary/10"
+      >
+        {String(value)}
+      </button>
+    ),
+  };
+}
+
 function withRankAnalyticsColumns(columns: AnalyticsTableColumn[]) {
   return [{ key: "rank", label: "Rank" }, ...columns];
 }
@@ -3998,6 +5047,14 @@ function getValueAnalyticsColumns(nameLabel: string, valueLabel: string): Analyt
   return [
     { key: "name", label: nameLabel, align: "left" },
     { key: "value", label: valueLabel, format: (value) => formatCurrency(Number(value)) },
+  ];
+}
+
+function getFirmAnalysisColumns(): AnalyticsTableColumn[] {
+  return [
+    { key: "name", label: "Firm", align: "left" },
+    { key: "selectedRolesLabel", label: "Boolean selection", align: "left" },
+    { key: "selectedRoles", label: "Matching cases" },
   ];
 }
 
@@ -4013,6 +5070,7 @@ function getFileValueThresholdColumns(): AnalyticsTableColumn[] {
 
 function getSuspectedAnomalyColumns(
   onAccept: (row: Record<string, number | string>) => void,
+  onAdminReview?: (signature: string, action: string) => void,
 ): AnalyticsTableColumn[] {
   return [
     { key: "fileRef", label: "File", align: "left" },
@@ -4035,15 +5093,38 @@ function getSuspectedAnomalyColumns(
       key: "action",
       label: "Action",
       align: "left",
-      render: (_value, row) => (
-        <button
-          type="button"
-          onClick={() => onAccept(row)}
-          className="rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
-        >
-          Accept
-        </button>
-      ),
+      render: (_value, row) => {
+        const signature = String(row.signature ?? "");
+        if (onAdminReview && signature) {
+          return (
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                onClick={() => onAdminReview(signature, "approve_file")}
+                className="rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
+              >
+                Accept file
+              </button>
+              <button
+                type="button"
+                onClick={() => onAdminReview(signature, "approve_universal")}
+                className="rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
+              >
+                Accept universal
+              </button>
+            </div>
+          );
+        }
+        return (
+          <button
+            type="button"
+            onClick={() => onAccept(row)}
+            className="rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-foreground hover:bg-accent"
+          >
+            Send request/message to Admin
+          </button>
+        );
+      },
     },
   ];
 }
@@ -4271,6 +5352,21 @@ function getCncSummaryColumns(): AnalyticsTableColumn[] {
   ];
 }
 
+function getFiscalCncSummaryColumns(
+  onFiscalYearClick: (fiscalYear: string) => void,
+): AnalyticsTableColumn[] {
+  return [
+    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    { key: "reviewed", label: "Cases reviewed" },
+    { key: "approved", label: "CNC approved" },
+    { key: "financialSanctionSigned", label: "Financial sanction signed" },
+    { key: "supplyOrderPlaced", label: "S.O. placed" },
+    { key: "approvalPending", label: "Approval pending" },
+    { key: "financialSanctionPending", label: "Financial sanction pending" },
+    { key: "supplyOrderPending", label: "S.O. pending" },
+  ];
+}
+
 function getMonthWiseSupplyOrderColumns(
   onMonthClick: (monthKey: string) => void,
 ): AnalyticsTableColumn[] {
@@ -4456,6 +5552,20 @@ function getAnalyticsSearchTarget(
     return { dashboardFilter: "paymentDue", division: name };
   }
   if (panelKey === "preBidMeetings") {
+    const fiscalYear = String(row.fiscalYear ?? "").trim();
+    if (/^\d{4}-\d{2}$/.test(fiscalYear)) {
+      const filterByColumn: Record<string, string> = {
+        count: `preBidMeetingFy:all:${fiscalYear}`,
+        preBidDue: `preBidMeetingFy:due:${fiscalYear}`,
+        preBidCompleted: `preBidMeetingFy:completed:${fiscalYear}`,
+        refloatPreBidDue: `refloatPreBidMeetingFy:due:${fiscalYear}`,
+        refloatPreBidCompleted: `refloatPreBidMeetingFy:completed:${fiscalYear}`,
+      };
+      const dashboardFilter = filterByColumn[columnKey];
+      return dashboardFilter
+        ? { dashboardFilter, focusSection: "Bidding details" }
+        : undefined;
+    }
     const monthKey = String(row.monthKey ?? row.name ?? "").trim();
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return undefined;
     const filterByColumn: Record<string, string> = {
@@ -4476,12 +5586,31 @@ function getAnalyticsSearchTarget(
     (columnKey === "reviewed" || columnKey === "signed" || columnKey === "pending")
   ) {
     const stage = String(row.stage ?? "pre") === "post" ? "post" : "pre";
+    const fiscalYear = String(row.fiscalYear ?? "").trim();
+    if (/^\d{4}-\d{2}$/.test(fiscalYear)) {
+      const committee = String(row.name ?? "").trim();
+      const isCommitteeRow = Boolean(row.committee === undefined && committee && committee !== fiscalYear);
+      return {
+        dashboardFilter: isCommitteeRow
+          ? getTcecStatusFiscalYearDashboardFilter(stage, columnKey, fiscalYear, committee)
+          : getTcecStatusFiscalYearDashboardFilter(stage, columnKey, fiscalYear),
+        focusSection: "TCEC block",
+      };
+    }
     return {
       dashboardFilter: getTcecStatusDashboardFilter(stage, columnKey, name),
       focusSection: "TCEC block",
     };
   }
   if (panelKey === "cncSummary" && isCncSummaryMetric(columnKey)) {
+    const fiscalYear = String(row.fiscalYear ?? "").trim();
+    if (/^\d{4}-\d{2}$/.test(fiscalYear)) {
+      if (columnKey === "name") return undefined;
+      return {
+        dashboardFilter: getCncSummaryFiscalYearDashboardFilter(columnKey, fiscalYear),
+        focusSection: "Approval block",
+      };
+    }
     const cncDate = String(row.cncDate ?? row.name ?? "").trim();
     if (!cncDate) return undefined;
     return {
@@ -4491,6 +5620,17 @@ function getAnalyticsSearchTarget(
   }
   if (panelKey === "topFirms" && columnKey === "value") {
     return { analyticsType: "firm", analyticsNames: [name] };
+  }
+  if (panelKey === "firmAnalysis") {
+    const firm = String(row.name ?? "").trim();
+    if (!firm || columnKey === "name") return undefined;
+    const expression = String(row.selectedRolesExpression ?? "").trim();
+    if (columnKey === "selectedRoles" && expression) {
+      return {
+        dashboardFilter: `firmAnalysis:expr:${expression}:${encodeURIComponent(firm)}`,
+        focusSection: "Firm details",
+      };
+    }
   }
   if (panelKey === "indentorsByFiles" && columnKey === "count") {
     return { analyticsType: "indentor", analyticsNames: [name] };
@@ -4622,6 +5762,10 @@ function getCncSummaryDashboardFilter(metric: string, cncDate: string) {
   return `cncSummary:${encodeURIComponent(metric)}:${encodeURIComponent(cncDate)}`;
 }
 
+function getCncSummaryFiscalYearDashboardFilter(metric: string, fiscalYear: string) {
+  return `cncSummaryFy:${encodeURIComponent(metric)}:${encodeURIComponent(fiscalYear)}`;
+}
+
 function isCncSummaryMetric(value: string) {
   return (
     value === "name" ||
@@ -4652,6 +5796,23 @@ function getTcecStatusDashboardFilter(
     .join(":");
 }
 
+function getTcecStatusFiscalYearDashboardFilter(
+  stage: string,
+  metric: string,
+  fiscalYear: string,
+  committee?: string,
+) {
+  return [
+    "tcecStatusFy",
+    encodeURIComponent(stage),
+    encodeURIComponent(metric),
+    encodeURIComponent(fiscalYear),
+    committee ? encodeURIComponent(committee) : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(":");
+}
+
 function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget | undefined {
   const normalized = normalizeMilestoneName(name);
   if (normalized === "delivery") return { dashboardFilter: "deliveryCompleted" };
@@ -4661,6 +5822,324 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
   );
   if (milestone) return { dashboardFilter: `milestoneCleared:${milestone.key}` };
   return undefined;
+}
+
+type AnomalyWorkflowTab =
+  | "current"
+  | "sent"
+  | "fileAccepted"
+  | "universalAccepted"
+  | "rejected"
+  | "revoked";
+
+function formatAnomalyStatus(status: string) {
+  return status
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function groupSuspectedAnomalyRows(rows: SuspectedAnomalyRow[]) {
+  const groups = new Map<string, SuspectedAnomalyRow[]>();
+  rows.forEach((row) => {
+    const key = row.rule || row.ruleKey || "Suspected anomaly";
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  });
+  return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
+}
+
+function groupAnomalyAcceptances(rows: AnomalyAcceptanceRow[]) {
+  const groups = new Map<string, AnomalyAcceptanceRow[]>();
+  rows.forEach((row) => {
+    const key = row.ruleLabel || humanizeCompactAnomalyLabel(row.ruleKey) || "Anomaly exception";
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  });
+  return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
+}
+
+function humanizeCompactAnomalyLabel(value?: string) {
+  if (!value) return "";
+  if (value === "fileclosedbutbgreturnpendingexists") {
+    return "File is closed but BG return is still pending";
+  }
+  return value
+    .replace(/fileclosed/g, "File closed ")
+    .replace(/bgreturn/g, " BG return ")
+    .replace(/pending/g, " pending ")
+    .replace(/exists/g, " exists ")
+    .replace(/jobcompletion/g, " Job Completion ")
+    .replace(/financialsanction/g, " Financial Sanction ")
+    .replace(/supplyorder/g, " Supply Order ")
+    .replace(/should/g, " should ")
+    .replace(/not/g, " not ")
+    .replace(/before/g, " before ")
+    .replace(/after/g, " after ")
+    .replace(/date/g, " date ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function SuspectedAnomalyGroupedView({
+  rows,
+  acceptances,
+  isAdmin,
+  onRequest,
+  onAdminReview,
+  onClearSelected,
+  onOpenRow,
+}: {
+  rows: SuspectedAnomalyRow[];
+  acceptances: AnomalyAcceptanceRow[];
+  isAdmin: boolean;
+  onRequest: (row: Record<string, number | string>) => void;
+  onAdminReview: (signature: string, action: string) => void;
+  onClearSelected: (signatures: string[]) => void;
+  onOpenRow: (row: Record<string, number | string>) => void;
+}) {
+  const [tab, setTab] = useState<AnomalyWorkflowTab>("current");
+  const [selectedDecisionSignatures, setSelectedDecisionSignatures] = useState<string[]>([]);
+  const currentRows = rows.filter(
+    (row) =>
+      row.requestStatus !== "pending" &&
+      row.requestStatus !== "rejected" &&
+      row.requestStatus !== "revoked",
+  );
+  const sentRows = rows.filter((row) => row.requestStatus === "pending");
+  const fileAcceptedRows = acceptances.filter((row) => row.status === "approved_file");
+  const universalAcceptedRows = acceptances.filter((row) => row.status === "approved_universal");
+  const rejectedRows = acceptances.filter((row) => row.status === "rejected");
+  const revokedRows = acceptances.filter((row) => row.status === "revoked");
+  const decisionRows =
+    tab === "fileAccepted"
+      ? fileAcceptedRows
+      : tab === "universalAccepted"
+        ? universalAcceptedRows
+        : tab === "rejected"
+          ? rejectedRows
+          : tab === "revoked"
+            ? revokedRows
+            : [];
+  const tabs: Array<{ key: AnomalyWorkflowTab; label: string; count: number }> = [
+    { key: "current", label: "Current", count: currentRows.length },
+    { key: "sent", label: isAdmin ? "Received request" : "Sent", count: sentRows.length },
+    { key: "fileAccepted", label: "File Accepted", count: fileAcceptedRows.length },
+    { key: "universalAccepted", label: "Universal Accepted", count: universalAcceptedRows.length },
+    { key: "rejected", label: "Rejected", count: rejectedRows.length },
+    { key: "revoked", label: "Revoked", count: revokedRows.length },
+  ];
+  const canClearDecisionRows = tab === "rejected" || tab === "revoked";
+  const selectedDecisionSet = new Set(selectedDecisionSignatures);
+  const toggleDecisionSignature = (signature: string) => {
+    setSelectedDecisionSignatures((current) =>
+      current.includes(signature)
+        ? current.filter((item) => item !== signature)
+        : [...current, signature],
+    );
+  };
+  useEffect(() => {
+    setSelectedDecisionSignatures([]);
+  }, [tab]);
+  const decisionSignatureKey = decisionRows.map((row) => row.signature).join("|");
+  useEffect(() => {
+    setSelectedDecisionSignatures((current) =>
+      current.filter((signature) => decisionRows.some((row) => row.signature === signature)),
+    );
+  }, [decisionSignatureKey]);
+
+  const renderActiveGroups = (activeRows: SuspectedAnomalyRow[]) => {
+    if (!activeRows.length) {
+      return <div className="text-sm text-muted-foreground">No anomalies in this tab.</div>;
+    }
+    return (
+      <div className="space-y-3">
+        {groupSuspectedAnomalyRows(activeRows).map((group) => (
+          <div key={group.title} className="rounded-md border border-border">
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
+              <h3 className="text-sm font-semibold">{group.title}</h3>
+              <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
+            </div>
+            <div className="divide-y divide-border/70">
+              {group.items.map((row) => (
+                <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.4fr]">
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => onOpenRow(row as unknown as Record<string, number | string>)}
+                      className="font-semibold text-primary hover:underline"
+                    >
+                      {row.fileRef}
+                    </button>
+                    <div className="mt-1 text-muted-foreground">{row.division || "-"}</div>
+                    <div className="text-muted-foreground">{row.block}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div>
+                      <span className="font-medium">{row.previousField || "Expected"}:</span>{" "}
+                      {row.previousDate || "-"}
+                    </div>
+                    <div>
+                      <span className="font-medium">{row.laterField || "Found"}:</span>{" "}
+                      {row.laterDate || "-"}
+                    </div>
+                    {row.userExplanation ? (
+                      <div className="text-muted-foreground">
+                        {isAdmin ? `Message from ${row.requestedByName || "User"}` : "Message to Admin"}:{" "}
+                        {row.userExplanation}
+                      </div>
+                    ) : null}
+                    {row.adminMessage ? (
+                      <div className="font-medium text-destructive">Message to User: {row.adminMessage}</div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-start gap-1">
+                    {row.requestStatus ? (
+                      <span className="rounded border border-border px-2 py-1 font-medium">
+                        {formatAnomalyStatus(row.requestStatus)}
+                      </span>
+                    ) : null}
+                    {isAdmin ? (
+                      <>
+                        <button type="button" onClick={() => onAdminReview(row.signature, "approve_file")} className="rounded border border-border px-2 py-1 font-semibold hover:bg-accent">
+                          Accept file
+                        </button>
+                        <button type="button" onClick={() => onAdminReview(row.signature, "approve_universal")} className="rounded border border-border px-2 py-1 font-semibold hover:bg-accent">
+                          Accept universal
+                        </button>
+                        <button type="button" onClick={() => onAdminReview(row.signature, "reject")} className="rounded border border-border px-2 py-1 font-semibold hover:bg-accent">
+                          Send correction to user
+                        </button>
+                      </>
+                    ) : row.requestStatus === "pending" ? (
+                      <span className="text-muted-foreground">Message sent to Admin</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onRequest(row as unknown as Record<string, number | string>)}
+                        className="rounded border border-border px-2 py-1 font-semibold hover:bg-accent"
+                      >
+                        Send request/message to Admin
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderDecisionRows = (decisionTabRows: AnomalyAcceptanceRow[]) => {
+    if (!decisionTabRows.length) {
+      return <div className="text-sm text-muted-foreground">No anomalies in this tab.</div>;
+    }
+    return (
+      <div className="space-y-3">
+        {groupAnomalyAcceptances(decisionTabRows).map((group) => (
+          <div key={group.title} className="rounded-md border border-border">
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
+              <h3 className="text-sm font-semibold">{group.title}</h3>
+              <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
+            </div>
+            <div className="divide-y divide-border/70">
+              {group.items.map((row) => (
+                <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr]">
+                  <div className="flex items-start gap-2">
+                    {canClearDecisionRows ? (
+                      <input
+                        type="checkbox"
+                        checked={selectedDecisionSet.has(row.signature)}
+                        onChange={() => toggleDecisionSignature(row.signature)}
+                        className="mt-0.5"
+                        aria-label={`Select ${row.fileRef || "anomaly"}`}
+                      />
+                    ) : null}
+                    <span className="font-semibold">{row.fileRef || "File reference not available"}</span>
+                  </div>
+                  <div>
+                    <div>{row.previousField || "Expected"}: {row.previousValue || "-"}</div>
+                    <div>{row.laterField || "Found"}: {row.laterValue || "-"}</div>
+                    {row.reason ? (
+                      <div className="mt-1 text-muted-foreground">
+                        {isAdmin ? `Message from ${row.requestedByName || "User"}` : "Message to Admin"}:{" "}
+                        {row.reason}
+                      </div>
+                    ) : null}
+                    {row.adminMessage ? <div className="mt-1 font-medium text-destructive">Message to User: {row.adminMessage}</div> : null}
+                  </div>
+                  <div>
+                    <div className="font-medium">{formatAnomalyStatus(row.status)}</div>
+                    <div className="text-muted-foreground">
+                      {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
+                    </div>
+                    <div className="text-muted-foreground">
+                      {(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}
+                    </div>
+                    {isAdmin && (row.status === "approved_file" || row.status === "approved_universal") ? (
+                      <button
+                        type="button"
+                        onClick={() => onAdminReview(row.signature, "revoke")}
+                        className="mt-2 rounded border border-border px-2 py-1 font-semibold hover:bg-accent"
+                      >
+                        Revoke
+                      </button>
+                    ) : null}
+                    {canClearDecisionRows ? (
+                      <button
+                        type="button"
+                        onClick={() => onClearSelected([row.signature])}
+                        className="mt-2 rounded border border-border px-2 py-1 font-semibold text-destructive hover:bg-destructive/10"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {tabs.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setTab(item.key)}
+            className={
+              "rounded-md border px-3 py-1.5 text-xs font-semibold " +
+              (tab === item.key
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-card hover:bg-accent")
+            }
+          >
+            {item.label} ({item.count})
+          </button>
+        ))}
+        {canClearDecisionRows && selectedDecisionSignatures.length ? (
+          <button
+            type="button"
+            onClick={() => onClearSelected(selectedDecisionSignatures)}
+            className="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
+          >
+            Clear selected ({selectedDecisionSignatures.length})
+          </button>
+        ) : null}
+      </div>
+      {tab === "current"
+        ? renderActiveGroups(currentRows)
+        : tab === "sent"
+          ? renderActiveGroups(sentRows)
+          : renderDecisionRows(decisionRows)}
+    </div>
+  );
 }
 
 function AnalyticsRankingTable({
@@ -5781,6 +7260,25 @@ function getModeCounts(files: ReturnType<typeof useAccessibleFiles>, configuredM
   return modes.map((name) => ({ name, count: counts[name] ?? 0 }));
 }
 
+const gemBiddingModeOptions = ["Custom", "Catalogue", "Comparison"];
+
+function getGemBiddingModeCounts(files: ReturnType<typeof useAccessibleFiles>) {
+  const counts = files.reduce<Record<string, number>>((current, file) => {
+    if (!isYes(file.gem)) return current;
+    const mode = normalizeGemBiddingMode(file.gemBiddingMode);
+    if (!mode) return current;
+    current[mode] = (current[mode] ?? 0) + 1;
+    return current;
+  }, {});
+
+  return gemBiddingModeOptions.map((name) => ({ name, count: counts[name] ?? 0 }));
+}
+
+function normalizeGemBiddingMode(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return gemBiddingModeOptions.find((mode) => mode.toLowerCase() === normalized);
+}
+
 function getConfiguredModes(
   configuredModes: string[] | undefined,
   existingModes: Array<string | undefined>,
@@ -5855,16 +7353,39 @@ function isPsbApplicableFile(file: FileRecord) {
   );
 }
 
-function getFileTypeSummaryStats(files: ReturnType<typeof useAccessibleFiles>): SummaryStat {
+function getFileTypeSummaryStats(
+  files: ReturnType<typeof useAccessibleFiles>,
+  fileTypes: string[] | undefined,
+): SummaryStat {
   return {
     label: "File Type",
-    value: fileCategoryOptions.map((option) => ({
-      label: option.label,
-      value: files.filter((file) => fileMatchesCategory(file, [option.key])).length,
-      searchFilter: `fileCategory:${option.key}`,
+    value: getConfiguredFileTypes(fileTypes, files).map((fileType) => ({
+      label: fileType,
+      value: files.filter((file) => isFileTypeMatch(file, fileType)).length,
+      searchFilter: `fileType:${encodeURIComponent(fileType)}`,
     })),
     hint: "Files grouped by file type",
   };
+}
+
+function getConfiguredFileTypes(
+  fileTypes: string[] | undefined,
+  files: ReturnType<typeof useAccessibleFiles>,
+) {
+  const seen = new Set<string>();
+  const values = [...(fileTypes ?? []), ...files.map((file) => file.fileType ?? "")]
+    .map((fileType) => fileType.trim())
+    .filter((fileType) => {
+      const key = fileType.toLowerCase();
+      if (!fileType || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return values.length ? values : ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
+}
+
+function isFileTypeMatch(file: FileRecord, fileType: string) {
+  return (file.fileType ?? "").trim().toLowerCase() === fileType.trim().toLowerCase();
 }
 
 function getFirmTypeSummaryStats(
@@ -5916,6 +7437,9 @@ function getMiscellaneousCounts(files: ReturnType<typeof useAccessibleFiles>) {
     soCancelled: files.filter((file) =>
       fileSupplyOrders(file).some((order) => isYes(order.soCancelled)),
     ).length,
+    shortclosedSo: files.filter((file) =>
+      fileSupplyOrders(file).some((order) => isYes(order.shortclosure)),
+    ).length,
     multipleSupplyOrders: activeFiles.filter((file) => countExpectedSupplyOrderRows(file) > 1)
       .length,
   };
@@ -5944,6 +7468,7 @@ function getAnalyticsSummary(
     divisionValueRanking: getDivisionValueRanking(files, divisions),
     divisionTurnaroundRanking: getDivisionTurnaroundRanking(files),
     topFirmSupplyOrders: getTopFirmSupplyOrders(files),
+    firmAnalysis: getFirmAnalysisRows(files),
     topIndentorsByFiles: getTopIndentorsByFiles(files),
     topIndentorsByValue: getTopIndentorsByValue(files),
     milestoneClearingRanking: getMilestoneClearingRanking(files),
@@ -6004,6 +7529,62 @@ function getCncSummary(files: FileRecord[]) {
     rows.set(cncDate, current);
   });
   return Array.from(rows.values()).sort((a, b) => b.cncDate.localeCompare(a.cncDate));
+}
+
+function getFiscalYearSummaryRows<T extends Record<string, unknown>>(
+  rows: T[],
+  dateKey: keyof T,
+  metricKeys: string[],
+) {
+  const totals = new Map<string, Record<string, number | string>>();
+  rows.forEach((row) => {
+    const date = String(row[dateKey] ?? "");
+    const fiscalYear =
+      dateKey === "monthKey" ? getFiscalYearForMonthKey(date) : getFinancialYearForDate(date);
+    if (!fiscalYear) return;
+    const current = totals.get(fiscalYear) ?? {
+      name: fiscalYear,
+      fiscalYear,
+    };
+    metricKeys.forEach((key) => {
+      current[key] = Number(current[key] ?? 0) + Number(row[key] ?? 0);
+    });
+    totals.set(fiscalYear, current);
+  });
+  return Array.from(totals.values()).sort((a, b) =>
+    String(b.fiscalYear ?? "").localeCompare(String(a.fiscalYear ?? "")),
+  );
+}
+
+function getTcecCommitteeRowsForFiscalYear(
+  rows: Array<{
+    committee: string;
+    meetingDate: string;
+    stage: TcecStatusStage;
+    reviewed: number;
+    signed: number;
+    pending: number;
+  }>,
+  fiscalYear: string,
+) {
+  const totals = new Map<string, { name: string; stage: TcecStatusStage; fiscalYear: string; reviewed: number; signed: number; pending: number }>();
+  rows
+    .filter((row) => getFinancialYearForDate(row.meetingDate) === fiscalYear)
+    .forEach((row) => {
+      const current = totals.get(row.committee) ?? {
+        name: row.committee,
+        stage: row.stage,
+        fiscalYear,
+        reviewed: 0,
+        signed: 0,
+        pending: 0,
+      };
+      current.reviewed += row.reviewed;
+      current.signed += row.signed;
+      current.pending += row.pending;
+      totals.set(row.committee, current);
+    });
+  return Array.from(totals.values()).sort((a, b) => b.reviewed - a.reviewed || a.name.localeCompare(b.name));
 }
 
 function getTcecStatusSummary(files: FileRecord[]) {
@@ -6197,6 +7778,203 @@ function getTopFirmSupplyOrders(files: FileRecord[]) {
   return mapEntriesToSortedRows(totals, "value");
 }
 
+function getFirmAnalysisRows(files: FileRecord[]) {
+  const rows = new Map<
+    string,
+    {
+      name: string;
+      bq: number;
+      invited: number;
+      participated: number;
+      order: number;
+      roleMaskCounts: string;
+    }
+  >();
+  const getRow = (name: string) =>
+    rows.get(name) ?? {
+      name,
+      bq: 0,
+      invited: 0,
+      participated: 0,
+      order: 0,
+      roleMaskCounts: "{}",
+    };
+  files.forEach((file) => {
+    const roles = getFileFirmAnalysisRoles(file);
+    const firmNames = new Set<string>();
+    Object.values(roles).forEach((set) => set.forEach((name) => firmNames.add(name)));
+    firmNames.forEach((name) => {
+      const row = getRow(name);
+      const mask = getFirmAnalysisRoleMask(roles, name);
+      const roleMaskCounts = readFirmAnalysisRoleMaskCounts(row.roleMaskCounts);
+      roleMaskCounts[mask] = (roleMaskCounts[mask] ?? 0) + 1;
+      row.bq += roles.bq.has(name) ? 1 : 0;
+      row.invited += roles.invited.has(name) ? 1 : 0;
+      row.participated += roles.participated.has(name) ? 1 : 0;
+      row.order += roles.order.has(name) ? 1 : 0;
+      row.roleMaskCounts = JSON.stringify(roleMaskCounts);
+      rows.set(name, row);
+    });
+  });
+  return Array.from(rows.values()).sort(
+    (a, b) =>
+      b.order - a.order ||
+      b.participated - a.participated ||
+      b.invited - a.invited ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+function getFirmAnalysisSelectedRoleCount(
+  row: Record<string, number | string>,
+  roles: FirmAnalysisRoleKey[],
+  operators: Record<string, FirmAnalysisOperator>,
+  negatedRoles: FirmAnalysisRoleKey[],
+) {
+  if (!roles.length) return 0;
+  const orderedRoles = getSelectedFirmAnalysisRoles(roles);
+  const counts = readFirmAnalysisRoleMaskCounts(String(row.roleMaskCounts ?? "{}"));
+  const negated = new Set(negatedRoles);
+  return Object.entries(counts).reduce((total, [rawMask, count]) => {
+    const mask = Number(rawMask);
+    if (!Number.isFinite(mask)) return total;
+    const matches = evaluateFirmAnalysisExpression(mask, orderedRoles, operators, negated);
+    return matches ? total + count : total;
+  }, 0);
+}
+
+function getSelectedFirmAnalysisRoles(roles: FirmAnalysisRoleKey[]) {
+  return firmAnalysisRoleOptions
+    .map((role) => role.key)
+    .filter((role) => roles.includes(role));
+}
+
+function evaluateFirmAnalysisExpression(
+  mask: number,
+  roles: FirmAnalysisRoleKey[],
+  operators: Record<string, FirmAnalysisOperator>,
+  negatedRoles: Set<FirmAnalysisRoleKey>,
+) {
+  if (!roles.length) return false;
+  let result = getFirmAnalysisRoleBoolean(mask, roles[0], negatedRoles);
+  for (let index = 1; index < roles.length; index++) {
+    const previousRole = roles[index - 1];
+    const role = roles[index];
+    const operator = operators[firmAnalysisOperatorKey(previousRole, role)] ?? "and";
+    const value = getFirmAnalysisRoleBoolean(mask, role, negatedRoles);
+    result = operator === "and" ? result && value : result || value;
+  }
+  return result;
+}
+
+function getFirmAnalysisRoleBoolean(
+  mask: number,
+  role: FirmAnalysisRoleKey,
+  negatedRoles: Set<FirmAnalysisRoleKey>,
+) {
+  const value = Boolean(mask & firmAnalysisRoleBit(role));
+  return negatedRoles.has(role) ? !value : value;
+}
+
+function getFirmAnalysisExpression(
+  roles: FirmAnalysisRoleKey[],
+  operators: Record<string, FirmAnalysisOperator>,
+  negatedRoles: FirmAnalysisRoleKey[],
+) {
+  const orderedRoles = getSelectedFirmAnalysisRoles(roles);
+  const negated = new Set(negatedRoles);
+  return orderedRoles
+    .flatMap((role, index) => {
+      const nextRole = orderedRoles[index + 1];
+      const roleToken = negated.has(role) ? `not.${role}` : role;
+      return nextRole ? [roleToken, operators[firmAnalysisOperatorKey(role, nextRole)] ?? "and"] : [roleToken];
+    })
+    .join(",");
+}
+
+function getFirmAnalysisExpressionLabel(
+  roles: FirmAnalysisRoleKey[],
+  operators: Record<string, FirmAnalysisOperator>,
+  negatedRoles: FirmAnalysisRoleKey[],
+) {
+  const orderedRoles = getSelectedFirmAnalysisRoles(roles);
+  const negated = new Set(negatedRoles);
+  return orderedRoles
+    .flatMap((role, index) => {
+      const option = firmAnalysisRoleOptions.find((item) => item.key === role);
+      const label = `${negated.has(role) ? "NOT " : ""}${option?.label ?? role}`;
+      const nextRole = orderedRoles[index + 1];
+      return nextRole
+        ? [label, (operators[firmAnalysisOperatorKey(role, nextRole)] ?? "and").toUpperCase()]
+        : [label];
+    })
+    .join(" ");
+}
+
+function firmAnalysisOperatorKey(leftRole: FirmAnalysisRoleKey, rightRole: FirmAnalysisRoleKey) {
+  return `${leftRole}:${rightRole}`;
+}
+
+function readFirmAnalysisRoleMaskCounts(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([mask, count]) => [mask, Number(count)])
+        .filter(([, count]) => Number.isFinite(count)),
+    ) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function getFirmAnalysisRoleMask(
+  roles: ReturnType<typeof getFileFirmAnalysisRoles>,
+  firmName: string,
+) {
+  return firmAnalysisRoleOptions.reduce(
+    (mask, role) => (roles[role.key].has(firmName) ? mask | firmAnalysisRoleBit(role.key) : mask),
+    0,
+  );
+}
+
+function firmAnalysisRoleBit(role: FirmAnalysisRoleKey) {
+  return role === "bq"
+    ? 1
+    : role === "invited"
+      ? 2
+      : role === "participated"
+        ? 4
+        : 8;
+}
+
+function getFileFirmAnalysisRoles(file: FileRecord) {
+  const biddingApplicable = isBiddingApplicableForFile(file);
+  const bq = biddingApplicable ? getFirmNameSet(file.bqFirms) : new Set<string>();
+  const invited = biddingApplicable ? getFirmNameSet(file.invitedFirms) : new Set<string>();
+  const participated = biddingApplicable ? getFirmNameSet(file.bidderFirms) : new Set<string>();
+  const order = new Set<string>();
+  fileSupplyOrders(file).forEach((orderRow) => {
+    if (isSupplyOrderCancelled(file, orderRow)) return;
+    const name = normalizeFirmAnalysisName(orderRow.firm);
+    if (name) order.add(name);
+  });
+  return { bq, invited, participated, order };
+}
+
+function getFirmNameSet(rows: Array<{ firmName?: string }> | undefined) {
+  const names = new Set<string>();
+  (rows ?? []).forEach((row) => {
+    const name = normalizeFirmAnalysisName(row.firmName);
+    if (name) names.add(name);
+  });
+  return names;
+}
+
+function normalizeFirmAnalysisName(value: string | undefined) {
+  return value?.trim() || "";
+}
+
 function getSupplyOrderValueDistributionByFirmType(
   files: FileRecord[],
   configuredFirmTypes: string[] | undefined,
@@ -6307,7 +8085,7 @@ function getMilestoneClearingDurations(
 function getMonthlyFileInflow(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
-    const month = getMonthKey(file.receivedDate ?? file.date);
+    const month = getMonthKey(file.receivedDate);
     if (!month) return;
     counts.set(month, (counts.get(month) ?? 0) + 1);
   });
@@ -6391,9 +8169,15 @@ function isDeliveryFructified(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isJobCompletionDone(order: SupplyOrderDetail) {
-  return (order.completedMilestones ?? []).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+  return hasFilledString(order.jobCompletionDate);
+}
+
+function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
+  if (hasFilledString(order.billPreparationDate)) return false;
+  if (isDeliveryInspectionApplicable(file)) {
+    return isYes(file.ir) && hasFilledString(order.irReceiptDate);
+  }
+  return isJobCompletionDone(order);
 }
 
 function getDeliveryCompletionMonthDate(file: FileRecord, order: SupplyOrderDetail) {
@@ -6624,7 +8408,9 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
+  const orders = fileSupplyOrders(file).filter(
+    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
+  );
   if (orders.length) {
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   }
@@ -6632,7 +8418,9 @@ function getFileCommittedCapitalValue(file: FileRecord) {
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
+  const orders = fileSupplyOrders(file).filter(
+    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
+  );
   if (orders.length) {
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   }
@@ -6713,6 +8501,16 @@ function formatMonthKeyLabel(monthKey: string) {
     "Dec",
   ];
   return monthNames[monthIndex] ? `${monthNames[monthIndex]}-${year}` : monthKey;
+}
+
+function getFiscalYearForMonthKey(monthKey: string) {
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return undefined;
+  const startYear = month >= 4 ? year : year - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
 }
 
 function getAverageCycleMetric(
@@ -6837,6 +8635,7 @@ const milestoneDefinitions = [
     label: "Bidding",
     totalLabel: "Total files",
     current: "biddingStageOver",
+    applies: (file) => isBiddingApplicableForFile(file),
   },
   {
     key: "postTcec",
@@ -7061,7 +8860,9 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
   if (matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction")) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   if (isYes(file.tcec)) return current === "cnc" && !hasFilledField(file, "cncApprovalDate");
-  return current === "bidding" && !isYes(file.biddingStageOver);
+  return isBiddingApplicableForFile(file)
+    ? current === "bidding" && !isYes(file.biddingStageOver)
+    : current === "cfa" && !hasFilledField(file, "cfaDate");
 }
 
 function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
@@ -7343,6 +9144,7 @@ function isManualActiveMilestone(
   milestone: (typeof milestoneDefinitions)[number],
 ) {
   if (isCancelledFile(file)) return false;
+  if (!isBiddingApplicableForFile(file)) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   return getMilestoneNameAliases(milestone).some(
     (name) => current === normalizeMilestoneName(name),
@@ -7426,7 +9228,7 @@ function effectivePaymentEntries(files: FileRecord[]) {
 }
 
 function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isYes(order.soCancelled);
+  return isYes(file.demandCancelled) || isYes(order.soCancelled) || isYes(order.shortclosure);
 }
 
 function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
@@ -7471,7 +9273,10 @@ function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
 
 function isSoCancelledFile(file: FileRecord) {
   const orders = rawSupplyOrders(file);
-  return orders.length > 0 && orders.every((order) => isYes(order.soCancelled));
+  return (
+    orders.length > 0 &&
+    orders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure))
+  );
 }
 
 function countEffectiveSupplyOrders(files: FileRecord[]) {
@@ -7751,7 +9556,6 @@ function hasAdvancePaymentPending(file: FileRecord) {
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    normalizeMilestoneName(order.currentMilestone) === "payment" ||
     hasFilledString(order.billPreparationDate) ||
     hasFilledString(order.billSentForPaymentDate) ||
     isPaymentDueByDeliveryOrPeriod(file, order)
@@ -7765,7 +9569,7 @@ function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDeta
 
 function countLdOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
-    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled),
+    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
   ).length;
 }
 
@@ -7787,7 +9591,7 @@ function isNo(value: string | undefined) {
 }
 
 function isFileTenderLive(file: FileRecord) {
-  return isYes(file.tenderLive);
+  return isBiddingApplicableForFile(file) && isYes(file.tenderLive);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -7797,7 +9601,11 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
 }
 
 function isBidOverdue(file: FileRecord) {
-  return isNo(file.bidOpened) && isDateBeforeToday(getEffectiveBidOpeningDate(file));
+  return (
+    isBiddingApplicableForFile(file) &&
+    isNo(file.bidOpened) &&
+    isDateBeforeToday(getEffectiveBidOpeningDate(file))
+  );
 }
 
 function isPreBidMeetingStatus(
@@ -7874,7 +9682,7 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
     hasFilledString(getBgReturnDate(order, category))
   )
     return false;
-  if (isYes(order.soCancelled)) return true;
+  if (isYes(order.soCancelled) || isYes(order.shortclosure)) return true;
   const normalizedCategory = normalizeMilestoneName(category);
   return (
     !isSupplyOrderCancelled(file, order) &&
@@ -7999,19 +9807,11 @@ function isJobCompletionCurrentOrder(file: FileRecord, order: SupplyOrderDetail)
   if (!hasSupplyOrderDate(order) || !isJobCompletionWorkflow(file) || isJobCompletionDone(order)) {
     return false;
   }
-  const current = normalizeMilestoneName(order.currentMilestone);
-  return current === "jobcompletion" || isDateBeforeToday(getDeliveryPeriodDate(order));
+  return isDateBeforeToday(getDeliveryPeriodDate(order));
 }
 
 function isDeliveryInspectionApplicable(file: FileRecord) {
-  const fileType = (file.fileType ?? "").trim().toLowerCase();
-  return (
-    !isNo(file.ir) &&
-    fileType !== "amc" &&
-    fileType !== "mpc" &&
-    fileType !== "cars" &&
-    fileType !== "o&m"
-  );
+  return isDeliveryInspectionApplicableByGroup(file);
 }
 
 function isCompletedDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
@@ -8063,7 +9863,8 @@ function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
     hasSupplyOrderDate(order) &&
     isPhysicalDeliveryWorkflow(file) &&
     !isCompletedDeliveryOrder(file, order) &&
-    !isYes(order.soCancelled)
+    !isYes(order.soCancelled) &&
+    !isYes(order.shortclosure)
   );
 }
 
@@ -8174,6 +9975,34 @@ function addDays(date: string | undefined, days: number) {
   return formatLocalDate(next);
 }
 
+function getFinancialYearDateRange(financialYear: string | undefined) {
+  const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  if (!match) return undefined;
+  const startYear = Number(match[1]);
+  return {
+    start: `${startYear}-04-01`,
+    end: `${startYear + 1}-03-31`,
+  };
+}
+
+function getFinancialYearForDate(date: string | undefined) {
+  const time = parseLocalDateTime(date ?? "");
+  if (time === undefined) return undefined;
+  const parsed = new Date(time);
+  const year = parsed.getFullYear();
+  const month = parsed.getMonth() + 1;
+  const startYear = month >= 4 ? year : year - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+function isDateWithinRange(date: string | undefined, range: { start: string; end: string }) {
+  return hasFilledString(date) && date! >= range.start && date! <= range.end;
+}
+
+function isDateAfter(date: string | undefined, reference: string) {
+  return hasFilledString(date) && date! > reference;
+}
+
 function getLaterDate(first: string | undefined, second: string | undefined) {
   const firstTime = parseLocalDateTime(first ?? "");
   const secondTime = parseLocalDateTime(second ?? "");
@@ -8243,12 +10072,13 @@ const dashboardFilterTitles: Record<string, string> = {
   bgReturned: "PSB - Returned",
   advancePaid: "Payment - Advance Paid",
   advancePending: "Payment - Advance Pending",
-  miscLiveFiles: "Miscellaneous - Live files",
-  miscFileClosed: "Miscellaneous - File closed",
-  miscLd: "Miscellaneous - LD",
-  miscDemandCancelled: "Miscellaneous - Demand cancelled",
-  miscSoCancelled: "Miscellaneous - S.O. cancelled",
-  miscMultipleSupplyOrders: "Miscellaneous - Multiple S.O.",
+  miscLiveFiles: "Cancellation - Live files",
+  miscFileClosed: "Cancellation - File closed",
+  miscLd: "Cancellation - LD",
+  miscDemandCancelled: "Cancellation - Demand cancelled",
+  miscSoCancelled: "Cancellation - S.O. cancelled",
+  miscShortclosedSo: "Cancellation - Shortclosed S.O.",
+  miscMultipleSupplyOrders: "Cancellation - Multiple S.O.",
 };
 
 function isPaymentDue(file: FileRecord) {
@@ -8260,6 +10090,34 @@ function isPaymentCompleted(file: FileRecord) {
     ({ file: entryFile, order }) =>
       hasFilledString(order.paymentDate) && !isSupplyOrderCancelled(entryFile, order),
   );
+}
+
+function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
+  const [, mode = "", rawSelectedYear = "", rawSourceYear = ""] = filter.split(":");
+  const selectedYear = decodeStatusFilterPart(rawSelectedYear);
+  const sourceYear = decodeStatusFilterPart(rawSourceYear);
+  const range = getFinancialYearDateRange(selectedYear);
+  if (!selectedYear || !sourceYear || !range) return false;
+  return effectivePaymentEntries([file]).some(({ file: entryFile, order }) => {
+    if (isSupplyOrderCancelled(entryFile, order)) return false;
+    const orderYear = getFinancialYearForDate(order.soDate);
+    if (!orderYear || orderYear !== sourceYear) return false;
+    const paymentDate = order.paymentDate;
+    const paidInSelectedYear = isDateWithinRange(paymentDate, range);
+    const unpaidAtSelectedYearEnd = !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
+    if (mode === "carryForward") return orderYear === selectedYear && unpaidAtSelectedYearEnd;
+    if (mode === "clearedCarryForward") return orderYear < selectedYear && paidInSelectedYear;
+    if (mode === "previousCarryForward") return orderYear < selectedYear && unpaidAtSelectedYearEnd;
+    if (mode === "futureClearedCarryForward") {
+      return (
+        orderYear === selectedYear &&
+        hasFilledString(paymentDate) &&
+        isDateAfter(paymentDate, range.end) &&
+        getFinancialYearForDate(paymentDate) === sourceYear
+      );
+    }
+    return false;
+  });
 }
 
 function isIrPreparationPending(file: FileRecord) {
@@ -8305,6 +10163,9 @@ function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (!isCancellationDashboardFilter(filter) && isCancelledFile(file)) return false;
+  if (filter.startsWith("financeCarryForward:")) {
+    return matchesFinanceCarryForwardFilter(file, filter);
+  }
   if (filter.startsWith("statusSummary:")) {
     const [, rawMilestone = "", rawStage = ""] = filter.split(":");
     const milestone = decodeStatusFilterPart(rawMilestone);
@@ -8326,7 +10187,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("fileInflowMonth:")) {
     const monthKey = filter.slice("fileInflowMonth:".length);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
-    return getMonthKey(file.receivedDate ?? file.date) === monthKey;
+    return getMonthKey(file.receivedDate) === monthKey;
   }
   if (filter.startsWith("deliverySchedule:")) {
     const [, mode = "gross", monthKey = ""] = filter.split(":");
@@ -8381,6 +10242,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
       (file.mode ?? "").trim().toUpperCase() ===
       decodeURIComponent(filter.slice("mode:".length)).trim().toUpperCase()
     );
+  }
+  if (filter.startsWith("gemBiddingMode:")) {
+    const mode = decodeURIComponent(filter.slice("gemBiddingMode:".length)).trim().toLowerCase();
+    return isYes(file.gem) && (file.gemBiddingMode ?? "").trim().toLowerCase() === mode;
   }
   if (filter.startsWith("manualMilestoneCurrent:")) {
     const milestone = filter.slice("manualMilestoneCurrent:".length);
@@ -8468,6 +10333,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   }
   if (filter === "miscSoCancelled") {
     return fileSupplyOrders(file).some((order) => isYes(order.soCancelled));
+  }
+  if (filter === "miscShortclosedSo") {
+    return fileSupplyOrders(file).some((order) => isYes(order.shortclosure));
   }
   if (filter === "miscMultipleSupplyOrders") return countExpectedSupplyOrderRows(file) > 1;
   if (filter === "scrutinyCompleted") return hasAny(file, ["scrutinyCompletionDate"]);
@@ -8585,7 +10453,11 @@ function matchesCncSummaryFilter(file: FileRecord, filter: string) {
 }
 
 function isCancellationDashboardFilter(filter: string) {
-  return filter === "miscDemandCancelled" || filter === "miscSoCancelled";
+  return (
+    filter === "miscDemandCancelled" ||
+    filter === "miscSoCancelled" ||
+    filter === "miscShortclosedSo"
+  );
 }
 
 function decodeStatusFilterPart(value: string) {
@@ -8825,17 +10697,22 @@ function getStatusPageExportRows(
   });
 
   rows.push(
-    { section: "Miscellaneous", metric: "Live files", count: miscellaneousCounts.liveFiles },
-    { section: "Miscellaneous", metric: "File closed", count: miscellaneousCounts.fileClosed },
-    { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
+    { section: "Cancellation", metric: "Live files", count: miscellaneousCounts.liveFiles },
+    { section: "Cancellation", metric: "File closed", count: miscellaneousCounts.fileClosed },
+    { section: "Cancellation", metric: "LD", count: miscellaneousCounts.ld },
     {
-      section: "Miscellaneous",
+      section: "Cancellation",
       metric: "Demand cancelled",
       count: miscellaneousCounts.demandCancelled,
     },
-    { section: "Miscellaneous", metric: "S.O. cancelled", count: miscellaneousCounts.soCancelled },
+    { section: "Cancellation", metric: "S.O. cancelled", count: miscellaneousCounts.soCancelled },
     {
-      section: "Miscellaneous",
+      section: "Cancellation",
+      metric: "Shortclosed S.O.",
+      count: miscellaneousCounts.shortclosedSo,
+    },
+    {
+      section: "Cancellation",
       metric: "Multiple S.O.",
       count: miscellaneousCounts.multipleSupplyOrders,
     },
@@ -9245,8 +11122,21 @@ function getDashboardFilterTitle(filter: string) {
   if (filter.startsWith("mode:")) {
     return `Bidding Mode - ${decodeURIComponent(filter.slice("mode:".length))}`;
   }
+  if (filter.startsWith("gemBiddingMode:")) {
+    return `GeM bidding mode - ${decodeURIComponent(filter.slice("gemBiddingMode:".length))}`;
+  }
   if (filter.startsWith("valueThreshold:")) {
     return `File Value Threshold - ${decodeURIComponent(filter.slice("valueThreshold:".length))}`;
+  }
+  if (filter.startsWith("preBidMeetingFy:") || filter.startsWith("refloatPreBidMeetingFy:")) {
+    const [kind = "", state = "all", rawFy = ""] = filter.split(":");
+    const fiscalYear = decodeStatusFilterPart(rawFy);
+    const isRefloat = kind === "refloatPreBidMeetingFy";
+    const stateLabel =
+      state === "due" ? "Due" : state === "completed" ? "Completed" : "Total";
+    return `${isRefloat ? "Refloat Pre-Bid Meeting" : "Pre-Bid Meeting"} - ${stateLabel}${
+      fiscalYear ? ` - FY ${fiscalYear}` : ""
+    }`;
   }
   if (filter.startsWith("tcecStatus:")) {
     const [, rawStage = "pre", rawMetric = "reviewed", rawCommittee = "", rawDate = ""] =
@@ -9258,6 +11148,17 @@ function getDashboardFilterTitle(filter: string) {
     const committee = decodeStatusFilterPart(rawCommittee);
     const date = decodeStatusFilterPart(rawDate);
     return `${stage} ${metricLabel}${committee ? ` - ${committee}` : ""}${date ? ` - ${date}` : ""}`;
+  }
+  if (filter.startsWith("tcecStatusFy:")) {
+    const [, rawStage = "pre", rawMetric = "reviewed", rawFy = "", rawCommittee = ""] =
+      filter.split(":");
+    const stage = decodeStatusFilterPart(rawStage) === "post" ? "Post-TCEC" : "Pre-TCEC";
+    const metric = decodeStatusFilterPart(rawMetric);
+    const metricLabel =
+      metric === "signed" ? "Minutes signed" : metric === "pending" ? "Minutes pending" : "Files reviewed";
+    const fiscalYear = decodeStatusFilterPart(rawFy);
+    const committee = decodeStatusFilterPart(rawCommittee);
+    return `${stage} ${metricLabel}${fiscalYear ? ` - FY ${fiscalYear}` : ""}${committee ? ` - ${committee}` : ""}`;
   }
   if (filter.startsWith("cncSummary:")) {
     const [, rawMetric = "reviewed", rawDate = ""] = filter.split(":");
@@ -9278,6 +11179,26 @@ function getDashboardFilterTitle(filter: string) {
                   ? "S.O. pending"
                   : "Cases reviewed";
     return `CNC Summary ${metricLabel}${date ? ` - ${date}` : ""}`;
+  }
+  if (filter.startsWith("cncSummaryFy:")) {
+    const [, rawMetric = "reviewed", rawFy = ""] = filter.split(":");
+    const metric = decodeStatusFilterPart(rawMetric);
+    const fiscalYear = decodeStatusFilterPart(rawFy);
+    const metricLabel =
+      metric === "approved"
+        ? "CNC approved"
+        : metric === "financialSanctionSigned"
+          ? "Financial sanction signed"
+          : metric === "supplyOrderPlaced"
+            ? "S.O. placed"
+            : metric === "approvalPending"
+              ? "Approval pending"
+              : metric === "financialSanctionPending"
+                ? "Financial sanction pending"
+                : metric === "supplyOrderPending"
+                  ? "S.O. pending"
+                  : "Cases reviewed";
+    return `CNC Summary ${metricLabel}${fiscalYear ? ` - FY ${fiscalYear}` : ""}`;
   }
   return dashboardFilterTitles[filter] ?? "Status export";
 }

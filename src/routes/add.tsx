@@ -21,6 +21,7 @@ import {
   type FileRecord,
   type FileRemark,
   type FirmDetail,
+  type FirmRatingConfig,
   type MasterFirm,
   type SpecialFileMarker,
   type AdvancePaymentDetail,
@@ -48,7 +49,17 @@ import {
   isAllActiveFilesYear,
 } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
+import {
+  getConfiguredFileTypeGroup,
+  isBiddingApplicableForFile,
+  isContractFileType,
+} from "@/lib/file-type-groups";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import {
+  formatFirmRatingScore,
+  calculateFirmRatingScore,
+  normalizeFirmRatingConfig,
+} from "@/lib/firm-rating";
 
 export const Route = createFileRoute("/add")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -86,8 +97,10 @@ const empty = {
   valueRevenueSelected: "",
   tcec: "NO",
   fileType: "Goods & Services",
+  fileTypeGroup: "goodsServices",
   mode: "",
   gem: "No",
+  gemBiddingMode: "",
   highValue: "No",
   ad: "No",
   rqa: "No",
@@ -139,6 +152,7 @@ const empty = {
   soValueRevenue: "",
   dpDate: "",
   firm: "",
+  bqBasis: "Firm",
   dpExtension: "No",
   dpExtensionCount: "",
   ld: "No",
@@ -159,6 +173,8 @@ const empty = {
   demandCancelledDate: "",
   soCancelled: "No",
   soCancelledDate: "",
+  shortclosure: "No",
+  shortclosureDate: "",
   fileClosureDate: "",
 };
 
@@ -233,6 +249,7 @@ const supplyOrderMilestoneDateKeys = {
   Delivery: "materialReceiptDate",
   "IR Preparation": "irPreparationDate",
   "IR Receipt": "irReceiptDate",
+  "Job Completion": "jobCompletionDate",
   "Bill preparation": "billPreparationDate",
   "Bill sent for payment": "billSentForPaymentDate",
   Payment: "paymentDate",
@@ -243,6 +260,7 @@ type FieldKey = keyof FormState;
 type SupplyOrderKey = keyof SupplyOrderDetail;
 type AdvancePaymentKey = keyof AdvancePaymentDetail;
 type StageDeliveryKey = keyof StageDeliveryDetail;
+const specialBoardSections = new Set(["Timeline", "Remarks Summary", "Milestones"]);
 
 function getEditFileHeading(form: FormState, file: FileRecord | undefined) {
   return (
@@ -291,6 +309,7 @@ function createFormFromFile(file: FileRecord, financialYear: string): FormState 
 
 function createFirmDetailsFromFile(file: FileRecord | undefined): FirmDetailsState {
   return {
+    bqFirms: normalizeFirmRows(file?.bqFirms),
     invitedFirms: normalizeFirmRows(file?.invitedFirms),
     bidderFirms: normalizeFirmRows(file?.bidderFirms),
   };
@@ -419,7 +438,7 @@ const tcecDisabledKeys: FieldKey[] = [
   "cncApprovalDate",
 ];
 
-const gemDisabledKeys: FieldKey[] = ["gemUndertakingDate", "gemSoNo"];
+const gemDisabledKeys: FieldKey[] = ["gemBiddingMode", "gemUndertakingDate", "gemSoNo"];
 const rfpVettingDisabledKeys: FieldKey[] = ["rfpVettingInitiationDate", "rfpVettingApprovalDate"];
 const highValueDisabledKeys: FieldKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
 const rqaDisabledKeys: FieldKey[] = ["rqaSentDate", "rqaApprovalDate"];
@@ -443,12 +462,14 @@ const tcecCommitteeKeys: FieldKey[] = ["preTcecCommitteeNo", "postTcecCommitteeN
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
+const gemBiddingModeOptions = ["", "Custom", "Catalogue", "Comparison"];
 const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
 const defaultFileTypeOptions = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const paymentModeOptions = ["Select", "Online", "Offline"];
 const bgCoverageTypeOptions = ["None", "PSB", "PWB", "PSB+PWB", "PSB and PWB separately"];
 type FirmDetailsState = {
+  bqFirms: FirmDetail[];
   invitedFirms: FirmDetail[];
   bidderFirms: FirmDetail[];
 };
@@ -531,6 +552,8 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   demandCancelled: "No",
   soCancelled: "No",
   soCancelledDate: "",
+  shortclosure: "No",
+  shortclosureDate: "",
   stageDelivery: "No",
   stageDeliveryCount: "",
   deliveryPeriodStartDate: "",
@@ -539,6 +562,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   advancePayment: "No",
   advancePaymentDetail: {},
   stageDeliveries: [],
+  firmRatingValues: {},
 };
 
 const emptyAdvancePayment: Required<AdvancePaymentDetail> = {
@@ -585,8 +609,6 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "dpDate", label: "D.P. date", type: "date" },
   { key: "firm", label: "Firm" },
   { key: "firmUniqueNo", label: "Firm Unique No." },
-  { key: "firmContactNo", label: "Contact No.", type: "number" },
-  { key: "firmCity", label: "City" },
   { key: "firmType", label: "Firm type" },
   { key: "psbApplicable", label: "PSB applicable", options: yesNo },
   { key: "bgCoverageType", label: "BG coverage type", options: bgCoverageTypeOptions },
@@ -619,6 +641,8 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "paymentDate", label: "Payment Date", type: "date" },
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "actualPaymentCapital", label: "Actual payment amount" },
+  { key: "shortclosure", label: "Shortclosure (Yes/No)", options: yesNo },
+  { key: "shortclosureDate", label: "Shortclosure date", type: "date" },
   { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
   { key: "stageDelivery", label: "Stage Delivery", control: "radio", options: yesNo },
@@ -664,8 +688,6 @@ const supplyOrderSubviewFields = {
     "soValueCapital",
     "firm",
     "firmUniqueNo",
-    "firmContactNo",
-    "firmCity",
     "firmType",
     "firmTypeOther",
     "stageDelivery",
@@ -702,7 +724,8 @@ const supplyOrderSubviewFields = {
     "paymentMode",
     "actualPaymentCapital",
   ],
-  miscellaneous: ["soCancelled", "soCancelledDate"],
+  firmRating: [],
+  miscellaneous: ["shortclosure", "shortclosureDate", "soCancelled", "soCancelledDate"],
 } satisfies Record<string, SupplyOrderKey[]>;
 
 const supplyOrderSubviewTabs = [
@@ -711,7 +734,8 @@ const supplyOrderSubviewTabs = [
   { key: "dp", label: "D.P." },
   { key: "delivery", label: "Delivery & Inspection" },
   { key: "payment", label: "Payment" },
-  { key: "miscellaneous", label: "Miscellaneous" },
+  { key: "firmRating", label: "Firm Rating" },
+  { key: "miscellaneous", label: "Shortclosure / Cancellation" },
 ] as const;
 
 const supplyOrderFieldPrerequisites = {
@@ -760,6 +784,8 @@ const supplyOrderFieldPrerequisites = {
   paymentDate: ["billSentForPaymentDate"],
   paymentMode: ["paymentDate"],
   actualPaymentCapital: ["paymentDate"],
+  shortclosure: ["soDate"],
+  shortclosureDate: ["shortclosure"],
   soCancelled: ["soDate"],
   soCancelledDate: ["soCancelled"],
 } satisfies Partial<Record<SupplyOrderKey, SupplyOrderKey[]>>;
@@ -772,6 +798,7 @@ const supplyOrderSubviewMilestones = {
   dp: ["Delivery Period"],
   delivery: ["Delivery", "Job Completion", "IR Preparation", "IR Receipt"],
   payment: ["Bill preparation", "Bill sent for payment", "Payment"],
+  firmRating: [],
   miscellaneous: [],
 } as const satisfies Record<SupplyOrderSubviewKey, readonly SupplyOrderMilestoneName[]>;
 
@@ -801,7 +828,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "currency", label: "Currency" },
       { key: "exchangeRate", label: "Exchange rate", type: "number" },
       { key: "gte", label: "GTE", options: yesNo },
-      { key: "receivedDate", label: "Received date", type: "date" },
+      { key: "receivedDate", label: "Demand received date", type: "date" },
       { key: "fileType", label: "File Type", options: defaultFileTypeOptions },
       { key: "mode", label: "Mode", options: defaultModeOptions },
       { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
@@ -859,6 +886,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
   {
     title: "Bidding details",
     fields: [
+      { key: "gemBiddingMode", label: "GeM Bidding Mode", options: gemBiddingModeOptions },
       { key: "gemUndertakingDate", label: "GeM undertaking date", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
@@ -967,6 +995,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         : createEmptyForm(effectiveFinancialYear),
     ),
   );
+  useEffect(() => {
+    const nextGroup = getConfiguredFileTypeGroup(form.fileType, settings.fileTypeGroups);
+    if (form.fileTypeGroup === nextGroup) return;
+    setForm((current) => ({ ...current, fileTypeGroup: nextGroup }));
+  }, [form.fileType, form.fileTypeGroup, settings.fileTypeGroups]);
   const [firmDetails, setFirmDetails] = useState<FirmDetailsState>(() =>
     createFirmDetailsFromFile(editingFile),
   );
@@ -1201,6 +1234,24 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const preBidMeetingIsNo = isNo(formWithLockedYear.preBidMeeting);
   const refloatIsNo = isNo(formWithLockedYear.refloat);
   const refloatPreBidMeetingIsNo = isNo(formWithLockedYear.refloatPreBidMeeting);
+  const biddingApplicable = isBiddingApplicableForFile(formWithLockedYear);
+  const gemComparisonNoBidding =
+    isYes(formWithLockedYear.gem) && formWithLockedYear.gemBiddingMode === "Comparison";
+  const visibleExtraSections = useMemo(
+    () =>
+      extraSections.filter(
+        (section) =>
+          biddingApplicable ||
+          (gemComparisonNoBidding && section.title === "Bidding details") ||
+          (section.title !== "Bidding details" && section.title !== "Firm details"),
+      ),
+    [biddingApplicable, gemComparisonNoBidding],
+  );
+  useEffect(() => {
+    if (specialBoardSections.has(activeBoardSection)) return;
+    if (visibleExtraSections.some((section) => section.title === activeBoardSection)) return;
+    setActiveBoardSection("Supply order and payment");
+  }, [activeBoardSection, visibleExtraSections]);
   const adDisabledByDivision = isDivisionAdNo(formWithLockedYear.division, divisions);
   const milestoneOptions = useMemo(
     () => getConfiguredMilestones(settings.milestones),
@@ -1304,8 +1355,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     });
   }, [fileLevelApplicableMilestones, fileLevelMilestoneOptions]);
 
-  const activeSection = extraSections.find((section) => section.title === activeBoardSection);
-  const activeSectionIndex = extraSections.findIndex(
+  const activeSection = visibleExtraSections.find((section) => section.title === activeBoardSection);
+  const activeSectionIndex = visibleExtraSections.findIndex(
     (section) => section.title === activeBoardSection,
   );
   const activeSectionCfaApprovalLocked = Boolean(
@@ -2020,6 +2071,17 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           );
         }
 
+        if (field.key === "gemBiddingMode" && !isYes(formWithLockedYear.gem)) {
+          return null;
+        }
+        if (
+          section.title === "Bidding details" &&
+          !biddingApplicable &&
+          field.key !== "gemBiddingMode"
+        ) {
+          return null;
+        }
+
         const dynamicFieldDisabled =
           field.key === "year" ||
           field.key === "uniqueCode" ||
@@ -2160,8 +2222,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       remarks: cleanFileRemarks(fileRemarks) ?? [],
       markers: cleanFileMarkers(fileMarkers) ?? [],
       activeYears,
-      invitedFirms: cleanFirmRows(firmDetails.invitedFirms) ?? [],
-      bidderFirms: cleanFirmRows(firmDetails.bidderFirms) ?? [],
+      bqBasis: biddingApplicable ? formWithLockedYear.bqBasis || "Firm" : "",
+      bqFirms:
+        biddingApplicable && formWithLockedYear.bqBasis === "Firm"
+          ? (cleanFirmRows(firmDetails.bqFirms) ?? [])
+          : [],
+      invitedFirms: biddingApplicable ? (cleanFirmRows(firmDetails.invitedFirms) ?? []) : [],
+      bidderFirms: biddingApplicable ? (cleanFirmRows(firmDetails.bidderFirms) ?? []) : [],
       currentMilestone: currentMilestoneForSave || null,
       completedMilestones: completedMilestonesForSave,
     };
@@ -2374,7 +2441,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           </p>
         </div>
 
-        <SectionBoard active={activeBoardSection} onOpen={setActiveBoardSection} />
+        <SectionBoard
+          active={activeBoardSection}
+          sections={visibleExtraSections}
+          onOpen={setActiveBoardSection}
+        />
 
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
           {uniqueCodeGateLocked ? (
@@ -2442,7 +2513,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
                   lockFilledFields={firmDetailsLocked}
                   firmUniqueNoLabel={settings.firmUniqueNoLabel || "Firm Unique No."}
+                  bqBasis={form.bqBasis || "Firm"}
                   quickFocus={Boolean(quickFocus && activeSection.title === "Firm details")}
+                  onBqBasisChange={(value) => update("bqBasis", value)}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
                   onPatch={patchFirmDetail}
@@ -2468,6 +2541,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
                   lockFilledFields={supplyOrdersLocked}
                   firmUniqueNoLabel={settings.firmUniqueNoLabel || "Firm Unique No."}
+                  firmRatingConfig={settings.firmRatingConfig}
                   firmTypeOptions={firmTypeOptions}
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
@@ -2530,7 +2604,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         </div>
         <div className="px-5 py-4 border-t border-border bg-secondary/40 flex flex-wrap items-center justify-between gap-2">
           <div>
-            {isEditing && !readOnlyMode && (
+            {isEditing && !readOnlyMode && activeSection?.title === "File details" && (
               <button
                 type="button"
                 onClick={deleteFile}
@@ -2582,16 +2656,18 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
 
 function SectionBoard({
   active,
+  sections,
   onOpen,
 }: {
   active: string;
+  sections: typeof extraSections;
   onOpen: (sectionTitle: string) => void;
 }) {
   const links = [
     "Timeline",
     "Remarks Summary",
     "Milestones",
-    ...extraSections.map((section) => section.title),
+    ...sections.map((section) => section.title),
   ];
 
   return (
@@ -3125,7 +3201,9 @@ function FirmDetailsBlock({
   disabled,
   lockFilledFields,
   firmUniqueNoLabel,
+  bqBasis,
   quickFocus,
+  onBqBasisChange,
   onAdd,
   onChange,
   onPatch,
@@ -3137,7 +3215,9 @@ function FirmDetailsBlock({
   disabled: boolean;
   lockFilledFields: boolean;
   firmUniqueNoLabel: string;
+  bqBasis: string;
   quickFocus?: boolean;
+  onBqBasisChange: (value: string) => void;
   onAdd: (group: keyof FirmDetailsState) => void;
   onChange: (
     group: keyof FirmDetailsState,
@@ -3149,11 +3229,12 @@ function FirmDetailsBlock({
   onDelete: (group: keyof FirmDetailsState, index: number) => void;
   onDeleteSelected: (group: keyof FirmDetailsState, indexes: number[]) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("invitedFirms");
+  const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("bqFirms");
   const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
   const [firmSaveMessage, setFirmSaveMessage] = useState<string | undefined>();
   const tabs: { key: keyof FirmDetailsState; label: string }[] = [
+    { key: "bqFirms", label: "BQ" },
     { key: "invitedFirms", label: "Invited" },
     { key: "bidderFirms", label: "Bidders" },
   ];
@@ -3162,9 +3243,12 @@ function FirmDetailsBlock({
   const firmQuickFocusAppliedRef = useRef("");
   const latestFirmRowsRef = useRef(rows);
   const firmCounts = {
+    bqFirms: details.bqFirms.length,
     invitedFirms: details.invitedFirms.length,
     bidderFirms: details.bidderFirms.length,
   };
+  const bqBasisOptions = ["Firm", "GeM", "User estimate", "LPP"];
+  const showFirmRows = activeTab !== "bqFirms" || bqBasis === "Firm";
   const selectedIndexes = [...selectedRows].filter((index) => index < rows.length);
   const firmNameOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
@@ -3307,7 +3391,34 @@ function FirmDetailsBlock({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="inline-flex rounded-lg border border-border bg-background p-1">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={
+              "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
+              (activeTab === tab.key
+                ? "bg-secondary text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground")
+            }
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <label className="block">
+          <div className="mb-1.5 text-xs font-medium">BQ firms</div>
+          <input
+            value={bqBasis === "Firm" ? firmCounts.bqFirms : 0}
+            readOnly
+            disabled={disabled}
+            className={inputCls + disabledCls(disabled)}
+          />
+        </label>
         <label className="block">
           <div className="mb-1.5 text-xs font-medium">Invited firms</div>
           <input
@@ -3328,23 +3439,21 @@ function FirmDetailsBlock({
         </label>
       </div>
 
-      <div className="inline-flex rounded-lg border border-border bg-background p-1">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setActiveTab(tab.key)}
-            className={
-              "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
-              (activeTab === tab.key
-                ? "bg-secondary text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
+      {activeTab === "bqFirms" ? (
+        <label className="block max-w-xs">
+          <div className="mb-1.5 text-xs font-medium">BQ</div>
+          <select
+            value={bqBasis || "Firm"}
+            onChange={(event) => onBqBasisChange(event.target.value)}
+            disabled={disabled}
+            className={inputCls + disabledCls(disabled)}
           >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+            {bqBasisOptions.map((option) => (
+              <option key={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-muted-foreground">{selectedIndexes.length} selected</div>
@@ -3382,7 +3491,8 @@ function FirmDetailsBlock({
         </div>
       ) : null}
 
-      <div className="space-y-3">
+      {showFirmRows ? (
+        <div className="space-y-3">
         {rows.map((row, index) => {
           const lockedRow = lockedDetails[activeTab][index];
           const rowHasValue =
@@ -3555,9 +3665,11 @@ function FirmDetailsBlock({
             </div>
           );
         })}
-      </div>
+        </div>
+      ) : null}
 
-      <button
+      {showFirmRows ? (
+        <button
         ref={(element) => {
           firmInputRefs.current.addFirm = element;
         }}
@@ -3570,7 +3682,8 @@ function FirmDetailsBlock({
         }
       >
         Add firm
-      </button>
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -3583,6 +3696,7 @@ function SupplyOrdersBlock({
   disabled,
   lockFilledFields,
   firmUniqueNoLabel,
+  firmRatingConfig,
   firmTypeOptions,
   gemDisabled,
   bgDisabled,
@@ -3607,6 +3721,7 @@ function SupplyOrdersBlock({
   disabled: boolean;
   lockFilledFields: boolean;
   firmUniqueNoLabel: string;
+  firmRatingConfig?: FirmRatingConfig;
   firmTypeOptions: string[];
   gemDisabled: boolean;
   bgDisabled: boolean;
@@ -3652,6 +3767,7 @@ function SupplyOrdersBlock({
   const effectiveIrDisabled = irDisabled || deliveryInspectionInactive;
   const focusConfig = useMemo(() => parseSupplyOrderFocusTarget(focusTarget), [focusTarget]);
   const effectiveFocusSubview = focusConfig?.subview;
+  const ratingFields = normalizeFirmRatingConfig(firmRatingConfig).fields;
   const focusBlockKeys = useMemo(
     () => (focusConfig ? getSupplyOrderFocusKeys(orders, focusConfig, form) : []),
     [focusConfig, form, orders],
@@ -3805,7 +3921,9 @@ function SupplyOrdersBlock({
         />
       ) : null}
 
-      {!activeSubviewFields.length && !activeSubviewMilestones.length ? (
+      {!activeSubviewFields.length &&
+      !activeSubviewMilestones.length &&
+      activeSubview !== "firmRating" ? (
         <div className="rounded-md border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
           No fields in this tab.
         </div>
@@ -3841,7 +3959,7 @@ function SupplyOrdersBlock({
         </div>
       ) : null}
 
-      {activeSubviewFields.length || activeSubviewMilestones.length
+      {activeSubviewFields.length || activeSubviewMilestones.length || activeSubview === "firmRating"
         ? orders.map((order, index) => {
             const lockedOrder = lockedOrders[index];
             const stageFields =
@@ -3872,7 +3990,7 @@ function SupplyOrdersBlock({
             const fieldsToRender = activeSubviewFields.filter((field) =>
               shouldShowSupplyOrderField(field.key as SupplyOrderKey, order),
             );
-            const completion = getSupplyOrderSubviewCompletion({
+            const baseCompletion = getSupplyOrderSubviewCompletion({
               activeSubview,
               order,
               fieldsToRender,
@@ -3881,8 +3999,21 @@ function SupplyOrdersBlock({
               bgDisabled,
               irDisabled: effectiveIrDisabled,
             });
+            const ratingValues = order.firmRatingValues ?? {};
+            const ratingScore = calculateFirmRatingScore(ratingValues, firmRatingConfig);
+            const ratingFilled = ratingFields.filter((field) =>
+              hasFilledValue(ratingValues[field.id]),
+            ).length;
+            const completion =
+              activeSubview === "firmRating"
+                ? getFirmRatingCompletion(ratingFilled, ratingFields.length)
+                : baseCompletion;
             const orderTitle = getSupplyOrderDisplayTitle(order, index);
-            const orderSummary = getSupplyOrderDisplaySummary(order, form.fileType);
+            const orderSummary = getSupplyOrderDisplaySummary(
+              order,
+              form.fileType,
+              form.fileTypeGroup,
+            );
             const orderFocusKey = `order:${index}`;
             const directOrderFocusMatch = focusBlockKeySet.has(orderFocusKey);
             const childFocusMatch = focusBlockKeys.some(
@@ -3945,6 +4076,25 @@ function SupplyOrdersBlock({
                   </span>
                 </summary>
                 <div className="border-t border-border bg-secondary/15 p-4">
+                  {activeSubview === "firmRating" ? (
+                    <FirmRatingFieldsBlock
+                      fields={ratingFields}
+                      values={ratingValues}
+                      score={ratingScore}
+                      disabled={disabled || downstreamLocked}
+                      lockFilledFields={lockFilledFields}
+                      lockedValues={lockedOrder?.firmRatingValues}
+                      onChange={(fieldId, value) =>
+                        onOrderPatch(index, {
+                          firmRatingValues: {
+                            ...(order.firmRatingValues ?? {}),
+                            [fieldId]: value,
+                          },
+                        })
+                      }
+                    />
+                  ) : null}
+
                   {orderMilestones.length && !useStageCards ? (
                     <SupplyOrderMilestonesBlock
                       milestones={orderMilestones}
@@ -4584,6 +4734,53 @@ function SupplyOrdersBlock({
   );
 }
 
+function FirmRatingFieldsBlock({
+  fields,
+  values,
+  lockedValues,
+  score,
+  disabled,
+  lockFilledFields,
+  onChange,
+}: {
+  fields: FirmRatingConfig["fields"];
+  values: Record<string, string>;
+  lockedValues?: Record<string, string>;
+  score: number | undefined;
+  disabled: boolean;
+  lockFilledFields: boolean;
+  onChange: (fieldId: string, value: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {fields.map((field) => {
+          const fieldDisabled =
+            disabled || (lockFilledFields && hasFilledValue(lockedValues?.[field.id]));
+          return (
+            <label key={field.id} className="block">
+              <div className="mb-1.5 text-xs font-medium">{field.label}</div>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={values[field.id] ?? ""}
+                onChange={(event) => onChange(field.id, event.target.value)}
+                disabled={fieldDisabled}
+                className={inputCls + disabledCls(fieldDisabled)}
+              />
+            </label>
+          );
+        })}
+      </div>
+      <div className="rounded-md border border-border bg-background px-4 py-3 text-sm">
+        <span className="font-medium">Final score: </span>
+        <span className="text-muted-foreground">{formatFirmRatingScore(score) || "Not rated"}</span>
+      </div>
+    </div>
+  );
+}
+
 type SupplyOrderFocusConfig = {
   kind: string;
   state: string;
@@ -4800,12 +4997,12 @@ function getEffectiveStageFocusRow(
     actualPaymentCapital: useStagePayment
       ? (stage.actualPaymentCapital ?? "")
       : useCommonPayment
-        ? parentOrder.actualPaymentCapital || parentOrder.soValueCapital
+        ? parentOrder.actualPaymentCapital
         : "",
     actualPaymentRevenue: useStagePayment
       ? (stage.actualPaymentRevenue ?? "")
       : useCommonPayment
-        ? parentOrder.actualPaymentRevenue || parentOrder.soValueRevenue
+        ? parentOrder.actualPaymentRevenue
         : "",
   };
 }
@@ -4889,7 +5086,7 @@ function isFocusRowMatch(
   }
 
   if (config.kind === "delivery") {
-    if (isJobCompletionWorkflow(form.fileType, form.ir)) {
+    if (isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
       if (state === "completed" || state === "received") return isJobCompletionDone(row);
       if (state === "overdue")
         return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
@@ -4909,7 +5106,7 @@ function isFocusRowMatch(
   }
 
   if (config.kind === "jobcompletion") {
-    if (!isJobCompletionWorkflow(form.fileType, form.ir)) return false;
+    if (!isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) return false;
     if (state === "completed" || state === "received") return isJobCompletionDone(row);
     return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir).current;
   }
@@ -5101,7 +5298,6 @@ function hasPaymentWorkflowStarted(
   form: Pick<FormState, "fileType" | "ir">,
 ) {
   return (
-    normalizeMilestoneName(row.currentMilestone) === "payment" ||
     hasFilledValue(row.billPreparationDate) ||
     hasFilledValue(row.billSentForPaymentDate) ||
     isPaymentDueByDeliveryOrPeriod(row, form)
@@ -5112,7 +5308,7 @@ function isPaymentDueByDeliveryOrPeriod(
   row: SupplyOrderFocusRow,
   form: Pick<FormState, "fileType" | "ir">,
 ) {
-  if (!isJobCompletionWorkflow(form.fileType, form.ir)) {
+  if (!isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
     return hasFilledValue(isYes(form.ir) ? row.materialReceiptDate : row.jobCompletionDate);
   }
   return isJobCompletionDone(row);
@@ -5126,7 +5322,18 @@ type CompletionCount = {
 };
 
 function isDownstreamSubview(activeSubview: SupplyOrderSubviewKey) {
-  return activeSubview === "delivery" || activeSubview === "payment";
+  return activeSubview === "delivery" || activeSubview === "payment" || activeSubview === "firmRating";
+}
+
+function getFirmRatingCompletion(filled: number, total: number) {
+  const status: SupplyOrderCompletionStatus =
+    total === 0 || filled === 0 ? "empty" : filled >= total ? "complete" : "partial";
+  return {
+    status,
+    filled,
+    total,
+    label: status === "complete" ? "Complete" : status === "partial" ? "Partial" : "Empty",
+  };
 }
 
 function isSupplyOrderAndDpComplete(order: SupplyOrderDetail, form: FormState) {
@@ -5204,7 +5411,10 @@ function getSupplyOrderSubviewCompletion({
     getStageDeliveryCount(order.stageDeliveryCount),
   );
 
-  if (activeSubview === "delivery" && isJobCompletionWorkflow(form.fileType, form.ir)) {
+  if (
+    activeSubview === "delivery" &&
+    isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
+  ) {
     const counts = useStageCards
       ? stageDeliveries.reduce<CompletionCount>(
           (current, stage) => addSingleCompletion(current, isJobCompletionDone(stage)),
@@ -5301,7 +5511,10 @@ function getSingleStageCompletion({
   form: FormState;
   irDisabled: boolean;
 }) {
-  if (activeSubview === "delivery" && isJobCompletionWorkflow(form.fileType, form.ir)) {
+  if (
+    activeSubview === "delivery" &&
+    isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
+  ) {
     let counts = addSingleCompletion({ filled: 0, total: 0 }, isJobCompletionDone(stage));
     counts = addSingleCompletion(counts, hasFilledValue(stage.jobCompletionDate));
     const status = getCompletionStatus(counts);
@@ -5474,7 +5687,7 @@ function hasMeaningfulSupplyOrderValue(
 ) {
   const normalized = value.trim();
   if (!normalized) return false;
-  if (["dpExtension", "ld", "soCancelled"].includes(key)) {
+  if (["dpExtension", "ld", "soCancelled", "shortclosure"].includes(key)) {
     return isYes(normalized);
   }
   if (["stageDelivery", "stagePayment", "advancePayment"].includes(key)) {
@@ -5488,8 +5701,12 @@ function getSupplyOrderDisplayTitle(order: SupplyOrderDetail, index: number) {
   return order.soNo?.trim() || order.gemSoNo?.trim() || `Supply Order ${index + 1}`;
 }
 
-function getSupplyOrderDisplaySummary(order: SupplyOrderDetail, fileType: string) {
-  const stageDpLabel = getStageDpRibbonLabel(order, fileType);
+function getSupplyOrderDisplaySummary(
+  order: SupplyOrderDetail,
+  fileType: string,
+  fileTypeGroup?: string,
+) {
+  const stageDpLabel = getStageDpRibbonLabel(order, fileType, fileTypeGroup);
   return [
     order.firm,
     order.soDate ? `S.O. date ${order.soDate}` : "",
@@ -5500,8 +5717,12 @@ function getSupplyOrderDisplaySummary(order: SupplyOrderDetail, fileType: string
     .join(" | ");
 }
 
-function getStageDpRibbonLabel(order: SupplyOrderDetail, fileType: string) {
-  if (!isStageDeliveryFileType(fileType) || !isYes(order.stageDelivery)) return "";
+function getStageDpRibbonLabel(
+  order: SupplyOrderDetail,
+  fileType: string,
+  fileTypeGroup?: string,
+) {
+  if (!isContractFileType({ fileType, fileTypeGroup }) || !isYes(order.stageDelivery)) return "";
   const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
   if (stageCount <= 1 || !order.stageDeliveries?.length) return "";
   const stages = resizeStageDeliveries(order.stageDeliveries, stageCount);
@@ -5552,9 +5773,7 @@ function getDerivedDeliveryMilestoneState(row: MilestoneRowState, fileType?: str
 }
 
 function isJobCompletionDone(row: MilestoneRowState) {
-  return normalizeCompletedMilestones(row.completedMilestones).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+  return isCompleteDateValue(String(row.jobCompletionDate ?? ""));
 }
 
 function getDerivedJobCompletionMilestoneState(
@@ -5563,8 +5782,6 @@ function getDerivedJobCompletionMilestoneState(
   ir?: string,
 ) {
   const completed = isJobCompletionWorkflow(fileType, ir) && isJobCompletionDone(row);
-  const manualCurrent =
-    normalizeMilestoneName(String(row.currentMilestone ?? "")) === "jobcompletion";
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const autoCurrent =
     isJobCompletionWorkflow(fileType, ir) &&
@@ -5573,9 +5790,8 @@ function getDerivedJobCompletionMilestoneState(
     isCompleteDateValue(String(row.soDate ?? "")) &&
     isCompleteDateValue(effectiveDp ?? "") &&
     effectiveDp! < formatLocalDate(new Date());
-  const current =
-    isJobCompletionWorkflow(fileType, ir) && !completed && (manualCurrent || autoCurrent);
-  return { current, completed, manualCurrent, autoCurrent };
+  const current = isJobCompletionWorkflow(fileType, ir) && !completed && autoCurrent;
+  return { current, completed, autoCurrent };
 }
 
 function isAutoCurrentSupplyOrderMilestone(
@@ -5626,7 +5842,11 @@ function isAutoCurrentSupplyOrderMilestone(
     );
   }
   if (milestone === "Bill preparation") {
-    return false;
+    if (isCompleteDateValue(String(row.billPreparationDate ?? ""))) return false;
+    if (isJobCompletionWorkflow(fileType, ir)) {
+      return isCompleteDateValue(String(row.jobCompletionDate ?? ""));
+    }
+    return isYes(String(ir ?? "")) && isCompleteDateValue(String(row.irReceiptDate ?? ""));
   }
   if (milestone === "Bill sent for payment") {
     return (
@@ -5679,6 +5899,7 @@ function SupplyOrderMilestonesBlock({
       milestone === "PSB+PWB" ||
       milestone === "IR Preparation" ||
       milestone === "IR Receipt" ||
+      milestone === "Job Completion" ||
       milestone === "Bill preparation" ||
       milestone === "Bill sent for payment" ||
       milestone === "Payment"
@@ -5718,6 +5939,7 @@ function SupplyOrderMilestonesBlock({
           milestone === "PSB+PWB" ||
           milestone === "IR Preparation" ||
           milestone === "IR Receipt" ||
+          milestone === "Job Completion" ||
           milestone === "Bill preparation" ||
           milestone === "Bill sent for payment" ||
           milestone === "Payment";
@@ -5745,7 +5967,7 @@ function SupplyOrderMilestonesBlock({
         const isCompleted = isDeliveryMilestone
           ? derivedDelivery.completed
           : isJobCompletionMilestone
-            ? completedSet.has(milestone)
+            ? getDerivedJobCompletionMilestoneState(order, fileType, ir).completed
             : isDateDrivenMilestone
               ? milestone === "Supply Order"
                 ? isSupplyOrderTabComplete(order, completionForm)
@@ -5760,7 +5982,12 @@ function SupplyOrderMilestonesBlock({
         const currentDisabled =
           disabled ||
           lockFilledFields ||
+          milestone === "Financial Sanction" ||
           isDeliveryMilestone ||
+          isJobCompletionMilestone ||
+          milestone === "Bill preparation" ||
+          milestone === "Bill sent for payment" ||
+          milestone === "Payment" ||
           isAutoCurrentMilestone ||
           isDerivedCurrentMilestone ||
           (milestone === "Payment" &&
@@ -5770,7 +5997,11 @@ function SupplyOrderMilestonesBlock({
             !isCompleteDateValue(String(order.financialSanctionDate ?? ""))) ||
           isCompleted;
         const completedDisabled =
-          disabled || lockFilledFields || isDeliveryMilestone || isDateDrivenMilestone;
+          disabled ||
+          lockFilledFields ||
+          isDeliveryMilestone ||
+          isJobCompletionMilestone ||
+          isDateDrivenMilestone;
         return (
           <div
             key={milestone}
@@ -6549,7 +6780,7 @@ function getStageTimelineItems(
 ) {
   if (!isYes(order.stageDelivery ?? "") || !order.stageDeliveries?.length) return [];
   const stageDateFields = stageDeliveryFields.filter((field) => field.type === "date");
-  const stageLabel = isJobCompletionWorkflow(form.fileType, form.ir)
+  const stageLabel = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
     ? "Delivery Period"
     : "Delivery";
   return resizeStageDeliveries(
@@ -6688,6 +6919,19 @@ function exportFirmDetails(details: FirmDetailsState, format: "excel" | "pdf") {
     title: "Firm Details",
     fileName: `${getExportFileName("firm-details")}.${format === "excel" ? "xls" : "pdf"}`,
     tables: [
+      {
+        title: "BQ firms",
+        headers: [
+          "S.No.",
+          "Firm name",
+          firmUniqueNoLabel,
+          "Email",
+          "Address",
+          "City",
+          "Contact No.",
+        ],
+        rows: firmRows(details.bqFirms),
+      },
       {
         title: "Invited firms",
         headers: [
@@ -7089,6 +7333,9 @@ function isMilestoneApplicableToFile(
   const key = normalizeMilestoneName(milestone);
 
   if (key === "highvalue") return isYes(form.highValue);
+  if (key === "bidding" || key === "prebidmeeting" || key === "refloatprebidmeeting") {
+    return isBiddingApplicableForFile(form);
+  }
   if (key === "pretcec" || key === "posttcec" || key === "cnc") return isYes(form.tcec);
   if (key === "ad") return isYes(form.ad) && !isDivisionAdNo(form.division, divisions);
   if (key === "rqa") return isYes(form.rqa);
@@ -7110,7 +7357,7 @@ function isMilestoneApplicableToFile(
   if (key === "psbpwb")
     return isYes(form.bg) && supplyOrders.some((order) => order.bgCoverageType === "PSB+PWB");
   if (key === "irpreparation" || key === "irreceipt") {
-    return isYes(form.ir) && !isJobCompletionWorkflow(form.fileType, form.ir);
+    return isYes(form.ir) && !isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup);
   }
 
   return true;
@@ -7242,7 +7489,10 @@ function getApplicableSupplyOrderMilestones(
 function getSupplyOrderMilestoneProgress(
   milestones: string[],
   orders: SupplyOrderDetail[],
-  form: Pick<FormState, "bg" | "ir" | "fileType">,
+  form: Pick<
+    FormState,
+    "bg" | "ir" | "fileType" | "mode" | "biddingStageOver" | "tcec" | "cfaDate" | "cncApprovalDate"
+  >,
   forceUse = shouldUseSupplyOrderMilestones(orders),
   mainCurrentMilestone = "",
 ): Record<string, MilestoneProgress> {
@@ -7262,13 +7512,23 @@ function getSupplyOrderMilestoneProgress(
       ).length;
       const partiallyCompleted = completed > 0 && completed < applicableOrders.length;
       const current =
-        applicableOrders.some(
-          (order) =>
-            normalizeMilestoneName(order.currentMilestone ?? "") ===
-              normalizeMilestoneName(orderMilestone) ||
-            isAutoCurrentSupplyOrderMilestone(order, orderMilestone, form.fileType, form.ir),
-        ) ||
-        normalizeMilestoneName(mainCurrentMilestone) === normalizeMilestoneName(orderMilestone) ||
+        applicableOrders.some((order) => {
+          if (orderMilestone === "Financial Sanction") {
+            return (
+              isFinancialSanctionReachedForForm(form) &&
+              !isYes(order.soCancelled ?? "") &&
+              !isCompleteDateValue(order.financialSanctionDate ?? "")
+            );
+          }
+          return (
+            (normalizeMilestoneName(orderMilestone) !== "billpreparation" &&
+              normalizeMilestoneName(order.currentMilestone ?? "") ===
+                normalizeMilestoneName(orderMilestone)) ||
+            isAutoCurrentSupplyOrderMilestone(order, orderMilestone, form.fileType, form.ir)
+          );
+        }) ||
+        (orderMilestone !== "Financial Sanction" &&
+          normalizeMilestoneName(mainCurrentMilestone) === normalizeMilestoneName(orderMilestone)) ||
         partiallyCompleted;
       return [
         [normalizeMilestoneName(milestone), { completed, total: applicableOrders.length, current }],
@@ -7285,7 +7545,7 @@ function getDeliveryMilestoneProgress(
     (order) => isCompleteDateValue(order.soDate ?? "") && !isYes(order.soCancelled),
   );
   if (!rows.length) return undefined;
-  if (isJobCompletionWorkflow(form.fileType, form.ir)) {
+  if (isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
     const completed = rows.filter(isJobCompletionDone).length;
     const current =
       rows.some(
@@ -7667,8 +7927,16 @@ function cleanSupplyOrderRows(
     paymentMode: cleanPaymentModeValue(row.paymentMode) || undefined,
     actualPaymentCapital: row.actualPaymentCapital || undefined,
     actualPaymentRevenue: row.actualPaymentRevenue || undefined,
+    shortclosure: row.shortclosure || undefined,
+    shortclosureDate:
+      isYes(row.shortclosure ?? "") && hasFilledValue(row.shortclosureDate)
+        ? row.shortclosureDate
+        : undefined,
     soCancelled: row.soCancelled || undefined,
-    soCancelledDate: row.soCancelledDate || undefined,
+    soCancelledDate:
+      isYes(row.soCancelled ?? "") && hasFilledValue(row.soCancelledDate)
+        ? row.soCancelledDate
+        : undefined,
     stageDelivery: row.stageDelivery || undefined,
     stageDeliveryCount: row.stageDeliveryCount || undefined,
     stagePayment: row.stagePayment || undefined,
@@ -7708,6 +7976,9 @@ function getStageDeliveryWarnings(
 
     if (isYes(order.soCancelled ?? "") && !hasFilledValue(order.soCancelledDate)) {
       warnings.push(`${orderLabel}: S.O. cancelled is Yes, but S.O. cancelled date is blank.`);
+    }
+    if (isYes(order.shortclosure ?? "") && !hasFilledValue(order.shortclosureDate)) {
+      warnings.push(`${orderLabel}: Shortclosure is Yes, but Shortclosure date is blank.`);
     }
 
     if (orderPaymentCompleted && !hasAnyOrderPaymentDate(order)) {
@@ -7867,12 +8138,7 @@ function areRequiredBankGuaranteesReceived(
 }
 
 function isFinancialSanctionCompletedForOrder(order: MilestoneRowState | SupplyOrderDetail) {
-  return (
-    isCompleteDateValue(order.financialSanctionDate ?? "") ||
-    normalizeCompletedMilestones(order.completedMilestones).some(
-      (milestone) => normalizeMilestoneName(milestone) === "financialsanction",
-    )
-  );
+  return isCompleteDateValue(order.financialSanctionDate ?? "");
 }
 
 function isBankGuaranteePendingMilestoneRow(order: MilestoneRowState | SupplyOrderDetail) {
@@ -8164,12 +8430,17 @@ function cleanStageDeliveryRows(
       : normalized;
     const deliveryState = getDerivedDeliveryMilestoneState(effectiveRow, form?.fileType, form?.ir);
     const completedMilestones = normalizeCompletedMilestones(normalized.completedMilestones)
-      .filter((milestone) => normalizeMilestoneName(milestone) !== "delivery")
-      .concat(deliveryState.completed ? ["Delivery"] : []);
+      .filter(
+        (milestone) => !["delivery", "jobcompletion"].includes(normalizeMilestoneName(milestone)),
+      )
+      .concat(deliveryState.completed ? ["Delivery"] : [])
+      .concat(isJobCompletionDone(normalized) ? ["Job Completion"] : []);
+    const normalizedCurrent = normalizeMilestoneName(normalized.currentMilestone ?? "");
     const currentMilestone =
-      !isJobCompletionWorkflow(form?.fileType, form?.ir) && deliveryState.current
+      !isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
+      deliveryState.current
         ? "Delivery"
-        : normalizeMilestoneName(normalized.currentMilestone ?? "") === "delivery"
+        : ["delivery", "payment"].includes(normalizedCurrent)
           ? ""
           : normalized.currentMilestone;
     return {
@@ -8235,6 +8506,8 @@ function firstSupplyOrderMirrorPatch(rows: SupplyOrderDetail[]) {
     paymentMode: first.paymentMode || null,
     actualPaymentCapital: first.actualPaymentCapital || null,
     actualPaymentRevenue: first.actualPaymentRevenue || null,
+    shortclosure: first.shortclosure || null,
+    shortclosureDate: first.shortclosureDate || null,
     soCancelled: first.soCancelled || null,
     soCancelledDate: first.soCancelledDate || null,
     stageDelivery: first.stageDelivery || null,
@@ -8269,6 +8542,8 @@ function emptyFirstSupplyOrderMirrorPatch() {
     paymentMode: null,
     actualPaymentCapital: null,
     actualPaymentRevenue: null,
+    shortclosure: null,
+    shortclosureDate: null,
     soCancelled: null,
     soCancelledDate: null,
     stageDelivery: null,
@@ -8325,11 +8600,39 @@ function hasPlacedSupplyOrderRows(rows: SupplyOrderDetail[]) {
 }
 
 function hasSavedFirmDetails(file: FileRecord | undefined) {
-  return Boolean(cleanFirmRows(file?.invitedFirms ?? []) || cleanFirmRows(file?.bidderFirms ?? []));
+  return Boolean(
+    cleanFirmRows(file?.bqFirms ?? []) ||
+      cleanFirmRows(file?.invitedFirms ?? []) ||
+      cleanFirmRows(file?.bidderFirms ?? []),
+  );
 }
 
 function applyConditionalRules(form: FormState) {
   let next = normalizeBlankYesNoFields(form);
+  if (!isBiddingApplicableForFile(next)) {
+    next = {
+      ...next,
+      gemUndertakingDate:
+        isYes(next.gem) && next.gemBiddingMode === "Comparison" ? next.gemUndertakingDate : "",
+      rfpVetting: "No",
+      rfpVettingInitiationDate: "",
+      rfpVettingApprovalDate: "",
+      preBidMeeting: "No",
+      preBidMeetingDate: "",
+      bidNumber: "",
+      bidDate: "",
+      bidOpeningDate: "",
+      tenderLive: "No",
+      bidOpened: "NO",
+      refloat: "No",
+      refloatPreBidMeeting: "No",
+      refloatPreBidMeetingDate: "",
+      refloatBiddingDate: "",
+      refloatBidOpeningDate: "",
+      rst: "No",
+      biddingStageOver: "No",
+    };
+  }
   if (isInr(next.currency) && !next.exchangeRate) {
     next = {
       ...next,
@@ -8370,6 +8673,7 @@ function applyConditionalRules(form: FormState) {
   if (isNo(next.gem)) {
     next = {
       ...next,
+      gemBiddingMode: "",
       gemUndertakingDate: "",
       gemSoNo: "",
     };
@@ -8499,6 +8803,7 @@ const defaultNoFieldValues = {
   biddingStageOver: "No",
   demandCancelled: "No",
   soCancelled: "No",
+  shortclosure: "No",
 } as const satisfies Partial<Record<FieldKey, string>>;
 
 function normalizeBlankYesNoFields(form: FormState) {
@@ -8694,7 +8999,18 @@ function normalizeSupplyOrderMilestoneState(
     | Partial<
         Pick<
           FormState,
-          "bg" | "ir" | "fileType" | "gem" | "valueCapitalSelected" | "valueRevenueSelected"
+          | "bg"
+          | "ir"
+          | "fileType"
+          | "fileTypeGroup"
+          | "mode"
+          | "biddingStageOver"
+          | "tcec"
+          | "cfaDate"
+          | "cncApprovalDate"
+          | "gem"
+          | "valueCapitalSelected"
+          | "valueRevenueSelected"
         >
       >
     | undefined,
@@ -8737,6 +9053,7 @@ function normalizeSupplyOrderMilestoneState(
         normalized !== "psbpwb" &&
         normalized !== "irpreparation" &&
         normalized !== "irreceipt" &&
+        normalized !== "jobcompletion" &&
         normalized !== "billpreparation" &&
         normalized !== "billsentforpayment" &&
         normalized !== "payment"
@@ -8762,6 +9079,9 @@ function normalizeSupplyOrderMilestoneState(
     ...(isCompleteDateValue(order.irReceiptDate ?? "") && irReceiptMilestone
       ? [irReceiptMilestone]
       : []),
+    ...(isCompleteDateValue(order.jobCompletionDate ?? "") && jobCompletionMilestone
+      ? [jobCompletionMilestone]
+      : []),
     ...(isCompleteDateValue(order.billPreparationDate ?? "") && billPreparationMilestone
       ? [billPreparationMilestone]
       : []),
@@ -8778,27 +9098,27 @@ function normalizeSupplyOrderMilestoneState(
     : completedWithDateDrivenMilestones;
   const rawManualCurrentMilestone =
     applicableByKey.get(normalizeMilestoneName(order.currentMilestone ?? "")) ?? "";
-  const manualCurrentMilestone = ["psb", "pwb", "psbpwb"].includes(
-    normalizeMilestoneName(rawManualCurrentMilestone),
-  )
+  const manualCurrentMilestone = [
+    "financialsanction",
+    "psb",
+    "pwb",
+    "psbpwb",
+    "jobcompletion",
+    "billpreparation",
+    "billsentforpayment",
+    "payment",
+  ].includes(normalizeMilestoneName(rawManualCurrentMilestone))
     ? ""
     : rawManualCurrentMilestone;
-  const financialSanctionReached =
-    Boolean(form) &&
-    isYes(form.biddingStageOver) &&
-    (!isYes(form.tcec) || hasFilledValue(form.cncApprovalDate));
+  const financialSanctionReached = Boolean(form) && isFinancialSanctionReachedForForm(form);
   const financialSanctionBecomesCurrent =
     financialSanctionReached &&
     !isCompleteDateValue(order.financialSanctionDate ?? "") &&
-    Boolean(financialSanctionMilestone) &&
-    (!manualCurrentMilestone ||
-      normalizeMilestoneName(manualCurrentMilestone) === "financialsanction");
+    Boolean(financialSanctionMilestone);
   const financialSanctionMovesToSupplyOrder =
     isCompleteDateValue(order.financialSanctionDate ?? "") &&
     !isCompleteDateValue(order.soDate ?? "") &&
-    Boolean(supplyOrderMilestone) &&
-    (!manualCurrentMilestone ||
-      normalizeMilestoneName(manualCurrentMilestone) === "financialsanction");
+    Boolean(supplyOrderMilestone);
   const supplyOrderMovesToDeliveryPeriod =
     isSupplyOrderTabComplete(order, form) &&
     !isCompleteDateValue(order.dpDate ?? "") &&
@@ -8814,6 +9134,17 @@ function normalizeSupplyOrderMilestoneState(
     !isCompleteDateValue(order.irReceiptDate ?? "") &&
     Boolean(irReceiptMilestone) &&
     (!manualCurrentMilestone || normalizeMilestoneName(manualCurrentMilestone) === "irpreparation");
+  const billPreparationBecomesCurrent =
+    isAutoCurrentSupplyOrderMilestone(
+      order as MilestoneRowState,
+      "Bill preparation",
+      form?.fileType,
+      form?.ir,
+    ) &&
+    Boolean(billPreparationMilestone) &&
+    (!manualCurrentMilestone ||
+      normalizeMilestoneName(manualCurrentMilestone) === "irreceipt" ||
+      normalizeMilestoneName(manualCurrentMilestone) === "jobcompletion");
   const billPreparationMovesToBillSent =
     isCompleteDateValue(order.billPreparationDate ?? "") &&
     !isCompleteDateValue(order.billSentForPaymentDate ?? "") &&
@@ -8821,7 +9152,7 @@ function normalizeSupplyOrderMilestoneState(
     (!manualCurrentMilestone ||
       normalizeMilestoneName(manualCurrentMilestone) === "billpreparation");
   const jobCompletionMovesToPayment =
-    isJobCompletionWorkflow(form?.fileType, form?.ir) &&
+    isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
     isJobCompletionDone(order) &&
     !isCompleteDateValue(order.paymentDate ?? "") &&
     Boolean(paymentMilestone) &&
@@ -8839,7 +9170,7 @@ function normalizeSupplyOrderMilestoneState(
     (normalizeMilestoneName(manualCurrentMilestone) === "payment" ||
       isCompleteDateValue(order.paymentDate ?? ""));
   const paymentRollsBackToJobCompletion =
-    isJobCompletionWorkflow(form?.fileType, form?.ir) &&
+    isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
     normalizeMilestoneName(manualCurrentMilestone) === "payment" &&
     !isJobCompletionDone(order);
   const supplyOrderRollsBackToFinancialSanction =
@@ -8847,30 +9178,27 @@ function normalizeSupplyOrderMilestoneState(
     Boolean(financialSanctionMilestone) &&
     normalizeMilestoneName(manualCurrentMilestone) === "supplyorder";
   const currentMilestone =
-    !isJobCompletionWorkflow(form?.fileType, form?.ir) && deliveryState.current
+    !isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
+    deliveryState.current
       ? "Delivery"
-      : jobCompletionState.manualCurrent && jobCompletionMilestone
-        ? jobCompletionMilestone
-        : financialSanctionBecomesCurrent
-          ? financialSanctionMilestone!
-          : financialSanctionMovesToSupplyOrder
-            ? supplyOrderMilestone!
+      : financialSanctionBecomesCurrent
+        ? financialSanctionMilestone!
+        : financialSanctionMovesToSupplyOrder
+          ? supplyOrderMilestone!
             : supplyOrderMovesToDeliveryPeriod
               ? deliveryPeriodMilestone!
               : deliveryMovesToIrPreparation
                 ? irPreparationMilestone!
                 : irPreparationMovesToIrReceipt
                   ? irReceiptMilestone!
-                  : billPreparationMovesToBillSent
-                    ? billSentForPaymentMilestone!
-                    : jobCompletionMovesToPayment
-                      ? paymentMilestone!
-                      : billSentForPaymentMovesToPayment
+                  : billPreparationBecomesCurrent
+                    ? billPreparationMilestone!
+                    : billPreparationMovesToBillSent
+                      ? billSentForPaymentMilestone!
+                      : jobCompletionMovesToPayment
                         ? paymentMilestone!
-                        : paymentRollsBackToJobCompletion &&
-                            jobCompletionState.manualCurrent &&
-                            jobCompletionMilestone
-                          ? jobCompletionMilestone
+                        : billSentForPaymentMovesToPayment
+                          ? paymentMilestone!
                           : paymentRollsBackToBillSent
                             ? billSentForPaymentMilestone!
                             : supplyOrderRollsBackToFinancialSanction
@@ -8879,7 +9207,7 @@ function normalizeSupplyOrderMilestoneState(
                                 ? ""
                                 : manualCurrentMilestone;
   const normalizedCurrentMilestone =
-    paymentRollsBackToJobCompletion && !jobCompletionState.manualCurrent ? "" : currentMilestone;
+    paymentRollsBackToJobCompletion ? "" : currentMilestone;
   return {
     ...order,
     currentMilestone: completedWithDerivedDelivery.includes(normalizedCurrentMilestone)
@@ -9016,13 +9344,13 @@ function addCalendarMonthsClamped(date: Date, months: number) {
 function getProportionalStageAmounts(value: string | undefined, stageCount: number) {
   const amount = parseMoneyAmount(value);
   if (amount === undefined || amount === 0 || stageCount <= 0) return [];
-  const cents = Math.round(amount * 100);
-  const baseCents = Math.floor(cents / stageCount);
-  let remainingCents = cents;
+  const totalRupees = Math.round(amount);
+  const initialStageRupees = Math.round(totalRupees / stageCount);
+  let remainingRupees = totalRupees;
   return Array.from({ length: stageCount }, (_, index) => {
-    const stageCents = index === stageCount - 1 ? remainingCents : baseCents;
-    remainingCents -= stageCents;
-    return formatDecimalInput((stageCents / 100).toFixed(2));
+    const stageRupees = index === stageCount - 1 ? remainingRupees : initialStageRupees;
+    remainingRupees -= stageRupees;
+    return formatDecimalInput(String(stageRupees));
   });
 }
 
@@ -9175,19 +9503,27 @@ function isYes(value: unknown) {
   );
 }
 
-function isDeliveryInspectionInactive(form: Pick<FormState, "fileType" | "ir" | "mode">) {
-  return isJobCompletionWorkflow(form.fileType, form.ir);
+function isDeliveryInspectionInactive(
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir" | "mode">,
+) {
+  return isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup);
 }
 
-function isJobCompletionWorkflow(fileType: string | undefined, ir: string | undefined) {
-  return isStageDeliveryFileType(fileType) || isNo(ir);
+function isJobCompletionWorkflow(
+  fileType: string | undefined,
+  ir: string | undefined,
+  fileTypeGroup?: string,
+) {
+  return isContractFileType({ fileType, fileTypeGroup }) || isNo(ir);
 }
 
-function isStageDeliveryFileType(fileType: string | undefined) {
-  const normalized = (fileType ?? "").trim().toLowerCase();
-  return (
-    normalized === "amc" || normalized === "mpc" || normalized === "cars" || normalized === "o&m"
-  );
+function isFinancialSanctionReachedForForm(
+  form: Pick<FormState, "mode" | "biddingStageOver" | "tcec" | "cfaDate" | "cncApprovalDate">,
+) {
+  if (isYes(form.tcec)) return hasFilledValue(form.cncApprovalDate);
+  return isBiddingApplicableForFile(form)
+    ? isYes(form.biddingStageOver)
+    : hasFilledValue(form.cfaDate);
 }
 
 function isDpExpiryWordHiddenFileType(fileType: string | undefined) {
@@ -9255,6 +9591,12 @@ function shouldShowSupplyOrderField(key: SupplyOrderKey, order: SupplyOrderDetai
   }
   if (key === "advancePayment") {
     return isYes(order.stageDelivery ?? "") && isYes(order.stagePayment ?? "");
+  }
+  if (key === "shortclosureDate") {
+    return isYes(order.shortclosure ?? "");
+  }
+  if (key === "soCancelledDate") {
+    return isYes(order.soCancelled ?? "");
   }
   return true;
 }

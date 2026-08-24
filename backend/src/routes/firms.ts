@@ -15,6 +15,7 @@ type MasterFirmRow = {
   address: string | null;
   firm_unique_no: string | null;
   contact_no: string | null;
+  firm_rating?: string | null;
   created_by: string | null;
   created_by_name: string | null;
   created_at: Date | string;
@@ -30,11 +31,149 @@ function mapFirm(row: MasterFirmRow): MasterFirm {
     address: fromDbText(row.address) || undefined,
     firmUniqueNo: fromDbText(row.firm_unique_no) || undefined,
     contactNo: fromDbText(row.contact_no) || undefined,
+    firmRating: fromDbText(row.firm_rating) || undefined,
     createdBy: row.created_by ?? undefined,
     createdByName: row.created_by_name ?? undefined,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
+}
+
+type FirmRatingField = {
+  id: string;
+  label: string;
+  weight?: string;
+};
+
+type FirmRatingConfig = {
+  fields: FirmRatingField[];
+};
+
+type SupplyOrderRatingRow = {
+  firm: string | null;
+  firm_unique_no: string | null;
+  firm_rating_values: unknown;
+};
+
+const defaultFirmRatingConfig: FirmRatingConfig = {
+  fields: [
+    { id: "delivery", label: "Delivery", weight: "1" },
+    { id: "quality", label: "Quality", weight: "1" },
+    { id: "afterSalesService", label: "After Sales Service", weight: "1" },
+  ],
+};
+
+function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
+  const normalized = fields.reduce<FirmRatingField[]>((result, item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return result;
+      const candidate = item as Record<string, unknown>;
+      const label = toDbText(candidate.label) || `Rating ${index + 1}`;
+      const rawId = toDbText(candidate.id) || label;
+      const id =
+        rawId
+          .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
+          .replace(/^[^a-zA-Z]+/, "")
+          .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+      const weight = Number.parseFloat(toDbText(candidate.weight) ?? "1");
+      result.push({
+        id,
+        label,
+        weight: Number.isFinite(weight) && weight > 0 ? String(weight) : "1",
+      });
+      return result;
+    }, []);
+  return { fields: normalized.length ? normalized : defaultFirmRatingConfig.fields };
+}
+
+function readRatingValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const values: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const text = toDbText(item);
+    if (text) values[key] = text;
+  }
+  return values;
+}
+
+function calculateFirmRatingScore(values: Record<string, string>, config: FirmRatingConfig) {
+  let weightedTotal = 0;
+  let weightTotal = 0;
+  for (const field of config.fields) {
+    const rawValue = values[field.id];
+    if (!rawValue) continue;
+    const score = Number.parseFloat(rawValue);
+    const weight = Number.parseFloat(field.weight ?? "1");
+    if (!Number.isFinite(score) || !Number.isFinite(weight) || weight <= 0) continue;
+    weightedTotal += score * weight;
+    weightTotal += weight;
+  }
+  return weightTotal > 0 ? weightedTotal / weightTotal : undefined;
+}
+
+function formatFirmRatingScore(score: number | undefined) {
+  if (score === undefined || !Number.isFinite(score)) return undefined;
+  return score.toFixed(2).replace(/\.?0+$/, "");
+}
+
+async function getFirmRatingConfig() {
+  const result = await pool.query<{ firm_rating_config: unknown }>(
+    "select firm_rating_config from app_settings where id = true",
+  );
+  return normalizeFirmRatingConfig(result.rows[0]?.firm_rating_config);
+}
+
+async function getAverageFirmRatings(firms: MasterFirmRow[]) {
+  const firmUniqueNos = firms
+    .map((firm) => fromDbText(firm.firm_unique_no)?.toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  const firmNames = firms
+    .map((firm) => fromDbText(firm.firm_name)?.toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  if (!firmUniqueNos.length && !firmNames.length) return new Map<string, string>();
+
+  const config = await getFirmRatingConfig();
+  const result = await pool.query<SupplyOrderRatingRow>(
+    `select firm, firm_unique_no, firm_rating_values
+     from supply_orders
+     where firm_rating_values <> '{}'::jsonb
+       and (
+         lower(coalesce(firm_unique_no, '')) = any($1::text[])
+         or lower(coalesce(firm, '')) = any($2::text[])
+       )`,
+    [firmUniqueNos, firmNames],
+  );
+  const scoresByFirmId = new Map<string, number[]>();
+
+  for (const order of result.rows) {
+    const orderUniqueNo = fromDbText(order.firm_unique_no)?.toLowerCase();
+    const orderFirmName = fromDbText(order.firm)?.toLowerCase();
+    const score = calculateFirmRatingScore(readRatingValues(order.firm_rating_values), config);
+    if (score === undefined) continue;
+
+    for (const firm of firms) {
+      const firmUniqueNo = fromDbText(firm.firm_unique_no)?.toLowerCase();
+      const firmName = fromDbText(firm.firm_name)?.toLowerCase();
+      const matchesUniqueNo = Boolean(firmUniqueNo && orderUniqueNo && firmUniqueNo === orderUniqueNo);
+      const matchesName = Boolean(!matchesUniqueNo && firmName && orderFirmName && firmName === orderFirmName);
+      if (!matchesUniqueNo && !matchesName) continue;
+      const scores = scoresByFirmId.get(firm.id) ?? [];
+      scores.push(score);
+      scoresByFirmId.set(firm.id, scores);
+    }
+  }
+
+  const averages = new Map<string, string>();
+  for (const [firmId, scores] of scoresByFirmId) {
+    const average = scores.reduce((total, score) => total + score, 0) / scores.length;
+    const formatted = formatFirmRatingScore(average);
+    if (formatted) averages.set(firmId, formatted);
+  }
+  return averages;
 }
 
 function readPositiveInteger(value: unknown, fallback: number, max: number) {
@@ -123,8 +262,14 @@ firmsRouter.get(
        limit $${values.length - 1} offset $${values.length}`,
       values,
     );
+    const ratings = await getAverageFirmRatings(result.rows);
 
-    response.json({ firms: result.rows.map(mapFirm), total, page, pageSize });
+    response.json({
+      firms: result.rows.map((row) => mapFirm({ ...row, firm_rating: ratings.get(row.id) })),
+      total,
+      page,
+      pageSize,
+    });
   }),
 );
 

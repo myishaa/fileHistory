@@ -348,6 +348,7 @@ type SettingsRow = {
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
+  file_type_groups: unknown;
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
@@ -386,6 +387,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
+    fileTypeGroups: fromDbJsonArray(row.file_type_groups) as AppSettings["fileTypeGroups"],
     modes: fromDbJsonArray(row.modes) as string[],
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
@@ -399,7 +401,7 @@ async function loadSettings() {
   return getCached("settings:reports", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets,
+              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               bg_receipt_delay_days, active_user_id
        from app_settings
        where id = true`,
@@ -466,7 +468,7 @@ function isInactiveFile(
     ((file.supplyOrders?.length ?? 0) === 0 && isYes(file.soCancelled)) ||
     Boolean(
       file.supplyOrders?.length &&
-        file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled)),
+        file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled) || isYes(order.shortclosure)),
     )
   );
 }
@@ -748,6 +750,12 @@ function bgReturnColumn(category: string) {
 }
 
 function completedOrderMilestoneExpression(orderAlias: string, normalizedMilestone: string) {
+  if (normalizeMilestoneName(normalizedMilestone) === "financialsanction") {
+    return hasFilledExpression(`${orderAlias}.financial_sanction_date`);
+  }
+  if (normalizeMilestoneName(normalizedMilestone) === "jobcompletion") {
+    return hasFilledExpression(`${orderAlias}.job_completion_date`);
+  }
   return `exists (
     select 1
     from jsonb_array_elements_text(coalesce(${orderAlias}.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
@@ -756,6 +764,9 @@ function completedOrderMilestoneExpression(orderAlias: string, normalizedMilesto
 }
 
 function completedStageMilestoneExpression(stageAlias: string, normalizedMilestone: string) {
+  if (normalizeMilestoneName(normalizedMilestone) === "jobcompletion") {
+    return `${jsonDateExpression(`${stageAlias}.stage`, "jobCompletionDate")} is not null`;
+  }
   return `exists (
     select 1
     from jsonb_array_elements_text(coalesce(${stageAlias}.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
@@ -764,18 +775,10 @@ function completedStageMilestoneExpression(stageAlias: string, normalizedMilesto
 }
 
 function financialSanctionCompleteExpression() {
-  return `not ${isCancelledExpression()} and (
-    exists (
-      select 1 from file_completed_milestones completed_financial_sanction
-      where completed_financial_sanction.file_id = f.id
-        and ${normalizeMilestoneExpression("completed_financial_sanction.milestone")} = 'financialsanction'
-    )
-    or ${supplyOrderExists(
-      `not ${isYesExpression("so.so_cancelled")}
-       and (${hasFilledExpression("so.financial_sanction_date")}
-         or ${completedOrderMilestoneExpression("so", "financialsanction")})`,
-    )}
-  )`;
+  return `not ${isCancelledExpression()} and ${supplyOrderExists(
+    `not ${isYesExpression("so.so_cancelled")}
+       and ${hasFilledExpression("so.financial_sanction_date")}`,
+  )}`;
 }
 
 function fileClosedExpression() {
@@ -839,10 +842,9 @@ function reportActiveExpression(milestone: (typeof reportMilestoneDefinitions)[n
            category,
          )}'
          or (
-           '${normalizeMilestoneName(category)}' in ('psb', 'psbpwb')
-           and (${hasFilledExpression("so.financial_sanction_date")}
-             or ${completedOrderMilestoneExpression("so", "financialsanction")})
-         )
+          '${normalizeMilestoneName(category)}' in ('psb', 'psbpwb')
+          and ${hasFilledExpression("so.financial_sanction_date")}
+        )
 	         or (
 	           '${normalizeMilestoneName(category)}' = 'pwb'
 	           and (
@@ -983,8 +985,7 @@ function reportPaymentRowsSource(whereSql: string, extraConditions: string[] = [
 function paymentRowReadyExpression(alias = "payment_row") {
   const nonDelivery = nonDeliveryFileTypeExpression(alias);
   return `(
-    ${normalizeMilestoneExpression(`${alias}.current_milestone`)} = 'payment'
-    or ${hasFilledExpression(`${alias}.bill_preparation_date`)}
+    ${hasFilledExpression(`${alias}.bill_preparation_date`)}
     or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
     or (
       not ${nonDelivery}
@@ -1249,12 +1250,11 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
          and (${hasFilledExpression(`so.${receivedColumn}`)}
            or ${completedOrderMilestoneExpression("so", normalizeMilestoneName(category))})`,
       );
-	      const pendingStarted =
-	        normalizeMilestoneName(category) === "pwb"
-	          ? `(not ${nonDeliveryFileType} and ${hasFilledExpression("so.material_receipt_date")})
-	            or (${nonDeliveryFileType} and ${completedOrderMilestoneExpression("so", "jobcompletion")})`
-	          : `(${hasFilledExpression("so.financial_sanction_date")}
-	             or ${completedOrderMilestoneExpression("so", "financialsanction")})`;
+		      const pendingStarted =
+		        normalizeMilestoneName(category) === "pwb"
+		          ? `(not ${nonDeliveryFileType} and ${hasFilledExpression("so.material_receipt_date")})
+		            or (${nonDeliveryFileType} and ${completedOrderMilestoneExpression("so", "jobcompletion")})`
+			          : hasFilledExpression("so.financial_sanction_date");
       addRow(milestone.label, "Received", `${eligible} and ${received}`);
       addRow(
         milestone.label,
@@ -1400,29 +1400,18 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
   const stageJobCompletionDone = `exists (
     select 1
     from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as job_stage(stage)
-    where exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(job_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_job_stage(milestone)
-      where ${normalizeMilestoneExpression("completed_job_stage.milestone")} = 'jobcompletion'
-    )
+    where nullif(job_stage.stage ->> 'jobCompletionDate', '')::date is not null
   )`;
   const stageJobCompletionDue = `exists (
     select 1
     from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as due_job_stage(stage)
-    where not exists (
-      select 1
-      from jsonb_array_elements_text(coalesce(due_job_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_due_job_stage(milestone)
-      where ${normalizeMilestoneExpression("completed_due_job_stage.milestone")} = 'jobcompletion'
-    )
-    and (
-      ${normalizeMilestoneExpression("due_job_stage.stage ->> 'currentMilestone'")} = 'jobcompletion'
-      or coalesce(
-        nullif(due_job_stage.stage ->> 'revisedDp', '')::date,
-        nullif(due_job_stage.stage ->> 'dpDate', '')::date,
-        so.revised_dp,
-        so.dp_date
-      ) < current_date
-    )
+    where nullif(due_job_stage.stage ->> 'jobCompletionDate', '')::date is null
+    and coalesce(
+      nullif(due_job_stage.stage ->> 'revisedDp', '')::date,
+      nullif(due_job_stage.stage ->> 'dpDate', '')::date,
+      so.revised_dp,
+      so.dp_date
+    ) < current_date
   )`;
   const orderJobCompletionDone = completedOrderMilestoneExpression("so", "Job Completion");
   addRow(
@@ -1434,10 +1423,8 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
        and (
          (
            not ${orderJobCompletionDone}
-           and (
-             ${normalizeMilestoneExpression("so.current_milestone")} = 'jobcompletion'
-             or (${effectiveDpDateExpression("so")} is not null and ${effectiveDpDateExpression("so")} < current_date)
-           )
+           and ${effectiveDpDateExpression("so")} is not null
+           and ${effectiveDpDateExpression("so")} < current_date
          )
          or ${stageJobCompletionDue}
        )`,
@@ -1660,7 +1647,9 @@ async function loadCashOutgoRows(
   })();
   const dateRangeCondition =
     fromDatePlaceholder && toDatePlaceholder
-      ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
+      ? ` and ${
+          mode === "expectedReceiptPendingBill" ? receiptPendingBillBaseDateExpression : dateExpression
+        } between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
       : "";
   const effectiveCapitalExpression =
     mode === "actual"
@@ -1969,7 +1958,10 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
           and ${jobCompletionDone}
           and ${effectiveDpDate} is not null
         then (${effectiveDpDate} + interval '1 day')::date
-        else coalesce(${irReceiptDate}, ${materialReceiptDate})
+        else coalesce(${irReceiptDate}, ${effectiveOrderDateExpression(
+          "ir_preparation_date",
+          "irPreparationDate",
+        )}, ${materialReceiptDate})
       end as bill_preparation_start_date,
       ${effectiveOrderDateExpression("bill_preparation_date", "billPreparationDate")} as bill_preparation_date,
       ${effectiveOrderDateExpression("bill_preparation_date", "billPreparationDate")} as bill_sent_for_payment_start_date,
@@ -2398,8 +2390,13 @@ reportsRouter.get(
       const categoryFiles = selectedYearFiles.filter((file) =>
         matchesFileCategorySelection(file, fileCategories),
       );
+      const pendingBillingFiles =
+        selectedYear === activePlusCurrentFyClosedYear
+          ? categoryFiles.filter((file) => !isInactiveFile(file))
+          : categoryFiles;
       const normalizedSummary = buildReportsSummary({
         files: categoryFiles,
+        pendingBillingFiles,
         division,
         delayDays,
         delayMilestone,

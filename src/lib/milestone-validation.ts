@@ -1,5 +1,6 @@
 import type { FileRecord, StageDeliveryDetail, SupplyOrderDetail } from "@/lib/files-store";
 import { fileSupplyOrders as normalizedFileSupplyOrders } from "@/lib/effective-deliveries";
+import { isContractFileType } from "@/lib/file-type-groups";
 
 type MilestoneCompletionRule = {
   aliases: string[];
@@ -378,8 +379,7 @@ function normalizeMilestoneName(value: string) {
 }
 
 function isDeliveryInspectionApplicable(file: Partial<FileRecord>) {
-  const fileType = file.fileType?.trim().toLowerCase();
-  return !["amc", "mpc", "cars", "o&m"].includes(fileType ?? "");
+  return !isContractFileType(file);
 }
 
 function hasFilledString(value: string | undefined) {

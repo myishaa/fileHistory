@@ -3,6 +3,10 @@ import { useState } from "react";
 import { ArrowRight, ScanLine } from "lucide-react";
 import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
 import { fetchFilesByUniqueCode, type FileRecord, useActiveUser } from "@/lib/files-store";
+import {
+  isBiddingApplicableForFile,
+  isDeliveryInspectionApplicableByGroup,
+} from "@/lib/file-type-groups";
 
 export const Route = createFileRoute("/quick-entry")({
   component: QuickEntryPage,
@@ -29,6 +33,7 @@ const quickEntryStageSections = [
     title: "Supply order and payment",
     milestones: [
       "Supply Order",
+      "Financial Sanction",
       "Delivery Period",
       "PSB",
       "PWB",
@@ -243,14 +248,130 @@ function getEffectiveQuickEntryMilestone(file: FileRecord) {
 
 function getCurrentSupplyOrderMilestone(file: FileRecord) {
   const currentMilestones = [
-    ...rawSupplyOrders(file).map((order) => order.currentMilestone),
-    ...fileSupplyOrders(file).map((order) => order.currentMilestone),
+    ...rawSupplyOrders(file).map((order) => getEffectiveQuickEntryOrderMilestone(file, order)),
+    ...fileSupplyOrders(file).map((order) => getEffectiveQuickEntryOrderMilestone(file, order)),
   ];
   return (
     currentMilestones
       .map(normalizeQuickEntryMilestone)
       .find((milestone) => milestone && isSupplyOrderQuickEntryMilestone(milestone)) ?? ""
   );
+}
+
+function getEffectiveQuickEntryOrderMilestone(
+  file: FileRecord,
+  order: { [key: string]: unknown },
+) {
+  if (isYes(order.soCancelled)) return "";
+  if (isFinancialSanctionReached(file) && !hasDate(order.financialSanctionDate)) {
+    return "financialsanction";
+  }
+  if (hasDate(order.financialSanctionDate) && !hasDate(order.soDate)) return "supplyorder";
+  if (hasDate(order.soDate) && !hasDate(order.dpDate)) return "deliveryperiod";
+  if (isAdvancePaymentPending(order)) return "advancepayment";
+  if (isJobCompletionWorkflow(file)) {
+    if (hasDate(order.soDate) && isDateBeforeToday(getDeliveryPeriodDate(order)) && !hasDate(order.jobCompletionDate)) {
+      return "jobcompletion";
+    }
+  } else if (hasDate(order.soDate) && hasDate(getDeliveryPeriodDate(order)) && !hasDate(order.materialReceiptDate)) {
+    return "delivery";
+  }
+  if (isBgPending(file, order, "psbpwb")) return "psbpwb";
+  if (isBgPending(file, order, "psb")) return "psb";
+  if (isBgPending(file, order, "pwb")) return "pwb";
+  if (isYes(file.ir) && hasDate(order.materialReceiptDate) && !hasDate(order.irPreparationDate)) {
+    return "irpreparation";
+  }
+  if (isYes(file.ir) && hasDate(order.irPreparationDate) && !hasDate(order.irReceiptDate)) {
+    return "irreceipt";
+  }
+  if (isBillPreparationCurrent(file, order)) return "billpreparation";
+  if (hasDate(order.billPreparationDate) && !hasDate(order.billSentForPaymentDate)) {
+    return "billsentforpayment";
+  }
+  if (hasPaymentWorkflowStarted(file, order) && !hasDate(order.paymentDate)) return "payment";
+  return normalizeQuickEntryMilestone(String(order.currentMilestone ?? ""));
+}
+
+function isFinancialSanctionReached(file: FileRecord) {
+  return (
+    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasDate(file.cfaDate)) &&
+    (!isYes(file.tcec) || hasDate(file.cncApprovalDate))
+  );
+}
+
+function isJobCompletionWorkflow(file: FileRecord) {
+  return !isDeliveryInspectionApplicableByGroup(file);
+}
+
+function isBillPreparationCurrent(file: FileRecord, order: { [key: string]: unknown }) {
+  if (hasDate(order.billPreparationDate)) return false;
+  return isJobCompletionWorkflow(file) ? hasDate(order.jobCompletionDate) : hasDate(order.irReceiptDate);
+}
+
+function hasPaymentWorkflowStarted(file: FileRecord, order: { [key: string]: unknown }) {
+  return (
+    hasDate(order.billPreparationDate) ||
+    hasDate(order.billSentForPaymentDate) ||
+    (isJobCompletionWorkflow(file) ? hasDate(order.jobCompletionDate) : hasDate(order.materialReceiptDate))
+  );
+}
+
+function isAdvancePaymentPending(order: { [key: string]: unknown }) {
+  const detail = order.advancePaymentDetail as { paymentDate?: unknown } | undefined;
+  return isYes(order.advancePayment) && !hasDate(detail?.paymentDate);
+}
+
+function isBgPending(file: FileRecord, order: { [key: string]: unknown }, kind: string) {
+  if (kind === "psb") {
+    return (
+      isYes(order.psbApplicable) &&
+      ["PSB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) &&
+      hasDate(order.financialSanctionDate) &&
+      !hasDate(order.psbBgReceivedDate)
+    );
+  }
+  if (kind === "pwb") {
+    return (
+      isYes(file.bg) &&
+      ["PWB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) &&
+      hasPaymentWorkflowStarted(file, order) &&
+      !hasDate(order.pwbBgReceivedDate)
+    );
+  }
+  return (
+    isYes(file.bg) &&
+    String(order.bgCoverageType ?? "") === "PSB+PWB" &&
+    hasDate(order.financialSanctionDate) &&
+    !hasDate(order.combinedBgReceivedDate)
+  );
+}
+
+function getDeliveryPeriodDate(order: { [key: string]: unknown }) {
+  return String(order.revisedDp || order.dpDate || "");
+}
+
+function isDateBeforeToday(value: unknown) {
+  const date = parseDate(value);
+  if (!date) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date.getTime() < today.getTime();
+}
+
+function parseDate(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined;
+  const date = new Date(`${text}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function hasDate(value: unknown) {
+  return Boolean(parseDate(value));
+}
+
+function isYes(value: unknown) {
+  return String(value ?? "").trim().toLowerCase() === "yes";
 }
 
 function isSupplyOrderQuickEntryMilestone(value: string) {

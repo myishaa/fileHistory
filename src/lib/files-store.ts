@@ -3,6 +3,7 @@ import * as React from "react";
 import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
 import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
+import type { FileTypeGroup, FileTypeGroupSetting } from "@/lib/file-type-groups";
 import {
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
@@ -35,8 +36,10 @@ export type FileRecord = {
   gte?: string;
   tcec?: string;
   fileType?: string;
+  fileTypeGroup?: FileTypeGroup;
   mode?: string;
   gem?: string;
+  gemBiddingMode?: string;
   highValue?: string;
   ad?: string;
   rqa?: string;
@@ -88,6 +91,7 @@ export type FileRecord = {
   soValueRevenue?: string;
   dpDate?: string;
   firm?: string;
+  bqBasis?: string;
   firmUniqueNo?: string;
   firmContactNo?: string;
   firmCity?: string;
@@ -113,6 +117,9 @@ export type FileRecord = {
   demandCancelledDate?: string;
   soCancelled?: string;
   soCancelledDate?: string;
+  shortclosure?: string;
+  shortclosureDate?: string;
+  bqFirms?: FirmDetail[];
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
   supplyOrders?: SupplyOrderDetail[];
@@ -219,6 +226,8 @@ export type SupplyOrderDetail = {
   demandCancelled?: string;
   soCancelled?: string;
   soCancelledDate?: string;
+  shortclosure?: string;
+  shortclosureDate?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -227,6 +236,7 @@ export type SupplyOrderDetail = {
   deliveryPeriodStartDate?: string;
   stageDeliveryLabel?: string;
   stageDeliveries?: StageDeliveryDetail[];
+  firmRatingValues?: Record<string, string>;
 };
 
 export type AdvancePaymentDetail = {
@@ -313,6 +323,7 @@ export type MasterFirm = {
   address?: string;
   firmUniqueNo?: string;
   contactNo?: string;
+  firmRating?: string;
   createdBy?: string;
   createdByName?: string;
   createdAt: string;
@@ -368,6 +379,14 @@ export type ValueThresholdLevel = {
   maxValue?: string;
   appliesTo: ValueThresholdAppliesTo;
 };
+export type FirmRatingField = {
+  id: string;
+  label: string;
+  weight?: string;
+};
+export type FirmRatingConfig = {
+  fields: FirmRatingField[];
+};
 export type DemandProcessingDayRange = {
   id?: string;
   label: string;
@@ -389,6 +408,7 @@ export type AppSettings = {
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
+  fileTypeGroups: FileTypeGroupSetting[];
   modes: string[];
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
@@ -402,6 +422,7 @@ export type AppSettings = {
   bgReceiptDelayDays?: number[];
   specialFileMarkers?: SpecialFileMarker[];
   firmUniqueNoLabel?: string;
+  firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
 };
 
@@ -421,6 +442,13 @@ const defaultSettings: AppSettings = {
   tcecCommittees: [],
   firmTypes: ["MSE", "MSE (Women)", "Non-MSE"],
   fileTypes: ["Goods & Services", "AMC", "MPC", "CARS", "O&M"],
+  fileTypeGroups: [
+    { fileType: "Goods & Services", group: "goodsServices" },
+    { fileType: "AMC", group: "contract" },
+    { fileType: "MPC", group: "contract" },
+    { fileType: "CARS", group: "contract" },
+    { fileType: "O&M", group: "contract" },
+  ],
   modes: ["OBM", "PBM", "SBM", "LBM", "LPC"],
   valueThresholdLevels: [],
   milestones: [],
@@ -438,6 +466,13 @@ const defaultSettings: AppSettings = {
   bgReceiptDelayDays: [10, 30, 60],
   specialFileMarkers: [],
   firmUniqueNoLabel: "Firm Unique No.",
+  firmRatingConfig: {
+    fields: [
+      { id: "delivery", label: "Delivery", weight: "1" },
+      { id: "quality", label: "Quality", weight: "1" },
+      { id: "afterSalesService", label: "After Sales Service", weight: "1" },
+    ],
+  },
 };
 
 const defaultUsers: AppUser[] = [];
@@ -733,10 +768,56 @@ export const store = {
       acceptances: Array<{
         signature: string;
         reason?: string;
+        ruleKey?: string;
+        ruleLabel?: string;
+        previousField?: string;
+        previousValue?: string;
+        laterField?: string;
+        laterValue?: string;
+        context?: string;
+        fileId?: string;
+        fileRef?: string;
+        status: string;
+        scope: string;
+        requestedByName?: string;
+        requestedAt?: string;
         acceptedByName?: string;
         acceptedAt?: string;
+        reviewedByName?: string;
+        reviewedAt?: string;
+        revokedByName?: string;
+        revokedAt?: string;
+        adminMessage?: string;
       }>;
     }>("/api/dashboard/suspected-anomalies/acceptances");
+  },
+  listSuspectedAnomalies(selectedYear: string) {
+    const params = new URLSearchParams({ selectedYear });
+    return request<{
+      rows: Array<{
+        signature: string;
+        fileId: string;
+        fileRef: string;
+        division: string;
+        indentor: string;
+        description: string;
+        block: string;
+        rule: string;
+        ruleKey?: string;
+        previousField: string;
+        previousDate: string;
+        laterField: string;
+        laterDate: string;
+        requestStatus?: string;
+        userExplanation?: string;
+        adminMessage?: string;
+        requestedByName?: string;
+        requestedAt?: string;
+        reviewedByName?: string;
+        reviewedAt?: string;
+        scope?: string;
+      }>;
+    }>(`/api/dashboard/suspected-anomalies?${params.toString()}`);
   },
   async countSuspectedAnomalies(selectedYear: string) {
     const params = new URLSearchParams({ selectedYear });
@@ -749,6 +830,64 @@ export const store = {
     return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances", {
       method: "POST",
       body: JSON.stringify({ signature, reason }),
+    });
+  },
+  reviewSuspectedAnomaly(signature: string, action: string, adminMessage?: string) {
+    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances/review", {
+      method: "POST",
+      body: JSON.stringify({ signature, action, adminMessage }),
+    });
+  },
+  clearSuspectedAnomalyHistory(password: string, signatures: string[]) {
+    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances/clear-history", {
+      method: "POST",
+      body: JSON.stringify({ password, signatures }),
+    });
+  },
+  listAnomalyRules() {
+    return request<{
+      rules: Array<{
+        id: string;
+        name: string;
+        description: string;
+        ruleType: string;
+        fieldA: string;
+        operator: string;
+        fieldB?: string;
+        fixedValue?: string;
+        thresholdDays?: number;
+        severity: string;
+        scope: string;
+        enabled: boolean;
+        createdByName?: string;
+        createdAt?: string;
+        updatedAt?: string;
+      }>;
+      fields: Array<{ key: string; label: string; scope: string }>;
+    }>("/api/dashboard/suspected-anomalies/rules");
+  },
+  createAnomalyRule(rule: {
+    name?: string;
+    description?: string;
+    ruleType?: string;
+    fieldA?: string;
+    operator?: string;
+    fieldB?: string;
+    fixedValue?: string;
+    thresholdDays?: number;
+    severity?: string;
+    scope?: string;
+    enabled?: boolean;
+  }) {
+    return request<{ rule: unknown }>("/api/dashboard/suspected-anomalies/rules", {
+      method: "POST",
+      body: JSON.stringify(rule),
+    });
+  },
+  updateAnomalyRule(id: string, patch: { enabled: boolean }) {
+    return request<{ ok: true }>(`/api/dashboard/suspected-anomalies/rules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
     });
   },
   viewerLogin(divisionId: string, password: string) {
@@ -1085,6 +1224,25 @@ export function deleteMasterFirm(id: string) {
   return request<{ deleted: true; firm: MasterFirm }>(`/api/firms/${id}`, {
     method: "DELETE",
   });
+}
+
+export function fetchReportPreferences<T extends Record<string, unknown>>(reportKey: string) {
+  return request<{ preferences: T }>(
+    `/api/settings/report-preferences/${encodeURIComponent(reportKey)}`,
+  );
+}
+
+export function saveReportPreferences<T extends Record<string, unknown>>(
+  reportKey: string,
+  preferences: T,
+) {
+  return request<{ preferences: T }>(
+    `/api/settings/report-preferences/${encodeURIComponent(reportKey)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(preferences),
+    },
+  );
 }
 
 export function fetchFile(id: string) {

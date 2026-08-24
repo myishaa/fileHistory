@@ -4,6 +4,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:300
 );
 
 type ExportFormat = "excel" | "pdf";
+export type FileSearchExportLayout = "columnwise" | "rowwise";
 
 export type ExportTable = {
   title?: string;
@@ -81,6 +82,7 @@ export type FileSearchExportPayload = {
   title: string;
   columns: FileSearchExportColumn[];
   query: Record<string, string>;
+  layout?: FileSearchExportLayout;
 };
 
 export async function downloadBackendFileSearchExport(payload: FileSearchExportPayload) {

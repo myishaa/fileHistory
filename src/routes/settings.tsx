@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
@@ -18,6 +18,7 @@ import {
   type Division,
   type DemandProcessingDayRange,
   type FileRecord,
+  type FirmRatingConfig,
   type Indentor,
   type MasterFirm,
   type SpecialFileMarker,
@@ -41,6 +42,14 @@ import {
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
 } from "@/lib/year-filter";
+import { defaultFirmRatingFields, normalizeFirmRatingConfig } from "@/lib/firm-rating";
+import {
+  fileTypeGroupOptions,
+  getDefaultFileTypeGroup,
+  normalizeFileTypeGroups,
+  type FileTypeGroup,
+  type FileTypeGroupSetting,
+} from "@/lib/file-type-groups";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -74,6 +83,7 @@ const defaultFileTypes = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModes = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const allFileCategoryKeys = fileCategoryOptions.map((option) => option.key);
 const fileClosedMilestone = "File Closed";
+const settingsPageSizeOptions = [25, 50, 100] as const;
 
 function appendFileClosedMilestone(milestones: string[]) {
   const normalize = (value: string) =>
@@ -179,8 +189,92 @@ type AdminSection = {
   content: ReactNode;
 };
 
+type AnomalyAcceptanceRow = {
+  signature: string;
+  reason?: string;
+  ruleKey?: string;
+  ruleLabel?: string;
+  previousField?: string;
+  previousValue?: string;
+  laterField?: string;
+  laterValue?: string;
+  context?: string;
+  fileId?: string;
+  fileRef?: string;
+  status: string;
+  scope: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  revokedByName?: string;
+  revokedAt?: string;
+  adminMessage?: string;
+};
+
+type SuspectedAnomalyRow = {
+  signature: string;
+  fileId: string;
+  fileRef: string;
+  division: string;
+  block: string;
+  rule: string;
+  ruleKey?: string;
+  previousField: string;
+  previousDate: string;
+  laterField: string;
+  laterDate: string;
+  requestStatus?: string;
+  userExplanation?: string;
+  adminMessage?: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+};
+
+function humanizeSettingsAnomalyLabel(value?: string) {
+  if (!value) return "";
+  if (value === "fileclosedbutbgreturnpendingexists") {
+    return "File is closed but BG return is still pending";
+  }
+  return value
+    .replace(/fileclosed/g, "File closed ")
+    .replace(/bgreturn/g, " BG return ")
+    .replace(/pending/g, " pending ")
+    .replace(/exists/g, " exists ")
+    .replace(/jobcompletion/g, " Job Completion ")
+    .replace(/financialsanction/g, " Financial Sanction ")
+    .replace(/supplyorder/g, " Supply Order ")
+    .replace(/should/g, " should ")
+    .replace(/not/g, " not ")
+    .replace(/before/g, " before ")
+    .replace(/after/g, " after ")
+    .replace(/date/g, " date ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type AnomalyRuleRow = {
+  id: string;
+  name: string;
+  description: string;
+  ruleType: string;
+  fieldA: string;
+  operator: string;
+  fieldB?: string;
+  fixedValue?: string;
+  thresholdDays?: number;
+  severity: string;
+  scope: string;
+  enabled: boolean;
+};
+
+type AnomalyRuleField = { key: string; label: string; scope: string };
+
 function SettingsPage() {
   const activeUser = useActiveUser();
+  const locationSearch = useRouterState({ select: (state) => state.location.search });
   const [activeAdminSection, setActiveAdminSection] = useState("divisions");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
   if (activeUser?.role === "viewer" || activeUser?.role === "division_user") {
@@ -214,9 +308,12 @@ function SettingsPage() {
           <TabsList aria-label="Settings sections">
             <TabsTrigger value="user">User</TabsTrigger>
             <TabsTrigger value="indentors">Indentors</TabsTrigger>
-            <TabsTrigger value="firms">Firm Database</TabsTrigger>
-            <TabsTrigger value="presets">Preset table fields</TabsTrigger>
-            {canEditMmgSummary ? <TabsTrigger value="mmgSummary">MMG Summary</TabsTrigger> : null}
+          <TabsTrigger value="firms">Firm Database</TabsTrigger>
+          <TabsTrigger value="presets">Preset table fields</TabsTrigger>
+          {canEditMmgSummary ? (
+            <TabsTrigger value="anomalyGovernance">Anomaly Control</TabsTrigger>
+          ) : null}
+          {canEditMmgSummary ? <TabsTrigger value="mmgSummary">MMG Summary</TabsTrigger> : null}
           </TabsList>
           <TabsContent value="user">
             <AccountSettings />
@@ -230,6 +327,11 @@ function SettingsPage() {
           <TabsContent value="presets">
             <TableFieldPresetSettings />
           </TabsContent>
+          {canEditMmgSummary ? (
+            <TabsContent value="anomalyGovernance">
+              <AnomalyGovernanceSettings />
+            </TabsContent>
+          ) : null}
           {canEditMmgSummary ? (
             <TabsContent value="mmgSummary">
               <MmgSummarySettings />
@@ -263,12 +365,14 @@ function SettingsPage() {
     { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
     { key: "indentors", label: "Indentors", content: <IndentorSettings /> },
     { key: "firms", label: "Firm Database", content: <FirmDatabaseSettings /> },
+    { key: "firmRating", label: "Firm Rating", content: <FirmRatingSettings /> },
     { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
     { key: "modes", label: "Modes", content: <ModeSettings /> },
     { key: "firmTypes", label: "Firm Types", content: <FirmTypeSettings /> },
     { key: "fileMarkers", label: "File Markers", content: <SpecialFileMarkerSettings /> },
     { key: "tcec", label: "TCEC Committee", content: <TcecCommitteeSettings /> },
     { key: "thresholds", label: "Value thresholds", content: <ValueThresholdSettings /> },
+    { key: "anomalyGovernance", label: "Anomaly Control", content: <AnomalyGovernanceSettings /> },
     { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
     { key: "presets", label: "Preset table fields", content: <TableFieldPresetSettings /> },
     { key: "users", label: "Authorised users", content: <UserSettings /> },
@@ -277,6 +381,14 @@ function SettingsPage() {
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
   const selectedAdminSectionUnlocked = Boolean(unlockedAdminSections[selectedAdminSection.key]);
+
+  useEffect(() => {
+    const requestedSection =
+      typeof locationSearch.section === "string" ? locationSearch.section : undefined;
+    if (requestedSection && adminSections.some((section) => section.key === requestedSection)) {
+      setActiveAdminSection(requestedSection);
+    }
+  }, [locationSearch.section]);
 
   const setAdminSectionUnlocked = (key: string, unlocked: boolean) => {
     setUnlockedAdminSections((current) => ({ ...current, [key]: unlocked }));
@@ -1001,37 +1113,67 @@ function FileTypeSettings() {
   const activeUser = useActiveUser();
   const [name, setName] = useState("");
   const fileTypes = normalizeFileTypes(settings.fileTypes);
+  const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
 
   if (activeUser && activeUser.role !== "admin") return null;
 
-  const updateFileTypes = (next: string[]) => {
-    store.updateSettings({ fileTypes: normalizeFileTypes(next) });
+  const updateFileTypes = (next: string[], nextGroups: FileTypeGroupSetting[] = fileTypeGroups) => {
+    const normalizedTypes = normalizeFileTypes(next);
+    store.updateSettings({
+      fileTypes: normalizedTypes,
+      fileTypeGroups: normalizeFileTypeGroups(nextGroups, normalizedTypes),
+    });
   };
 
   const add = () => {
     const trimmed = name.trim();
     if (!trimmed) return;
     const exists = fileTypes.some((fileType) => fileType.toLowerCase() === trimmed.toLowerCase());
-    if (!exists) updateFileTypes([...fileTypes, trimmed]);
+    if (!exists) {
+      updateFileTypes([...fileTypes, trimmed], [
+        ...fileTypeGroups,
+        { fileType: trimmed, group: getDefaultFileTypeGroup(trimmed) },
+      ]);
+    }
     setName("");
   };
 
   const rename = (index: number, value: string) => {
     const next = [...fileTypes];
+    const oldFileType = next[index];
     next[index] = value;
-    updateFileTypes(next);
+    const nextGroups = fileTypeGroups.map((entry) =>
+      entry.fileType === oldFileType ? { ...entry, fileType: value } : entry,
+    );
+    updateFileTypes(next, nextGroups);
+  };
+
+  const updateGroup = (fileType: string, group: FileTypeGroup) => {
+    const nextGroups = [
+      ...fileTypeGroups.filter(
+        (entry) => entry.fileType.trim().toLowerCase() !== fileType.trim().toLowerCase(),
+      ),
+      { fileType, group },
+    ];
+    updateFileTypes(fileTypes, nextGroups);
   };
 
   const remove = (index: number) => {
     if (isDefaultFileType(fileTypes[index])) return;
-    updateFileTypes(fileTypes.filter((_, itemIndex) => itemIndex !== index));
+    const removed = fileTypes[index];
+    updateFileTypes(
+      fileTypes.filter((_, itemIndex) => itemIndex !== index),
+      fileTypeGroups.filter(
+        (entry) => entry.fileType.trim().toLowerCase() !== removed.trim().toLowerCase(),
+      ),
+    );
   };
 
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">File Types</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Add and edit the file type values shown in File Details.
+        Add file types and assign the workflow group used by future files.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
@@ -1055,7 +1197,10 @@ function FileTypeSettings() {
             {fileTypes.map((fileType, index) => {
               const protectedFileType = isDefaultFileType(fileType);
               return (
-                <li key={`${fileType}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                <li
+                  key={`${fileType}-${index}`}
+                  className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_260px_auto]"
+                >
                   <input
                     value={fileType}
                     onChange={(event) => rename(index, event.target.value)}
@@ -1067,6 +1212,23 @@ function FileTypeSettings() {
                         : "bg-background")
                     }
                   />
+                  <select
+                    value={
+                      fileTypeGroups.find(
+                        (entry) =>
+                          entry.fileType.trim().toLowerCase() === fileType.trim().toLowerCase(),
+                      )?.group ?? getDefaultFileTypeGroup(fileType)
+                    }
+                    onChange={(event) => updateGroup(fileType, event.target.value as FileTypeGroup)}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                    aria-label={`Workflow group for ${fileType}`}
+                  >
+                    {fileTypeGroupOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                   {protectedFileType ? (
                     <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
                       Default
@@ -1488,6 +1650,452 @@ function formatIndianIntegerInput(integerPart: string) {
   const lastTwoBeforeThousands = beforeThousands.slice(-2);
   const lakhPart = beforeThousands.slice(0, -2);
   return [lakhPart, lastTwoBeforeThousands, lastThree].filter(Boolean).join(",");
+}
+
+function AnomalyGovernanceSettings() {
+  const [acceptances, setAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
+  const [activeAnomalies, setActiveAnomalies] = useState<SuspectedAnomalyRow[]>([]);
+  const [rules, setRules] = useState<AnomalyRuleRow[]>([]);
+  const [fields, setFields] = useState<AnomalyRuleField[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [workflowTab, setWorkflowTab] = useState<
+    "current" | "sent" | "fileAccepted" | "universalAccepted" | "rejected" | "revoked"
+  >("current");
+  const [selectedDecisionSignatures, setSelectedDecisionSignatures] = useState<string[]>([]);
+  const settings = useSettings();
+
+  const load = async () => {
+    setLoading(true);
+    setMessage("");
+    try {
+      const [acceptancePayload, rulePayload, anomalyPayload] = await Promise.all([
+        store.listSuspectedAnomalyAcceptances(),
+        store.listAnomalyRules(),
+        store.listSuspectedAnomalies(settings.selectedYear),
+      ]);
+      setAcceptances(acceptancePayload.acceptances);
+      setRules(rulePayload.rules);
+      setFields(rulePayload.fields);
+      setActiveAnomalies(anomalyPayload.rows);
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : "Failed to load anomaly control.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [settings.selectedYear]);
+
+  const fieldLabel = (key?: string) => fields.find((field) => field.key === key)?.label ?? key ?? "";
+  const anomalySummary = (row: AnomalyAcceptanceRow) => ({
+    title: row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception",
+    detail:
+      row.previousField || row.laterField
+        ? `${row.previousField || "Expected"}: ${row.previousValue || "-"}; ${row.laterField || "Found"}: ${row.laterValue || "-"}`
+        : row.context
+          ? `Context: ${row.context}`
+          : "",
+  });
+  const formatStatus = (status: string) =>
+    status
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const review = async (signature: string, action: string) => {
+    const adminMessage =
+      action === "reject"
+        ? window.prompt("Correction message to User explaining what should be fixed:")
+        : undefined;
+    if (action === "reject" && !adminMessage?.trim()) return;
+    try {
+      await store.reviewSuspectedAnomaly(signature, action, adminMessage?.trim());
+      await load();
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : "Could not review anomaly.");
+    }
+  };
+
+  const clearSelected = async (signatures: string[]) => {
+    if (!signatures.length) return;
+    const password = window.prompt("Enter your account password to clear selected anomalies:");
+    if (!password?.trim()) return;
+    try {
+      await store.clearSuspectedAnomalyHistory(password.trim(), signatures);
+      setSelectedDecisionSignatures([]);
+      await load();
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : "Could not clear anomaly history.");
+    }
+  };
+
+  const toggleRule = async (rule: AnomalyRuleRow) => {
+    try {
+      await store.updateAnomalyRule(rule.id, { enabled: !rule.enabled });
+      await load();
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : "Could not update anomaly rule.");
+    }
+  };
+
+  const createRule = async () => {
+    const name = window.prompt("Rule name:");
+    if (!name?.trim()) return;
+    const fieldA = window.prompt(
+      `Field A key:\n${fields.map((field) => `${field.key} - ${field.label}`).join("\n")}`,
+    );
+    if (!fieldA?.trim()) return;
+    const ruleType = window.prompt(
+      "Rule type: date_order, required_field, delay_days, date_boundary",
+      "date_order",
+    );
+    if (!ruleType?.trim()) return;
+    const fieldB =
+      ruleType === "date_boundary" ? "" : window.prompt("Field B key:");
+    if (ruleType !== "date_boundary" && !fieldB?.trim()) return;
+    const operator =
+      ruleType === "required_field"
+        ? "requires"
+        : ruleType === "date_boundary"
+          ? window.prompt("Operator: not_before_fixed or not_after_fixed", "not_before_fixed")
+          : window.prompt("Operator: not_before or not_after", "not_before");
+    if (!operator?.trim()) return;
+    const fixedValue =
+      ruleType === "date_boundary" ? window.prompt("Fixed date (DD-MM-YYYY or YYYY-MM-DD):") : undefined;
+    if (ruleType === "date_boundary" && !fixedValue?.trim()) return;
+    const thresholdDays =
+      ruleType === "delay_days"
+        ? Number.parseInt(window.prompt("Threshold days:", "0") ?? "", 10)
+        : undefined;
+    try {
+      await store.createAnomalyRule({
+        name: name.trim(),
+        ruleType: ruleType.trim(),
+        fieldA: fieldA.trim(),
+        operator: operator.trim(),
+        fieldB: fieldB?.trim(),
+        fixedValue: fixedValue?.trim(),
+        thresholdDays,
+        severity: "Medium",
+        scope: "all",
+        enabled: true,
+      });
+      await load();
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : "Could not create anomaly rule.");
+    }
+  };
+
+  const currentAnomalies = activeAnomalies.filter(
+    (row) =>
+      row.requestStatus !== "pending" &&
+      row.requestStatus !== "rejected" &&
+      row.requestStatus !== "revoked",
+  );
+  const sentAnomalies = activeAnomalies.filter((row) => row.requestStatus === "pending");
+  const fileAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_file");
+  const universalAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_universal");
+  const rejectedAnomalies = acceptances.filter((row) => row.status === "rejected");
+  const revokedAnomalies = acceptances.filter((row) => row.status === "revoked");
+  const decisionAnomalies =
+    workflowTab === "fileAccepted"
+      ? fileAcceptedAnomalies
+      : workflowTab === "universalAccepted"
+        ? universalAcceptedAnomalies
+        : workflowTab === "rejected"
+          ? rejectedAnomalies
+          : workflowTab === "revoked"
+            ? revokedAnomalies
+            : [];
+  const workflowTabs = [
+    { key: "current" as const, label: "Current", count: currentAnomalies.length },
+    { key: "sent" as const, label: "Received request", count: sentAnomalies.length },
+    { key: "fileAccepted" as const, label: "File Accepted", count: fileAcceptedAnomalies.length },
+    {
+      key: "universalAccepted" as const,
+      label: "Universal Accepted",
+      count: universalAcceptedAnomalies.length,
+    },
+    { key: "rejected" as const, label: "Rejected", count: rejectedAnomalies.length },
+    { key: "revoked" as const, label: "Revoked", count: revokedAnomalies.length },
+  ];
+  const canClearDecisionRows = workflowTab === "rejected" || workflowTab === "revoked";
+  const selectedDecisionSet = new Set(selectedDecisionSignatures);
+  const toggleDecisionSignature = (signature: string) => {
+    setSelectedDecisionSignatures((current) =>
+      current.includes(signature)
+        ? current.filter((item) => item !== signature)
+        : [...current, signature],
+    );
+  };
+  useEffect(() => {
+    setSelectedDecisionSignatures([]);
+  }, [workflowTab]);
+  const decisionSignatureKey = decisionAnomalies.map((row) => row.signature).join("|");
+  useEffect(() => {
+    setSelectedDecisionSignatures((current) =>
+      current.filter((signature) => decisionAnomalies.some((row) => row.signature === signature)),
+    );
+  }, [decisionSignatureKey]);
+  const groupActive = (rows: SuspectedAnomalyRow[]) => {
+    const groups = new Map<string, SuspectedAnomalyRow[]>();
+    rows.forEach((row) => {
+      const key = row.rule || row.ruleKey || "Suspected anomaly";
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    });
+    return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
+  };
+  const groupHistory = (rows: AnomalyAcceptanceRow[]) => {
+    const groups = new Map<string, AnomalyAcceptanceRow[]>();
+    rows.forEach((row) => {
+      const key = row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception";
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    });
+    return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
+  };
+  const renderActiveAnomalyGroups = (rows: SuspectedAnomalyRow[]) => {
+    if (!rows.length) return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
+    return (
+      <div className="space-y-3">
+        {groupActive(rows).map((group) => (
+          <div key={group.title} className="rounded-md border border-border">
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-3 py-2">
+              <h4 className="text-sm font-semibold">{group.title}</h4>
+              <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
+            </div>
+            <div className="divide-y divide-border/70">
+              {group.items.map((row) => (
+                <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.6fr]">
+                  <div>
+                    <span className="font-semibold">{row.fileRef}</span>
+                    <span className="mt-1 block text-muted-foreground">{row.division || "-"}</span>
+                    <span className="block text-muted-foreground">{row.block}</span>
+                  </div>
+                  <div>
+                    <div>{row.previousField || "Expected"}: {row.previousDate || "-"}</div>
+                    <div>{row.laterField || "Found"}: {row.laterDate || "-"}</div>
+                    {row.userExplanation ? (
+                      <div className="mt-1 text-muted-foreground">
+                        Message from {row.requestedByName || "User"}: {row.userExplanation}
+                      </div>
+                    ) : null}
+                    {row.adminMessage ? (
+                      <div className="mt-1 font-medium text-destructive">Message to User: {row.adminMessage}</div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-start gap-1">
+                    {row.requestStatus ? (
+                      <span className="rounded border border-border px-2 py-1 font-medium">
+                        {formatStatus(row.requestStatus)}
+                      </span>
+                    ) : null}
+                    <button type="button" onClick={() => void review(row.signature, "approve_file")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                      File
+                    </button>
+                    <button type="button" onClick={() => void review(row.signature, "approve_universal")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                      Universal
+                    </button>
+                    <button type="button" onClick={() => void review(row.signature, "reject")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                      Send correction to user
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+  const renderHistoryGroups = () => {
+    if (!decisionAnomalies.length) return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
+    return (
+      <div className="space-y-3">
+        {groupHistory(decisionAnomalies).map((group) => (
+          <div key={group.title} className="rounded-md border border-border">
+            <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-3 py-2">
+              <h4 className="text-sm font-semibold">{group.title}</h4>
+              <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
+            </div>
+            <div className="divide-y divide-border/70">
+              {group.items.map((row) => {
+                const summary = anomalySummary(row);
+                return (
+                  <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr_1fr]">
+                    <div className="flex items-start gap-2">
+                      {canClearDecisionRows ? (
+                        <input
+                          type="checkbox"
+                          checked={selectedDecisionSet.has(row.signature)}
+                          onChange={() => toggleDecisionSignature(row.signature)}
+                          className="mt-0.5"
+                          aria-label={`Select ${row.fileRef || "anomaly"}`}
+                        />
+                      ) : null}
+                      <span className="font-semibold">{row.fileRef || "File reference not available"}</span>
+                    </div>
+                    <div>
+                      {summary.detail ? <div>{summary.detail}</div> : null}
+                      {row.reason ? (
+                        <div className="mt-1 text-muted-foreground">
+                          Message from {row.requestedByName || "User"}: {row.reason}
+                        </div>
+                      ) : null}
+                      {row.adminMessage ? <div className="mt-1 font-medium text-destructive">Message to User: {row.adminMessage}</div> : null}
+                    </div>
+                    <div>
+                      <div className="font-medium">{formatStatus(row.status)}</div>
+                      <div className="text-muted-foreground">{row.reviewedByName || row.revokedByName || row.requestedByName || "-"}</div>
+                      <div className="text-muted-foreground">{(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}</div>
+                    </div>
+                    <div>
+                      {row.status === "approved_file" || row.status === "approved_universal" ? (
+                        <button type="button" onClick={() => void review(row.signature, "revoke")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                          Revoke
+                        </button>
+                      ) : null}
+                      {canClearDecisionRows ? (
+                        <button
+                          type="button"
+                          onClick={() => void clearSelected([row.signature])}
+                          className="rounded border border-border px-2 py-1 text-destructive hover:bg-destructive/10"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="mb-1 text-sm font-semibold">Anomaly Control</h2>
+        <p className="text-sm text-muted-foreground">
+          Review user acceptance requests, approve file-specific or universal exceptions, and manage
+          custom anomaly rules.
+        </p>
+      </div>
+      {message ? (
+        <p className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">{message}</p>
+      ) : null}
+      {loading ? <p className="text-xs text-muted-foreground">Loading anomaly control...</p> : null}
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Anomaly workflow</h3>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
+          >
+            Refresh
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {workflowTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setWorkflowTab(tab.key)}
+              className={
+                "rounded-md border px-3 py-1.5 text-xs font-semibold " +
+                (workflowTab === tab.key
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border hover:bg-accent")
+              }
+            >
+              {tab.label} ({tab.count})
+            </button>
+          ))}
+          {canClearDecisionRows && selectedDecisionSignatures.length ? (
+            <button
+              type="button"
+              onClick={() => void clearSelected(selectedDecisionSignatures)}
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
+            >
+              Clear selected ({selectedDecisionSignatures.length})
+            </button>
+          ) : null}
+        </div>
+        {workflowTab === "current"
+          ? renderActiveAnomalyGroups(currentAnomalies)
+          : workflowTab === "sent"
+            ? renderActiveAnomalyGroups(sentAnomalies)
+            : renderHistoryGroups()}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
+          <button
+            type="button"
+            onClick={() => void createRule()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
+          >
+            <Plus className="size-3.5" /> Add rule
+          </button>
+        </div>
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-secondary/60 text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Rule</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2">Condition</th>
+                <th className="px-3 py-2">Severity</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.length ? (
+                rules.map((rule) => (
+                  <tr key={rule.id} className="border-t border-border align-top">
+                    <td className="px-3 py-2 font-medium">{rule.name}</td>
+                    <td className="px-3 py-2">{rule.ruleType}</td>
+                    <td className="px-3 py-2">
+                      {fieldLabel(rule.fieldA)} {rule.operator}{" "}
+                      {rule.ruleType === "date_boundary" ? rule.fixedValue : fieldLabel(rule.fieldB)}
+                      {rule.thresholdDays !== undefined ? ` (${rule.thresholdDays} days)` : ""}
+                    </td>
+                    <td className="px-3 py-2">{rule.severity}</td>
+                    <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
+                    <td className="px-3 py-2">
+                      <button type="button" onClick={() => void toggleRule(rule)} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                        {rule.enabled ? "Disable" : "Enable"}
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td className="px-3 py-3 text-muted-foreground" colSpan={6}>
+                    No custom rules configured.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function MilestoneSettings() {
@@ -2147,10 +2755,12 @@ function MmgSummarySettings() {
     settings.mmgSummaryFields,
     settings.modes,
     settings.firmTypes,
+    settings.fileTypes,
   );
   const mmgSummaryFieldOptions = getMmgSummaryFieldOptions(
     settings.modes,
     settings.firmTypes,
+    settings.fileTypes,
     fields,
   );
   const optionGroups = Array.from(new Set(mmgSummaryFieldOptions.map((option) => option.group)));
@@ -2190,7 +2800,9 @@ function MmgSummarySettings() {
           <button
             type="button"
             onClick={() =>
-              updateFields(normalizeMmgSummaryFields([], settings.modes, settings.firmTypes))
+              updateFields(
+                normalizeMmgSummaryFields([], settings.modes, settings.firmTypes, settings.fileTypes),
+              )
             }
             className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
           >
@@ -2491,6 +3103,109 @@ function isValidEmailFormat(value: string | undefined) {
   return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 }
 
+function FirmRatingSettings() {
+  const settings = useSettings();
+  const config = normalizeFirmRatingConfig(settings.firmRatingConfig);
+
+  const updateFields = (fields: FirmRatingConfig["fields"]) => {
+    store.updateSettings({ firmRatingConfig: normalizeFirmRatingConfig({ fields }) });
+  };
+
+  const updateField = (index: number, patch: Partial<FirmRatingConfig["fields"][number]>) => {
+    updateFields(
+      config.fields.map((field, fieldIndex) =>
+        fieldIndex === index ? { ...field, ...patch } : field,
+      ),
+    );
+  };
+
+  const addField = () => {
+    updateFields([
+      ...config.fields,
+      {
+        id: `rating${config.fields.length + 1}`,
+        label: `Rating ${config.fields.length + 1}`,
+        weight: "1",
+      },
+    ]);
+  };
+
+  const removeField = (index: number) => {
+    updateFields(config.fields.filter((_field, fieldIndex) => fieldIndex !== index));
+  };
+
+  const resetFields = () => {
+    updateFields(defaultFirmRatingFields);
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold mb-1">Firm Rating</h2>
+          <p className="text-xs text-muted-foreground">
+            Configure the score fields used for every supply order. Final score is calculated as a
+            weighted average of filled numeric values.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={addField}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+          >
+            Add field
+          </button>
+          <button
+            type="button"
+            onClick={resetFields}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {config.fields.map((field, index) => (
+          <div
+            key={`${field.id}:${index}`}
+            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
+          >
+            <label className="text-xs text-muted-foreground">
+              <span className="mb-1 block">Field label</span>
+              <input
+                value={field.label}
+                onChange={(event) => updateField(index, { label: event.target.value })}
+                className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              <span className="mb-1 block">Weight</span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={field.weight ?? "1"}
+                onChange={(event) => updateField(index, { weight: event.target.value })}
+                className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => removeField(index)}
+              disabled={config.fields.length <= 1}
+              className="h-9 self-end rounded-md border border-border bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FirmDatabaseSettings() {
   const activeUser = useActiveUser();
   const settings = useSettings();
@@ -2712,15 +3427,32 @@ function FirmDatabaseSettings() {
         </div>
       ) : null}
 
+      <SettingsPaginationControls
+        firstResultNumber={firstResultNumber}
+        lastResultNumber={lastResultNumber}
+        total={firmTotal}
+        itemLabel="firms"
+        page={page}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        onPageSizeChange={(value) => {
+          setPageSize(value);
+          setPage(1);
+        }}
+        onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+        onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+      />
+
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[1260px] table-fixed text-sm">
+        <table className="w-full min-w-[1360px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[17%]" />
-            <col className="w-[14%]" />
-            <col className="w-[17%]" />
-            <col className="w-[23%]" />
+            <col className="w-[16%]" />
             <col className="w-[13%]" />
-            <col className="w-[10%]" />
+            <col className="w-[16%]" />
+            <col className="w-[21%]" />
+            <col className="w-[12%]" />
+            <col className="w-[9%]" />
+            <col className="w-[7%]" />
             <col className="w-[6%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
@@ -2731,13 +3463,14 @@ function FirmDatabaseSettings() {
               <th className="px-4 py-2.5 text-left font-medium">Address</th>
               <th className="px-4 py-2.5 text-left font-medium">City</th>
               <th className="px-4 py-2.5 text-left font-medium">Contact No.</th>
+              <th className="px-4 py-2.5 text-left font-medium">Rating</th>
               <th className="px-4 py-2.5 text-right font-medium">Action</th>
             </tr>
           </thead>
           <tbody>
             {firms.length === 0 ? (
               <tr className="border-t border-border">
-                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={7}>
+                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={8}>
                   {loading ? "Loading firms..." : "No firms found."}
                 </td>
               </tr>
@@ -2779,6 +3512,9 @@ function FirmDatabaseSettings() {
                       onChange={(value) => updateEditDraft("contactNo", numericOnly(value))}
                       type="tel"
                     />
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {firm.firmRating || "Not rated"}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
                         {isEditing ? (
@@ -2828,46 +3564,22 @@ function FirmDatabaseSettings() {
         </table>
       </div>
 
-      <div className="mt-3 flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-        <span>
-          Showing {firstResultNumber}-{lastResultNumber} of {firmTotal}
-        </span>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setPage(1);
-            }}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          >
-            {[25, 50, 100, 200].map((size) => (
-              <option key={size} value={size}>
-                {size} / page
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={page <= 1}
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span>
-            Page {page} of {totalPages}
-          </span>
-          <button
-            type="button"
-            disabled={page >= totalPages}
-            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+      <SettingsPaginationControls
+        className="mt-3"
+        firstResultNumber={firstResultNumber}
+        lastResultNumber={lastResultNumber}
+        total={firmTotal}
+        itemLabel="firms"
+        page={page}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        onPageSizeChange={(value) => {
+          setPageSize(value);
+          setPage(1);
+        }}
+        onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+        onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+      />
     </div>
   );
 }
@@ -2931,6 +3643,82 @@ function FirmInput({
         (invalid ? " border-destructive" : "")
       }
     />
+  );
+}
+
+function SettingsPaginationControls({
+  firstResultNumber,
+  lastResultNumber,
+  total,
+  itemLabel,
+  page,
+  totalPages,
+  pageSize,
+  className = "mt-5",
+  onPageSizeChange,
+  onPrevious,
+  onNext,
+}: {
+  firstResultNumber: number;
+  lastResultNumber: number;
+  total: number;
+  itemLabel: string;
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  className?: string;
+  onPageSizeChange: (pageSize: number) => void;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div
+      className={
+        className +
+        " flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+      }
+    >
+      <span>
+        {total
+          ? `Showing ${firstResultNumber}-${lastResultNumber} of ${total} ${itemLabel}`
+          : `No ${itemLabel}`}
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2">
+          <span>Rows per page</span>
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value))}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {settingsPageSizeOptions.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={onPrevious}
+          className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Previous
+        </button>
+        <span>
+          Page {page} of {totalPages}
+        </span>
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={onNext}
+          className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -3185,6 +3973,22 @@ function IndentorSettings() {
         </button>
       </div>
 
+      <SettingsPaginationControls
+        firstResultNumber={firstResultNumber}
+        lastResultNumber={lastResultNumber}
+        total={indentorTotal}
+        itemLabel="indentors"
+        page={page}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        onPageSizeChange={(value) => {
+          setPageSize(value);
+          setPage(1);
+        }}
+        onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+        onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+      />
+
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[1050px] table-fixed text-sm">
           <colgroup>
@@ -3316,46 +4120,22 @@ function IndentorSettings() {
           </tbody>
         </table>
       </div>
-      <div className="mt-3 flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-        <span>
-          Showing {firstResultNumber}-{lastResultNumber} of {indentorTotal}
-        </span>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setPage(1);
-            }}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          >
-            {[25, 50, 100, 200].map((size) => (
-              <option key={size} value={size}>
-                {size} / page
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={page <= 1}
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span>
-            Page {page} of {totalPages}
-          </span>
-          <button
-            type="button"
-            disabled={page >= totalPages}
-            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-            className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+      <SettingsPaginationControls
+        className="mt-3"
+        firstResultNumber={firstResultNumber}
+        lastResultNumber={lastResultNumber}
+        total={indentorTotal}
+        itemLabel="indentors"
+        page={page}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        onPageSizeChange={(value) => {
+          setPageSize(value);
+          setPage(1);
+        }}
+        onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+        onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+      />
     </div>
   );
 }

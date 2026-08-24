@@ -18,8 +18,21 @@ import {
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "./effective-deliveries.js";
 import { allFileCategoryKeys, matchesFileCategorySelection } from "./file-categories.js";
+import {
+  isBiddingApplicableForFile,
+  isDeliveryInspectionApplicableByGroup,
+} from "./file-type-groups.js";
 
 export type DashboardSummary = ReturnType<typeof buildDashboardSummary>;
+
+type FinanceCarryForwardRow = {
+  year: string;
+  count: number;
+  capital: number;
+  revenue: number;
+  total: number;
+  filter: string;
+};
 
 const defaultManualMilestones = [
   "Scrutiny",
@@ -138,7 +151,13 @@ const milestoneDefinitions = [
     reviewed: "cfaSentDate",
     current: "cfaDate",
   },
-  { key: "bidding", label: "Bidding", totalLabel: "Total files", current: "biddingStageOver" },
+  {
+    key: "bidding",
+    label: "Bidding",
+    totalLabel: "Total files",
+    current: "biddingStageOver",
+    applies: (file: FileRecord) => isBiddingApplicableForFile(file),
+  },
   {
     key: "postTcec",
     label: "Post-TCEC",
@@ -218,6 +237,7 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
   "billSentForPaymentDate",
   "paymentDate",
   "soCancelledDate",
+  "shortclosureDate",
 ]);
 
 export function buildDashboardSummary({
@@ -227,8 +247,10 @@ export function buildDashboardSummary({
   division = "all",
   analyticsDivision = "all",
   liveMilestones,
-}: {
+  financeFiles,
+	}: {
   files: FileRecord[];
+  financeFiles?: FileRecord[];
   divisions: Division[];
   settings: AppSettings;
   division?: string;
@@ -240,6 +262,12 @@ export function buildDashboardSummary({
   const dashboardFiles =
     activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision);
   const activeDashboardFiles = dashboardFiles.filter((file) => !isCancelledFile(file));
+  const rawFinanceFiles = financeFiles ?? files;
+  const dashboardFinanceFiles =
+    activeDivision === "all"
+      ? rawFinanceFiles
+      : rawFinanceFiles.filter((file) => file.division === activeDivision);
+  const activeDashboardFinanceFiles = dashboardFinanceFiles.filter((file) => !isCancelledFile(file));
   const dashboardDivisions =
     activeDivision === "all" ? divisions : divisions.filter((item) => item.name === activeDivision);
   const activeAnalyticsDivision =
@@ -264,7 +292,13 @@ export function buildDashboardSummary({
     liveMilestones,
     manualMilestoneFlow,
   );
-  const financeTotals = getFinanceTotals(activeDashboardFiles, dashboardDivisions);
+  const financeTotals = getFinanceTotals(
+    activeDashboardFiles,
+    dashboardDivisions,
+    settings.selectedYear,
+    activeDashboardFinanceFiles,
+    settings.financialYear,
+  );
 
   return {
     activeDivision,
@@ -272,8 +306,9 @@ export function buildDashboardSummary({
     dashboardFileCount: activeDashboardFiles.length,
     dashboardDivisions,
     modeCounts: getModeCounts(activeDashboardFiles, settings.modes),
+    gemBiddingModeCounts: getGemBiddingModeCounts(activeDashboardFiles),
     topSummaryStats: getAttributeSummaryStats(activeDashboardFiles),
-    fileTypeStats: getFileTypeSummaryStats(activeDashboardFiles),
+    fileTypeStats: getFileTypeSummaryStats(activeDashboardFiles, settings.fileTypes),
     firmTypeStats: getFirmTypeSummaryStats(activeDashboardFiles, settings.firmTypes),
     manualMilestoneFlow,
     visibleLiveMilestoneNames,
@@ -301,7 +336,7 @@ export function buildDashboardSummary({
         settings.firmTypes,
       ),
       actualPayment: getActualPaymentDistributionByFirmType(
-        activeDashboardFiles,
+        activeDashboardFinanceFiles,
         settings.firmTypes,
       ),
     },
@@ -316,9 +351,27 @@ export function buildDashboardSummary({
   };
 }
 
-function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
-  const actualPaymentEntries = effectivePaymentEntries(files).filter(
+function getFinanceTotals(
+  files: FileRecord[],
+  divisions: Division[],
+  selectedYear?: string,
+  financeFiles = files,
+  currentFinancialYear?: string,
+) {
+  const financeYear = getFinancialYearDateRange(selectedYear) ? selectedYear : currentFinancialYear;
+  const financeYearRange = getFinancialYearDateRange(financeYear);
+  const actualPaymentEntries = effectivePaymentEntries(financeFiles).filter(
     ({ file, order }) => !isSupplyOrderCancelled(file, order),
+  );
+  const paymentInYearEntries = financeYearRange
+    ? actualPaymentEntries.filter(({ order }) => isDateWithinRange(order.paymentDate, financeYearRange))
+    : actualPaymentEntries;
+  const sameYearPaidEntries = financeYearRange
+    ? paymentInYearEntries.filter(({ order }) => isDateWithinRange(order.soDate, financeYearRange))
+    : [];
+  const carryForwardRows = getFinanceCarryForwardRows(
+    financeFiles,
+    financeYear,
   );
   return {
     allocatedCapital: divisions.reduce(
@@ -373,11 +426,19 @@ function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
       (sum, file) => sum + (isSoCancelledFile(file) ? 0 : getFileCommittedRevenueValue(file)),
       0,
     ),
-    paidCapital: actualPaymentEntries.reduce(
+    paidCapital: paymentInYearEntries.reduce(
       (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentCapital, file) ?? 0),
       0,
     ),
-    paidRevenue: actualPaymentEntries.reduce(
+    paidRevenue: paymentInYearEntries.reduce(
+      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentRevenue, file) ?? 0),
+      0,
+    ),
+    sameYearPaidCapital: sameYearPaidEntries.reduce(
+      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentCapital, file) ?? 0),
+      0,
+    ),
+    sameYearPaidRevenue: sameYearPaidEntries.reduce(
       (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentRevenue, file) ?? 0),
       0,
     ),
@@ -397,7 +458,122 @@ function getFinanceTotals(files: FileRecord[], divisions: Division[]) {
           : (getInrAmount(getAdvancePaymentRevenue(order), file) ?? 0)),
       0,
     ),
+    carryForward: sumFinanceCarryForwardRows(carryForwardRows.carryForward),
+    clearedCarryForward: sumFinanceCarryForwardRows(carryForwardRows.clearedCarryForward),
+    previousCarryForward: sumFinanceCarryForwardRows(carryForwardRows.previousCarryForward),
+    futureClearedCarryForward: sumFinanceCarryForwardRows(
+      carryForwardRows.futureClearedCarryForward,
+    ),
+    carryForwardBreakup: carryForwardRows.carryForward,
+    clearedCarryForwardBreakup: carryForwardRows.clearedCarryForward,
+    previousCarryForwardBreakup: carryForwardRows.previousCarryForward,
+    futureClearedCarryForwardBreakup: carryForwardRows.futureClearedCarryForward,
   };
+}
+
+function getFinanceCarryForwardRows(files: FileRecord[], selectedYear: string | undefined) {
+  const range = getFinancialYearDateRange(selectedYear);
+  if (!range || !selectedYear) {
+    return {
+      carryForward: [] as FinanceCarryForwardRow[],
+      clearedCarryForward: [] as FinanceCarryForwardRow[],
+      previousCarryForward: [] as FinanceCarryForwardRow[],
+      futureClearedCarryForward: [] as FinanceCarryForwardRow[],
+    };
+  }
+  const financialYear = selectedYear;
+  const carryForward = new Map<string, Omit<FinanceCarryForwardRow, "year" | "filter">>();
+  const clearedCarryForward = new Map<string, Omit<FinanceCarryForwardRow, "year" | "filter">>();
+  const previousCarryForward = new Map<string, Omit<FinanceCarryForwardRow, "year" | "filter">>();
+  const futureClearedCarryForward = new Map<
+    string,
+    Omit<FinanceCarryForwardRow, "year" | "filter">
+  >();
+
+  for (const { file, order } of effectivePaymentEntries(files)) {
+    if (isSupplyOrderCancelled(file, order)) continue;
+    const sourceYear = getFinancialYearForDate(order.soDate);
+    if (!sourceYear) continue;
+    const paymentDate = order.paymentDate;
+    const paidInSelectedYear = isDateWithinRange(paymentDate, range);
+    const unpaidAtSelectedYearEnd = !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
+    const capital = getFinancePaymentCapital(file, order);
+    const revenue = getFinancePaymentRevenue(file, order);
+
+    if (sourceYear === financialYear && unpaidAtSelectedYearEnd) {
+      addFinanceCarryForward(carryForward, sourceYear, capital, revenue);
+    }
+    if (sourceYear === financialYear && hasFilledString(paymentDate) && isDateAfter(paymentDate, range.end)) {
+      const clearingYear = getFinancialYearForDate(paymentDate);
+      if (clearingYear && clearingYear > financialYear) {
+        addFinanceCarryForward(futureClearedCarryForward, clearingYear, capital, revenue);
+      }
+    }
+    if (sourceYear !== financialYear && sourceYear < financialYear && paidInSelectedYear) {
+      addFinanceCarryForward(clearedCarryForward, sourceYear, capital, revenue);
+    }
+    if (sourceYear !== financialYear && sourceYear < financialYear && unpaidAtSelectedYearEnd) {
+      addFinanceCarryForward(previousCarryForward, sourceYear, capital, revenue);
+    }
+  }
+
+  return {
+    carryForward: mapFinanceCarryForwardRows(carryForward, "carryForward", financialYear),
+    clearedCarryForward: mapFinanceCarryForwardRows(clearedCarryForward, "clearedCarryForward", financialYear),
+    previousCarryForward: mapFinanceCarryForwardRows(
+      previousCarryForward,
+      "previousCarryForward",
+      financialYear,
+    ),
+    futureClearedCarryForward: mapFinanceCarryForwardRows(
+      futureClearedCarryForward,
+      "futureClearedCarryForward",
+      financialYear,
+    ),
+  };
+}
+
+function addFinanceCarryForward(
+  rows: Map<string, Omit<FinanceCarryForwardRow, "year" | "filter">>,
+  year: string,
+  capital: number,
+  revenue: number,
+) {
+  const current = rows.get(year) ?? { count: 0, capital: 0, revenue: 0, total: 0 };
+  current.count += 1;
+  current.capital += capital;
+  current.revenue += revenue;
+  current.total += capital + revenue;
+  rows.set(year, current);
+}
+
+function mapFinanceCarryForwardRows(
+  rows: Map<string, Omit<FinanceCarryForwardRow, "year" | "filter">>,
+  mode: string,
+  selectedYear: string,
+) {
+  return Array.from(rows.entries())
+    .map(([year, row]) => ({
+      year,
+      count: row.count,
+      capital: Math.round(row.capital),
+      revenue: Math.round(row.revenue),
+      total: Math.round(row.total),
+      filter: `financeCarryForward:${mode}:${encodeURIComponent(selectedYear)}:${encodeURIComponent(year)}`,
+    }))
+    .sort((a, b) => b.year.localeCompare(a.year));
+}
+
+function sumFinanceCarryForwardRows(rows: FinanceCarryForwardRow[]) {
+  return rows.reduce(
+    (total, row) => ({
+      count: total.count + row.count,
+      capital: total.capital + row.capital,
+      revenue: total.revenue + row.revenue,
+      total: total.total + row.total,
+    }),
+    { count: 0, capital: 0, revenue: 0, total: 0 },
+  );
 }
 
 function getModeCounts(files: FileRecord[], configuredModes: string[] | undefined) {
@@ -412,6 +588,24 @@ function getModeCounts(files: FileRecord[], configuredModes: string[] | undefine
     return current;
   }, {});
   return modes.map((name) => ({ name, count: counts[name] ?? 0 }));
+}
+
+const gemBiddingModeOptions = ["Custom", "Catalogue", "Comparison"];
+
+function getGemBiddingModeCounts(files: FileRecord[]) {
+  const counts = files.reduce<Record<string, number>>((current, file) => {
+    if (!isYes(file.gem)) return current;
+    const mode = normalizeGemBiddingMode(file.gemBiddingMode);
+    if (!mode) return current;
+    current[mode] = (current[mode] ?? 0) + 1;
+    return current;
+  }, {});
+  return gemBiddingModeOptions.map((name) => ({ name, count: counts[name] ?? 0 }));
+}
+
+function normalizeGemBiddingMode(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return gemBiddingModeOptions.find((mode) => mode.toLowerCase() === normalized);
 }
 
 function getConfiguredModes(
@@ -463,24 +657,33 @@ function isPsbApplicableFile(file: FileRecord) {
   );
 }
 
-function getFileTypeSummaryStats(files: FileRecord[]) {
-  const fileTypeKeys = allFileCategoryKeys;
-  const labels: Record<(typeof fileTypeKeys)[number], string> = {
-    goodsServices: "Goods & Services",
-    amc: "AMC",
-    mpc: "MPC",
-    cars: "CARS",
-    om: "O&M",
-  };
+function getFileTypeSummaryStats(files: FileRecord[], fileTypes: string[] | undefined) {
   return {
     label: "File Type",
-    value: fileTypeKeys.map((key) => ({
-      label: labels[key],
-      value: files.filter((file) => matchesFileCategorySelection(file, [key])).length,
-      searchFilter: `fileCategory:${key}`,
+    value: getConfiguredFileTypes(fileTypes, files).map((fileType) => ({
+      label: fileType,
+      value: files.filter((file) => isFileTypeMatch(file, fileType)).length,
+      searchFilter: `fileType:${encodeURIComponent(fileType)}`,
     })),
     hint: "Files grouped by file type",
   };
+}
+
+function getConfiguredFileTypes(fileTypes: string[] | undefined, files: FileRecord[]) {
+  const seen = new Set<string>();
+  const values = [...(fileTypes ?? []), ...files.map((file) => file.fileType ?? "")]
+    .map((fileType) => fileType.trim())
+    .filter((fileType) => {
+      const key = fileType.toLowerCase();
+      if (!fileType || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  return values.length ? values : ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
+}
+
+function isFileTypeMatch(file: FileRecord, fileType: string) {
+  return (file.fileType ?? "").trim().toLowerCase() === fileType.trim().toLowerCase();
 }
 
 function getFirmTypeSummaryStats(files: FileRecord[], firmTypes: string[] | undefined) {
@@ -528,6 +731,9 @@ function getMiscellaneousCounts(files: FileRecord[]) {
     demandCancelled: files.filter((file) => isYes(file.demandCancelled)).length,
     soCancelled: files.filter((file) =>
       fileSupplyOrders(file).some((order) => isYes(order.soCancelled)),
+    ).length,
+    shortclosedSo: files.filter((file) =>
+      fileSupplyOrders(file).some((order) => isYes(order.shortclosure)),
     ).length,
     multipleSupplyOrders: activeFiles.filter((file) => countExpectedSupplyOrderRows(file) > 1)
       .length,
@@ -695,6 +901,14 @@ function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string)
   if (isSupplyOrderDrivenMilestoneName(milestoneName)) {
     return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
   }
+  if (normalized === "bidding") {
+    return files.filter(
+      (file) =>
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        normalizeMilestoneName(file.currentMilestone) === "bidding",
+    ).length;
+  }
   return files.filter((file) => !isCancelledFile(file) && file.currentMilestone === milestoneName)
     .length;
 }
@@ -713,7 +927,7 @@ function shouldUseOrderMilestoneRows(file: FileRecord) {
 function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isCancelledFile(file) &&
-    isYes(file.biddingStageOver) &&
+    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }
@@ -730,7 +944,9 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   if (isFinancialSanctionPendingOrder(file, order)) return "financialsanction";
   if (isSupplyOrderPendingOrder(file, order)) return "supplyorder";
   const current = normalizeMilestoneName(order.currentMilestone);
-  if (current && isOrderMilestoneApplicable(file, current)) return current;
+  if (current && current !== "billpreparation" && isOrderMilestoneApplicable(file, current)) {
+    return current;
+  }
   if (isJobCompletionCurrentOrder(file, order)) return "jobcompletion";
   if (isDueDeliveryOrder(file, order)) return "delivery";
   if (isBgCurrentOrder(order, "psbpwb") && isBgCategoryApplicable(file, order, "psbpwb")) {
@@ -753,6 +969,7 @@ function getEffectiveOrderCurrentMilestone(file: FileRecord, order: SupplyOrderD
   ) {
     return "irreceipt";
   }
+  if (isBillPreparationCurrentOrder(file, order)) return "billpreparation";
   return "";
 }
 
@@ -767,6 +984,9 @@ function isOrderCurrentForMilestone(
   if (normalizedMilestone === "supplyorder") return isSupplyOrderPendingOrder(file, order);
   if (normalizedMilestone === "jobcompletion") {
     return isJobCompletionCurrentOrder(file, order);
+  }
+  if (normalizedMilestone === "billpreparation") {
+    return isBillPreparationCurrentOrder(file, order);
   }
   const current = normalizeMilestoneName(order.currentMilestone);
   if (current === normalizedMilestone && isOrderMilestoneApplicable(file, current)) return true;
@@ -891,10 +1111,7 @@ function countCompletedSupplyOrderMilestoneStatuses(
           (fileSupplyOrders(file).some(
             (order) =>
               !isSupplyOrderCancelled(file, order) &&
-              (hasFilledString(order.financialSanctionDate) ||
-                normalizeCompletedMilestones(order.completedMilestones).some(
-                  (milestone) => normalizeMilestoneName(milestone) === normalizedMilestone,
-                )),
+              hasFilledString(order.financialSanctionDate),
           )
             ? 1
             : 0)
@@ -915,10 +1132,7 @@ function countCompletedSupplyOrderMilestoneStatuses(
         (order) =>
           !isSupplyOrderCancelled(file, order) &&
           (normalizedMilestone === "financialsanction"
-            ? hasFilledString(order.financialSanctionDate) ||
-              normalizeCompletedMilestones(order.completedMilestones).some(
-                (milestone) => normalizeMilestoneName(milestone) === normalizedMilestone,
-              )
+            ? hasFilledString(order.financialSanctionDate)
             : normalizeCompletedMilestones(order.completedMilestones).some(
                 (milestone) => normalizeMilestoneName(milestone) === normalizedMilestone,
               )),
@@ -937,7 +1151,9 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
   if (countCurrentSupplyOrderMilestoneStatuses([file], "financialsanction") > 0) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   if (isYes(file.tcec)) return current === "cnc" && !hasFilledString(file.cncApprovalDate);
-  return current === "bidding" && !isYes(file.biddingStageOver);
+  return isBiddingApplicableForFile(file)
+    ? current === "bidding" && !isYes(file.biddingStageOver)
+    : current === "cfa" && !hasFilledString(file.cfaDate);
 }
 
 function getMilestoneFlow(files: FileRecord[]) {
@@ -1168,6 +1384,7 @@ function getAnalyticsSummary(
     divisionValueRanking: getDivisionValueRanking(files, divisions),
     divisionTurnaroundRanking: getDivisionTurnaroundRanking(files),
     topFirmSupplyOrders: getTopFirmSupplyOrders(files),
+    firmAnalysis: getFirmAnalysisRows(files),
     topIndentorsByFiles: getTopIndentorsByFiles(files),
     topIndentorsByValue: getTopIndentorsByValue(files),
     milestoneClearingRanking: getMilestoneClearingRanking(files),
@@ -1408,6 +1625,122 @@ function getTopFirmSupplyOrders(files: FileRecord[]) {
   return mapEntriesToSortedRows(totals, "value");
 }
 
+type FirmAnalysisRoleKey = "bq" | "invited" | "participated" | "order";
+
+const firmAnalysisRoleKeys: FirmAnalysisRoleKey[] = [
+  "bq",
+  "invited",
+  "participated",
+  "order",
+];
+
+function getFirmAnalysisRows(files: FileRecord[]) {
+  const rows = new Map<
+    string,
+    {
+      name: string;
+      bq: number;
+      invited: number;
+      participated: number;
+      order: number;
+      roleMaskCounts: string;
+    }
+  >();
+  const getRow = (name: string) =>
+    rows.get(name) ?? {
+      name,
+      bq: 0,
+      invited: 0,
+      participated: 0,
+      order: 0,
+      roleMaskCounts: "{}",
+    };
+  files.forEach((file) => {
+    const roles = getFileFirmAnalysisRoles(file);
+    const firmNames = new Set<string>();
+    Object.values(roles).forEach((set) => set.forEach((name) => firmNames.add(name)));
+    firmNames.forEach((name) => {
+      const row = getRow(name);
+      const mask = getFirmAnalysisRoleMask(roles, name);
+      const roleMaskCounts = readFirmAnalysisRoleMaskCounts(row.roleMaskCounts);
+      roleMaskCounts[mask] = (roleMaskCounts[mask] ?? 0) + 1;
+      row.bq += roles.bq.has(name) ? 1 : 0;
+      row.invited += roles.invited.has(name) ? 1 : 0;
+      row.participated += roles.participated.has(name) ? 1 : 0;
+      row.order += roles.order.has(name) ? 1 : 0;
+      row.roleMaskCounts = JSON.stringify(roleMaskCounts);
+      rows.set(name, row);
+    });
+  });
+  return Array.from(rows.values()).sort(
+    (a, b) =>
+      b.order - a.order ||
+      b.participated - a.participated ||
+      b.invited - a.invited ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+function getFileFirmAnalysisRoles(file: FileRecord) {
+  const biddingApplicable = isBiddingApplicableForFile(file);
+  const bq = biddingApplicable ? getFirmNameSet(file.bqFirms) : new Set<string>();
+  const invited = biddingApplicable ? getFirmNameSet(file.invitedFirms) : new Set<string>();
+  const participated = biddingApplicable ? getFirmNameSet(file.bidderFirms) : new Set<string>();
+  const order = new Set<string>();
+  fileSupplyOrders(file).forEach((orderRow) => {
+    if (isSupplyOrderCancelled(file, orderRow)) return;
+    const name = normalizeFirmAnalysisName(orderRow.firm);
+    if (name) order.add(name);
+  });
+  return { bq, invited, participated, order };
+}
+
+function getFirmNameSet(rows: Array<{ firmName?: string }> | undefined) {
+  const names = new Set<string>();
+  (rows ?? []).forEach((row) => {
+    const name = normalizeFirmAnalysisName(row.firmName);
+    if (name) names.add(name);
+  });
+  return names;
+}
+
+function normalizeFirmAnalysisName(value: string | undefined) {
+  return value?.trim() || "";
+}
+
+function readFirmAnalysisRoleMaskCounts(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([mask, count]) => [mask, Number(count)])
+        .filter(([, count]) => Number.isFinite(count)),
+    ) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function getFirmAnalysisRoleMask(
+  roles: ReturnType<typeof getFileFirmAnalysisRoles>,
+  firmName: string,
+) {
+  return firmAnalysisRoleKeys.reduce(
+    (mask, role) => (roles[role].has(firmName) ? mask | firmAnalysisRoleBit(role) : mask),
+    0,
+  );
+}
+
+function firmAnalysisRoleBit(role: FirmAnalysisRoleKey) {
+  return role === "bq"
+    ? 1
+    : role === "invited"
+      ? 2
+      : role === "participated"
+        ? 4
+        : 8;
+}
+
 function getSupplyOrderValueDistributionByFirmType(
   files: FileRecord[],
   configuredFirmTypes: string[] | undefined,
@@ -1518,7 +1851,7 @@ function getMilestoneClearingDurations(
 function getMonthlyFileInflow(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
-    const month = getMonthKey(file.receivedDate ?? file.date);
+    const month = getMonthKey(file.receivedDate);
     if (!month) return;
     counts.set(month, (counts.get(month) ?? 0) + 1);
   });
@@ -1601,9 +1934,15 @@ function isDeliveryFructified(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isJobCompletionDone(order: SupplyOrderDetail) {
-  return (order.completedMilestones ?? []).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+  return hasFilledString(order.jobCompletionDate);
+}
+
+function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
+  if (hasFilledString(order.billPreparationDate)) return false;
+  if (isDeliveryInspectionApplicable(file)) {
+    return isYes(file.ir) && hasFilledString(order.irReceiptDate);
+  }
+  return isJobCompletionDone(order);
 }
 
 function getBiddingModeMix(files: FileRecord[]) {
@@ -1870,7 +2209,7 @@ function effectivePaymentEntries(files: FileRecord[]) {
 }
 
 function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isYes(order.soCancelled);
+  return isYes(file.demandCancelled) || isYes(order.soCancelled) || isYes(order.shortclosure);
 }
 
 function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
@@ -1972,8 +2311,7 @@ function countJobCompletionLiveOrders(files: FileRecord[]) {
       isJobCompletionWorkflow(file) &&
       !isJobCompletionDone(order) &&
       !isSupplyOrderCancelled(file, order) &&
-      (normalizeMilestoneName(order.currentMilestone) === "jobcompletion" ||
-        isDateBeforeToday(getDeliveryPeriodDate(order))),
+      isDateBeforeToday(getDeliveryPeriodDate(order)),
   ).length;
 }
 
@@ -2123,12 +2461,7 @@ function isBgCurrentOrder(order: SupplyOrderDetail, category: string) {
 }
 
 function isFinancialSanctionCompletedOrder(order: SupplyOrderDetail) {
-  return (
-    hasFilledString(order.financialSanctionDate) ||
-    normalizeCompletedMilestones(order.completedMilestones).some(
-      (milestone) => normalizeMilestoneName(milestone) === "financialsanction",
-    )
-  );
+  return hasFilledString(order.financialSanctionDate);
 }
 
 function hasOrderFinancialSanctionCompleted(file: FileRecord) {
@@ -2184,7 +2517,7 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
     hasFilledString(getBgReturnDate(order, category))
   )
     return false;
-  if (isYes(order.soCancelled)) return true;
+  if (isYes(order.soCancelled) || isYes(order.shortclosure)) return true;
   const normalizedCategory = normalizeMilestoneName(category);
   return (
     !isSupplyOrderCancelled(file, order) &&
@@ -2306,7 +2639,7 @@ function countAdvancePaymentPendingOrders(files: FileRecord[]) {
 
 function countLdOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
-    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled),
+    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
   ).length;
 }
 
@@ -2348,14 +2681,18 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
+  const orders = fileSupplyOrders(file).filter(
+    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
+  );
   if (orders.length)
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0);
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
+  const orders = fileSupplyOrders(file).filter(
+    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
+  );
   if (orders.length)
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0);
@@ -2366,6 +2703,50 @@ function getSupplyOrderTotalValue(file: FileRecord, order: SupplyOrderDetail) {
     (getInrAmount(order.soValueCapital, file) ?? 0) +
     (getInrAmount(order.soValueRevenue, file) ?? 0)
   );
+}
+
+function getFinancePaymentCapital(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    getInrAmount(order.actualPaymentCapital, file) ??
+    getInrAmount(order.soValueCapital, file) ??
+    0
+  );
+}
+
+function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    getInrAmount(order.actualPaymentRevenue, file) ??
+    getInrAmount(order.soValueRevenue, file) ??
+    0
+  );
+}
+
+function getFinancialYearDateRange(financialYear: string | undefined) {
+  const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  if (!match) return undefined;
+  const startYear = Number(match[1]);
+  return {
+    start: `${startYear}-04-01`,
+    end: `${startYear + 1}-03-31`,
+  };
+}
+
+function getFinancialYearForDate(date: string | undefined) {
+  const time = parseLocalDateTime(date ?? "");
+  if (time === undefined) return undefined;
+  const parsed = new Date(time);
+  const year = parsed.getFullYear();
+  const month = parsed.getMonth() + 1;
+  const startYear = month >= 4 ? year : year - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+function isDateWithinRange(date: string | undefined, range: { start: string; end: string }) {
+  return hasFilledString(date) && date! >= range.start && date! <= range.end;
+}
+
+function isDateAfter(date: string | undefined, reference: string) {
+  return hasFilledString(date) && date! > reference;
 }
 
 function mapEntriesToSortedRows<T extends "count" | "value">(values: Map<string, number>, key: T) {
@@ -2425,6 +2806,7 @@ function countPreBidMeetingFiles(
 
 function isPreBidMeetingFile(file: FileRecord, refloat: boolean, state: "due" | "completed") {
   if (isCancelledFile(file)) return false;
+  if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
     : isYes(file.preBidMeeting);
@@ -2467,7 +2849,6 @@ function isPaymentPending(file: FileRecord) {
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    normalizeMilestoneName(order.currentMilestone) === "payment" ||
     hasFilledString(order.billPreparationDate) ||
     hasFilledString(order.billSentForPaymentDate) ||
     isPaymentDueByDeliveryOrPeriod(file, order)
@@ -2575,7 +2956,7 @@ function isNo(value: string | undefined) {
 }
 
 function isFileTenderLive(file: FileRecord) {
-  return isYes(file.tenderLive);
+  return isBiddingApplicableForFile(file) && isYes(file.tenderLive);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -2585,7 +2966,11 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
 }
 
 function isBidOverdue(file: FileRecord) {
-  return isNo(file.bidOpened) && isDateBeforeToday(getEffectiveBidOpeningDate(file));
+  return (
+    isBiddingApplicableForFile(file) &&
+    isNo(file.bidOpened) &&
+    isDateBeforeToday(getEffectiveBidOpeningDate(file))
+  );
 }
 
 function isLiveSupplyOrder(file: FileRecord) {
@@ -2642,19 +3027,11 @@ function isJobCompletionCurrentOrder(file: FileRecord, order: SupplyOrderDetail)
   if (!hasSupplyOrderDate(order) || !isJobCompletionWorkflow(file) || isJobCompletionDone(order)) {
     return false;
   }
-  const current = normalizeMilestoneName(order.currentMilestone);
-  return current === "jobcompletion" || isDateBeforeToday(getDeliveryPeriodDate(order));
+  return isDateBeforeToday(getDeliveryPeriodDate(order));
 }
 
 function isDeliveryInspectionApplicable(file: FileRecord) {
-  const fileType = (file.fileType ?? "").trim().toLowerCase();
-  return (
-    !isNo(file.ir) &&
-    fileType !== "amc" &&
-    fileType !== "mpc" &&
-    fileType !== "cars" &&
-    fileType !== "o&m"
-  );
+  return isDeliveryInspectionApplicableByGroup(file);
 }
 
 function isCompletedDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
@@ -2670,7 +3047,8 @@ function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
     hasSupplyOrderDate(order) &&
     isPhysicalDeliveryWorkflow(file) &&
     !isCompletedDeliveryOrder(file, order) &&
-    !isYes(order.soCancelled)
+    !isYes(order.soCancelled) &&
+    !isYes(order.shortclosure)
   );
 }
 
@@ -2733,7 +3111,9 @@ function isBankGuaranteeEligible(file: FileRecord) {
   if (isCancelledFile(file)) return false;
   return (
     isYes(file.bg) &&
-    rawSupplyOrders(file).some((order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled))
+    rawSupplyOrders(file).some(
+      (order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
+    )
   );
 }
 
@@ -2741,12 +3121,15 @@ function isCancelledFile(file: FileRecord) {
   if (isYes(file.demandCancelled)) return true;
   const orders = rawSupplyOrders(file);
   if (orders.length === 0) return false;
-  return orders.every((order) => isYes(order.soCancelled));
+  return orders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure));
 }
 
 function isSoCancelledFile(file: FileRecord) {
   const orders = rawSupplyOrders(file);
-  return orders.length > 0 && orders.every((order) => isYes(order.soCancelled));
+  return (
+    orders.length > 0 &&
+    orders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure))
+  );
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {

@@ -12,6 +12,10 @@ import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 import { effectiveSupplyOrderEntries } from "../utils/effective-deliveries.js";
 import {
+  isBiddingApplicableForFile,
+  isDeliveryInspectionApplicableByGroup,
+} from "../utils/file-type-groups.js";
+import {
   matchesFileCategorySelection,
   normalizeFileCategories,
   type FileCategoryKey,
@@ -28,6 +32,12 @@ import { cacheTtl, clearDashboardReportCaches, getCached } from "../utils/cache.
 import { asyncHandler, HttpError } from "../utils/http.js";
 
 export const dashboardRouter = Router();
+
+let anomalyGovernanceSchemaReady: Promise<void> | undefined;
+
+function hasAnomalyAdminAccess(user: { role: string }) {
+  return user.role === "admin" || user.role === "sub_admin";
+}
 
 type DivisionRow = {
   id: string;
@@ -48,6 +58,7 @@ type SettingsRow = {
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
+  file_type_groups: unknown;
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
@@ -219,6 +230,7 @@ const defaultManualMilestones = [
   "Advance Payment",
   "Payment",
 ];
+const gemBiddingModeOptions = ["Custom", "Catalogue", "Comparison"];
 
 function mapDivision(row: DivisionRow): Division {
   return {
@@ -248,6 +260,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
+    fileTypeGroups: fromDbJsonArray(row.file_type_groups) as AppSettings["fileTypeGroups"],
     modes: fromDbJsonArray(row.modes) as string[],
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
@@ -258,7 +271,8 @@ function mapSettings(row: SettingsRow): AppSettings {
 
 function getSuspectedAnomalyRows(
   files: FileRecord[],
-  acceptedSignatures: Set<string>,
+  suppressions: AnomalySuppressions,
+  customRules: CustomAnomalyRule[] = [],
 ): SuspectedAnomalyRow[] {
   const rows: SuspectedAnomalyRow[] = [];
   const emittedAnomalyKeys = new Set<string>();
@@ -286,16 +300,17 @@ function getSuspectedAnomalyRows(
       context = "file",
     ) => {
       if (!isIsoDate(previousDate) || !isIsoDate(laterDate) || previousDate! <= laterDate!) return;
+      const ruleKey = normalizeAnomalyKey(rule);
       const signature = [
         file.id,
         context,
-        normalizeAnomalyKey(rule),
+        ruleKey,
         previousField,
         previousDate,
         laterField,
         laterDate,
       ].join("|");
-      if (acceptedSignatures.has(signature)) return;
+      if (isAnomalySuppressed(signature, ruleKey, suppressions)) return;
       const emittedKey = [
         file.id,
         getCanonicalAnomalyContext(context),
@@ -316,6 +331,7 @@ function getSuspectedAnomalyRows(
         description: file.demandDescription ?? "",
         block,
         rule,
+        ruleKey,
         previousField,
         previousDate: previousDate!,
         laterField,
@@ -332,16 +348,17 @@ function getSuspectedAnomalyRows(
       foundValue: string,
       context = "file",
     ) => {
+      const ruleKey = normalizeAnomalyKey(rule);
       const signature = [
         file.id,
         context,
-        normalizeAnomalyKey(rule),
+        ruleKey,
         expectedField,
         expectedValue,
         foundField,
         foundValue,
       ].join("|");
-      if (acceptedSignatures.has(signature)) return;
+      if (isAnomalySuppressed(signature, ruleKey, suppressions)) return;
       const emittedKey = [
         file.id,
         getCanonicalAnomalyContext(context),
@@ -362,6 +379,7 @@ function getSuspectedAnomalyRows(
         description: file.demandDescription ?? "",
         block,
         rule,
+        ruleKey,
         previousField: expectedField,
         previousDate: expectedValue,
         laterField: foundField,
@@ -371,11 +389,13 @@ function getSuspectedAnomalyRows(
     };
 
     const supplyOrders = fileSupplyOrders(file);
-    const activeSupplyOrders = supplyOrders.filter((order) => !isYes(order.soCancelled));
+    const activeSupplyOrders = supplyOrders.filter(
+      (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
+    );
     const hasSupplyOrderWorkflow = supplyOrders.some((order) => hasFilledString(order.soDate));
     const hasCncWorkflow = hasFilledString(file.cncDate) || hasFilledString(file.cncApprovalDate);
     const fileClosed = hasCompletedMilestone(file.completedMilestones, fileClosedMilestone);
-    const fileReceivedDate = file.receivedDate ?? file.date;
+    const fileReceivedDate = file.receivedDate;
 
     if (!hasFilledString(file.division)) {
       addIssue("Data Completeness", "File has no division", "Division", "Filled", "Division", "Blank");
@@ -419,40 +439,42 @@ function getSuspectedAnomalyRows(
       }
     });
 
-    if (isYes(file.refloat) && (!hasFilledString(file.refloatBiddingDate) || !hasFilledString(file.refloatBidOpeningDate))) {
-      addIssue(
-        "Refloat",
-        "Refloat is Yes but refloat bidding or opening date is blank",
-        "Refloat bidding/opening dates",
-        "Filled",
-        "Refloat dates",
-        "Blank",
-      );
-    }
-    if (isNo(file.refloat) && (hasFilledString(file.refloatBiddingDate) || hasFilledString(file.refloatBidOpeningDate))) {
-      addIssue(
-        "Refloat",
-        "Refloat bidding or opening dates are filled while Refloat is No",
-        "Refloat Yes or dates blank",
-        "Refloat No with blank dates",
-        "Refloat dates",
-        "Filled",
-      );
-    }
-    if (isYes(file.tenderLive) && !hasFilledString(file.bidDate)) {
-      addIssue("Bidding", "Tender Live is Yes but bid date is blank", "Bid date", "Filled", "Bid date", "Blank");
-    }
-    if (hasFilledString(file.bidOpeningDate) && !hasFilledString(file.bidDate)) {
-      addIssue("Bidding", "Bid opening date exists but bid date is blank", "Bid date", "Filled", "Bid opening date", file.bidOpeningDate!);
-    }
-    if (isYes(file.bidOpened) && !hasFilledString(file.bidOpeningDate)) {
-      addIssue("Bidding", "Bid Opened is Yes but bid opening date is blank", "Bid opening date", "Filled", "Bid Opened", "Yes");
-    }
-    if (isYes(file.biddingStageOver) && !hasFilledString(file.bidOpeningDate)) {
-      addIssue("Bidding", "Bidding Stage Over is Yes but bid opening date is blank", "Bid opening date", "Filled", "Bidding Stage Over", "Yes");
-    }
-    if (isNo(file.biddingStageOver) && (hasCncWorkflow || hasSupplyOrderWorkflow)) {
-      addIssue("Bidding", "Bidding Stage Over is No but CNC or S.O. workflow exists", "Bidding Stage Over", "Yes", "Later workflow", "CNC/S.O. exists");
+    if (isBiddingApplicableForFile(file)) {
+      if (isYes(file.refloat) && (!hasFilledString(file.refloatBiddingDate) || !hasFilledString(file.refloatBidOpeningDate))) {
+        addIssue(
+          "Refloat",
+          "Refloat is Yes but refloat bidding or opening date is blank",
+          "Refloat bidding/opening dates",
+          "Filled",
+          "Refloat dates",
+          "Blank",
+        );
+      }
+      if (isNo(file.refloat) && (hasFilledString(file.refloatBiddingDate) || hasFilledString(file.refloatBidOpeningDate))) {
+        addIssue(
+          "Refloat",
+          "Refloat bidding or opening dates are filled while Refloat is No",
+          "Refloat Yes or dates blank",
+          "Refloat No with blank dates",
+          "Refloat dates",
+          "Filled",
+        );
+      }
+      if (isYes(file.tenderLive) && !hasFilledString(file.bidDate)) {
+        addIssue("Bidding", "Tender Live is Yes but bid date is blank", "Bid date", "Filled", "Bid date", "Blank");
+      }
+      if (hasFilledString(file.bidOpeningDate) && !hasFilledString(file.bidDate)) {
+        addIssue("Bidding", "Bid opening date exists but bid date is blank", "Bid date", "Filled", "Bid opening date", file.bidOpeningDate!);
+      }
+      if (isYes(file.bidOpened) && !hasFilledString(file.bidOpeningDate)) {
+        addIssue("Bidding", "Bid Opened is Yes but bid opening date is blank", "Bid opening date", "Filled", "Bid Opened", "Yes");
+      }
+      if (isYes(file.biddingStageOver) && !hasFilledString(file.bidOpeningDate)) {
+        addIssue("Bidding", "Bidding Stage Over is Yes but bid opening date is blank", "Bid opening date", "Filled", "Bidding Stage Over", "Yes");
+      }
+      if (isNo(file.biddingStageOver) && (hasCncWorkflow || hasSupplyOrderWorkflow)) {
+        addIssue("Bidding", "Bidding Stage Over is No but CNC or S.O. workflow exists", "Bidding Stage Over", "Yes", "Later workflow", "CNC/S.O. exists");
+      }
     }
     if (isYes(file.highValue) && !hasFilledString(file.highValueMeetingDate) && hasLaterWorkflowAfterHighValue(file)) {
       addIssue("High Value", "High Value is Yes but meeting date is blank after later workflow exists", "High Value meeting date", "Filled", "Later workflow", "Exists");
@@ -478,7 +500,7 @@ function getSuspectedAnomalyRows(
     if (isNo(file.demandCancelled) && hasFilledString(file.demandCancelledDate)) {
       addIssue("Cancellation", "Demand Cancelled is No but cancellation date is filled", "Demand cancellation date", "Blank", "Demand cancellation date", file.demandCancelledDate!);
     }
-    addPair("Cancellation", "Demand cancellation date should not be before file received date", "File received date", fileReceivedDate, "Demand cancellation date", file.demandCancelledDate);
+    addPair("Cancellation", "Demand cancellation date should not be before Demand received date", "Demand received date", fileReceivedDate, "Demand cancellation date", file.demandCancelledDate);
 
     if (fileClosed) {
       if (!hasFilledString(file.fileClosureDate)) {
@@ -491,7 +513,7 @@ function getSuspectedAnomalyRows(
           "Done",
         );
       }
-      if (effectiveSupplyOrderEntries([file]).some(({ order }) => !hasFilledString(order.paymentDate) && !isYes(order.soCancelled))) {
+      if (effectiveSupplyOrderEntries([file]).some(({ order }) => !hasFilledString(order.paymentDate) && !isYes(order.soCancelled) && !isYes(order.shortclosure))) {
         addIssue("Closure", "File closed but payment pending exists", "Payment", "Completed before file closure", "Payment", "Pending");
       }
       if (supplyOrders.some(hasBgReturnPendingForAnyCategory)) {
@@ -518,9 +540,9 @@ function getSuspectedAnomalyRows(
 
     addPair(
       "Scrutiny",
-      "Received date should not be after scrutiny date",
-      "Received date",
-      file.receivedDate ?? file.date,
+      "Demand received date should not be after scrutiny date",
+      "Demand received date",
+      file.receivedDate,
       "Scrutiny date",
       file.scrutinyDate,
     );
@@ -620,104 +642,108 @@ function getSuspectedAnomalyRows(
       "Bid opening date",
       file.bidOpeningDate,
     );
-    addPair(
-      "Bidding",
-      "Refloat bid date should not be after refloat bid opening",
-      "Refloat bid date",
-      file.refloatBiddingDate,
-      "Refloat bid opening",
-      file.refloatBidOpeningDate,
-    );
-    if (isYes(file.preBidMeeting) && !hasFilledString(file.preBidMeetingDate)) {
-      addIssue(
+    if (isBiddingApplicableForFile(file)) {
+      addPair(
+        "Bidding",
+        "Refloat bid date should not be after refloat bid opening",
+        "Refloat bid date",
+        file.refloatBiddingDate,
+        "Refloat bid opening",
+        file.refloatBidOpeningDate,
+      );
+      if (isYes(file.preBidMeeting) && !hasFilledString(file.preBidMeetingDate)) {
+        addIssue(
+          "Pre-Bid Meeting",
+          "Pre-Bid Meeting is Yes but date is missing",
+          "Expected",
+          "Pre-Bid Meeting date filled",
+          "Found",
+          "Pre-Bid Meeting Yes with blank date",
+        );
+      }
+      if (isNo(file.preBidMeeting) && hasFilledString(file.preBidMeetingDate)) {
+        addIssue(
+          "Pre-Bid Meeting",
+          "Pre-Bid Meeting date is filled while Pre-Bid Meeting is No",
+          "Expected",
+          "Pre-Bid Meeting Yes or date blank",
+          "Found",
+          "Pre-Bid Meeting No with date filled",
+        );
+      }
+      addPair(
         "Pre-Bid Meeting",
-        "Pre-Bid Meeting is Yes but date is missing",
-        "Expected",
-        "Pre-Bid Meeting date filled",
-        "Found",
-        "Pre-Bid Meeting Yes with blank date",
+        "Demand received date should not be after Pre-Bid Meeting date",
+        "Demand received date",
+        file.receivedDate,
+        "Pre-Bid Meeting date",
+        file.preBidMeetingDate,
       );
-    }
-    if (isNo(file.preBidMeeting) && hasFilledString(file.preBidMeetingDate)) {
-      addIssue(
+      addPair(
         "Pre-Bid Meeting",
-        "Pre-Bid Meeting date is filled while Pre-Bid Meeting is No",
-        "Expected",
-        "Pre-Bid Meeting Yes or date blank",
-        "Found",
-        "Pre-Bid Meeting No with date filled",
+        "Pre-Bid Meeting date should not be before bid date",
+        "Bid date",
+        file.bidDate,
+        "Pre-Bid Meeting date",
+        file.preBidMeetingDate,
+      );
+      addPair(
+        "Pre-Bid Meeting",
+        "Pre-Bid Meeting date should not be after bid opening date",
+        "Pre-Bid Meeting date",
+        file.preBidMeetingDate,
+        "Bid opening date",
+        file.bidOpeningDate,
       );
     }
-    addPair(
-      "Pre-Bid Meeting",
-      "File received date should not be after Pre-Bid Meeting date",
-      "File received date",
-      file.receivedDate ?? file.date,
-      "Pre-Bid Meeting date",
-      file.preBidMeetingDate,
-    );
-    addPair(
-      "Pre-Bid Meeting",
-      "Pre-Bid Meeting date should not be before bid date",
-      "Bid date",
-      file.bidDate,
-      "Pre-Bid Meeting date",
-      file.preBidMeetingDate,
-    );
-    addPair(
-      "Pre-Bid Meeting",
-      "Pre-Bid Meeting date should not be after bid opening date",
-      "Pre-Bid Meeting date",
-      file.preBidMeetingDate,
-      "Bid opening date",
-      file.bidOpeningDate,
-    );
-    if (!isYes(file.refloat) && (isYes(file.refloatPreBidMeeting) || hasFilledString(file.refloatPreBidMeetingDate))) {
-      addIssue(
+    if (isBiddingApplicableForFile(file)) {
+      if (!isYes(file.refloat) && (isYes(file.refloatPreBidMeeting) || hasFilledString(file.refloatPreBidMeetingDate))) {
+        addIssue(
+          "Refloat Pre-Bid Meeting",
+          "Refloat Pre-Bid fields are filled while Refloat is No",
+          "Expected",
+          "Refloat Yes or refloat pre-bid fields blank",
+          "Found",
+          "Refloat Pre-Bid data without Refloat",
+        );
+      }
+      if (isYes(file.refloat) && isYes(file.refloatPreBidMeeting) && !hasFilledString(file.refloatPreBidMeetingDate)) {
+        addIssue(
+          "Refloat Pre-Bid Meeting",
+          "Refloat Pre-Bid Meeting is Yes but date is missing",
+          "Expected",
+          "Refloat Pre-Bid Meeting date filled",
+          "Found",
+          "Refloat Pre-Bid Meeting Yes with blank date",
+        );
+      }
+      if (isYes(file.refloat) && isNo(file.refloatPreBidMeeting) && hasFilledString(file.refloatPreBidMeetingDate)) {
+        addIssue(
+          "Refloat Pre-Bid Meeting",
+          "Refloat Pre-Bid Meeting date is filled while Refloat Pre-Bid Meeting is No",
+          "Expected",
+          "Refloat Pre-Bid Meeting Yes or date blank",
+          "Found",
+          "Refloat Pre-Bid Meeting No with date filled",
+        );
+      }
+      addPair(
         "Refloat Pre-Bid Meeting",
-        "Refloat Pre-Bid fields are filled while Refloat is No",
-        "Expected",
-        "Refloat Yes or refloat pre-bid fields blank",
-        "Found",
-        "Refloat Pre-Bid data without Refloat",
+        "Refloat Pre-Bid Meeting date should not be before refloat bid date",
+        "Refloat bid date",
+        file.refloatBiddingDate,
+        "Refloat Pre-Bid Meeting date",
+        file.refloatPreBidMeetingDate,
       );
-    }
-    if (isYes(file.refloat) && isYes(file.refloatPreBidMeeting) && !hasFilledString(file.refloatPreBidMeetingDate)) {
-      addIssue(
+      addPair(
         "Refloat Pre-Bid Meeting",
-        "Refloat Pre-Bid Meeting is Yes but date is missing",
-        "Expected",
-        "Refloat Pre-Bid Meeting date filled",
-        "Found",
-        "Refloat Pre-Bid Meeting Yes with blank date",
+        "Refloat Pre-Bid Meeting date should not be after refloat bid opening date",
+        "Refloat Pre-Bid Meeting date",
+        file.refloatPreBidMeetingDate,
+        "Refloat bid opening date",
+        file.refloatBidOpeningDate,
       );
     }
-    if (isYes(file.refloat) && isNo(file.refloatPreBidMeeting) && hasFilledString(file.refloatPreBidMeetingDate)) {
-      addIssue(
-        "Refloat Pre-Bid Meeting",
-        "Refloat Pre-Bid Meeting date is filled while Refloat Pre-Bid Meeting is No",
-        "Expected",
-        "Refloat Pre-Bid Meeting Yes or date blank",
-        "Found",
-        "Refloat Pre-Bid Meeting No with date filled",
-      );
-    }
-    addPair(
-      "Refloat Pre-Bid Meeting",
-      "Refloat Pre-Bid Meeting date should not be before refloat bid date",
-      "Refloat bid date",
-      file.refloatBiddingDate,
-      "Refloat Pre-Bid Meeting date",
-      file.refloatPreBidMeetingDate,
-    );
-    addPair(
-      "Refloat Pre-Bid Meeting",
-      "Refloat Pre-Bid Meeting date should not be after refloat bid opening date",
-      "Refloat Pre-Bid Meeting date",
-      file.refloatPreBidMeetingDate,
-      "Refloat bid opening date",
-      file.refloatBidOpeningDate,
-    );
     addPair(
       "CNC",
       "CNC date should not be after CNC approval date",
@@ -797,10 +823,20 @@ function getSuspectedAnomalyRows(
       if (isYes(rawOrder.soCancelled) && hasFilledString(rawOrder.soCancelledDate) && hasWorkflowAfterDate(rawOrder, rawOrder.soCancelledDate)) {
         addIssue("Cancellation", "S.O. cancelled but delivery/payment/job completion continues after cancellation date", "Workflow after cancellation", "Blank", "Later workflow", "Exists", rawContext);
       }
+      if (isYes(rawOrder.shortclosure) && !hasFilledString(rawOrder.shortclosureDate)) {
+        addIssue("Cancellation", "Shortclosure is Yes but Shortclosure date is blank", "Shortclosure date", "Filled", "Shortclosure", "Yes", rawContext);
+      }
+      if (isNo(rawOrder.shortclosure) && hasFilledString(rawOrder.shortclosureDate)) {
+        addIssue("Cancellation", "Shortclosure is No but Shortclosure date is filled", "Shortclosure date", "Blank", "Shortclosure date", rawOrder.shortclosureDate!, rawContext);
+      }
+      addPair("Cancellation", "Shortclosure date should not be before S.O. date", "S.O. date", rawOrder.soDate, "Shortclosure date", rawOrder.shortclosureDate, rawContext);
+      if (isYes(rawOrder.shortclosure) && hasFilledString(rawOrder.shortclosureDate) && hasWorkflowAfterDate(rawOrder, rawOrder.shortclosureDate)) {
+        addIssue("Cancellation", "S.O. shortclosed but delivery/payment/job completion continues after shortclosure date", "Workflow after shortclosure", "Blank", "Later workflow", "Exists", rawContext);
+      }
       if (isYes(rawOrder.dpExtension) && !hasFilledString(rawOrder.revisedDp)) {
         addIssue("Delivery Period", "D.P. Extension is Yes but Revised D.P. is blank", "Revised D.P.", "Filled", "D.P. Extension", "Yes", rawContext);
       }
-      if (hasSoDate && !isYes(rawOrder.soCancelled)) {
+      if (hasSoDate && !isYes(rawOrder.soCancelled) && !isYes(rawOrder.shortclosure)) {
         if (isYes(rawOrder.stageDelivery)) {
           rawStageRows.forEach((stage, stageIndex) => {
             const stageContext = `${rawContext}:stage:${stageIndex + 1}`;
@@ -950,15 +986,12 @@ function getSuspectedAnomalyRows(
       const orderLabel =
         order.soNo || order.gemSoNo || order.stageDeliveryLabel || `S.O. ${index + 1}`;
       const context = `order:${orderLabel}:${index}`;
-      const currentMilestone = normalizeMilestoneName(order.currentMilestone ?? "");
       const jobCompletionDone = isJobCompletionDone(order);
       const paymentWorkflowStarted =
-        currentMilestone === "payment" ||
         hasFilledString(order.billPreparationDate) ||
         hasFilledString(order.billSentForPaymentDate) ||
         hasFilledString(order.paymentDate);
       const paymentWorkflowStartedLabel = [
-        currentMilestone === "payment" ? "Payment Current" : "",
         hasFilledString(order.billPreparationDate) ? "Bill preparation date" : "",
         hasFilledString(order.billSentForPaymentDate) ? "Bill sent for payment date" : "",
         hasFilledString(order.paymentDate) ? "Payment date" : "",
@@ -974,17 +1007,6 @@ function getSuspectedAnomalyRows(
           "Job Completion Done checked",
           "Found",
           paymentWorkflowStartedLabel || "Payment workflow started",
-          context,
-        );
-      }
-      if (isJobCompletionWorkflow(file) && jobCompletionDone && currentMilestone === "jobcompletion") {
-        addIssue(
-          "Job Completion",
-          "Job Completion should not be both Current and Done",
-          "Expected",
-          "Current moved after Job Completion",
-          "Found",
-          "Job Completion Current and Done",
           context,
         );
       }
@@ -1050,18 +1072,18 @@ function getSuspectedAnomalyRows(
       }
       addPair(
         "Supply Order",
-        "File received date should not be after Financial Sanction date",
-        "File received date",
-        file.receivedDate ?? file.date,
+        "Demand received date should not be after Financial Sanction date",
+        "Demand received date",
+        file.receivedDate,
         "Financial Sanction date",
         order.financialSanctionDate,
         context,
       );
       addPair(
         "Supply Order",
-        "File received date should not be after S.O. date",
-        "File received date",
-        file.receivedDate ?? file.date,
+        "Demand received date should not be after S.O. date",
+        "Demand received date",
+        file.receivedDate,
         "S.O. date",
         order.soDate,
         context,
@@ -1378,7 +1400,7 @@ function getSuspectedAnomalyRows(
       addBgAnomalies({
         kind: "PSB",
         context,
-        fileReceivedDate: file.receivedDate ?? file.date,
+        fileReceivedDate: file.receivedDate,
         financialSanctionDate: order.financialSanctionDate,
         soDate: order.soDate,
         bgNo: order.psbBgNo,
@@ -1392,7 +1414,7 @@ function getSuspectedAnomalyRows(
       addBgAnomalies({
         kind: "PWB",
         context,
-        fileReceivedDate: file.receivedDate ?? file.date,
+        fileReceivedDate: file.receivedDate,
         financialSanctionDate: order.financialSanctionDate,
         soDate: order.soDate,
         bgNo: order.pwbBgNo,
@@ -1406,7 +1428,7 @@ function getSuspectedAnomalyRows(
       addBgAnomalies({
         kind: "PSB+PWB",
         context,
-        fileReceivedDate: file.receivedDate ?? file.date,
+        fileReceivedDate: file.receivedDate,
         financialSanctionDate: order.financialSanctionDate,
         soDate: order.soDate,
         bgNo: order.combinedBgNo,
@@ -1472,6 +1494,7 @@ function getSuspectedAnomalyRows(
         context,
       );
     });
+    addCustomRuleAnomalies(file, customRules, addIssue);
   });
   return rows.sort(
     (a, b) =>
@@ -1568,7 +1591,7 @@ function addBgAnomalies({
   const validityLabel = `${kind} validity date`;
   const returnLabel = `${kind} return date`;
   const earlierThanWorkflowDates = [
-    { label: "File received date", date: fileReceivedDate },
+    { label: "Demand received date", date: fileReceivedDate },
     { label: "Financial Sanction date", date: financialSanctionDate },
   ].filter((item): item is { label: string; date: string } => {
     const date = item.date;
@@ -2014,6 +2037,171 @@ function normalizeAnomalyKey(value: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function parseAnomalySignature(signature: string) {
+  const [fileId = "", context = "", ruleKey = "", previousField = "", previousValue = "", laterField = "", laterValue = ""] =
+    signature.split("|");
+  return {
+    fileId,
+    context,
+    ruleKey,
+    ruleLabel: humanizeAnomalyRuleKey(ruleKey),
+    previousField,
+    previousValue,
+    laterField,
+    laterValue,
+  };
+}
+
+function humanizeAnomalyRuleKey(ruleKey: string) {
+  if (!ruleKey) return "";
+  const compactReplacements: Array<[RegExp, string]> = [
+    [/fileclosedbutbgreturnpendingexists/g, "File is closed but BG return is still pending"],
+    [/bgreturnpending/g, "BG return pending"],
+    [/fileclosed/g, "File closed"],
+    [/exists/g, "exists"],
+    [/demandreceived/g, "Demand received"],
+    [/filereceived/g, "File received"],
+    [/prebidmeeting/g, "Pre-Bid Meeting"],
+    [/jobcompletion/g, "Job Completion"],
+    [/financialsanction/g, "Financial Sanction"],
+    [/supplyorder/g, "Supply Order"],
+  ];
+  let label = ruleKey;
+  compactReplacements.forEach(([pattern, replacement]) => {
+    label = label.replace(pattern, replacement);
+  });
+  return label
+    .replace(/date/g, " date ")
+    .replace(/should/g, " should ")
+    .replace(/not/g, " not ")
+    .replace(/after/g, " after ")
+    .replace(/before/g, " before ")
+    .replace(/filled/g, " filled ")
+    .replace(/blank/g, " blank ")
+    .replace(/current/g, " current ")
+    .replace(/done/g, " done ")
+    .replace(/bg/g, " BG ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (value) => value.toUpperCase());
+}
+
+function isAnomalySuppressed(signature: string, ruleKey: string, suppressions: AnomalySuppressions) {
+  return suppressions.signatures.has(signature) || suppressions.universalRuleKeys.has(ruleKey);
+}
+
+const customAnomalyFieldDefinitions = [
+  { key: "file.receivedDate", label: "Demand received date", scope: "file" },
+  { key: "file.scrutinyDate", label: "Scrutiny date", scope: "file" },
+  { key: "file.scrutinyResponseDate", label: "Scrutiny response date", scope: "file" },
+  { key: "file.scrutinyCompletionDate", label: "Scrutiny completion date", scope: "file" },
+  { key: "file.immsDate", label: "Control date", scope: "file" },
+  { key: "file.highValueMeetingDate", label: "High value meeting date", scope: "file" },
+  { key: "file.highValueMinutesDate", label: "High value minutes date", scope: "file" },
+  { key: "file.adSentDate", label: "AD sent date", scope: "file" },
+  { key: "file.adVettingDate", label: "AD vetting date", scope: "file" },
+  { key: "file.rqaSentDate", label: "R&QA sent date", scope: "file" },
+  { key: "file.rqaApprovalDate", label: "R&QA approval date", scope: "file" },
+  { key: "file.ifaSentDate", label: "IFA sent date", scope: "file" },
+  { key: "file.ifaFinalDate", label: "IFA final date", scope: "file" },
+  { key: "file.cfaSentDate", label: "CFA sent date", scope: "file" },
+  { key: "file.cfaDate", label: "CFA date", scope: "file" },
+  { key: "file.cncDate", label: "CNC date", scope: "file" },
+  { key: "file.cncApprovalDate", label: "CNC approval date", scope: "file" },
+  { key: "file.fileClosureDate", label: "File closure date", scope: "file" },
+  { key: "order.soDate", label: "S.O. date", scope: "supply_order" },
+  { key: "order.dpDate", label: "D.P. date", scope: "supply_order" },
+  { key: "order.revisedDp", label: "Revised D.P.", scope: "supply_order" },
+  { key: "order.materialReceiptDate", label: "Material receipt date", scope: "supply_order" },
+  { key: "order.jobCompletionDate", label: "Job completion date", scope: "supply_order" },
+  { key: "order.irPreparationDate", label: "IR preparation date", scope: "supply_order" },
+  { key: "order.irReceiptDate", label: "IR receipt date", scope: "supply_order" },
+  { key: "order.billPreparationDate", label: "Bill preparation date", scope: "supply_order" },
+  { key: "order.billSentForPaymentDate", label: "Bill sent for payment date", scope: "supply_order" },
+  { key: "order.paymentDate", label: "Payment date", scope: "supply_order" },
+] as const;
+
+function getCustomAnomalyFieldDefinition(key: string) {
+  return customAnomalyFieldDefinitions.find((field) => field.key === key);
+}
+
+function getCustomAnomalyFieldValue(
+  key: string,
+  file: FileRecord,
+  order?: SupplyOrderDetail,
+): string | undefined {
+  const definition = getCustomAnomalyFieldDefinition(key);
+  if (!definition) return undefined;
+  if (definition.scope === "file") return String((file as unknown as Record<string, unknown>)[key.replace("file.", "")] ?? "") || undefined;
+  if (!order) return undefined;
+  return String((order as unknown as Record<string, unknown>)[key.replace("order.", "")] ?? "") || undefined;
+}
+
+function getCustomAnomalyFieldLabel(key: string) {
+  return getCustomAnomalyFieldDefinition(key)?.label ?? key;
+}
+
+function addCustomRuleAnomalies(
+  file: FileRecord,
+  rules: CustomAnomalyRule[],
+  addIssue: AddAnomalyIssue,
+) {
+  rules.filter((rule) => rule.enabled).forEach((rule) => {
+    const fieldA = getCustomAnomalyFieldDefinition(rule.fieldA);
+    const fieldB = rule.fieldB ? getCustomAnomalyFieldDefinition(rule.fieldB) : undefined;
+    if (!fieldA) return;
+    const evaluate = (order: SupplyOrderDetail | undefined, context: string) => {
+      const valueA = getCustomAnomalyFieldValue(rule.fieldA, file, order);
+      const valueB = rule.fieldB ? getCustomAnomalyFieldValue(rule.fieldB, file, order) : undefined;
+      const labelA = getCustomAnomalyFieldLabel(rule.fieldA);
+      const labelB = rule.fieldB ? getCustomAnomalyFieldLabel(rule.fieldB) : "Required value";
+      if (rule.ruleType === "date_order") {
+        if (!fieldB || !isIsoDate(valueA) || !isIsoDate(valueB)) return;
+        const violates =
+          rule.operator === "not_before" ? valueA! < valueB! : rule.operator === "not_after" ? valueA! > valueB! : false;
+        if (!violates) return;
+        addIssue("Custom rule", rule.name, labelA, rule.operator === "not_before" ? `On/after ${labelB}` : `On/before ${labelB}`, labelA, valueA!, context);
+      } else if (rule.ruleType === "required_field") {
+        if (!fieldB || !hasFilledString(valueA) || hasFilledString(valueB)) return;
+        addIssue("Custom rule", rule.name, labelB, "Filled", labelB, "Blank", context);
+      } else if (rule.ruleType === "delay_days") {
+        if (!fieldB || !isIsoDate(valueA) || !isIsoDate(valueB) || !Number.isFinite(rule.thresholdDays)) return;
+        const start = new Date(`${valueB}T00:00:00.000Z`);
+        const end = new Date(`${valueA}T00:00:00.000Z`);
+        const days = Math.floor((end.getTime() - start.getTime()) / 86_400_000);
+        if (days <= (rule.thresholdDays ?? 0)) return;
+        addIssue("Custom rule", rule.name, labelA, `Within ${rule.thresholdDays} days of ${labelB}`, labelA, `${valueA} (${days} days)`, context);
+      } else if (rule.ruleType === "date_boundary") {
+        if (!isIsoDate(valueA) || !isIsoDate(rule.fixedValue)) return;
+        const violates =
+          rule.operator === "not_before_fixed"
+            ? valueA! < rule.fixedValue!
+            : rule.operator === "not_after_fixed"
+              ? valueA! > rule.fixedValue!
+              : false;
+        if (!violates) return;
+        addIssue(
+          "Custom rule",
+          rule.name,
+          labelA,
+          rule.operator === "not_before_fixed" ? `On/after ${rule.fixedValue}` : `On/before ${rule.fixedValue}`,
+          labelA,
+          valueA!,
+          context,
+        );
+      }
+    };
+    if (fieldA.scope === "file" && (!fieldB || fieldB.scope === "file")) {
+      evaluate(undefined, `custom-rule:${rule.id}`);
+      return;
+    }
+    fileSupplyOrders(file).forEach((order, index) => {
+      if (isYes(order.soCancelled)) return;
+      evaluate(order, `custom-rule:${rule.id}:so:${index}`);
+    });
+  });
+}
+
 function getCanonicalAnomalyContext(context: string) {
   return context.replace(/:\d+$/, "");
 }
@@ -2060,13 +2248,137 @@ async function loadSettings() {
   return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets, active_user_id
+              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, active_user_id
        from app_settings
        where id = true`,
     );
     if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
     return mapSettings(result.rows[0]);
   });
+}
+
+async function ensureAnomalyGovernanceSchema() {
+  anomalyGovernanceSchemaReady ??= (async () => {
+    await pool.query(`
+      alter table suspected_anomaly_acceptances
+        add column if not exists rule_key text,
+        add column if not exists file_id text,
+        add column if not exists status text not null default 'approved_file',
+        add column if not exists scope text not null default 'file',
+        add column if not exists requested_by_user_id uuid references app_users(id) on delete set null,
+        add column if not exists requested_by_name text,
+        add column if not exists requested_at timestamptz not null default now(),
+        add column if not exists reviewed_by_user_id uuid references app_users(id) on delete set null,
+        add column if not exists reviewed_by_name text,
+        add column if not exists reviewed_at timestamptz,
+        add column if not exists revoked_by_user_id uuid references app_users(id) on delete set null,
+        add column if not exists revoked_by_name text,
+        add column if not exists revoked_at timestamptz,
+        add column if not exists admin_message text,
+        add column if not exists history_hidden_by_user_ids uuid[] not null default '{}',
+        add column if not exists admin_history_cleared_at timestamptz,
+        add column if not exists admin_history_cleared_by_user_id uuid references app_users(id) on delete set null,
+        add column if not exists admin_history_cleared_by_name text
+    `);
+    await pool.query(`
+      update suspected_anomaly_acceptances
+      set
+        status = coalesce(nullif(status, ''), 'approved_file'),
+        scope = coalesce(nullif(scope, ''), 'file'),
+        requested_by_user_id = coalesce(requested_by_user_id, accepted_by_user_id),
+        requested_by_name = coalesce(requested_by_name, accepted_by_name),
+        requested_at = coalesce(requested_at, accepted_at),
+        reviewed_by_user_id = coalesce(reviewed_by_user_id, accepted_by_user_id),
+        reviewed_by_name = coalesce(reviewed_by_name, accepted_by_name),
+        reviewed_at = coalesce(reviewed_at, accepted_at)
+      where true
+    `);
+    await pool.query(`
+      create table if not exists anomaly_rules (
+        id uuid primary key default gen_random_uuid(),
+        name text not null,
+        description text not null default '',
+        rule_type text not null,
+        field_a text not null,
+        operator text not null,
+        field_b text,
+        fixed_value text,
+        threshold_days integer,
+        severity text not null default 'Medium',
+        scope text not null default 'all',
+        enabled boolean not null default true,
+        created_by_user_id uuid references app_users(id) on delete set null,
+        created_by_name text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `);
+    await pool.query(`alter table anomaly_rules add column if not exists fixed_value text`);
+  })();
+  await anomalyGovernanceSchemaReady;
+}
+
+async function loadCustomAnomalyRules() {
+  await ensureAnomalyGovernanceSchema();
+  const result = await pool.query<{
+    id: string;
+    name: string;
+    description: string | null;
+    rule_type: string;
+    field_a: string;
+    operator: string;
+    field_b: string | null;
+    fixed_value: string | null;
+    threshold_days: number | null;
+    severity: string;
+    scope: string;
+    enabled: boolean;
+    created_by_name: string | null;
+    created_at: string;
+    updated_at: string;
+  }>(`
+    select id, name, description, rule_type, field_a, operator, field_b, fixed_value, threshold_days,
+           severity, scope, enabled, created_by_name, created_at, updated_at
+    from anomaly_rules
+    order by created_at desc
+  `);
+  return result.rows.map(mapCustomAnomalyRule);
+}
+
+function mapCustomAnomalyRule(row: {
+  id: string;
+  name: string;
+  description: string | null;
+  rule_type: string;
+  field_a: string;
+  operator: string;
+  field_b: string | null;
+  fixed_value: string | null;
+  threshold_days: number | null;
+  severity: string;
+  scope: string;
+  enabled: boolean;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+}): CustomAnomalyRule {
+  return {
+    id: row.id,
+    name: row.name,
+    description: fromDbText(row.description),
+    ruleType: normalizeCustomRuleType(row.rule_type),
+    fieldA: row.field_a,
+    operator: row.operator,
+    fieldB: fromDbText(row.field_b),
+    fixedValue: fromDbText(row.fixed_value),
+    thresholdDays: row.threshold_days ?? undefined,
+    severity: normalizeCustomRuleSeverity(row.severity),
+    scope: normalizeCustomRuleScope(row.scope),
+    enabled: row.enabled,
+    createdByName: fromDbText(row.created_by_name),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 async function loadValueThresholdLevels(financialYear: string): Promise<ValueThresholdLevel[]> {
@@ -2098,6 +2410,79 @@ async function loadValueThresholdLevels(financialYear: string): Promise<ValueThr
 
 function readString(value: unknown) {
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeCustomRuleType(value: string): CustomAnomalyRule["ruleType"] {
+  return value === "required_field" || value === "delay_days" || value === "date_boundary"
+    ? value
+    : "date_order";
+}
+
+function normalizeCustomRuleSeverity(value: string): CustomAnomalyRule["severity"] {
+  return value === "Low" || value === "High" ? value : "Medium";
+}
+
+function normalizeCustomRuleScope(value: string): CustomAnomalyRule["scope"] {
+  return value === "file" || value === "supply_order" ? value : "all";
+}
+
+function validateCustomAnomalyRuleInput(body: Record<string, unknown>) {
+  const source = body;
+  const name = readString(source.name)?.trim();
+  const description = readString(source.description)?.trim() ?? "";
+  const ruleType = normalizeCustomRuleType(readString(source.ruleType) ?? "");
+  const fieldA = readString(source.fieldA)?.trim() ?? "";
+  const operator = readString(source.operator)?.trim() ?? "";
+  const fieldB = readString(source.fieldB)?.trim() ?? "";
+  const fixedValue = normalizeDateLiteral(readString(source.fixedValue)?.trim());
+  const thresholdDays =
+    typeof source.thresholdDays === "number"
+      ? source.thresholdDays
+      : Number.parseInt(readString(source.thresholdDays) ?? "", 10);
+  const severity = normalizeCustomRuleSeverity(readString(source.severity) ?? "");
+  const scope = normalizeCustomRuleScope(readString(source.scope) ?? "");
+  const enabled = typeof source.enabled === "boolean" ? source.enabled : true;
+  if (!name) throw new HttpError(400, "Rule name is required.");
+  if (!getCustomAnomalyFieldDefinition(fieldA)) throw new HttpError(400, "Field A is invalid.");
+  if ((ruleType === "date_order" || ruleType === "required_field" || ruleType === "delay_days") && !getCustomAnomalyFieldDefinition(fieldB)) {
+    throw new HttpError(400, "Field B is invalid.");
+  }
+  if (ruleType === "date_order" && operator !== "not_before" && operator !== "not_after") {
+    throw new HttpError(400, "Date order operator must be not_before or not_after.");
+  }
+  if (ruleType === "required_field" && operator !== "requires") {
+    throw new HttpError(400, "Required field operator must be requires.");
+  }
+  if (ruleType === "delay_days" && (!Number.isInteger(thresholdDays) || thresholdDays < 0)) {
+    throw new HttpError(400, "Delay rule needs a non-negative threshold.");
+  }
+  if (ruleType === "date_boundary") {
+    if (operator !== "not_before_fixed" && operator !== "not_after_fixed") {
+      throw new HttpError(400, "Date boundary operator must be not_before_fixed or not_after_fixed.");
+    }
+    if (!isIsoDate(fixedValue)) throw new HttpError(400, "Date boundary rule needs a fixed date.");
+  }
+  return {
+    name,
+    description,
+    ruleType,
+    fieldA,
+    operator,
+    fieldB,
+    fixedValue,
+    thresholdDays: ruleType === "delay_days" ? thresholdDays : undefined,
+    severity,
+    scope,
+    enabled,
+  };
+}
+
+function normalizeDateLiteral(value: string | undefined) {
+  if (!value) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const match = value.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (!match) return value;
+  return `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
 }
 
 const allActiveFilesYear = "__all_active_files__";
@@ -2160,7 +2545,7 @@ function isInactiveFile(
     ((file.supplyOrders?.length ?? 0) === 0 && isYes(file.soCancelled)) ||
     Boolean(
       file.supplyOrders?.length &&
-      file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled)),
+      file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled) || isYes(order.shortclosure)),
     )
   );
 }
@@ -2315,6 +2700,7 @@ function isNoExpression(column: string) {
 type SimpleDashboardCounts = {
   dashboardFileCount: number;
   modeCounts: Array<{ name: string; count: number }>;
+  gemBiddingModeCounts: Array<{ name: string; count: number }>;
   topSummaryStats: Array<{
     label: string;
     value: Array<{ label: string; value: number; searchFilter: string }>;
@@ -2343,6 +2729,7 @@ type MiscellaneousCounts = {
   ld: number;
   demandCancelled: number;
   soCancelled: number;
+  shortclosedSo: number;
   multipleSupplyOrders: number;
 };
 
@@ -2437,11 +2824,43 @@ type SuspectedAnomalyRow = {
   description: string;
   block: string;
   rule: string;
+  ruleKey: string;
   previousField: string;
   previousDate: string;
   laterField: string;
   laterDate: string;
   accepted: "No";
+  requestStatus?: string;
+  userExplanation?: string;
+  adminMessage?: string;
+  requestedByName?: string;
+  requestedAt?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  scope?: string;
+};
+
+type AnomalySuppressions = {
+  signatures: Set<string>;
+  universalRuleKeys: Set<string>;
+};
+
+type CustomAnomalyRule = {
+  id: string;
+  name: string;
+  description: string;
+  ruleType: "date_order" | "required_field" | "delay_days" | "date_boundary";
+  fieldA: string;
+  operator: string;
+  fieldB?: string;
+  fixedValue?: string;
+  thresholdDays?: number;
+  severity: "Low" | "Medium" | "High";
+  scope: "all" | "file" | "supply_order";
+  enabled: boolean;
+  createdByName?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type ManualMilestoneSqlSlice = {
@@ -2478,6 +2897,10 @@ async function loadSimpleDashboardCounts({
     (mode, index) =>
       `${countFilter(`upper(trim(coalesce(f.mode, ''))) = ${literalSql(mode)}`)} as mode_${index}`,
   );
+  const gemBiddingModeSelects = gemBiddingModeOptions.map(
+    (mode, index) =>
+      `${countFilter(`${isYesExpression("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = ${literalSql(mode.toLowerCase())}`)} as gem_bidding_mode_${index}`,
+  );
   const attributeSelects = snapshotAttributeDefinitions.flatMap((attribute, index) => [
     `${countFilter("condition" in attribute ? attribute.condition : isYesExpression(attribute.column))} as attribute_${index}_yes`,
     `${countFilter("condition" in attribute ? `not (${attribute.condition})` : isNoExpression(attribute.column))} as attribute_${index}_no`,
@@ -2485,7 +2908,7 @@ async function loadSimpleDashboardCounts({
   const result = await pool.query<Record<string, number | string>>(
     `select
        count(*)::integer as dashboard_file_count,
-       ${[...modeSelects, ...attributeSelects].join(",\n       ")}
+       ${[...modeSelects, ...gemBiddingModeSelects, ...attributeSelects].join(",\n       ")}
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, extraConditions)}`,
@@ -2497,6 +2920,10 @@ async function loadSimpleDashboardCounts({
   return {
     dashboardFileCount: readCount("dashboard_file_count"),
     modeCounts: modeNames.map((name, index) => ({ name, count: readCount(`mode_${index}`) })),
+    gemBiddingModeCounts: gemBiddingModeOptions.map((name, index) => ({
+      name,
+      count: readCount(`gem_bidding_mode_${index}`),
+    })),
     topSummaryStats: snapshotAttributeDefinitions.map((attribute, index) => ({
       label: attribute.label,
       value: [
@@ -2625,6 +3052,12 @@ function effectiveOrderCurrentMilestoneExpression(milestone: string, alias = "es
 }
 
 function effectiveOrderCompletedMilestoneExpression(milestone: string, alias = "eso") {
+  if (normalizeMilestoneName(milestone) === "financialsanction") {
+    return hasFilledExpression(`${alias}.financial_sanction_date`);
+  }
+  if (normalizeMilestoneName(milestone) === "jobcompletion") {
+    return hasFilledExpression(`${alias}.job_completion_date`);
+  }
   return `exists (
     select 1
     from jsonb_array_elements_text(coalesce(${alias}.completed_milestones, '[]'::jsonb)) as completed(milestone)
@@ -2633,6 +3066,12 @@ function effectiveOrderCompletedMilestoneExpression(milestone: string, alias = "
 }
 
 function completedOrderMilestoneExpression(orderAlias: string, milestone: string) {
+  if (normalizeMilestoneName(milestone) === "financialsanction") {
+    return hasFilledExpression(`${orderAlias}.financial_sanction_date`);
+  }
+  if (normalizeMilestoneName(milestone) === "jobcompletion") {
+    return hasFilledExpression(`${orderAlias}.job_completion_date`);
+  }
   return `exists (
     select 1
     from jsonb_array_elements_text(coalesce(${orderAlias}.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
@@ -2688,8 +3127,9 @@ function effectiveOrderJobCompletionWorkflowExpression(alias = "eso") {
 function effectiveOrderJobCompletionLiveExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and ${effectiveOrderJobCompletionWorkflowExpression(alias)}
-    and ${effectiveOrderCurrentMilestoneExpression("Job Completion", alias)}
     and not ${effectiveOrderCompletedMilestoneExpression("Job Completion", alias)}
+    and ${effectiveOrderDpDateExpression(alias)} is not null
+    and ${effectiveOrderDpDateExpression(alias)} < current_date
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
@@ -2747,7 +3187,6 @@ function effectiveOrderPaymentPendingExpression(alias = "eso") {
       )
       or ${hasFilledExpression(`${alias}.bill_preparation_date`)}
       or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
-      or ${effectiveOrderCurrentMilestoneExpression("Payment", alias)}
     )
     and not ${hasFilledExpression(`${alias}.payment_date`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
@@ -2826,17 +3265,12 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
 
 function paymentRowReadyExpression(alias = "payment_row") {
   return `(
-    ${normalizeMilestoneExpression(`${alias}.current_milestone`)} = 'payment'
-    or ${hasFilledExpression(`${alias}.bill_preparation_date`)}
+    ${hasFilledExpression(`${alias}.bill_preparation_date`)}
     or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
 	    or (
-		      (not ${isYesExpression(`${alias}.file_ir`)}
-		        or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-	      and exists (
-	        select 1
-	        from jsonb_array_elements_text(coalesce(${alias}.completed_milestones, '[]'::jsonb)) as completed_payment(milestone)
-	        where ${normalizeMilestoneExpression("completed_payment.milestone")} = 'jobcompletion'
-	      )
+	      (not ${isYesExpression(`${alias}.file_ir`)}
+	        or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+      and ${hasFilledExpression(`${alias}.job_completion_date`)}
 	    )
     or (
 	      ${isYesExpression(`${alias}.file_ir`)}
@@ -2941,25 +3375,16 @@ function normalizeMilestoneName(value: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function isPhysicalDeliveryWorkflow(file: Pick<FileRecord, "fileType" | "ir">) {
-  const fileType = (file.fileType ?? "").trim().toLowerCase();
-  return (
-    !isNo(file.ir) &&
-    fileType !== "amc" &&
-    fileType !== "mpc" &&
-    fileType !== "cars" &&
-    fileType !== "o&m"
-  );
+function isPhysicalDeliveryWorkflow(file: Pick<FileRecord, "fileType" | "fileTypeGroup" | "ir">) {
+  return isDeliveryInspectionApplicableByGroup(file);
 }
 
-function isJobCompletionWorkflow(file: Pick<FileRecord, "fileType" | "ir">) {
+function isJobCompletionWorkflow(file: Pick<FileRecord, "fileType" | "fileTypeGroup" | "ir">) {
   return !isPhysicalDeliveryWorkflow(file);
 }
 
-function isJobCompletionDone(order: Pick<SupplyOrderDetail, "completedMilestones">) {
-  return (order.completedMilestones ?? []).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+function isJobCompletionDone(order: Pick<SupplyOrderDetail, "jobCompletionDate">) {
+  return hasFilledString(order.jobCompletionDate);
 }
 
 function isBgStatusKey(value: string) {
@@ -3021,12 +3446,18 @@ function fileClosedExpression() {
 function financialSanctionCompleteExpression() {
   return `not ${isCancelledExpression()} and ${supplyOrderExists(
     `not ${isYesExpression("so.so_cancelled")}
-     and (${hasFilledExpression("so.financial_sanction_date")}
-       or ${completedOrderMilestoneExpression("so", "Financial Sanction")})`,
+     and ${hasFilledExpression("so.financial_sanction_date")}`,
   )}`;
 }
 
+function biddingApplicableExpression() {
+  return `upper(trim(coalesce(f.mode, ''))) <> 'LPC'
+    and lower(trim(coalesce(f.file_type, ''))) not in ('cars', 'capsi')
+    and not (${isYesExpression("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = 'comparison')`;
+}
+
 function statusAppliesExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
+  if (milestone.key === "bidding") return biddingApplicableExpression();
   return "appliesColumn" in milestone && milestone.appliesColumn
     ? isYesExpression(milestone.appliesColumn)
     : "true";
@@ -3070,9 +3501,8 @@ function statusActiveExpression(milestone: (typeof statusMilestoneDefinitions)[n
        and ${bgCategoryExpression("so", milestone.key)}
        and (
          (${normalizeMilestoneExpression("so.current_milestone")} = '${normalized}')
-         or ('${normalized}' in ('psb', 'psbpwb')
-           and (${hasFilledExpression("so.financial_sanction_date")}
-             or ${completedOrderMilestoneExpression("so", "Financial Sanction")}))
+	         or ('${normalized}' in ('psb', 'psbpwb')
+	           and ${hasFilledExpression("so.financial_sanction_date")})
          or ('${normalized}' = 'pwb'
            and (
              (${isYesExpression("f.ir")} and ${hasFilledExpression("so.material_receipt_date")})
@@ -3127,8 +3557,14 @@ function financialSanctionPreviousStageExpression() {
     and not (${financialSanctionReachedExpression()})
     and (
       (not ${isYesExpression("f.tcec")}
-        and ${normalizeMilestoneExpression("f.current_milestone")} = 'bidding'
-        and not ${isYesExpression("f.bidding_stage_over")})
+        and (
+          (${biddingApplicableExpression()}
+            and ${normalizeMilestoneExpression("f.current_milestone")} = 'bidding'
+            and not ${isYesExpression("f.bidding_stage_over")})
+          or (not ${biddingApplicableExpression()}
+            and ${normalizeMilestoneExpression("f.current_milestone")} = 'cfa'
+            and not ${hasFilledExpression("f.cfa_date")})
+        ))
       or (${isYesExpression("f.tcec")}
         and ${normalizeMilestoneExpression("f.current_milestone")} = 'cnc'
         and not ${hasFilledExpression("f.cnc_approval_date")})
@@ -3137,15 +3573,15 @@ function financialSanctionPreviousStageExpression() {
 
 function financialSanctionReachedExpression() {
   return `not ${isCancelledExpression()}
-    and ${isYesExpression("f.bidding_stage_over")}
+    and ((${biddingApplicableExpression()} and ${isYesExpression("f.bidding_stage_over")})
+      or (not ${biddingApplicableExpression()} and ${hasFilledExpression("f.cfa_date")}))
     and (not ${isYesExpression("f.tcec")} or ${hasFilledExpression("f.cnc_approval_date")})`;
 }
 
 function financialSanctionPendingExpression(orderAlias = "eso") {
   return `${financialSanctionReachedExpression()}
     and not ${effectiveOrderCancelledExpression(orderAlias)}
-    and not (${hasFilledExpression(`${orderAlias}.financial_sanction_date`)}
-      or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction", orderAlias)})`;
+    and not ${hasFilledExpression(`${orderAlias}.financial_sanction_date`)}`;
 }
 
 async function loadFinanceTotals({
@@ -3553,13 +3989,10 @@ async function loadAnalyticsSqlSlice({
     so.revised_dp,
     so.dp_date
   )`;
-  const paymentJobCompletionDone = `exists (
-    select 1
-    from jsonb_array_elements_text(
-      coalesce(payment_stage.stage -> 'completedMilestones', so.completed_milestones, '[]'::jsonb)
-    ) as completed_payment(milestone)
-    where ${normalizeMilestoneExpression("completed_payment.milestone")} = 'jobcompletion'
-  )`;
+  const paymentJobCompletionDone = `coalesce(
+    nullif(payment_stage.stage ->> 'jobCompletionDate', '')::date,
+    so.job_completion_date
+  ) is not null`;
   const paymentClearingStart = `case
     when ${deliveryInspectionApplicableExpression()} then coalesce(
       nullif(payment_stage.stage ->> 'materialReceiptDate', '')::date,
@@ -3629,13 +4062,13 @@ async function loadAnalyticsSqlSlice({
 
   const monthlyValues = [...fileRankingValues];
   const monthlyResult = await pool.query<{ name: string; count: number }>(
-    `select to_char(coalesce(f.received_date, f.file_date), 'YYYY-MM') as name,
+    `select to_char(f.received_date, 'YYYY-MM') as name,
             count(*)::integer as count
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
        ...fileRankingConditions,
-       "coalesce(f.received_date, f.file_date) is not null",
+       "f.received_date is not null",
      ])}
      group by 1
      order by name desc
@@ -3678,17 +4111,11 @@ async function loadAnalyticsSqlSlice({
 		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
 		               and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> ''
 		             )
-		             or (
-		               (not ${isYesExpression("f.ir")}
-		                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		               and exists (
-	                 select 1
-	                 from jsonb_array_elements_text(
-	                   coalesce(stage_delivery.stage -> 'completedMilestones', '[]'::jsonb)
-	                 ) as completed_stage(milestone)
-	                 where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-	               )
-	             )
+			             or (
+			               (not ${isYesExpression("f.ir")}
+			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			               and coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''
+		             )
 	             or exists (
                select 1
                from jsonb_array_elements_text(
@@ -3703,15 +4130,11 @@ async function loadAnalyticsSqlSlice({
 		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
 		               and ${hasFilledExpression("so.material_receipt_date")}
 		             )
-		             or (
-		               (not ${isYesExpression("f.ir")}
-		                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		               and exists (
-	                 select 1
-	                 from jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
-	                 where ${normalizeMilestoneExpression("completed_order.milestone")} = 'jobcompletion'
-	               )
-	             )
+			             or (
+			               (not ${isYesExpression("f.ir")}
+			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			               and ${hasFilledExpression("so.job_completion_date")}
+		             )
 	             or ${completedOrderMilestoneExpression("so", "Delivery")}
            )
          end as fructified
@@ -3881,15 +4304,11 @@ async function loadAnalyticsSqlSlice({
      from effective_payment_rows
      where not ${isYesExpression("so_cancelled")}
        and (
-		         (
-		           (not ${isYesExpression("file_ir")}
-		             or lower(trim(coalesce(file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		           and exists (
-	             select 1
-	             from jsonb_array_elements_text(coalesce(completed_milestones, '[]'::jsonb)) as completed_payment(milestone)
-	             where ${normalizeMilestoneExpression("completed_payment.milestone")} = 'jobcompletion'
-	           )
-	         )
+			         (
+			           (not ${isYesExpression("file_ir")}
+			             or lower(trim(coalesce(file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			           and coalesce(job_completion_date, '') <> ''
+		         )
          or (
 	         ${isYesExpression("file_ir")}
 	         and lower(trim(coalesce(file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
@@ -4196,17 +4615,11 @@ async function loadMonthWiseDeliveryScheduleRows({
 		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
 		               and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> ''
 		             )
-		             or (
-		               (not ${isYesExpression("f.ir")}
-		                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		               and exists (
-	                 select 1
-	                 from jsonb_array_elements_text(
-	                   coalesce(stage_delivery.stage -> 'completedMilestones', '[]'::jsonb)
-	                 ) as completed_stage(milestone)
-	                 where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-	               )
-	             )
+			             or (
+			               (not ${isYesExpression("f.ir")}
+			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			               and coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''
+		             )
 	             or exists (
                select 1
                from jsonb_array_elements_text(
@@ -4221,15 +4634,11 @@ async function loadMonthWiseDeliveryScheduleRows({
 		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')
 		               and ${hasFilledExpression("so.material_receipt_date")}
 		             )
-		             or (
-		               (not ${isYesExpression("f.ir")}
-		                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		               and exists (
-	                 select 1
-	                 from jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
-	                 where ${normalizeMilestoneExpression("completed_order.milestone")} = 'jobcompletion'
-	               )
-	             )
+			             or (
+			               (not ${isYesExpression("f.ir")}
+			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			               and ${hasFilledExpression("so.job_completion_date")}
+		             )
 	             or ${completedOrderMilestoneExpression("so", "Delivery")}
            )
          end as fructified
@@ -4309,6 +4718,12 @@ async function loadMiscellaneousCounts({
          )
        )::integer as so_cancelled,
        count(*) filter (
+         where exists (
+           select 1 from supply_orders so
+           where so.file_id = f.id and ${isYesExpression("so.shortclosure")}
+         )
+       )::integer as shortclosed_so,
+       count(*) filter (
          where greatest(coalesce(f.no_of_so, 0), (
            select count(*)
            from supply_orders so
@@ -4329,6 +4744,7 @@ async function loadMiscellaneousCounts({
     ld: readCount("ld"),
     demandCancelled: readCount("demand_cancelled"),
     soCancelled: readCount("so_cancelled"),
+    shortclosedSo: readCount("shortclosed_so"),
     multipleSupplyOrders: readCount("multiple_supply_orders"),
   };
 }
@@ -4508,20 +4924,37 @@ async function loadManualMilestoneSqlSlice({
                     `not ${isCancelledExpression()}`,
                     `not ${isYesExpression("so_current.so_cancelled")}`,
                     `(
-                      (
-                        ${normalizeMilestoneExpression("so_current.current_milestone")} = ${normalizeMilestoneExpression("milestone.name")}
-	                        and (
-	                          ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
-	                          or not ${hasFilledExpression("so_current.payment_date")}
-	                        )
+	                      (
+	                        ${normalizeMilestoneExpression("so_current.current_milestone")} = ${normalizeMilestoneExpression("milestone.name")}
+	                        and ${normalizeMilestoneExpression("milestone.name")} <> 'billsentforpayment'
+	                        and ${normalizeMilestoneExpression("milestone.name")} <> 'billpreparation'
+		                        and (
+		                          ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
+		                          or not ${hasFilledExpression("so_current.payment_date")}
+		                        )
 		                          and (
 		                            ${normalizeMilestoneExpression("milestone.name")} <> 'jobcompletion'
 		                          or not ${effectiveOrderCompletedMilestoneExpression("Job Completion", "so_current")}
 		                        )
 		                      )
-		                      or (
-		                        ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
-		                        and ${hasFilledExpression("so_current.so_date")}
+			                      or (
+			                        ${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment'
+			                        and ${hasFilledExpression("so_current.bill_preparation_date")}
+			                        and not ${hasFilledExpression("so_current.bill_sent_for_payment_date")}
+			                      )
+			                      or (
+			                        ${normalizeMilestoneExpression("milestone.name")} = 'billpreparation'
+			                        and not ${hasFilledExpression("so_current.bill_preparation_date")}
+			                        and (
+			                          (${isYesExpression("f.ir")} and ${hasFilledExpression("so_current.ir_receipt_date")})
+			                          or ((not ${isYesExpression("f.ir")}
+			                            or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			                            and ${hasFilledExpression("so_current.job_completion_date")})
+			                        )
+			                      )
+			                      or (
+			                        ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
+			                        and ${hasFilledExpression("so_current.so_date")}
 		                        and (not ${isYesExpression("f.ir")}
 		                          or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
 		                        and not ${effectiveOrderCompletedMilestoneExpression("Job Completion", "so_current")}
@@ -4532,30 +4965,36 @@ async function loadManualMilestoneSqlSlice({
 		                        select 1
 		                        from jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
 		                        where (
-		                          (
-		                            ${normalizeMilestoneExpression("current_stage.stage ->> 'currentMilestone'")} = ${normalizeMilestoneExpression("milestone.name")}
-	                              and (
-		                              ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
-		                              or not ${hasFilledExpression("current_stage.stage ->> 'paymentDate'")}
-		                            )
-		                            and (
-		                              ${normalizeMilestoneExpression("milestone.name")} <> 'jobcompletion'
-		                              or not exists (
-		                                select 1
-		                                from jsonb_array_elements_text(coalesce(current_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
-		                                where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-		                              )
-		                            )
-		                          )
-		                          or (
-		                            ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
-		                            and (not ${isYesExpression("f.ir")}
-		                              or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
-		                            and not exists (
-		                              select 1
-		                              from jsonb_array_elements_text(coalesce(current_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
-		                              where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-		                            )
+				                          (
+				                            ${normalizeMilestoneExpression("current_stage.stage ->> 'currentMilestone'")} = ${normalizeMilestoneExpression("milestone.name")}
+				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'jobcompletion'
+				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'billsentforpayment'
+				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'billpreparation'
+			                              and (
+				                              ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
+				                              or not ${hasFilledExpression("current_stage.stage ->> 'paymentDate'")}
+				                            )
+				                          )
+			                          or (
+				                            ${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment'
+				                            and ${hasFilledExpression("current_stage.stage ->> 'billPreparationDate'")}
+				                            and not ${hasFilledExpression("current_stage.stage ->> 'billSentForPaymentDate'")}
+				                          )
+			                          or (
+				                            ${normalizeMilestoneExpression("milestone.name")} = 'billpreparation'
+				                            and not ${hasFilledExpression("current_stage.stage ->> 'billPreparationDate'")}
+				                            and (
+				                              (${isYesExpression("f.ir")} and ${hasFilledExpression("current_stage.stage ->> 'irReceiptDate'")})
+				                              or ((not ${isYesExpression("f.ir")}
+				                                or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+				                                and ${hasFilledExpression("current_stage.stage ->> 'jobCompletionDate'")})
+				                            )
+				                          )
+			                          or (
+				                            ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
+			                            and (not ${isYesExpression("f.ir")}
+			                              or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))
+			                            and nullif(current_stage.stage ->> 'jobCompletionDate', '')::date is null
 		                            and coalesce(
 		                              nullif(current_stage.stage ->> 'revisedDp', '')::date,
 		                              nullif(current_stage.stage ->> 'dpDate', '')::date,
@@ -4613,8 +5052,7 @@ async function loadManualMilestoneSqlSlice({
                     ...extraConditions,
                     `not ${isCancelledExpression()}`,
                     `not ${isYesExpression("so_completed.so_cancelled")}`,
-                    `(${hasFilledExpression("so_completed.financial_sanction_date")}
-                    or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction", "so_completed")})`,
+                    hasFilledExpression("so_completed.financial_sanction_date"),
                   ],
                 )}
               )
@@ -4633,6 +5071,22 @@ async function loadManualMilestoneSqlSlice({
                     select 1
                     from jsonb_array_elements_text(coalesce(so_completed.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
                     where ${normalizeMilestoneExpression("completed_order.milestone")} = ${normalizeMilestoneExpression("milestone.name")}
+                  )
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion' and ${hasFilledExpression("so_completed.job_completion_date")})
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'irpreparation' and ${hasFilledExpression("so_completed.ir_preparation_date")})
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'irreceipt' and ${hasFilledExpression("so_completed.ir_receipt_date")})
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'billpreparation' and ${hasFilledExpression("so_completed.bill_preparation_date")})
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment' and ${hasFilledExpression("so_completed.bill_sent_for_payment_date")})
+                  or (${normalizeMilestoneExpression("milestone.name")} = 'payment' and ${hasFilledExpression("so_completed.payment_date")})
+                  or exists (
+                    select 1
+                    from jsonb_array_elements(coalesce(so_completed.stage_deliveries, '[]'::jsonb)) as completed_stage(stage)
+                    where (${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion' and ${hasFilledExpression("completed_stage.stage ->> 'jobCompletionDate'")})
+                       or (${normalizeMilestoneExpression("milestone.name")} = 'irpreparation' and ${hasFilledExpression("completed_stage.stage ->> 'irPreparationDate'")})
+                       or (${normalizeMilestoneExpression("milestone.name")} = 'irreceipt' and ${hasFilledExpression("completed_stage.stage ->> 'irReceiptDate'")})
+                       or (${normalizeMilestoneExpression("milestone.name")} = 'billpreparation' and ${hasFilledExpression("completed_stage.stage ->> 'billPreparationDate'")})
+                       or (${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment' and ${hasFilledExpression("completed_stage.stage ->> 'billSentForPaymentDate'")})
+                       or (${normalizeMilestoneExpression("milestone.name")} = 'payment' and ${hasFilledExpression("completed_stage.stage ->> 'paymentDate'")})
                   )`,
                   ],
                 )}
@@ -4700,36 +5154,25 @@ async function loadManualMilestoneSqlSlice({
        `${hasFilledExpression("so_current.so_date")}`,
        `(not ${isYesExpression("f.ir")}
          or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m'))`,
-	       `(
-	         (
-	           ${normalizeMilestoneExpression("so_current.current_milestone")} = 'jobcompletion'
-	           and not ${completedOrderMilestoneExpression("so_current", "Job Completion")}
-	         )
-	         or (
-	           ${hasFilledExpression("so_current.so_date")}
-	           and not ${completedOrderMilestoneExpression("so_current", "Job Completion")}
-	           and ${effectiveDpDateExpression("so_current")} is not null
-	           and ${effectiveDpDateExpression("so_current")} < current_date
-	         )
-	         or exists (
-	           select 1
-	           from jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
-	           where (
-	             ${normalizeMilestoneExpression("current_stage.stage ->> 'currentMilestone'")} = 'jobcompletion'
-	             or coalesce(
-	               nullif(current_stage.stage ->> 'revisedDp', '')::date,
-	               nullif(current_stage.stage ->> 'dpDate', '')::date,
-	               so_current.revised_dp,
-	               so_current.dp_date
-	             ) < current_date
-	           )
-	           and not exists (
-	             select 1
-	             from jsonb_array_elements_text(coalesce(current_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
-	             where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-	           )
-	         )
-	       )`,
+		       `(
+		         (
+		           ${hasFilledExpression("so_current.so_date")}
+		           and not ${completedOrderMilestoneExpression("so_current", "Job Completion")}
+		           and ${effectiveDpDateExpression("so_current")} is not null
+		           and ${effectiveDpDateExpression("so_current")} < current_date
+		         )
+		         or exists (
+		           select 1
+		           from jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
+		           where coalesce(
+		             nullif(current_stage.stage ->> 'revisedDp', '')::date,
+		             nullif(current_stage.stage ->> 'dpDate', '')::date,
+		             so_current.revised_dp,
+		             so_current.dp_date
+		           ) < current_date
+		           and nullif(current_stage.stage ->> 'jobCompletionDate', '')::date is null
+		         )
+		       )`,
      ])}
      group by 1`,
     queryValues,
@@ -4812,7 +5255,8 @@ async function loadStatusCounts({
   const bidOpeningDate = `(case when ${isYesExpression(
     "f.refloat",
   )} and f.refloat_bid_opening_date is not null then f.refloat_bid_opening_date else f.bid_opening_date end)`;
-  const bidOverdue = `${isNoExpression("f.bid_opened")}
+  const bidOverdue = `${biddingApplicableExpression()}
+    and ${isNoExpression("f.bid_opened")}
     and ${bidOpeningDate} is not null
     and ${bidOpeningDate} < current_date`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
@@ -4843,14 +5287,10 @@ async function loadStatusCounts({
         select 1 from jsonb_array_elements(coalesce(eso.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
         where coalesce(psb_stage.stage ->> 'irReceiptDate', '') = ''
       )`;
-      const allStagesHaveJobCompletion = `not exists (
-        select 1 from jsonb_array_elements(coalesce(eso.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
-        where not exists (
-          select 1
-          from jsonb_array_elements_text(coalesce(psb_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
-          where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'jobcompletion'
-        )
-      )`;
+	      const allStagesHaveJobCompletion = `not exists (
+	        select 1 from jsonb_array_elements(coalesce(eso.stage_deliveries, '[]'::jsonb)) as psb_stage(stage)
+	        where nullif(psb_stage.stage ->> 'jobCompletionDate', '')::date is null
+	      )`;
       const psbPurposeComplete = `(
         (lower(trim(coalesce(eso.file_type, ''))) in ('amc', 'mpc', 'cars', 'o&m')
           and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${effectiveOrderCompletedMilestoneExpression(
@@ -4866,11 +5306,10 @@ async function loadStatusCounts({
           )
         )
       )`;
-      const pendingStarted =
-        normalizedBg === "pwb"
-          ? deliveryPurposeComplete
-          : `(${hasFilledExpression("eso.financial_sanction_date")}
-             or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction")})`;
+	      const pendingStarted =
+	        normalizedBg === "pwb"
+	          ? deliveryPurposeComplete
+	          : hasFilledExpression("eso.financial_sanction_date");
       const pending = `${eligible} and ${pendingStarted} and not (${hasFilledExpression(
         `eso.${receivedColumn}`,
       )} or ${effectiveOrderCompletedMilestoneExpression(milestone.label)})`;
@@ -5019,10 +5458,11 @@ async function loadStatusCounts({
      )
      select
        ${milestoneSelects.join(",\n       ")},
-      ${countFilter(isYesExpression("f.tender_live"))} as live_bids,
+      ${countFilter(`${biddingApplicableExpression()} and ${isYesExpression("f.tender_live")}`)} as live_bids,
       ${countFilter(bidOverdue)} as overdue_bids,
       ${countFilter(
         `not ${cancelled}
+          and ${biddingApplicableExpression()}
           and regexp_replace(lower(coalesce(f.current_milestone, '')), '[^a-z0-9]+', '', 'g') = 'bidding'
           and not ${isYesExpression("f.tender_live")}
           and not (${bidOverdue})`,
@@ -5030,11 +5470,11 @@ async function loadStatusCounts({
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
 	       ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
 	       ${effectiveOrderCountFilter(financialSanctionPendingExpression())} as order_financial_sanction_pending,
-       ${effectiveOrderCountFilter(
-         `not ${effectiveOrderCancelledExpression()} and (${hasFilledExpression(
-           "eso.financial_sanction_date",
-         )} or ${effectiveOrderCompletedMilestoneExpression("Financial Sanction")})`,
-       )} as order_financial_sanction_completed,
+	       ${effectiveOrderCountFilter(
+	         `not ${effectiveOrderCancelledExpression()} and ${hasFilledExpression(
+	           "eso.financial_sanction_date",
+	         )}`,
+	       )} as order_financial_sanction_completed,
        ${countFilter(financialSanctionPreviousStageExpression())} as order_financial_sanction_previous_stage,
 	       ${effectiveOrderCountFilter(
            `not ${effectiveOrderCancelledExpression()} and ${effectiveOrderCurrentMilestoneExpression(
@@ -5484,28 +5924,120 @@ function warnIfManualMilestoneSqlSliceDiffers(
   });
 }
 
+async function verifyCurrentUserPassword(userId: string, password: string) {
+  const result = await pool.query<{ ok: boolean | null }>(
+    `select password_hash = crypt($2, password_hash) as ok
+     from app_users
+     where id = $1
+       and is_active = true
+       and password_hash is not null`,
+    [userId, password],
+  );
+  if (!result.rows[0]?.ok) throw new HttpError(403, "Incorrect password.");
+}
+
 dashboardRouter.get(
   "/suspected-anomalies/acceptances",
   asyncHandler(async (request, response) => {
-    requireAuth(request as AuthRequest);
+    const user = requireAuth(request as AuthRequest);
+    await ensureAnomalyGovernanceSchema();
     const result = await pool.query<{
       signature: string;
       reason: string | null;
+      rule_key: string | null;
+      file_id: string | null;
+      file_ref: string | null;
+      status: string;
+      scope: string;
+      requested_by_name: string | null;
+      requested_at: string;
       accepted_by_name: string | null;
       accepted_at: string;
+      reviewed_by_name: string | null;
+      reviewed_at: string | null;
+      revoked_by_name: string | null;
+      revoked_at: string | null;
+      admin_message: string | null;
     }>(
-      `select signature, reason, accepted_by_name, accepted_at
-       from suspected_anomaly_acceptances
-       order by accepted_at desc`,
+      `select a.signature, a.reason, a.rule_key, a.file_id,
+              coalesce(nullif(f.unique_code, ''), nullif(f.file_no, ''), nullif(f.title, ''), a.file_id) as file_ref,
+              a.status, a.scope, a.requested_by_name,
+              a.requested_at, a.accepted_by_name, a.accepted_at, a.reviewed_by_name, a.reviewed_at,
+              a.revoked_by_name, a.revoked_at, a.admin_message
+       from suspected_anomaly_acceptances a
+       left join files f on f.id::text = a.file_id
+       where (
+         $1::boolean = true
+         and (a.status = 'pending' or a.admin_history_cleared_at is null)
+       )
+       or (
+         $1::boolean = false
+         and not ($2::uuid = any(a.history_hidden_by_user_ids))
+         and a.requested_by_user_id = $2
+       )
+       order by a.requested_at desc`,
+      [hasAnomalyAdminAccess(user), user.id],
     );
     response.json({
       acceptances: result.rows.map((row) => ({
         signature: row.signature,
         reason: fromDbText(row.reason),
+        ruleKey: fromDbText(row.rule_key) || parseAnomalySignature(row.signature).ruleKey,
+        ruleLabel: parseAnomalySignature(row.signature).ruleLabel,
+        previousField: parseAnomalySignature(row.signature).previousField,
+        previousValue: parseAnomalySignature(row.signature).previousValue,
+        laterField: parseAnomalySignature(row.signature).laterField,
+        laterValue: parseAnomalySignature(row.signature).laterValue,
+        context: parseAnomalySignature(row.signature).context,
+        fileId: fromDbText(row.file_id),
+        fileRef: fromDbText(row.file_ref),
+        status: row.status,
+        scope: row.scope,
+        requestedByName: fromDbText(row.requested_by_name),
+        requestedAt: row.requested_at,
         acceptedByName: fromDbText(row.accepted_by_name),
         acceptedAt: row.accepted_at,
+        reviewedByName: fromDbText(row.reviewed_by_name),
+        reviewedAt: row.reviewed_at ?? undefined,
+        revokedByName: fromDbText(row.revoked_by_name),
+        revokedAt: row.revoked_at ?? undefined,
+        adminMessage: fromDbText(row.admin_message),
       })),
     });
+  }),
+);
+
+dashboardRouter.post(
+  "/suspected-anomalies/acceptances/clear-history",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    await ensureAnomalyGovernanceSchema();
+    const body = request.body as { password?: unknown; signatures?: unknown };
+    const password = readString(body.password)?.trim() ?? "";
+    if (!password) throw new HttpError(400, "Password is required.");
+    const signatures = Array.isArray(body.signatures)
+      ? body.signatures.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+    if (!signatures.length) throw new HttpError(400, "Select at least one anomaly to clear.");
+    await verifyCurrentUserPassword(user.id, password);
+    if (hasAnomalyAdminAccess(user)) {
+      await pool.query(
+        `delete from suspected_anomaly_acceptances
+         where status in ('rejected', 'revoked')
+           and signature = any($1::text[])`,
+        [signatures],
+      );
+    } else {
+      await pool.query(
+        `delete from suspected_anomaly_acceptances
+         where status in ('rejected', 'revoked')
+           and signature = any($1::text[])
+           and requested_by_user_id = $2`,
+        [signatures, user.id],
+      );
+    }
+    clearDashboardReportCaches();
+    response.json({ ok: true });
   }),
 );
 
@@ -5514,22 +6046,205 @@ dashboardRouter.post(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     if (user.role === "viewer") throw new HttpError(403, "Viewer cannot accept anomalies.");
+    await ensureAnomalyGovernanceSchema();
     const body = request.body as { signature?: unknown; reason?: unknown };
     const signature = typeof body.signature === "string" ? body.signature.trim() : "";
     const reason = typeof body.reason === "string" ? body.reason.trim() : "";
     if (!signature) throw new HttpError(400, "Anomaly signature is required.");
     if (!reason) throw new HttpError(400, "Reason is required to accept an anomaly.");
+    const parsedSignature = parseAnomalySignature(signature);
     await pool.query(
       `insert into suspected_anomaly_acceptances
-         (signature, reason, accepted_by_user_id, accepted_by_name, accepted_at)
-       values ($1, $2, $3, $4, now())
+         (signature, reason, rule_key, file_id, status, scope, requested_by_user_id,
+          requested_by_name, requested_at, accepted_by_user_id, accepted_by_name, accepted_at)
+       values ($1, $2, $3, $4, 'pending', 'file', $5, $6, now(), $5, $6, now())
        on conflict (signature) do update set
          reason = excluded.reason,
+         rule_key = excluded.rule_key,
+         file_id = excluded.file_id,
+         status = 'pending',
+         scope = 'file',
+         requested_by_user_id = excluded.requested_by_user_id,
+         requested_by_name = excluded.requested_by_name,
+         requested_at = now(),
          accepted_by_user_id = excluded.accepted_by_user_id,
          accepted_by_name = excluded.accepted_by_name,
-         accepted_at = now()`,
-      [signature, reason, user.id, user.name],
+         accepted_at = now(),
+         reviewed_by_user_id = null,
+         reviewed_by_name = null,
+         reviewed_at = null,
+         admin_message = null,
+         history_hidden_by_user_ids = '{}',
+         admin_history_cleared_at = null,
+         admin_history_cleared_by_user_id = null,
+         admin_history_cleared_by_name = null,
+         revoked_by_user_id = null,
+         revoked_by_name = null,
+         revoked_at = null`,
+      [signature, reason, parsedSignature.ruleKey, parsedSignature.fileId, user.id, user.name],
     );
+    clearDashboardReportCaches();
+    response.json({ ok: true });
+  }),
+);
+
+dashboardRouter.post(
+  "/suspected-anomalies/acceptances/review",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!hasAnomalyAdminAccess(user)) throw new HttpError(403, "Only admin can review anomalies.");
+    await ensureAnomalyGovernanceSchema();
+    const body = request.body as { signature?: unknown; action?: unknown; adminMessage?: unknown };
+    const signature = readString(body.signature)?.trim() ?? "";
+    const action = readString(body.action)?.trim() ?? "";
+    const adminMessage = readString(body.adminMessage)?.trim() ?? "";
+    const next =
+      action === "approve_file"
+        ? { status: "approved_file", scope: "file" }
+        : action === "approve_universal"
+          ? { status: "approved_universal", scope: "universal" }
+          : action === "reject"
+            ? { status: "rejected", scope: "file" }
+            : action === "revoke"
+              ? { status: "revoked", scope: "file" }
+              : undefined;
+    if (!signature) throw new HttpError(400, "Anomaly signature is required.");
+    if (!next) throw new HttpError(400, "Review action is invalid.");
+    if (action === "reject" && !adminMessage) {
+      throw new HttpError(400, "Admin message is required when rejecting an anomaly request.");
+    }
+    const parsedSignature = parseAnomalySignature(signature);
+    let result = await pool.query(
+      `update suspected_anomaly_acceptances
+       set status = $2::text,
+           scope = $3::text,
+           reviewed_by_user_id = $4,
+           reviewed_by_name = $5,
+           reviewed_at = now(),
+           admin_message = nullif($6::text, ''),
+           history_hidden_by_user_ids = '{}',
+           admin_history_cleared_at = null,
+           admin_history_cleared_by_user_id = null,
+           admin_history_cleared_by_name = null,
+           revoked_by_user_id = case when $2::text = 'revoked' then $4 else revoked_by_user_id end,
+           revoked_by_name = case when $2::text = 'revoked' then $5 else revoked_by_name end,
+           revoked_at = case when $2::text = 'revoked' then now() else revoked_at end
+       where signature = $1::text`,
+      [signature, next.status, next.scope, user.id, user.name, adminMessage],
+    );
+    if (
+      result.rowCount === 0 &&
+      (action === "approve_file" || action === "approve_universal" || action === "reject")
+    ) {
+      result = await pool.query(
+        `insert into suspected_anomaly_acceptances
+           (signature, reason, rule_key, file_id, status, scope, requested_by_user_id,
+            requested_by_name, requested_at, accepted_by_user_id, accepted_by_name, accepted_at,
+            reviewed_by_user_id, reviewed_by_name, reviewed_at, admin_message)
+         values ($1, 'Admin direct action', $2, $3, $4, $5, $6, $7, now(), $6, $7, now(), $6, $7, now(), nullif($8::text, ''))
+         on conflict (signature) do update set
+           status = excluded.status,
+           scope = excluded.scope,
+           reviewed_by_user_id = excluded.reviewed_by_user_id,
+           reviewed_by_name = excluded.reviewed_by_name,
+           reviewed_at = now(),
+           admin_message = excluded.admin_message,
+           history_hidden_by_user_ids = '{}',
+           admin_history_cleared_at = null,
+           admin_history_cleared_by_user_id = null,
+           admin_history_cleared_by_name = null`,
+        [
+          signature,
+          parsedSignature.ruleKey,
+          parsedSignature.fileId,
+          next.status,
+          next.scope,
+          user.id,
+          user.name,
+          adminMessage,
+        ],
+      );
+    }
+    if (result.rowCount === 0) throw new HttpError(404, "Anomaly exception request not found.");
+    clearDashboardReportCaches();
+    response.json({ ok: true });
+  }),
+);
+
+dashboardRouter.get(
+  "/suspected-anomalies/rules",
+  asyncHandler(async (request, response) => {
+    requireAuth(request as AuthRequest);
+    const rules = await loadCustomAnomalyRules();
+    response.json({ rules, fields: customAnomalyFieldDefinitions });
+  }),
+);
+
+dashboardRouter.post(
+  "/suspected-anomalies/rules",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!hasAnomalyAdminAccess(user)) throw new HttpError(403, "Only admin can create anomaly rules.");
+    await ensureAnomalyGovernanceSchema();
+    const input = validateCustomAnomalyRuleInput(request.body as Record<string, unknown>);
+    const result = await pool.query<{
+      id: string;
+      name: string;
+      description: string | null;
+      rule_type: string;
+      field_a: string;
+      operator: string;
+      field_b: string | null;
+      fixed_value: string | null;
+      threshold_days: number | null;
+      severity: string;
+      scope: string;
+      enabled: boolean;
+      created_by_name: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `insert into anomaly_rules
+         (name, description, rule_type, field_a, operator, field_b, fixed_value, threshold_days,
+          severity, scope, enabled, created_by_user_id, created_by_name)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       returning id, name, description, rule_type, field_a, operator, field_b,
+                 fixed_value, threshold_days, severity, scope, enabled, created_by_name, created_at, updated_at`,
+      [
+        input.name,
+        input.description,
+        input.ruleType,
+        input.fieldA,
+        input.operator,
+        input.fieldB,
+        input.fixedValue ?? null,
+        input.thresholdDays ?? null,
+        input.severity,
+        input.scope,
+        input.enabled,
+        user.id,
+        user.name,
+      ],
+    );
+    clearDashboardReportCaches();
+    response.json({ rule: mapCustomAnomalyRule(result.rows[0]) });
+  }),
+);
+
+dashboardRouter.patch(
+  "/suspected-anomalies/rules/:id",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!hasAnomalyAdminAccess(user)) throw new HttpError(403, "Only admin can update anomaly rules.");
+    await ensureAnomalyGovernanceSchema();
+    const id = request.params.id;
+    const enabled = (request.body as { enabled?: unknown }).enabled;
+    if (typeof enabled !== "boolean") throw new HttpError(400, "Enabled flag is required.");
+    const result = await pool.query(
+      `update anomaly_rules set enabled = $2::boolean, updated_at = now() where id = $1::uuid`,
+      [id, enabled],
+    );
+    if (result.rowCount === 0) throw new HttpError(404, "Anomaly rule not found.");
     clearDashboardReportCaches();
     response.json({ ok: true });
   }),
@@ -5569,15 +6284,83 @@ dashboardRouter.get(
       activeAnalyticsDivision,
       fileCategories,
     });
-    const [filesResult, acceptanceResult] = await Promise.all([
+    await ensureAnomalyGovernanceSchema();
+    const [filesResult, acceptanceResult, customRules] = await Promise.all([
       loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
-      pool.query<{ signature: string }>("select signature from suspected_anomaly_acceptances"),
+      pool.query<{
+        signature: string;
+        rule_key: string | null;
+        status: string;
+        scope: string;
+        reason: string | null;
+        admin_message: string | null;
+        requested_by_user_id: string | null;
+        requested_by_name: string | null;
+        requested_at: string | null;
+        reviewed_by_name: string | null;
+        reviewed_at: string | null;
+      }>(
+        `select signature, rule_key, status, scope, reason, admin_message, requested_by_user_id,
+                requested_by_name, requested_at, reviewed_by_name, reviewed_at
+         from suspected_anomaly_acceptances
+         where status in ('pending', 'approved_file', 'approved_universal', 'rejected', 'revoked')`,
+      ),
+      loadCustomAnomalyRules(),
     ]);
-    const acceptedSignatures = new Set(acceptanceResult.rows.map((row) => row.signature));
+    const canViewAllAnomalyGovernance = hasAnomalyAdminAccess(user);
+    const visibleStateRows = acceptanceResult.rows.filter(
+      (row) =>
+        row.status === "approved_file" ||
+        row.status === "approved_universal" ||
+        canViewAllAnomalyGovernance ||
+        row.requested_by_user_id === user.id,
+    );
+    const acceptanceBySignature = new Map(
+      visibleStateRows.map((row) => [
+        row.signature,
+        {
+          status: row.status,
+          scope: row.scope,
+          reason: fromDbText(row.reason),
+          adminMessage: fromDbText(row.admin_message),
+          requestedByName: fromDbText(row.requested_by_name),
+          requestedAt: row.requested_at ?? undefined,
+          reviewedByName: fromDbText(row.reviewed_by_name),
+          reviewedAt: row.reviewed_at ?? undefined,
+        },
+      ]),
+    );
+    const suppressions = {
+      signatures: new Set(
+        acceptanceResult.rows
+          .filter((row) => row.status === "approved_file")
+          .map((row) => row.signature),
+      ),
+      universalRuleKeys: new Set(
+        acceptanceResult.rows
+          .filter((row) => row.status === "approved_universal" && row.rule_key)
+          .map((row) => row.rule_key!),
+      ),
+    };
     const rows = getSuspectedAnomalyRows(
       filesResult.filter((file) => matchesFileCategorySelection(file, fileCategories)),
-      acceptedSignatures,
-    );
+      suppressions,
+      customRules,
+    ).map((row) => {
+      const acceptance = acceptanceBySignature.get(row.signature);
+      if (!acceptance) return row;
+      return {
+        ...row,
+        requestStatus: acceptance.status,
+        userExplanation: acceptance.reason,
+        adminMessage: acceptance.adminMessage,
+        requestedByName: acceptance.requestedByName,
+        requestedAt: acceptance.requestedAt,
+        reviewedByName: acceptance.reviewedByName,
+        reviewedAt: acceptance.reviewedAt,
+        scope: acceptance.scope,
+      };
+    });
     response.json({ rows });
   }),
 );
@@ -5663,6 +6446,15 @@ dashboardRouter.get(
       activeAnalyticsDivision,
       fileCategories,
     });
+    const financeFileWhere = getDashboardFileWhereSql({
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+      scopeValues: scope.values,
+      selectedYear: undefined,
+      currentFinancialYear: settings.financialYear,
+      activeDivision,
+      activeAnalyticsDivision,
+      fileCategories,
+    });
     const dashboardDivisions =
       activeDivision === "all"
         ? divisions
@@ -5686,11 +6478,17 @@ dashboardRouter.get(
       liveMilestones,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
-      const files = (
-        await loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values)
-      ).filter((file) => matchesFileCategorySelection(file, fileCategories));
+      const [files, financeFiles] = await Promise.all([
+        loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
+        loadFiles(financeFileWhere.whereSql, financeFileWhere.values),
+      ]);
+      const filteredFiles = files.filter((file) => matchesFileCategorySelection(file, fileCategories));
+      const filteredFinanceFiles = financeFiles.filter((file) =>
+        matchesFileCategorySelection(file, fileCategories),
+      );
       const normalizedSummary = buildDashboardSummary({
-        files,
+        files: filteredFiles,
+        financeFiles: filteredFinanceFiles,
         divisions,
         settings: { ...settings, valueThresholdLevels },
         division: activeDivision,
@@ -5757,6 +6555,9 @@ dashboardRouter.get(
           {
             dashboardFileCount: normalizedSummary.dashboardFileCount,
             modeCounts: normalizedSummary.modeCounts,
+            gemBiddingModeCounts:
+              normalizedSummary.gemBiddingModeCounts ??
+              gemBiddingModeOptions.map((name) => ({ name, count: 0 })),
             topSummaryStats: normalizedSummary.topSummaryStats,
           },
           sqlSimpleCounts,

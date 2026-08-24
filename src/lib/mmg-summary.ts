@@ -17,6 +17,10 @@ import {
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
+import {
+  isContractFileType,
+  isDeliveryInspectionApplicableByGroup,
+} from "@/lib/file-type-groups";
 
 export type MmgSummaryFieldConfig = {
   key: string;
@@ -37,8 +41,10 @@ export type MmgSummaryRow = {
 };
 
 const defaultModeKeys = new Set(["OBM", "PBM", "LPC", "SBM", "LBM"]);
+const defaultMmgFileTypes = new Set(["goods & services", "amc", "mpc", "cars", "o&m"]);
 const customModePrefix = "mode:";
 const firmTypePrefix = "firmType:";
+const fileTypePrefix = "fileType:";
 
 export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "allocatedCapital", label: "Allocated Capital (Lakhs)", group: "Finance" },
@@ -70,11 +76,6 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   },
   { key: "scrutinyToBeDone", label: "Scrutiny to be done", group: "Scrutiny and vetting" },
   { key: "tcecCompleted", label: "TCEC completed", group: "Scrutiny and vetting" },
-  {
-    key: "tcecFilesWithUserAfterScrutiny",
-    label: "TCEC files with user after scrutiny",
-    group: "Scrutiny and vetting",
-  },
   {
     key: "tcecFilesWithMmgForMeeting",
     label: "TCEC files with MMG for conducting meeting",
@@ -123,7 +124,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     group: "Bidding and S.O.",
   },
   { key: "postTcecCompleted", label: "Post TCEC completed", group: "Bidding and S.O." },
-  { key: "cncDue", label: "CNC in progress", group: "Bidding and S.O." },
+  { key: "cncInProgress", label: "CNC in progress", group: "Bidding and S.O." },
   { key: "cncCompleted", label: "CNC completed", group: "Bidding and S.O." },
   {
     key: "financialSanctionCompleted",
@@ -205,6 +206,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   },
   { key: "cancelledDemands", label: "Cancelled demands", group: "Additional" },
   { key: "soCancelled", label: "S.O. cancelled", group: "Additional" },
+  { key: "shortclosedSo", label: "Shortclosed S.O.", group: "Additional" },
   { key: "deliveriesOverdue", label: "Deliveries overdue", group: "Additional" },
   { key: "paymentsOverdue", label: "Payments overdue", group: "Additional" },
   { key: "psbPending", label: "PSB pending", group: "Security/Warranty BG" },
@@ -243,6 +245,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
 export function getMmgSummaryFieldOptions(
   modes?: string[],
   firmTypes?: string[],
+  fileTypes?: string[],
   config?: MmgSummaryFieldConfig[],
 ): MmgSummaryFieldOption[] {
   const optionByKey = new Map(mmgSummaryFieldOptions.map((option) => [option.key, option]));
@@ -270,12 +273,47 @@ export function getMmgSummaryFieldOptions(
   firmTypeOptions.forEach((option) => {
     if (!optionByKey.has(option.key)) optionByKey.set(option.key, option);
   });
+  const fileTypeOptions = [...(fileTypes ?? []), ...getFileTypeNamesFromConfig(config)]
+    .map(normalizeConfigName)
+    .filter((fileType) => fileType && !isDefaultMmgFileType(fileType))
+    .map((fileType) => ({
+      key: getFileTypeKey(fileType),
+      label: fileType,
+      group: "File Type",
+    }));
 
-  return Array.from(optionByKey.values());
+  fileTypeOptions.forEach((option) => {
+    if (!optionByKey.has(option.key)) optionByKey.set(option.key, option);
+  });
+
+  return orderMmgSummaryFieldOptions(Array.from(optionByKey.values()));
 }
 
-export function getDefaultMmgSummaryFields(modes?: string[], firmTypes?: string[]) {
-  return getMmgSummaryFieldOptions(modes, firmTypes).map((option) => ({
+function orderMmgSummaryFieldOptions(options: MmgSummaryFieldOption[]) {
+  const dynamicFileTypeOptions = options.filter(
+    (option) => option.key.startsWith(fileTypePrefix) && option.group === "File Type",
+  );
+  if (!dynamicFileTypeOptions.length) return options;
+  const dynamicKeys = new Set(dynamicFileTypeOptions.map((option) => option.key));
+  const withoutDynamicFileTypes = options.filter((option) => !dynamicKeys.has(option.key));
+  const lastBuiltInFileTypeIndex = withoutDynamicFileTypes.reduce(
+    (lastIndex, option, index) => (option.group === "File Type" ? index : lastIndex),
+    -1,
+  );
+  if (lastBuiltInFileTypeIndex === -1) return [...dynamicFileTypeOptions, ...withoutDynamicFileTypes];
+  return [
+    ...withoutDynamicFileTypes.slice(0, lastBuiltInFileTypeIndex + 1),
+    ...dynamicFileTypeOptions,
+    ...withoutDynamicFileTypes.slice(lastBuiltInFileTypeIndex + 1),
+  ];
+}
+
+export function getDefaultMmgSummaryFields(
+  modes?: string[],
+  firmTypes?: string[],
+  fileTypes?: string[],
+) {
+  return getMmgSummaryFieldOptions(modes, firmTypes, fileTypes).map((option) => ({
     key: option.key,
     label: option.label,
     enabled: true,
@@ -286,13 +324,15 @@ export function normalizeMmgSummaryFields(
   value: unknown,
   modes?: string[],
   firmTypes?: string[],
+  fileTypes?: string[],
 ): MmgSummaryFieldConfig[] {
   if (!Array.isArray(value) || value.length === 0)
-    return getDefaultMmgSummaryFields(modes, firmTypes);
+    return getDefaultMmgSummaryFields(modes, firmTypes, fileTypes);
   const byKey = new Map<string, MmgSummaryFieldConfig>();
   const options = getMmgSummaryFieldOptions(
     modes,
     firmTypes,
+    fileTypes,
     value.filter(
       (item): item is MmgSummaryFieldConfig =>
         Boolean(item && typeof item === "object" && !Array.isArray(item)) &&
@@ -303,11 +343,13 @@ export function normalizeMmgSummaryFields(
   value.forEach((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
     const candidate = item as Record<string, unknown>;
-    if (typeof candidate.key !== "string" || !optionByKey.has(candidate.key)) return;
-    const option = optionByKey.get(candidate.key);
+    if (typeof candidate.key !== "string") return;
+    const normalizedKey = normalizeMmgSummaryFieldKey(candidate.key);
+    if (!optionByKey.has(normalizedKey)) return;
+    const option = optionByKey.get(normalizedKey);
     const customLabel = typeof candidate.label === "string" ? candidate.label.trim() : "";
-    byKey.set(candidate.key, {
-      key: candidate.key,
+    byKey.set(normalizedKey, {
+      key: normalizedKey,
       label: customLabel || option?.label || candidate.key,
       enabled: candidate.enabled !== false,
     });
@@ -330,6 +372,7 @@ export function buildMmgSummaryRows({
   financialYear,
   modes,
   firmTypes,
+  fileTypes,
 }: {
   files: FileRecord[];
   divisions: Division[];
@@ -338,9 +381,10 @@ export function buildMmgSummaryRows({
   financialYear: string;
   modes?: string[];
   firmTypes?: string[];
+  fileTypes?: string[];
 }): MmgSummaryRow[] {
   const values = getMmgSummaryValues(files, divisions, previousYearFiles ?? [], financialYear);
-  return normalizeMmgSummaryFields(config, modes, firmTypes)
+  return normalizeMmgSummaryFields(config, modes, firmTypes, fileTypes)
     .filter((field) => field.enabled)
     .map((field) => ({
       key: field.key,
@@ -358,6 +402,12 @@ function getCustomModeNamesFromConfig(config: MmgSummaryFieldConfig[] | undefine
 function getFirmTypeNamesFromConfig(config: MmgSummaryFieldConfig[] | undefined) {
   return (config ?? [])
     .map((field) => (field.key.startsWith(firmTypePrefix) ? decodeFirmTypeKey(field.key) : ""))
+    .filter(Boolean);
+}
+
+function getFileTypeNamesFromConfig(config: MmgSummaryFieldConfig[] | undefined) {
+  return (config ?? [])
+    .map((field) => (field.key.startsWith(fileTypePrefix) ? decodeFileTypeKey(field.key) : ""))
     .filter(Boolean);
 }
 
@@ -389,12 +439,28 @@ function decodeFirmTypeKey(key: string) {
   }
 }
 
+function getFileTypeKey(fileType: string) {
+  return `${fileTypePrefix}${encodeURIComponent(normalizeConfigName(fileType))}`;
+}
+
+function decodeFileTypeKey(key: string) {
+  try {
+    return normalizeConfigName(decodeURIComponent(key.slice(fileTypePrefix.length)));
+  } catch {
+    return normalizeConfigName(key.slice(fileTypePrefix.length));
+  }
+}
+
 function normalizeConfigName(value: string | undefined) {
   return value?.trim() ?? "";
 }
 
 function normalizeFirmTypeKey(value: string | undefined) {
   return normalizeConfigName(value).toLowerCase();
+}
+
+function normalizeMmgSummaryFieldKey(key: string) {
+  return key === "cncDue" ? "cncInProgress" : key;
 }
 
 function getMmgSummaryValues(
@@ -477,19 +543,12 @@ function getMmgSummaryValues(
     ),
     filesWithUsersAfterScrutiny: countFiles(
       nonCancelledFiles,
-      (file) => !hasFilledString(file.scrutinyCompletionDate),
+      (file) => hasFilledString(file.scrutinyDate) && !hasFilledString(file.scrutinyCompletionDate),
     ),
     scrutinyToBeDone: countFiles(nonCancelledFiles, (file) => !hasFilledString(file.scrutinyDate)),
     tcecCompleted: countFiles(
       nonCancelledFiles,
       (file) => isYes(file.tcec) && hasFilledString(file.preTcecMinutesDate),
-    ),
-    tcecFilesWithUserAfterScrutiny: countFiles(
-      nonCancelledFiles,
-      (file) =>
-        isYes(file.tcec) &&
-        hasFilledString(file.scrutinyCompletionDate) &&
-        !hasFilledString(file.preTcecDate),
     ),
     tcecFilesWithMmgForMeeting: countFiles(
       nonCancelledFiles,
@@ -556,7 +615,7 @@ function getMmgSummaryValues(
     postTcecCompleted: countFiles(nonCancelledFiles, (file) =>
       hasFilledString(file.postTcecMinutesDate),
     ),
-    cncDue: countFiles(
+    cncInProgress: countFiles(
       nonCancelledFiles,
       (file) => hasFilledString(file.cncDate) && !hasFilledString(file.cncApprovalDate),
     ),
@@ -820,6 +879,7 @@ function getMmgSummaryValues(
     liveFilesPreviousYears: formatCount(liveFiles.length),
     cancelledDemands: countFiles(files, isDemandCancelled),
     soCancelled: formatCount(countCancelledSupplyOrders(files)),
+    shortclosedSo: formatCount(countShortclosedSupplyOrders(files)),
     deliveriesOverdue: formatCount(
       orders.filter(
         ({ file, order }) =>
@@ -898,6 +958,13 @@ function getMmgSummaryValues(
       ),
     );
   });
+  getFileTypesInFiles(nonCancelledFiles).forEach((fileType) => {
+    if (isDefaultMmgFileType(fileType)) return;
+    values[getFileTypeKey(fileType)] = countFiles(
+      nonCancelledFiles,
+      (file) => normalizeConfigName(file.fileType) === normalizeConfigName(fileType),
+    );
+  });
   return values;
 }
 
@@ -912,10 +979,20 @@ function countFileType(files: FileRecord[], fileType: string) {
 }
 
 function countGoodsServicesFileType(files: FileRecord[]) {
-  const specialFileTypes = new Set(["amc", "mpc", "cars", "o&m"]);
-  return formatCount(
-    files.filter((file) => !specialFileTypes.has(file.fileType?.trim().toLowerCase() ?? "")).length,
-  );
+  return formatCount(files.filter((file) => !isContractFileType(file)).length);
+}
+
+function isDefaultMmgFileType(fileType: string | undefined) {
+  return defaultMmgFileTypes.has(normalizeConfigName(fileType).toLowerCase());
+}
+
+function getFileTypesInFiles(files: FileRecord[]) {
+  const fileTypes = new Map<string, string>();
+  files.forEach((file) => {
+    const fileType = normalizeConfigName(file.fileType);
+    if (fileType && !fileTypes.has(fileType.toLowerCase())) fileTypes.set(fileType.toLowerCase(), fileType);
+  });
+  return Array.from(fileTypes.values());
 }
 
 function getFirmTypesInFiles(files: FileRecord[]) {
@@ -944,6 +1021,16 @@ function countCancelledSupplyOrders(files: FileRecord[]) {
     const cancelledRows = rawSupplyOrders(file).filter((order) => isYes(order.soCancelled)).length;
     if (cancelledRows > 0) return total + cancelledRows;
     return total + (isYes(file.soCancelled) ? 1 : 0);
+  }, 0);
+}
+
+function countShortclosedSupplyOrders(files: FileRecord[]) {
+  return files.reduce((total, file) => {
+    if (isDemandCancelled(file)) return total;
+    const shortclosedRows = rawSupplyOrders(file).filter((order) => isYes(order.shortclosure))
+      .length;
+    if (shortclosedRows > 0) return total + shortclosedRows;
+    return total + (isYes(file.shortclosure) ? 1 : 0);
   }, 0);
 }
 
@@ -1008,15 +1095,14 @@ function hasAnyActiveRawOrderAmount(file: FileRecord, type: "capital" | "revenue
 }
 
 function isDeliveryInspectionApplicable(file: FileRecord) {
-  const fileType = file.fileType?.trim().toLowerCase();
-  return !isNo(file.ir) && !["amc", "mpc", "cars", "o&m"].includes(fileType ?? "");
+  return isDeliveryInspectionApplicableByGroup(file);
 }
 
 function isCancelledDemand(file: FileRecord) {
   if (isDemandCancelled(file)) return true;
   const supplyOrders = file.supplyOrders ?? [];
   if (supplyOrders.length === 0) return false;
-  return supplyOrders.every((order) => isYes(order.soCancelled));
+  return supplyOrders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure));
 }
 
 function isDemandCancelled(file: FileRecord) {
@@ -1024,7 +1110,7 @@ function isDemandCancelled(file: FileRecord) {
 }
 
 function isCancelledOrder(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isYes(order.soCancelled);
+  return isYes(file.demandCancelled) || isYes(order.soCancelled) || isYes(order.shortclosure);
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
@@ -1246,7 +1332,7 @@ function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category
     hasFilledString(getBgReturnDate(order, category))
   )
     return false;
-  if (isYes(order.soCancelled)) return true;
+  if (isYes(order.soCancelled) || isYes(order.shortclosure)) return true;
   const normalizedCategory = normalizeMilestoneName(category);
   return (
     !isCancelledOrder(file, order) &&
@@ -1312,17 +1398,11 @@ function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: 
 }
 
 function isFinancialSanctionCompleted(order: SupplyOrderDetail) {
-  return (
-    hasFilledString(order.financialSanctionDate) ||
-    normalizeCompletedMilestones(order.completedMilestones).some(
-      (milestone) => normalizeMilestoneName(milestone) === "financialsanction",
-    )
-  );
+  return hasFilledString(order.financialSanctionDate);
 }
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    normalizeMilestoneName(order.currentMilestone) === "payment" ||
     hasFilledString(order.billPreparationDate) ||
     hasFilledString(order.billSentForPaymentDate) ||
     isPaymentDueByDeliveryOrPeriod(file, order)
@@ -1331,7 +1411,7 @@ function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
 
 function hasBillingWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) {
-    return hasFilledString(order.irReceiptDate || order.materialReceiptDate);
+    return hasFilledString(order.irReceiptDate || order.irPreparationDate || order.materialReceiptDate);
   }
   return isJobCompletionDone(order);
 }
@@ -1347,9 +1427,7 @@ function getPaymentAgingCompletionDate(file: FileRecord, order: SupplyOrderDetai
 }
 
 function isJobCompletionDone(order: SupplyOrderDetail) {
-  return normalizeCompletedMilestones(order.completedMilestones).some(
-    (milestone) => normalizeMilestoneName(milestone) === "jobcompletion",
-  );
+  return hasFilledString(order.jobCompletionDate);
 }
 
 function normalizeCompletedMilestones(value: string[] | undefined) {

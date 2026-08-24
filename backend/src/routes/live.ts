@@ -23,6 +23,7 @@ type SettingsRow = {
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
+  file_type_groups: unknown;
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
@@ -57,6 +58,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
+    fileTypeGroups: fromDbJsonArray(row.file_type_groups) as AppSettings["fileTypeGroups"],
     modes: fromDbJsonArray(row.modes) as string[],
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
@@ -85,7 +87,7 @@ async function loadSettings() {
   return getCached("settings:live", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, modes, milestones, table_field_presets,
+              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               mmg_live_enabled, mmg_live_options, active_user_id
        from app_settings
        where id = true`,

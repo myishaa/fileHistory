@@ -53,8 +53,7 @@ type DateFieldConfig = {
 };
 
 const dateFieldConfigs: DateFieldConfig[] = [
-  { id: "file.receivedDate", label: "Received date", group: "File details", scope: "file", key: "receivedDate" },
-  { id: "file.date", label: "Demand date", group: "File details", scope: "file", key: "date" },
+  { id: "file.receivedDate", label: "Demand received date", group: "File details", scope: "file", key: "receivedDate" },
   { id: "file.demandCancelledDate", label: "Demand cancelled date", group: "File details", scope: "file", key: "demandCancelledDate" },
   { id: "file.scrutinyDate", label: "Scrutiny date", group: "Scrutiny", scope: "file", key: "scrutinyDate" },
   { id: "file.scrutinyResponseDate", label: "Scrutiny response date", group: "Scrutiny", scope: "file", key: "scrutinyResponseDate" },
@@ -131,7 +130,7 @@ export const demandProcessingDateFields: DemandProcessingDateField[] = dateField
 );
 
 export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
-  { id: "builtin-received-control", name: "Received date to Demand control date", fromFieldId: "file.receivedDate", toFieldId: "file.immsDate", active: true },
+  { id: "builtin-received-control", name: "Demand received date to Demand control date", fromFieldId: "file.receivedDate", toFieldId: "file.immsDate", active: true },
   { id: "builtin-control-so", name: "Demand control date to S.O. date", fromFieldId: "file.immsDate", toFieldId: "order.soDate", active: true },
   { id: "builtin-fs-so", name: "Financial Sanction date to S.O. date", fromFieldId: "order.financialSanctionDate", toFieldId: "order.soDate", active: true },
   { id: "builtin-so-material", name: "S.O. date to Material receipt date", fromFieldId: "order.soDate", toFieldId: "order.materialReceiptDate", active: true },
