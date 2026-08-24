@@ -15,6 +15,10 @@ import {
   requireParam,
   requireString,
 } from "../utils/http.js";
+import {
+  acknowledgeFileProcessingNotification,
+  loadFileProcessingNotifications,
+} from "../utils/file-processing-notifications.js";
 
 export const messagesRouter = Router();
 
@@ -149,6 +153,25 @@ messagesRouter.get(
     }
     const whereSql = conditions.length ? `where ${conditions.join(" and ")}` : "";
     response.json({ messages: await loadMessages(whereSql, values) });
+  }),
+);
+
+messagesRouter.get(
+  "/file-processing",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    response.json({ notifications: await loadFileProcessingNotifications(user) });
+  }),
+);
+
+messagesRouter.post(
+  "/file-processing/:id/acknowledge",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const id = requireParam(request.params.id, "id");
+    const notification = await acknowledgeFileProcessingNotification(id, user);
+    if (!notification) throw new HttpError(404, "Notification not found.");
+    response.json({ notification });
   }),
 );
 

@@ -173,6 +173,32 @@ export type FileMessage = {
   replies: FileMessageReply[];
 };
 
+export type FileProcessingChange = {
+  field: string;
+  label: string;
+  oldValue?: string;
+  newValue?: string;
+  action: "entered" | "cleared" | "changed";
+};
+
+export type FileProcessingNotification = {
+  id: string;
+  fileId: string;
+  divisionId?: string;
+  divisionName: string;
+  fileUniqueCode?: string;
+  fileNo?: string;
+  imms?: string;
+  changedByName: string;
+  changedByRole: string;
+  changes: FileProcessingChange[];
+  summary: string;
+  status: "pending" | "acknowledged";
+  acknowledgedByName?: string;
+  acknowledgedAt?: string;
+  createdAt: string;
+};
+
 export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
@@ -490,6 +516,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:300
 type StoreState = {
   files: FileRecord[];
   messages: FileMessage[];
+  fileProcessingNotifications: FileProcessingNotification[];
   divisions: Division[];
   indentors: Indentor[];
   settings: AppSettings;
@@ -503,6 +530,7 @@ type StoreState = {
 let state: StoreState = {
   files: [],
   messages: [],
+  fileProcessingNotifications: [],
   divisions: [],
   indentors: [],
   settings: defaultSettings,
@@ -529,6 +557,15 @@ function upsertMessage(messages: FileMessage[], message: FileMessage) {
   return messages.some((current) => current.id === message.id)
     ? messages.map((current) => (current.id === message.id ? message : current))
     : [message, ...messages];
+}
+
+function upsertFileProcessingNotification(
+  notifications: FileProcessingNotification[],
+  notification: FileProcessingNotification,
+) {
+  return notifications.some((current) => current.id === notification.id)
+    ? notifications.map((current) => (current.id === notification.id ? notification : current))
+    : [notification, ...notifications];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -618,6 +655,7 @@ async function loadAll(force = false) {
         setState({
           files: [],
           messages: [],
+          fileProcessingNotifications: [],
           divisions: divisions.divisions,
           indentors: [],
           users: [],
@@ -639,8 +677,9 @@ async function loadAll(force = false) {
       const baseRequests = [
         request<{ divisions: Division[] }>(divisionsPath(settings.settings.selectedYear)),
         request<{ messages: FileMessage[] }>("/api/messages"),
+        request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
       ] as const;
-      const [divisions, messages] = await Promise.all(baseRequests);
+      const [divisions, messages, fileProcessingNotifications] = await Promise.all(baseRequests);
       const users =
         auth.user.role === "admin"
           ? await request<{ users: AppUser[] }>("/api/users")
@@ -649,6 +688,7 @@ async function loadAll(force = false) {
       setState({
         files: [],
         messages: messages.messages,
+        fileProcessingNotifications: fileProcessingNotifications.notifications,
         divisions: divisions.divisions,
         indentors: [],
         users: users.users,
@@ -703,6 +743,10 @@ export const store = {
   getMessages(): FileMessage[] {
     ensureLoaded();
     return state.messages;
+  },
+  getFileProcessingNotifications(): FileProcessingNotification[] {
+    ensureLoaded();
+    return state.fileProcessingNotifications;
   },
   getDivisions(): Division[] {
     ensureLoaded();
@@ -966,6 +1010,22 @@ export const store = {
         method: "POST",
       });
       setState({ messages: upsertMessage(state.messages, result.message) });
+    })();
+  },
+  acknowledgeFileProcessingNotification(id: string) {
+    return (async () => {
+      const result = await request<{ notification: FileProcessingNotification }>(
+        `/api/messages/file-processing/${id}/acknowledge`,
+        {
+          method: "POST",
+        },
+      );
+      setState({
+        fileProcessingNotifications: upsertFileProcessingNotification(
+          state.fileProcessingNotifications,
+          result.notification,
+        ),
+      });
     })();
   },
   deleteMessage(id: string) {
@@ -1297,6 +1357,17 @@ export function useMessages() {
     };
   }, []);
   return store.getMessages();
+}
+
+export function useFileProcessingNotifications() {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const u = store.subscribe(() => setTick((t) => t + 1));
+    return () => {
+      u();
+    };
+  }, []);
+  return store.getFileProcessingNotifications();
 }
 
 export function useDivisions() {

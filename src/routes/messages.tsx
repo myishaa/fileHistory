@@ -1,9 +1,16 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Bell, Check, ChevronLeft, ChevronRight, Eye, FolderOpen, Trash2 } from "lucide-react";
 import { useMemo } from "react";
-import { store, type FileMessage, useActiveUser, useMessages } from "@/lib/files-store";
+import {
+  store,
+  type FileMessage,
+  type FileProcessingNotification,
+  useActiveUser,
+  useFileProcessingNotifications,
+  useMessages,
+} from "@/lib/files-store";
 
-type MessageView = "pending" | "resolved" | "sent" | "received";
+type MessageView = "pending" | "resolved" | "sent" | "received" | "processing";
 
 const pageSize = 12;
 
@@ -22,12 +29,13 @@ function MessagesPage() {
   const search = Route.useSearch();
   const activeUser = useActiveUser();
   const messages = useMessages();
+  const fileProcessingNotifications = useFileProcessingNotifications();
   const isViewer = activeUser?.role === "viewer" || activeUser?.role === "division_user";
-  const defaultView: MessageView = isViewer ? "sent" : "pending";
+  const defaultView: MessageView = isViewer ? "processing" : "pending";
   const view = search.view ?? defaultView;
   const currentPage = search.page ?? 1;
   const visibleViews = isViewer
-    ? (["sent", "received"] as const)
+    ? (["processing", "sent", "received"] as const)
     : (["pending", "resolved"] as const);
   const pendingMessages = messages.filter((message) => message.status === "pending");
   const resolvedMessages = messages.filter((message) => message.status === "resolved");
@@ -39,23 +47,45 @@ function MessagesPage() {
         : view === "pending"
           ? pendingMessages
           : resolvedMessages;
+  const pendingFileProcessingNotifications = fileProcessingNotifications.filter(
+    (notification) => notification.status === "pending",
+  );
+  const viewNotifications = view === "processing" ? pendingFileProcessingNotifications : [];
   const divisions = useMemo(
-    () => uniqueSorted(viewMessages.map((message) => message.divisionName)),
-    [viewMessages],
+    () =>
+      uniqueSorted(
+        view === "processing"
+          ? viewNotifications.map((notification) => notification.divisionName)
+          : viewMessages.map((message) => message.divisionName),
+      ),
+    [view, viewMessages, viewNotifications],
   );
   const divisionFiltered = search.division
     ? viewMessages.filter((message) => message.divisionName === search.division)
     : viewMessages;
+  const divisionFilteredNotifications = search.division
+    ? viewNotifications.filter((notification) => notification.divisionName === search.division)
+    : viewNotifications;
   const sections = useMemo(
-    () => uniqueSorted(divisionFiltered.map((message) => message.section)),
-    [divisionFiltered],
+    () =>
+      view === "processing"
+        ? ["File Processing"]
+        : uniqueSorted(divisionFiltered.map((message) => message.section)),
+    [divisionFiltered, view],
   );
   const filteredMessages = search.section
     ? divisionFiltered.filter((message) => message.section === search.section)
     : divisionFiltered;
-  const totalPages = Math.max(1, Math.ceil(filteredMessages.length / pageSize));
+  const filteredNotifications = divisionFilteredNotifications;
+  const itemCount =
+    view === "processing" ? filteredNotifications.length : filteredMessages.length;
+  const totalPages = Math.max(1, Math.ceil(itemCount / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const pageMessages = filteredMessages.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageNotifications = filteredNotifications.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize,
+  );
 
   const updateSearch = (
     patch: Partial<{ view: MessageView; page: number; division: string; section: string }>,
@@ -81,7 +111,8 @@ function MessagesPage() {
             Messages
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {filteredMessages.length} message{filteredMessages.length === 1 ? "" : "s"}
+            {itemCount} {view === "processing" ? "notification" : "message"}
+            {itemCount === 1 ? "" : "s"}
           </p>
         </div>
         <div className="grid grid-cols-2 rounded-md border border-border bg-card p-1">
@@ -102,7 +133,13 @@ function MessagesPage() {
                 (view === item ? "bg-secondary text-foreground shadow-sm" : "text-muted-foreground")
               }
             >
-              {item} {countForView(item, pendingMessages, resolvedMessages)}
+              {viewLabel(item)}{" "}
+              {countForView(
+                item,
+                pendingMessages,
+                resolvedMessages,
+                pendingFileProcessingNotifications,
+              )}
             </button>
           ))}
         </div>
@@ -130,6 +167,7 @@ function MessagesPage() {
             ))}
           </select>
         </label>
+        {view === "processing" ? null : (
         <label className="block">
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">Section</div>
           <select
@@ -150,6 +188,7 @@ function MessagesPage() {
             ))}
           </select>
         </label>
+        )}
         <button
           type="button"
           onClick={() => updateSearch({ division: undefined, section: undefined, page: 1 })}
@@ -166,7 +205,17 @@ function MessagesPage() {
           <div>Section</div>
           <div className="text-right">Action</div>
         </div>
-        {pageMessages.length ? (
+        {view === "processing" ? (
+          pageNotifications.length ? (
+            pageNotifications.map((notification) => (
+              <FileProcessingNotificationRow key={notification.id} notification={notification} />
+            ))
+          ) : (
+            <div className="p-6 text-sm text-muted-foreground">
+              No file processing notifications found.
+            </div>
+          )
+        ) : pageMessages.length ? (
           pageMessages.map((message) => (
             <MessageRow
               key={message.id}
@@ -204,6 +253,89 @@ function MessagesPage() {
             <ChevronRight className="size-4" />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function FileProcessingNotificationRow({
+  notification,
+}: {
+  notification: FileProcessingNotification;
+}) {
+  const navigate = useNavigate();
+  return (
+    <div className="grid grid-cols-[1fr_8rem_8rem_9rem] gap-3 border-b border-border px-4 py-3 last:border-b-0">
+      <button
+        type="button"
+        onClick={() =>
+          navigate({
+            to: "/add",
+            search: {
+              fileId: notification.fileId,
+              section: "File Details",
+              milestone: undefined,
+              quickFocus: false,
+            },
+          })
+        }
+        className="min-w-0 text-left"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">
+            {notification.fileUniqueCode || notification.fileNo || notification.imms || "File"}
+          </span>
+          <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium">
+            File Processing
+          </span>
+        </div>
+        <div className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+          {notification.summary
+            .split("\n")
+            .filter(Boolean)
+            .slice(0, 4)
+            .map((line) => (
+              <div key={line}>{line}</div>
+            ))}
+          {notification.summary.split("\n").filter(Boolean).length > 4 ? (
+            <div>+{notification.summary.split("\n").filter(Boolean).length - 4} more change(s)</div>
+          ) : null}
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          Changed by {notification.changedByName} · {formatMessageDate(notification.createdAt)}
+        </div>
+      </button>
+      <div className="truncate text-sm text-muted-foreground">{notification.divisionName}</div>
+      <div className="truncate text-sm text-muted-foreground">File Processing</div>
+      <div className="flex justify-end gap-1">
+        <button
+          type="button"
+          onClick={() =>
+            navigate({
+              to: "/add",
+              search: {
+                fileId: notification.fileId,
+                section: "File Details",
+                milestone: undefined,
+                quickFocus: false,
+              },
+            })
+          }
+          title="Open file"
+          aria-label="Open file"
+          className="grid size-8 place-items-center rounded-md border border-border hover:bg-accent"
+        >
+          <FolderOpen className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => void store.acknowledgeFileProcessingNotification(notification.id)}
+          title="Accept"
+          aria-label="Accept"
+          className="grid size-8 place-items-center rounded-md border border-border text-success hover:bg-success/10"
+        >
+          <Check className="size-4" />
+        </button>
       </div>
     </div>
   );
@@ -317,7 +449,13 @@ function MessageRow({
 }
 
 function isMessageView(value: unknown): value is MessageView {
-  return value === "pending" || value === "resolved" || value === "sent" || value === "received";
+  return (
+    value === "pending" ||
+    value === "resolved" ||
+    value === "sent" ||
+    value === "received" ||
+    value === "processing"
+  );
 }
 
 function parsePage(value: unknown) {
@@ -333,8 +471,14 @@ function countForView(
   view: MessageView,
   pendingMessages: FileMessage[],
   resolvedMessages: FileMessage[],
+  pendingFileProcessingNotifications: FileProcessingNotification[] = [],
 ) {
+  if (view === "processing") return pendingFileProcessingNotifications.length;
   return view === "pending" || view === "sent" ? pendingMessages.length : resolvedMessages.length;
+}
+
+function viewLabel(view: MessageView) {
+  return view === "processing" ? "File Processing" : view;
 }
 
 function formatMessageDate(value: string) {

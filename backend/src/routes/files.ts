@@ -36,6 +36,10 @@ import {
 import { clearDashboardReportCaches } from "../utils/cache.js";
 import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../utils/http.js";
 import { isBiddingApplicableForFile } from "../utils/file-type-groups.js";
+import {
+  buildFileProcessingChanges,
+  createFileProcessingNotification,
+} from "../utils/file-processing-notifications.js";
 
 export const filesRouter = Router();
 const allActiveFilesYear = "__all_active_files__";
@@ -6218,6 +6222,7 @@ filesRouter.patch(
       if (!canAccessFileCategory(user, { fileType: nextFileType, mode: nextMode })) {
         throw new HttpError(403, "You cannot change files to this file type.");
       }
+      const oldFiles = await loadFiles("where f.id = $1", [id]);
       await validateDemandCancellationAllowed(client, body, id);
       const update = buildFileUpdate(body, divisionId);
 
@@ -6241,6 +6246,19 @@ filesRouter.patch(
       clearDashboardReportCaches();
       const files = await loadFiles("where f.id = $1", [id]);
       if (!files[0]) throw new HttpError(404, "File not found.");
+      const changes = oldFiles[0] ? buildFileProcessingChanges(oldFiles[0], files[0]) : [];
+      if (changes.length) {
+        try {
+          await createFileProcessingNotification({
+            client: pool,
+            file: files[0],
+            user,
+            changes,
+          });
+        } catch (notificationError) {
+          console.error("Failed to create file processing notification", notificationError);
+        }
+      }
       response.json({ file: files[0] });
     } catch (error) {
       await client.query("rollback");

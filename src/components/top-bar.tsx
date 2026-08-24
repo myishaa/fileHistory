@@ -16,7 +16,13 @@ import {
 } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { store, useActiveUser, useMessages, useSettings } from "@/lib/files-store";
+import {
+  store,
+  useActiveUser,
+  useFileProcessingNotifications,
+  useMessages,
+  useSettings,
+} from "@/lib/files-store";
 import {
   ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
   ALL_ACTIVE_FILES_YEAR,
@@ -39,6 +45,7 @@ export function TopBar() {
   const navigate = useNavigate();
   const settings = useSettings();
   const messages = useMessages();
+  const fileProcessingNotifications = useFileProcessingNotifications();
   const activeUser = useActiveUser();
   const [anomalyWarningCount, setAnomalyWarningCount] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
@@ -73,7 +80,10 @@ export function TopBar() {
   const messageWarningCount = isViewer
     ? pendingMessages.length + viewerUnreadResolved.length
     : pendingMessages.length;
-  const bellCount = messageWarningCount + anomalyWarningCount;
+  const fileProcessingWarningCount = isViewer
+    ? fileProcessingNotifications.filter((notification) => notification.status === "pending").length
+    : 0;
+  const bellCount = messageWarningCount + anomalyWarningCount + fileProcessingWarningCount;
   useEffect(() => {
     if (!activeUser) {
       setAnomalyWarningCount(0);
@@ -107,6 +117,18 @@ export function TopBar() {
       to: "/messages",
       search: {
         view: undefined,
+        page: undefined,
+        division: undefined,
+        section: undefined,
+      },
+    });
+  };
+  const openFileProcessing = () => {
+    setWarningsOpen(false);
+    navigate({
+      to: "/messages",
+      search: {
+        view: "processing",
         page: undefined,
         division: undefined,
         section: undefined,
@@ -198,6 +220,23 @@ export function TopBar() {
                   Warnings
                 </div>
                 <div className="mt-2 space-y-1">
+                  {isViewer ? (
+                    <button
+                      type="button"
+                      onClick={openFileProcessing}
+                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    >
+                      <span>
+                        <span className="block text-sm font-medium">File Processing</span>
+                        <span className="block text-xs text-muted-foreground">
+                          Open file change notifications
+                        </span>
+                      </span>
+                      <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-semibold text-secondary-foreground">
+                        {fileProcessingWarningCount}
+                      </span>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={openSuspectedAnomalies}
