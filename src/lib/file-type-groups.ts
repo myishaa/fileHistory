@@ -5,18 +5,19 @@ export type FileTypeGroupSetting = {
   group: FileTypeGroup;
 };
 
-export const fileTypeGroupOptions: { value: FileTypeGroup; label: string; description: string }[] = [
-  {
-    value: "goodsServices",
-    label: "Group A - Goods & Services",
-    description: "IR Yes/No decides delivery or job-completion workflow.",
-  },
-  {
-    value: "contract",
-    label: "Group B - AMC/MPC/O&M/CARS",
-    description: "Contract/service workflow based on job completion and stage delivery rules.",
-  },
-];
+export const fileTypeGroupOptions: { value: FileTypeGroup; label: string; description: string }[] =
+  [
+    {
+      value: "goodsServices",
+      label: "Group A - Goods & Services",
+      description: "IR Yes/No decides delivery or job-completion workflow.",
+    },
+    {
+      value: "contract",
+      label: "Group B - AMC/MPC/O&M/CARS",
+      description: "Contract/service workflow based on job completion and stage delivery rules.",
+    },
+  ];
 
 export function normalizeFileTypeGroup(value: unknown): FileTypeGroup {
   return value === "contract" ? "contract" : "goodsServices";
@@ -24,7 +25,11 @@ export function normalizeFileTypeGroup(value: unknown): FileTypeGroup {
 
 export function getDefaultFileTypeGroup(fileType: string | undefined): FileTypeGroup {
   const normalized = (fileType ?? "").trim().toLowerCase();
-  return normalized === "amc" || normalized === "mpc" || normalized === "cars" || normalized === "o&m"
+  return normalized === "amc" ||
+    normalized === "mpc" ||
+    normalized === "cars" ||
+    normalized === "capsi" ||
+    normalized === "o&m"
     ? "contract"
     : "goodsServices";
 }
@@ -67,7 +72,10 @@ export function isContractFileType(file: {
   fileType?: string;
   fileTypeGroup?: FileTypeGroup | string;
 }): boolean {
-  return normalizeFileTypeGroup(file.fileTypeGroup ?? getDefaultFileTypeGroup(file.fileType)) === "contract";
+  return (
+    normalizeFileTypeGroup(file.fileTypeGroup ?? getDefaultFileTypeGroup(file.fileType)) ===
+    "contract"
+  );
 }
 
 export function isDeliveryInspectionApplicableByGroup(file: {
@@ -79,9 +87,15 @@ export function isDeliveryInspectionApplicableByGroup(file: {
 }
 
 export function isBiddingApplicableForFile(file: { mode?: string; fileType?: string }): boolean {
-  const mode = String(file.mode ?? "").trim().toUpperCase();
-  const fileType = String(file.fileType ?? "").trim().toLowerCase();
-  const gem = String((file as { gem?: string }).gem ?? "").trim().toLowerCase();
+  const mode = String(file.mode ?? "")
+    .trim()
+    .toUpperCase();
+  const fileType = String(file.fileType ?? "")
+    .trim()
+    .toLowerCase();
+  const gem = String((file as { gem?: string }).gem ?? "")
+    .trim()
+    .toLowerCase();
   const gemBiddingMode = String((file as { gemBiddingMode?: string }).gemBiddingMode ?? "")
     .trim()
     .toLowerCase();
@@ -94,5 +108,9 @@ export function isBiddingApplicableForFile(file: { mode?: string; fileType?: str
 }
 
 function isNo(value: unknown) {
-  return String(value ?? "").trim().toLowerCase() === "no";
+  return (
+    String(value ?? "")
+      .trim()
+      .toLowerCase() === "no"
+  );
 }

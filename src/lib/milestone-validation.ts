@@ -67,9 +67,21 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
     isComplete: (file) => hasFilledString(file.postTcecMinutesDate),
   },
   {
+    aliases: ["Refloat bidding"],
+    completionLabel: "Bidding stage over",
+    isApplicable: (file) => isYes(file.refloat),
+    isComplete: (file) => isYes(file.biddingStageOver),
+  },
+  {
+    aliases: ["Refloat Post-TCEC"],
+    completionLabel: "Refloat Post-TCEC minutes date",
+    isApplicable: (file) => isYes(file.refloat) && isYes(file.tcec) && isYes(file.biddingStageOver),
+    isComplete: (file) => hasFilledString(file.refloatPostTcecMinutesDate),
+  },
+  {
     aliases: ["CNC"],
     completionLabel: "CNC approval date",
-    isApplicable: (file) => isYes(file.tcec),
+    isApplicable: (file) => isYes(file.tcec) && isYes(file.biddingStageOver),
     isComplete: (file) => hasFilledString(file.cncApprovalDate),
   },
   {

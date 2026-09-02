@@ -1,4 +1,10 @@
-export type AppUserRole = "admin" | "sub_admin" | "division_user" | "editor" | "viewer";
+export type AppUserRole =
+  | "admin"
+  | "sub_admin"
+  | "division_user"
+  | "editor"
+  | "viewer"
+  | "universal_viewer";
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
 export type FileTypeGroup = "goodsServices" | "contract";
@@ -122,6 +128,13 @@ export type FileMarker = {
   createdAt?: string;
 };
 
+export type BillReturnCycle = {
+  returnedDate?: string;
+  reason?: string;
+  resubmittedDate?: string;
+  remarks?: string;
+};
+
 export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
@@ -149,6 +162,8 @@ export type SupplyOrderDetail = {
   soDate?: string;
   soValueCapital?: string;
   soValueRevenue?: string;
+  billAmountCapital?: string;
+  billAmountRevenue?: string;
   dpDate?: string;
   firm?: string;
   bqBasis?: string;
@@ -169,6 +184,7 @@ export type SupplyOrderDetail = {
   irReceiptDate?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -196,6 +212,7 @@ export type AdvancePaymentDetail = {
   stageAmountRevenue?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -221,6 +238,7 @@ export type StageDeliveryDetail = {
   irReceiptDate?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -254,6 +272,7 @@ export type MasterFirm = {
 export type FileRecord = {
   id: string;
   title?: string;
+  divisionId?: string;
   division?: string;
   officer?: string;
   imms?: string;
@@ -319,6 +338,9 @@ export type FileRecord = {
   postTcecCommitteeNumber?: string;
   refloatBiddingDate?: string;
   refloatBidOpeningDate?: string;
+  refloatPostTcecDate?: string;
+  refloatPostTcecMinutesDate?: string;
+  refloatPostTcecCommitteeNo?: string;
   rst?: string;
   biddingStageOver?: string;
   cncDate?: string;
@@ -329,6 +351,8 @@ export type FileRecord = {
   soDate?: string;
   soValueCapital?: string;
   soValueRevenue?: string;
+  billAmountCapital?: string;
+  billAmountRevenue?: string;
   dpDate?: string;
   firm?: string;
   firmUniqueNo?: string;
@@ -394,4 +418,17 @@ export type FileMessage = {
   resolvedAt?: string;
   viewedAt?: string;
   replies: FileMessageReply[];
+};
+
+export type FileStatusUpdate = {
+  id: string;
+  fileId: string;
+  divisionId?: string;
+  text: string;
+  createdByName: string;
+  createdByRole: string;
+  createdAt: string;
+  updatedByName?: string;
+  updatedAt?: string;
+  canEdit?: boolean;
 };

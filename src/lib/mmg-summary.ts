@@ -2,8 +2,9 @@ import type { Division, FileRecord, SupplyOrderDetail } from "@/lib/files-store"
 import {
   advancePaymentEntries as normalizedAdvancePaymentEntries,
   countExpectedSupplyOrderRows,
-  effectivePaymentEntries as normalizedPaymentEntries,
   expectedSupplyOrders as normalizedExpectedSupplyOrders,
+  filePaymentEntries as normalizedFilePaymentEntries,
+  fileSupplyOrderEntries as normalizedFileSupplyOrderEntries,
   fileSupplyOrders as normalizedFileSupplyOrders,
   getAdvancePaymentCapital,
   getAdvancePaymentRevenue,
@@ -12,15 +13,17 @@ import {
   isAdvancePaymentPaid,
   isAdvancePaymentPending,
   isExpiredDeliveryPeriodEntry,
-  isExtendedDeliveryPeriodEntry,
   isValidDeliveryPeriodEntry,
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
+import { isContractFileType, isDeliveryInspectionApplicableByGroup } from "@/lib/file-type-groups";
 import {
-  isContractFileType,
-  isDeliveryInspectionApplicableByGroup,
-} from "@/lib/file-type-groups";
+  hasBillReturnHistory,
+  hasCompletedBillReturn,
+  hasOpenBillReturn,
+  hasReturnedBillPaid,
+} from "@/lib/refloat-returned-bill";
 
 export type MmgSummaryFieldConfig = {
   key: string;
@@ -38,6 +41,8 @@ export type MmgSummaryRow = {
   key: string;
   label: string;
   value: string;
+  fileIds?: string[];
+  focusTargets?: Record<string, string[]>;
 };
 
 const defaultModeKeys = new Set(["OBM", "PBM", "LPC", "SBM", "LBM"]);
@@ -167,6 +172,14 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   },
   { key: "paymentPending", label: "Payment pending", group: "Payment" },
   { key: "paymentCompleted", label: "Payment completed", group: "Payment" },
+  { key: "billsReturnedForCorrection", label: "Bills returned for correction", group: "Payment" },
+  { key: "billsPendingCorrection", label: "Bills pending correction", group: "Payment" },
+  {
+    key: "billsResubmittedAfterCorrection",
+    label: "Bills resubmitted after correction",
+    group: "Payment",
+  },
+  { key: "returnedBillPaid", label: "Returned bill paid", group: "Payment" },
   { key: "totalPaymentDueThisMonth", label: "Total payment due this month", group: "Payment" },
   {
     key: "billsSentForCurrentMonthDeliveries",
@@ -300,7 +313,8 @@ function orderMmgSummaryFieldOptions(options: MmgSummaryFieldOption[]) {
     (lastIndex, option, index) => (option.group === "File Type" ? index : lastIndex),
     -1,
   );
-  if (lastBuiltInFileTypeIndex === -1) return [...dynamicFileTypeOptions, ...withoutDynamicFileTypes];
+  if (lastBuiltInFileTypeIndex === -1)
+    return [...dynamicFileTypeOptions, ...withoutDynamicFileTypes];
   return [
     ...withoutDynamicFileTypes.slice(0, lastBuiltInFileTypeIndex + 1),
     ...dynamicFileTypeOptions,
@@ -383,13 +397,20 @@ export function buildMmgSummaryRows({
   firmTypes?: string[];
   fileTypes?: string[];
 }): MmgSummaryRow[] {
-  const values = getMmgSummaryValues(files, divisions, previousYearFiles ?? [], financialYear);
+  const { values, fileIdsByKey, focusTargetsByKey } = getMmgSummaryValues(
+    files,
+    divisions,
+    previousYearFiles ?? [],
+    financialYear,
+  );
   return normalizeMmgSummaryFields(config, modes, firmTypes, fileTypes)
     .filter((field) => field.enabled)
     .map((field) => ({
       key: field.key,
       label: field.label,
       value: values[field.key] ?? "0",
+      fileIds: fileIdsByKey[field.key],
+      focusTargets: focusTargetsByKey[field.key],
     }));
 }
 
@@ -504,11 +525,23 @@ function getMmgSummaryValues(
     (sum, { file, order }) => sum + getOrderAmount(file, order, "revenue"),
     0,
   );
-  const paymentOrders = normalizedPaymentEntries(files).filter(
+  const paymentOrders = paymentOrderEntries(files).filter(
     ({ order }) => order.stageDeliveryLabel !== "Advance Payment",
   );
   const actualPaymentEntries = paymentOrders.filter(
     ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
+  );
+  const pendingPaymentEntries = paymentOrders.filter(
+    ({ file, order }) => isPaymentPendingEntry(file, order),
+  );
+  const overduePaymentEntries = orders.filter(({ file, order }) =>
+    isPaymentOverdueEntry(file, order, currentMonthKey),
+  );
+  const expiredDeliveryPeriodEntries = orders.filter(({ file, order }) =>
+    isExpiredDeliveryPeriodEntry(file, order),
+  );
+  const extendedDeliveryPeriodEntries = orders.filter(({ file, order }) =>
+    isDeliveryPeriodExtendedEntry(file, order),
   );
   const advancePaymentEntries = normalizedAdvancePaymentEntries(files).filter(
     ({ file, order }) => !isCancelledOrder(file, order),
@@ -609,11 +642,11 @@ function getMmgSummaryValues(
       nonCancelledFiles,
       (file) =>
         isYes(file.tcec) &&
-        hasFilledString(file.postTcecDate) &&
-        !hasFilledString(file.postTcecMinutesDate),
+        hasFilledString(getEffectivePostTcecDate(file)) &&
+        !hasFilledString(getEffectivePostTcecMinutesDate(file)),
     ),
     postTcecCompleted: countFiles(nonCancelledFiles, (file) =>
-      hasFilledString(file.postTcecMinutesDate),
+      hasFilledString(getEffectivePostTcecMinutesDate(file)),
     ),
     cncInProgress: countFiles(
       nonCancelledFiles,
@@ -652,36 +685,36 @@ function getMmgSummaryValues(
           !hasFilledString(order.materialReceiptDate),
       ).length,
     ),
-	    deliveriesCompletedThisMonth: formatCount(
-	      orders.filter(
-	        ({ file, order }) =>
-	          !isCancelledOrder(file, order) &&
-	          (isDeliveryInspectionApplicable(file)
-	            ? monthMatches(order.materialReceiptDate, currentMonthKey)
-	            : isJobCompletionDone(order) &&
-	              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
-	      ).length,
-	    ),
-	    deliveryCompleted: formatCount(
-	      orders.filter(
-	        ({ file, order }) =>
-	          !isCancelledOrder(file, order) &&
-	          (isDeliveryInspectionApplicable(file)
-	            ? hasFilledString(order.materialReceiptDate)
-	            : isJobCompletionDone(order)),
-	      ).length,
-	    ),
+    deliveriesCompletedThisMonth: formatCount(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? monthMatches(order.materialReceiptDate, currentMonthKey)
+            : isJobCompletionDone(order) &&
+              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
+      ).length,
+    ),
+    deliveryCompleted: formatCount(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? hasFilledString(order.materialReceiptDate)
+            : isJobCompletionDone(order)),
+      ).length,
+    ),
     deliveryPending: formatCount(
       orders.filter(
-	        ({ file, order }) =>
-	          !isCancelledOrder(file, order) &&
-	          hasSupplyOrderDate(order) &&
-	          (isDeliveryInspectionApplicable(file)
-	            ? !hasFilledString(order.materialReceiptDate)
-	            : !isJobCompletionDone(order)) &&
-	          hasFilledString(getDeliveryPeriodDate(order)),
-	      ).length,
-	    ),
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasSupplyOrderDate(order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? !hasFilledString(order.materialReceiptDate)
+            : !isJobCompletionDone(order)) &&
+          hasFilledString(getDeliveryPeriodDate(order)),
+      ).length,
+    ),
     deliveryOverdue: formatCount(
       orders.filter(
         ({ file, order }) =>
@@ -696,12 +729,8 @@ function getMmgSummaryValues(
     deliveryPeriodValid: formatCount(
       orders.filter(({ file, order }) => isValidDeliveryPeriodEntry(file, order)).length,
     ),
-    deliveryPeriodExpired: formatCount(
-      orders.filter(({ file, order }) => isExpiredDeliveryPeriodEntry(file, order)).length,
-    ),
-    deliveryPeriodExtended: formatCount(
-      orders.filter(({ file, order }) => isExtendedDeliveryPeriodEntry(file, order)).length,
-    ),
+    deliveryPeriodExpired: formatCount(entryFileIds(expiredDeliveryPeriodEntries).length),
+    deliveryPeriodExtended: formatCount(extendedDeliveryPeriodEntries.length),
     irPreparationPending: formatCount(
       orders.filter(
         ({ file, order }) =>
@@ -776,14 +805,26 @@ function getMmgSummaryValues(
           !isCancelledOrder(file, order) && hasFilledString(order.billSentForPaymentDate),
       ).length,
     ),
-    paymentPending: formatCount(
-      paymentOrders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          hasPaymentWorkflowStarted(file, order) &&
-          !hasFilledString(order.paymentDate),
+    billsReturnedForCorrection: formatCount(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasBillReturnHistory(order),
       ).length,
     ),
+    billsPendingCorrection: formatCount(
+      orders.filter(({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order))
+        .length,
+    ),
+    billsResubmittedAfterCorrection: formatCount(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasCompletedBillReturn(order),
+      ).length,
+    ),
+    returnedBillPaid: formatCount(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasReturnedBillPaid(order),
+      ).length,
+    ),
+    paymentPending: formatCount(entryFileIds(pendingPaymentEntries).length),
     paymentCompleted: formatCount(
       paymentOrders.filter(
         ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
@@ -890,14 +931,7 @@ function getMmgSummaryValues(
           !hasFilledString(order.materialReceiptDate),
       ).length,
     ),
-    paymentsOverdue: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
-          !hasFilledString(order.paymentDate),
-      ).length,
-    ),
+    paymentsOverdue: formatCount(entryFileIds(overduePaymentEntries).length),
     psbPending: formatCount(countBgPendingOrders(nonCancelledFiles, "psb")),
     psbReceived: formatCount(countBgReceivedOrders(nonCancelledFiles, "psb")),
     psbExpired: formatCount(countBgExpiredOrders(nonCancelledFiles, "psb")),
@@ -931,7 +965,8 @@ function getMmgSummaryValues(
     ),
     totalSoValuePlacedThisFy: formatMoney(
       rawActiveOrders.reduce(
-        (sum, { file, order }) => sum + (hasSupplyOrderDate(order) ? getOrderTotal(file, order) : 0),
+        (sum, { file, order }) =>
+          sum + (hasSupplyOrderDate(order) ? getOrderTotal(file, order) : 0),
         0,
       ),
     ),
@@ -944,10 +979,930 @@ function getMmgSummaryValues(
     ),
     filesClosedPercentage: `${getPercent(closedFiles.length, nonCancelledFiles.length)}%`,
   };
+  const fileIdsByKey: Record<string, string[]> = {
+    totalDemands: fileIds(nonCancelledFiles),
+    nonTcecDemands: fileIds(nonCancelledFiles.filter((file) => isNo(file.tcec))),
+    tcecDemands: fileIds(nonCancelledFiles.filter((file) => isYes(file.tcec))),
+    obm: fileIds(filesForMode(nonCancelledFiles, "OBM")),
+    pbm: fileIds(filesForMode(nonCancelledFiles, "PBM")),
+    lpc: fileIds(filesForMode(nonCancelledFiles, "LPC")),
+    sbm: fileIds(filesForMode(nonCancelledFiles, "SBM")),
+    lbm: fileIds(filesForMode(nonCancelledFiles, "LBM")),
+    goodsServices: fileIds(nonCancelledFiles.filter((file) => !isContractFileType(file))),
+    amc: fileIds(filesForType(nonCancelledFiles, "amc")),
+    mpc: fileIds(filesForType(nonCancelledFiles, "mpc")),
+    cars: fileIds(filesForType(nonCancelledFiles, "cars")),
+    om: fileIds(filesForType(nonCancelledFiles, "o&m")),
+    scrutinyCompleted: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.scrutinyCompletionDate)),
+    ),
+    filesWithUsersAfterScrutiny: fileIds(
+      nonCancelledFiles.filter(
+        (file) =>
+          hasFilledString(file.scrutinyDate) && !hasFilledString(file.scrutinyCompletionDate),
+      ),
+    ),
+    scrutinyToBeDone: fileIds(
+      nonCancelledFiles.filter((file) => !hasFilledString(file.scrutinyDate)),
+    ),
+    tcecCompleted: fileIds(
+      nonCancelledFiles.filter(
+        (file) => isYes(file.tcec) && hasFilledString(file.preTcecMinutesDate),
+      ),
+    ),
+    tcecFilesWithMmgForMeeting: fileIds(
+      nonCancelledFiles.filter(
+        (file) =>
+          isYes(file.tcec) &&
+          hasFilledString(file.preTcecDate) &&
+          !hasFilledString(file.preTcecMinutesDate),
+      ),
+    ),
+    highValueDemands: fileIds(nonCancelledFiles.filter((file) => isYes(file.highValue))),
+    highValueReviewCompleted: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.highValueMinutesDate)),
+    ),
+    adVettingDemands: fileIds(nonCancelledFiles.filter((file) => isYes(file.ad))),
+    adVettingCompleted: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.adVettingDate)),
+    ),
+    adVettingRemaining: fileIds(
+      nonCancelledFiles.filter((file) => isYes(file.ad) && !hasFilledString(file.adVettingDate)),
+    ),
+    rqaDemands: fileIds(nonCancelledFiles.filter((file) => isYes(file.rqa))),
+    rqaVettingDone: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.rqaApprovalDate)),
+    ),
+    rqaVettingRemaining: fileIds(
+      nonCancelledFiles.filter((file) => isYes(file.rqa) && !hasFilledString(file.rqaApprovalDate)),
+    ),
+    controllingDone: fileIds(
+      nonCancelledFiles.filter(
+        (file) => hasFilledString(file.imms) || hasFilledString(file.immsDate),
+      ),
+    ),
+    controllingRemaining: fileIds(
+      nonCancelledFiles.filter(
+        (file) => !hasFilledString(file.imms) && !hasFilledString(file.immsDate),
+      ),
+    ),
+    filesWithIfa: fileIds(
+      nonCancelledFiles.filter(
+        (file) => hasFilledString(file.ifaSentDate) && !hasFilledString(file.ifaFinalDate),
+      ),
+    ),
+    ifaApprovalDone: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.ifaFinalDate)),
+    ),
+    cfaApprovalDone: fileIds(nonCancelledFiles.filter((file) => hasFilledString(file.cfaDate))),
+    cfaApprovalRemaining: fileIds(
+      nonCancelledFiles.filter((file) => !hasFilledString(file.cfaDate)),
+    ),
+    liveBids: fileIds(nonCancelledFiles.filter((file) => isYes(file.tenderLive))),
+    preBidMeetingDue: fileIds(
+      nonCancelledFiles.filter((file) => isPreBidMeetingStatus(file, false, "due")),
+    ),
+    preBidMeetingCompleted: fileIds(
+      nonCancelledFiles.filter((file) => isPreBidMeetingStatus(file, false, "completed")),
+    ),
+    refloatPreBidMeetingDue: fileIds(
+      nonCancelledFiles.filter((file) => isPreBidMeetingStatus(file, true, "due")),
+    ),
+    refloatPreBidMeetingCompleted: fileIds(
+      nonCancelledFiles.filter((file) => isPreBidMeetingStatus(file, true, "completed")),
+    ),
+    bidsToBeOpened: fileIds(nonCancelledFiles.filter(isBidToBeOpened)),
+    bidsOverdueToOpen: fileIds(nonCancelledFiles.filter(isBidOverdueToOpen)),
+    postTcecEvaluationInProgress: fileIds(
+      nonCancelledFiles.filter(
+        (file) =>
+          isYes(file.tcec) &&
+          hasFilledString(getEffectivePostTcecDate(file)) &&
+          !hasFilledString(getEffectivePostTcecMinutesDate(file)),
+      ),
+    ),
+    postTcecCompleted: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(getEffectivePostTcecMinutesDate(file))),
+    ),
+    cncInProgress: fileIds(
+      nonCancelledFiles.filter(
+        (file) => hasFilledString(file.cncDate) && !hasFilledString(file.cncApprovalDate),
+      ),
+    ),
+    cncCompleted: fileIds(
+      nonCancelledFiles.filter((file) => hasFilledString(file.cncApprovalDate)),
+    ),
+    financialSanctionCompleted: entryFileIds(
+      rawActiveOrders.filter(({ order }) => isFinancialSanctionCompleted(order)),
+    ),
+    financialSanctionPending: entryFileIds(
+      rawActiveOrders.filter(({ file, order }) => isFinancialSanctionPending(file, order)),
+    ),
+    soTotal: entryFileIds(
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+    ),
+    soPlaced: entryFileIds(
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+    ),
+    soPending: entryFileIds(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isSupplyOrderPendingOrder(file, order),
+      ),
+    ),
+    soLive: entryFileIds(
+      rawActiveOrders.filter(
+        ({ file, order }) =>
+          isSupplyOrderTabComplete(file, order) && !hasFilledString(order.paymentDate),
+      ),
+    ),
+    deliveriesDueThisMonth: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          monthMatches(getDeliveryPeriodDate(order), currentMonthKey) &&
+          !hasFilledString(order.materialReceiptDate),
+      ),
+    ),
+    deliveriesCompletedThisMonth: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? monthMatches(order.materialReceiptDate, currentMonthKey)
+            : isJobCompletionDone(order) &&
+              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
+      ),
+    ),
+    deliveryCompleted: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? hasFilledString(order.materialReceiptDate)
+            : isJobCompletionDone(order)),
+      ),
+    ),
+    deliveryPending: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasSupplyOrderDate(order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? !hasFilledString(order.materialReceiptDate)
+            : !isJobCompletionDone(order)) &&
+          hasFilledString(getDeliveryPeriodDate(order)),
+      ),
+    ),
+    deliveryOverdue: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasSupplyOrderDate(order) &&
+          !hasFilledString(order.materialReceiptDate) &&
+          hasFilledString(getDeliveryPeriodDate(order)) &&
+          isBeforeToday(getDeliveryPeriodDate(order)),
+      ),
+    ),
+    deliveryPeriodValid: entryFileIds(
+      orders.filter(({ file, order }) => isValidDeliveryPeriodEntry(file, order)),
+    ),
+    deliveryPeriodExpired: entryFileIds(expiredDeliveryPeriodEntries),
+    deliveryPeriodExtended: entryFileIds(extendedDeliveryPeriodEntries),
+    irPreparationPending: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasSupplyOrderDate(order) &&
+          hasFilledString(order.materialReceiptDate) &&
+          !hasFilledString(order.irPreparationDate),
+      ),
+    ),
+    irReceiptPending: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasFilledString(order.irPreparationDate) &&
+          !hasFilledString(order.irReceiptDate),
+      ),
+    ),
+    irCompleted: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasFilledString(order.irReceiptDate),
+      ),
+    ),
+    totalIrSentToUser: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasFilledString(order.irPreparationDate),
+      ),
+    ),
+    totalIrReceived: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasFilledString(order.irReceiptDate),
+      ),
+    ),
+    billPreparationPending: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasBillingWorkflowStarted(file, order) &&
+          !hasFilledString(order.billPreparationDate),
+      ),
+    ),
+    billPreparationCompleted: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) && hasFilledString(order.billPreparationDate),
+      ),
+    ),
+    billSentForPaymentPending: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasFilledString(order.billPreparationDate) &&
+          !hasFilledString(order.billSentForPaymentDate),
+      ),
+    ),
+    billSentForPaymentCompleted: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) && hasFilledString(order.billSentForPaymentDate),
+      ),
+    ),
+    billsReturnedForCorrection: entryFileIds(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasBillReturnHistory(order),
+      ),
+    ),
+    billsPendingCorrection: entryFileIds(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order),
+      ),
+    ),
+    billsResubmittedAfterCorrection: entryFileIds(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasCompletedBillReturn(order),
+      ),
+    ),
+    returnedBillPaid: entryFileIds(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasReturnedBillPaid(order),
+      ),
+    ),
+    paymentPending: entryFileIds(pendingPaymentEntries),
+    paymentCompleted: entryFileIds(
+      paymentOrders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
+      ),
+    ),
+    totalPaymentDueThisMonth: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          !hasFilledString(order.paymentDate),
+      ),
+    ),
+    billsSentForCurrentMonthDeliveries: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          hasFilledString(order.billSentForPaymentDate),
+      ),
+    ),
+    paymentDueFromPreviousMonths: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          !hasFilledString(order.paymentDate),
+      ),
+    ),
+    billsSentForPreviousMonthsDeliveries: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          monthMatches(order.billSentForPaymentDate, currentMonthKey),
+      ),
+    ),
+    totalBillsSentThisMonth: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(order.billSentForPaymentDate, currentMonthKey),
+      ),
+    ),
+    advancePaymentCount: entryFileIds(advancePaymentEntries),
+    advancePaid: entryFileIds(
+      advancePaymentEntries.filter(({ order }) => isAdvancePaymentPaid(order)),
+    ),
+    advancePending: entryFileIds(
+      advancePaymentEntries.filter(({ order }) => isAdvancePaymentPending(order)),
+    ),
+    liveFilesThisYear: fileIds(liveFiles),
+    closedFilesThisYear: fileIds(closedFiles),
+    liveFilesPreviousYears: fileIds(liveFiles),
+    cancelledDemands: fileIds(files.filter(isDemandCancelled)),
+    soCancelled: entryFileIds(
+      rawOrderEntries(files).filter(({ order }) => isYes(order.soCancelled)),
+    ),
+    shortclosedSo: entryFileIds(
+      rawOrderEntries(files).filter(({ order }) => isYes(order.shortclosure)),
+    ),
+    deliveriesOverdue: entryFileIds(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          Boolean(getDeliveryPeriodDate(order)) &&
+          isBeforeToday(getDeliveryPeriodDate(order)) &&
+          !hasFilledString(order.materialReceiptDate),
+      ),
+    ),
+    paymentsOverdue: entryFileIds(overduePaymentEntries),
+    psbPending: entryFileIds(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "psb"),
+      ),
+    ),
+    psbReceived: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "psb") &&
+          isBgReceivedOrder(order, "psb") &&
+          !isCancelledOrder(file, order),
+      ),
+    ),
+    psbExpired: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "psb"),
+      ),
+    ),
+    psbToBeReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "psb"),
+      ),
+    ),
+    psbReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "psb"),
+      ),
+    ),
+    pwbPending: entryFileIds(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "pwb"),
+      ),
+    ),
+    pwbReceived: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "pwb") &&
+          isBgReceivedOrder(order, "pwb") &&
+          !isCancelledOrder(file, order),
+      ),
+    ),
+    pwbExpired: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "pwb"),
+      ),
+    ),
+    pwbToBeReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "pwb"),
+      ),
+    ),
+    pwbReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "pwb"),
+      ),
+    ),
+    psbPwbPending: entryFileIds(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "psbpwb"),
+      ),
+    ),
+    psbPwbReceived: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "psbpwb") &&
+          isBgReceivedOrder(order, "psbpwb") &&
+          !isCancelledOrder(file, order),
+      ),
+    ),
+    psbPwbExpired: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "psbpwb"),
+      ),
+    ),
+    psbPwbToBeReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "psbpwb"),
+      ),
+    ),
+    psbPwbReturned: entryFileIds(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "psbpwb"),
+      ),
+    ),
+    multipleSupplyOrders: fileIds(
+      nonCancelledFiles.filter((file) => countExpectedSupplyOrderRows(file) > 1),
+    ),
+    ld: entryFileIds(rawActiveOrders.filter(({ order }) => isYes(order.ld))),
+    dpExtension: entryFileIds(rawActiveOrders.filter(({ order }) => isYes(order.dpExtension))),
+    revisedDp: entryFileIds(
+      rawActiveOrders.filter(({ order }) => hasFilledString(order.revisedDp)),
+    ),
+  };
+  const focusTargetsByKey: Record<string, Record<string, string[]>> = {
+    committedCapital: entryFocusTargets(rawActiveOrders, "supplyorder", "any"),
+    committedRevenue: entryFocusTargets(rawActiveOrders, "supplyorder", "any"),
+    financialSanctionCompleted: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isFinancialSanctionCompleted(order)),
+      "financialsanction",
+      "completed",
+    ),
+    financialSanctionPending: entryFocusTargets(
+      rawActiveOrders.filter(({ file, order }) => isFinancialSanctionPending(file, order)),
+      "financialsanction",
+      "pending",
+    ),
+    soTotal: entryFocusTargets(
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+      "supplyorder",
+      "any",
+    ),
+    soPlaced: entryFocusTargets(
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+      "supplyorder",
+      "placed",
+    ),
+    soPending: entryFocusTargets(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isSupplyOrderPendingOrder(file, order),
+      ),
+      "supplyorder",
+      "pending",
+    ),
+    soLive: entryFocusTargets(
+      rawActiveOrders.filter(
+        ({ file, order }) =>
+          isSupplyOrderTabComplete(file, order) && !hasFilledString(order.paymentDate),
+      ),
+      "supplyorder",
+      "live",
+    ),
+    deliveriesDueThisMonth: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          monthMatches(getDeliveryPeriodDate(order), currentMonthKey) &&
+          !hasFilledString(order.materialReceiptDate),
+      ),
+      "deliveryperiod",
+      "pending",
+    ),
+    deliveriesCompletedThisMonth: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? monthMatches(order.materialReceiptDate, currentMonthKey)
+            : isJobCompletionDone(order) &&
+              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
+      ),
+      "delivery",
+      "completed",
+    ),
+    deliveryCompleted: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? hasFilledString(order.materialReceiptDate)
+            : isJobCompletionDone(order)),
+      ),
+      "delivery",
+      "completed",
+    ),
+    deliveryPending: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasSupplyOrderDate(order) &&
+          (isDeliveryInspectionApplicable(file)
+            ? !hasFilledString(order.materialReceiptDate)
+            : !isJobCompletionDone(order)) &&
+          hasFilledString(getDeliveryPeriodDate(order)),
+      ),
+      "delivery",
+      "pending",
+    ),
+    deliveryOverdue: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasSupplyOrderDate(order) &&
+          !hasFilledString(order.materialReceiptDate) &&
+          hasFilledString(getDeliveryPeriodDate(order)) &&
+          isBeforeToday(getDeliveryPeriodDate(order)),
+      ),
+      "delivery",
+      "overdue",
+    ),
+    deliveryPeriodValid: entryFocusTargets(
+      orders.filter(({ file, order }) => isValidDeliveryPeriodEntry(file, order)),
+      "deliveryperiod",
+      "valid",
+    ),
+    deliveryPeriodExpired: entryFocusTargets(
+      expiredDeliveryPeriodEntries,
+      "deliveryperiod",
+      "expired",
+    ),
+    deliveryPeriodExtended: entryFocusTargets(
+      extendedDeliveryPeriodEntries,
+      "dpextension",
+      "yes",
+    ),
+    irPreparationPending: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasSupplyOrderDate(order) &&
+          hasFilledString(order.materialReceiptDate) &&
+          !hasFilledString(order.irPreparationDate),
+      ),
+      "irpreparation",
+      "pending",
+    ),
+    irReceiptPending: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasFilledString(order.irPreparationDate) &&
+          !hasFilledString(order.irReceiptDate),
+      ),
+      "irreceipt",
+      "pending",
+    ),
+    irCompleted: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          isYes(file.ir) &&
+          hasFilledString(order.irReceiptDate),
+      ),
+      "irreceipt",
+      "completed",
+    ),
+    totalIrSentToUser: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasFilledString(order.irPreparationDate),
+      ),
+      "irpreparation",
+      "completed",
+    ),
+    totalIrReceived: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          hasFilledString(order.irReceiptDate),
+      ),
+      "irreceipt",
+      "completed",
+    ),
+    billPreparationPending: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasBillingWorkflowStarted(file, order) &&
+          !hasFilledString(order.billPreparationDate),
+      ),
+      "billpreparation",
+      "pending",
+    ),
+    billPreparationCompleted: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) && hasFilledString(order.billPreparationDate),
+      ),
+      "billpreparation",
+      "completed",
+    ),
+    billSentForPaymentPending: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          hasFilledString(order.billPreparationDate) &&
+          !hasFilledString(order.billSentForPaymentDate),
+      ),
+      "billsentforpayment",
+      "pending",
+    ),
+    billSentForPaymentCompleted: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) && hasFilledString(order.billSentForPaymentDate),
+      ),
+      "billsentforpayment",
+      "completed",
+    ),
+    billsReturnedForCorrection: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasBillReturnHistory(order),
+      ),
+      "billreturnedforcorrection",
+      "any",
+    ),
+    billsPendingCorrection: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order),
+      ),
+      "billreturnedforcorrection",
+      "pending",
+    ),
+    billsResubmittedAfterCorrection: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasCompletedBillReturn(order),
+      ),
+      "billreturnedforcorrection",
+      "resubmitted",
+    ),
+    returnedBillPaid: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasReturnedBillPaid(order),
+      ),
+      "billreturnedforcorrection",
+      "paid",
+    ),
+    paymentPending: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
+    paymentCompleted: entryFocusTargets(
+      paymentOrders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
+      ),
+      "payment",
+      "completed",
+    ),
+    totalPaymentDueThisMonth: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          !hasFilledString(order.paymentDate),
+      ),
+      "payment",
+      "pending",
+    ),
+    billsSentForCurrentMonthDeliveries: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          hasFilledString(order.billSentForPaymentDate),
+      ),
+      "billsentforpayment",
+      "completed",
+    ),
+    paymentDueFromPreviousMonths: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          !hasFilledString(order.paymentDate),
+      ),
+      "payment",
+      "overdue",
+    ),
+    billsSentForPreviousMonthsDeliveries: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
+          monthMatches(order.billSentForPaymentDate, currentMonthKey),
+      ),
+      "billsentforpayment",
+      "completed",
+    ),
+    totalBillsSentThisMonth: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          monthMatches(order.billSentForPaymentDate, currentMonthKey),
+      ),
+      "billsentforpayment",
+      "completed",
+    ),
+    advancePaymentCount: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isYes(order.advancePayment)),
+      "advancepayment",
+      "yes",
+    ),
+    advancePaid: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isAdvancePaymentPaid(order)),
+      "advancepayment",
+      "paid",
+    ),
+    advancePending: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isAdvancePaymentPending(order)),
+      "advancepayment",
+      "pending",
+    ),
+    soCancelled: entryFocusTargets(
+      rawOrderEntries(files).filter(({ order }) => isYes(order.soCancelled)),
+      "socancelled",
+      "yes",
+    ),
+    shortclosedSo: entryFocusTargets(
+      rawOrderEntries(files).filter(({ order }) => isYes(order.shortclosure)),
+      "shortclosure",
+      "yes",
+    ),
+    deliveriesOverdue: entryFocusTargets(
+      orders.filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          isDeliveryInspectionApplicable(file) &&
+          Boolean(getDeliveryPeriodDate(order)) &&
+          isBeforeToday(getDeliveryPeriodDate(order)) &&
+          !hasFilledString(order.materialReceiptDate),
+      ),
+      "delivery",
+      "overdue",
+    ),
+    paymentsOverdue: entryFocusTargets(overduePaymentEntries, "payment", "overdue"),
+    psbPending: entryFocusTargets(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "psb"),
+      ),
+      "psb",
+      "pending",
+    ),
+    psbReceived: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "psb") &&
+          isBgReceivedOrder(order, "psb") &&
+          !isCancelledOrder(file, order),
+      ),
+      "psb",
+      "received",
+    ),
+    psbExpired: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "psb"),
+      ),
+      "psb",
+      "expired",
+    ),
+    psbToBeReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "psb"),
+      ),
+      "psb",
+      "tobereturned",
+    ),
+    psbReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "psb"),
+      ),
+      "psb",
+      "returned",
+    ),
+    pwbPending: entryFocusTargets(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "pwb"),
+      ),
+      "pwb",
+      "pending",
+    ),
+    pwbReceived: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "pwb") &&
+          isBgReceivedOrder(order, "pwb") &&
+          !isCancelledOrder(file, order),
+      ),
+      "pwb",
+      "received",
+    ),
+    pwbExpired: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "pwb"),
+      ),
+      "pwb",
+      "expired",
+    ),
+    pwbToBeReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "pwb"),
+      ),
+      "pwb",
+      "tobereturned",
+    ),
+    pwbReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "pwb"),
+      ),
+      "pwb",
+      "returned",
+    ),
+    psbPwbPending: entryFocusTargets(
+      expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgPendingOrder(file, order, "psbpwb"),
+      ),
+      "psbpwb",
+      "pending",
+    ),
+    psbPwbReceived: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          isBgCategoryApplicable(file, order, "psbpwb") &&
+          isBgReceivedOrder(order, "psbpwb") &&
+          !isCancelledOrder(file, order),
+      ),
+      "psbpwb",
+      "received",
+    ),
+    psbPwbExpired: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgExpiredOrder(file, order, "psbpwb"),
+      ),
+      "psbpwb",
+      "expired",
+    ),
+    psbPwbToBeReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnDueOrder(file, order, "psbpwb"),
+      ),
+      "psbpwb",
+      "tobereturned",
+    ),
+    psbPwbReturned: entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
+        isBgReturnedOrder(file, order, "psbpwb"),
+      ),
+      "psbpwb",
+      "returned",
+    ),
+    ld: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isYes(order.ld)),
+      "ld",
+      "yes",
+    ),
+    dpExtension: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => isYes(order.dpExtension)),
+      "dpextension",
+      "yes",
+    ),
+    revisedDp: entryFocusTargets(
+      rawActiveOrders.filter(({ order }) => hasFilledString(order.revisedDp)),
+      "deliveryperiod",
+      "extended",
+    ),
+    totalSoValuePlacedThisFy: entryFocusTargets(
+      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+      "supplyorder",
+      "placed",
+    ),
+    totalUnpaidSoValue: entryFocusTargets(
+      orders.filter(({ file, order }) => !isCancelledOrder(file, order) && !hasFilledString(order.paymentDate)),
+      "payment",
+      "pending",
+    ),
+  };
   nonCancelledFiles.forEach((file) => {
     const mode = normalizeModeName(file.mode);
     if (!mode || defaultModeKeys.has(mode)) return;
     values[getCustomModeKey(mode)] = countMode(nonCancelledFiles, mode);
+    fileIdsByKey[getCustomModeKey(mode)] = fileIds(filesForMode(nonCancelledFiles, mode));
   });
   getFirmTypesInFiles(nonCancelledFiles).forEach((firmType) => {
     values[getFirmTypeKey(firmType)] = countFiles(nonCancelledFiles, (file) =>
@@ -957,6 +1912,24 @@ function getMmgSummaryValues(
           normalizeFirmTypeKey(getFirmTypeName(order)) === normalizeFirmTypeKey(firmType),
       ),
     );
+    fileIdsByKey[getFirmTypeKey(firmType)] = fileIds(
+      nonCancelledFiles.filter((file) =>
+        rawSupplyOrders(file).some(
+          (order) =>
+            !isCancelledOrder(file, order) &&
+            normalizeFirmTypeKey(getFirmTypeName(order)) === normalizeFirmTypeKey(firmType),
+        ),
+      ),
+    );
+    focusTargetsByKey[getFirmTypeKey(firmType)] = entryFocusTargets(
+      rawOrderEntries(nonCancelledFiles).filter(
+        ({ file, order }) =>
+          !isCancelledOrder(file, order) &&
+          normalizeFirmTypeKey(getFirmTypeName(order)) === normalizeFirmTypeKey(firmType),
+      ),
+      "firmtype",
+      "any",
+    );
   });
   getFileTypesInFiles(nonCancelledFiles).forEach((fileType) => {
     if (isDefaultMmgFileType(fileType)) return;
@@ -964,18 +1937,65 @@ function getMmgSummaryValues(
       nonCancelledFiles,
       (file) => normalizeConfigName(file.fileType) === normalizeConfigName(fileType),
     );
+    fileIdsByKey[getFileTypeKey(fileType)] = fileIds(
+      nonCancelledFiles.filter(
+        (file) => normalizeConfigName(file.fileType) === normalizeConfigName(fileType),
+      ),
+    );
   });
-  return values;
+  return { values, fileIdsByKey, focusTargetsByKey };
 }
 
 function countMode(files: FileRecord[], mode: string) {
   return formatCount(files.filter((file) => file.mode?.trim().toUpperCase() === mode).length);
 }
 
+function filesForMode(files: FileRecord[], mode: string) {
+  return files.filter((file) => file.mode?.trim().toUpperCase() === mode);
+}
+
 function countFileType(files: FileRecord[], fileType: string) {
   return formatCount(
     files.filter((file) => file.fileType?.trim().toLowerCase() === fileType).length,
   );
+}
+
+function filesForType(files: FileRecord[], fileType: string) {
+  return files.filter((file) => file.fileType?.trim().toLowerCase() === fileType);
+}
+
+function fileIds(files: FileRecord[]) {
+  return Array.from(new Set(files.map((file) => file.id).filter(Boolean)));
+}
+
+function entryFileIds(entries: Array<{ file: FileRecord }>) {
+  return fileIds(entries.map((entry) => entry.file));
+}
+
+function entryFocusTargets(
+  entries: Array<{ file: FileRecord; orderIndex?: number; stageIndex?: number }>,
+  kind: string,
+  state: string,
+) {
+  return entries.reduce<Record<string, string[]>>((targets, entry) => {
+    if (!entry.file.id) return targets;
+    targets[entry.file.id] = [
+      ...(targets[entry.file.id] ?? []),
+      buildSupplyOrderFocusTarget(kind, state, entry),
+    ];
+    return targets;
+  }, {});
+}
+
+function buildSupplyOrderFocusTarget(
+  kind: string,
+  state: string,
+  entry: { orderIndex?: number; stageIndex?: number },
+) {
+  if (entry.orderIndex === undefined) return `${kind}:${state}`;
+  return `${kind}:${state}:${entry.orderIndex}${
+    entry.stageIndex === undefined ? "" : `:${entry.stageIndex}`
+  }`;
 }
 
 function countGoodsServicesFileType(files: FileRecord[]) {
@@ -990,7 +2010,8 @@ function getFileTypesInFiles(files: FileRecord[]) {
   const fileTypes = new Map<string, string>();
   files.forEach((file) => {
     const fileType = normalizeConfigName(file.fileType);
-    if (fileType && !fileTypes.has(fileType.toLowerCase())) fileTypes.set(fileType.toLowerCase(), fileType);
+    if (fileType && !fileTypes.has(fileType.toLowerCase()))
+      fileTypes.set(fileType.toLowerCase(), fileType);
   });
   return Array.from(fileTypes.values());
 }
@@ -1027,8 +2048,9 @@ function countCancelledSupplyOrders(files: FileRecord[]) {
 function countShortclosedSupplyOrders(files: FileRecord[]) {
   return files.reduce((total, file) => {
     if (isDemandCancelled(file)) return total;
-    const shortclosedRows = rawSupplyOrders(file).filter((order) => isYes(order.shortclosure))
-      .length;
+    const shortclosedRows = rawSupplyOrders(file).filter((order) =>
+      isYes(order.shortclosure),
+    ).length;
     if (shortclosedRows > 0) return total + shortclosedRows;
     return total + (isYes(file.shortclosure) ? 1 : 0);
   }, 0);
@@ -1046,16 +2068,37 @@ function sumOrders(
 }
 
 function effectiveOrderEntries(files: FileRecord[]) {
-  return files.flatMap((file) => fileSupplyOrders(file).map((order) => ({ file, order })));
+  return files.flatMap((file) =>
+    normalizedFileSupplyOrderEntries(file).map(({ order, orderIndex, stageIndex }) => ({
+      file,
+      order,
+      orderIndex,
+      stageIndex,
+    })),
+  );
 }
 
 function rawOrderEntries(files: FileRecord[]) {
-  return files.flatMap((file) => rawSupplyOrders(file).map((order) => ({ file, order })));
+  return files.flatMap((file) =>
+    rawSupplyOrders(file).map((order, orderIndex) => ({ file, order, orderIndex })),
+  );
 }
 
 function expectedOrderEntries(files: FileRecord[]) {
   return files.flatMap((file) =>
-    normalizedExpectedSupplyOrders(file).map((order) => ({ file, order })),
+    normalizedExpectedSupplyOrders(file).map((order, orderIndex) => ({ file, order, orderIndex })),
+  );
+}
+
+function paymentOrderEntries(files: FileRecord[]) {
+  return files.flatMap((file) =>
+    normalizedFilePaymentEntries(file).map(({ order, orderIndex, stageIndex, advancePayment }) => ({
+      file,
+      order,
+      orderIndex,
+      stageIndex,
+      advancePayment,
+    })),
   );
 }
 
@@ -1102,7 +2145,7 @@ function isCancelledDemand(file: FileRecord) {
   if (isDemandCancelled(file)) return true;
   const supplyOrders = file.supplyOrders ?? [];
   if (supplyOrders.length === 0) return false;
-  return supplyOrders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure));
+  return supplyOrders.every((order) => isYes(order.soCancelled));
 }
 
 function isDemandCancelled(file: FileRecord) {
@@ -1110,7 +2153,7 @@ function isDemandCancelled(file: FileRecord) {
 }
 
 function isCancelledOrder(file: FileRecord, order: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isYes(order.soCancelled) || isYes(order.shortclosure);
+  return isYes(file.demandCancelled) || isYes(order.soCancelled);
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
@@ -1147,11 +2190,7 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
     : file.bidOpeningDate;
 }
 
-function isPreBidMeetingStatus(
-  file: FileRecord,
-  refloat: boolean,
-  state: "due" | "completed",
-) {
+function isPreBidMeetingStatus(file: FileRecord, refloat: boolean, state: "due" | "completed") {
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
     : isYes(file.preBidMeeting);
@@ -1216,6 +2255,10 @@ function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
   );
 }
 
+function isDeliveryPeriodExtendedEntry(file: FileRecord, order: SupplyOrderDetail) {
+  return !isCancelledOrder(file, order) && (isYes(order.dpExtension) || hasFilledString(order.revisedDp));
+}
+
 function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) {
   return (
     !isCancelledOrder(file, order) &&
@@ -1225,7 +2268,9 @@ function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) 
 }
 
 function isFinancialSanctionReached(file: FileRecord) {
-  return isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate));
+  return (
+    isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
+  );
 }
 
 function isBgCategoryApplicable(file: FileRecord, order: SupplyOrderDetail, category: string) {
@@ -1405,13 +2450,31 @@ function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   return (
     hasFilledString(order.billPreparationDate) ||
     hasFilledString(order.billSentForPaymentDate) ||
-    isPaymentDueByDeliveryOrPeriod(file, order)
+    hasBillReturnHistory(order) ||
+    isPaymentWorkflowStartDateReached(file, order)
+  );
+}
+
+function isPaymentPendingEntry(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    !isCancelledOrder(file, order) &&
+    hasPaymentWorkflowStarted(file, order) &&
+    !hasFilledString(order.paymentDate)
+  );
+}
+
+function isPaymentOverdueEntry(file: FileRecord, order: SupplyOrderDetail, monthKey: string) {
+  return (
+    isPaymentPendingEntry(file, order) &&
+    monthBefore(getPaymentAgingCompletionDate(file, order), monthKey)
   );
 }
 
 function hasBillingWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) {
-    return hasFilledString(order.irReceiptDate || order.irPreparationDate || order.materialReceiptDate);
+    return hasFilledString(
+      order.irReceiptDate || order.irPreparationDate || order.materialReceiptDate,
+    );
   }
   return isJobCompletionDone(order);
 }
@@ -1423,7 +2486,19 @@ function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDeta
 
 function getPaymentAgingCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
-  return isJobCompletionDone(order) ? getDeliveryPeriodDate(order) : undefined;
+  return getNonInspectionPaymentDueDate(file, order);
+}
+
+function getNonInspectionPaymentDueDate(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isContractFileType(file) && isNo(file.ir)) return order.jobCompletionDate;
+  return addDays(getDeliveryPeriodDate(order), 1);
+}
+
+function isPaymentWorkflowStartDateReached(file: FileRecord, order: SupplyOrderDetail) {
+  const startDate = getPaymentAgingCompletionDate(file, order);
+  if (!hasFilledString(startDate)) return false;
+  if (isContractFileType(file) && isNo(file.ir)) return !isAfterToday(startDate);
+  return true;
 }
 
 function isJobCompletionDone(order: SupplyOrderDetail) {
@@ -1454,6 +2529,10 @@ function isDateBefore(date: string | undefined, reference: string | undefined) {
 
 function isBeforeToday(date: string | undefined) {
   return hasFilledString(date) && date! < formatLocalDate(new Date());
+}
+
+function isAfterToday(date: string | undefined) {
+  return hasFilledString(date) && date! > formatLocalDate(new Date());
 }
 
 function addDays(date: string | undefined, days: number) {
@@ -1489,6 +2568,14 @@ function hasAmount(value: string | undefined) {
 
 function isYes(value: string | undefined) {
   return (value ?? "").trim().toLowerCase() === "yes";
+}
+
+function getEffectivePostTcecDate(file: FileRecord) {
+  return isYes(file.refloat) ? file.refloatPostTcecDate : file.postTcecDate;
+}
+
+function getEffectivePostTcecMinutesDate(file: FileRecord) {
+  return isYes(file.refloat) ? file.refloatPostTcecMinutesDate : file.postTcecMinutesDate;
 }
 
 function isNo(value: string | undefined) {

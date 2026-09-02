@@ -65,6 +65,8 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "file.preTcecMinutesDate", label: "Pre-TCEC minutes date", group: "TCEC", scope: "file", key: "preTcecMinutesDate" },
   { id: "file.postTcecDate", label: "Post-TCEC date", group: "TCEC", scope: "file", key: "postTcecDate" },
   { id: "file.postTcecMinutesDate", label: "Post-TCEC minutes date", group: "TCEC", scope: "file", key: "postTcecMinutesDate" },
+  { id: "file.refloatPostTcecDate", label: "Refloat Post-TCEC date", group: "TCEC", scope: "file", key: "refloatPostTcecDate" },
+  { id: "file.refloatPostTcecMinutesDate", label: "Refloat Post-TCEC minutes date", group: "TCEC", scope: "file", key: "refloatPostTcecMinutesDate" },
   { id: "file.adSentDate", label: "AD sent date", group: "Approval / vetting", scope: "file", key: "adSentDate" },
   { id: "file.adVettingDate", label: "AD vetting date", group: "Approval / vetting", scope: "file", key: "adVettingDate" },
   { id: "file.rqaSentDate", label: "R&QA sent date", group: "Approval / vetting", scope: "file", key: "rqaSentDate" },
@@ -139,6 +141,7 @@ export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
   { id: "builtin-ifa", name: "IFA sent date to IFA final date", fromFieldId: "file.ifaSentDate", toFieldId: "file.ifaFinalDate", active: true },
   { id: "builtin-pre-tcec", name: "Pre-TCEC date to Pre-TCEC minutes date", fromFieldId: "file.preTcecDate", toFieldId: "file.preTcecMinutesDate", active: true },
   { id: "builtin-post-tcec", name: "Post-TCEC date to Post-TCEC minutes date", fromFieldId: "file.postTcecDate", toFieldId: "file.postTcecMinutesDate", active: true },
+  { id: "builtin-refloat-post-tcec", name: "Refloat Post-TCEC date to Refloat Post-TCEC minutes date", fromFieldId: "file.refloatPostTcecDate", toFieldId: "file.refloatPostTcecMinutesDate", active: true },
   { id: "builtin-cnc", name: "CNC date to CNC approval date", fromFieldId: "file.cncDate", toFieldId: "file.cncApprovalDate", active: true },
 ];
 

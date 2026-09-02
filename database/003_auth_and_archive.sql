@@ -9,7 +9,7 @@ alter table app_users
 
 alter table app_users
   add constraint app_users_role_check
-  check (role in ('admin', 'sub_admin', 'editor', 'viewer', 'division_user'));
+  check (role in ('admin', 'sub_admin', 'editor', 'viewer', 'division_user', 'universal_viewer'));
 
 alter table divisions
   add column if not exists viewer_password_hash text;

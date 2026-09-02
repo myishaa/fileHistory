@@ -59,9 +59,11 @@ export function TopBar() {
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor";
+  const canUseQuickEntry = canAddFiles || activeUser?.role === "universal_viewer";
   const visibleNav = nav.filter((item) => {
     if (item.to === "/settings") return canViewUserSettings;
-    if (item.to === "/add" || item.to === "/quick-entry") return canAddFiles;
+    if (item.to === "/add") return canAddFiles;
+    if (item.to === "/quick-entry") return canUseQuickEntry;
     return true;
   });
   const isViewer = activeUser?.role === "viewer" || activeUser?.role === "division_user";

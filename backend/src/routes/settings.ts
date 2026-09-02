@@ -705,7 +705,8 @@ settingsRouter.patch(
       user.role === "sub_admin" ||
       user.role === "editor" ||
       user.role === "division_user" ||
-      user.role === "viewer";
+      user.role === "viewer" ||
+      user.role === "universal_viewer";
     const canUpdateMmgSummaryFields =
       !("mmgSummaryFields" in body) || user.role === "admin" || user.role === "sub_admin";
     const canUpdateUserPreference =

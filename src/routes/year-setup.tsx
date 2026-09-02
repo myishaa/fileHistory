@@ -255,6 +255,9 @@ export function YearSetupPanel() {
     setSavingId(division.id);
     try {
       await store.saveDivisionAllocation(division.id, setupYear, allocation);
+      setCurrentDivisions((current) =>
+        current.map((item) => (item.id === division.id ? { ...item, ...allocation } : item)),
+      );
     } finally {
       setSavingId(undefined);
     }
@@ -494,6 +497,10 @@ export function YearSetupPanel() {
               <tbody>
                 {rows.map((row) => {
                   const isSaving = savingId === row.division.id;
+                  const allocationChanged =
+                    row.draft.active !== (row.division.active ?? false) ||
+                    row.draft.allocatedCapital !== (row.division.allocatedCapital ?? "") ||
+                    row.draft.allocatedRevenue !== (row.division.allocatedRevenue ?? "");
                   return (
                     <tr key={row.division.id} className="border-t border-border align-top">
                       <td className="px-4 py-3">
@@ -547,10 +554,10 @@ export function YearSetupPanel() {
                           <button
                             type="button"
                             onClick={() => void saveAllocation(row.division, row.draft)}
-                            disabled={isSaving}
+                            disabled={isSaving || !allocationChanged}
                             title="Save allocation"
                             aria-label="Save allocation"
-                            className="grid size-8 place-items-center rounded-md border border-border bg-background hover:bg-accent disabled:opacity-50"
+                            className="grid size-8 place-items-center rounded-md border border-border bg-background hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {isSaving ? (
                               <RotateCw className="size-4 animate-spin" />

@@ -46,7 +46,10 @@ export function serializeFileCategories(values: FileCategoryKey[]) {
   return values.length ? values.join(",") : "__none__";
 }
 
-export function fileMatchesCategory(file: Pick<FileRecord, "fileType" | "mode">, categories: FileCategoryKey[]) {
+export function fileMatchesCategory(
+  file: Pick<FileRecord, "fileType" | "mode">,
+  categories: FileCategoryKey[],
+) {
   const categorySet = new Set(categories);
   const fileType = (file.fileType ?? "").trim().toLowerCase();
   if (categorySet.has("cars") && fileType === "cars") return true;
@@ -58,6 +61,7 @@ export function fileMatchesCategory(file: Pick<FileRecord, "fileType" | "mode">,
     fileType !== "amc" &&
     fileType !== "mpc" &&
     fileType !== "cars" &&
+    fileType !== "capsi" &&
     fileType !== "o&m"
   ) {
     return true;

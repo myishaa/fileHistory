@@ -185,7 +185,7 @@ export function requireAdmin(request: AuthRequest) {
 }
 
 export function canUseAllDivisions(user: AuthUser) {
-  return user.role === "admin" || user.role === "sub_admin";
+  return user.role === "admin" || user.role === "sub_admin" || user.role === "universal_viewer";
 }
 
 export function canMutateFiles(user: AuthUser) {
@@ -216,7 +216,13 @@ export function canAccessFileCategory(user: AuthUser, file: { fileType?: string;
     if (category === "amc") return fileType === "amc";
     if (category === "mpc") return fileType === "mpc";
     if (category === "om") return fileType === "o&m";
-    return fileType !== "amc" && fileType !== "mpc" && fileType !== "cars" && fileType !== "o&m";
+    return (
+      fileType !== "amc" &&
+      fileType !== "mpc" &&
+      fileType !== "cars" &&
+      fileType !== "capsi" &&
+      fileType !== "o&m"
+    );
   });
 }
 
@@ -237,7 +243,7 @@ export function getFileCategoryScopeCondition(user: AuthUser, alias = "f") {
   const predicates: string[] = [];
   if (categorySet.has("goodsServices")) {
     predicates.push(
-      `lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'o&m')`,
+      `lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
     );
   }
   if (categorySet.has("amc")) {
@@ -256,7 +262,9 @@ export function getFileCategoryScopeCondition(user: AuthUser, alias = "f") {
 }
 
 export function getAuthScopeCacheKey(user: AuthUser) {
-  const divisions = canUseAllDivisions(user) ? "all" : [...user.divisionIds].sort().join(",") || "none";
+  const divisions = canUseAllDivisions(user)
+    ? "all"
+    : [...user.divisionIds].sort().join(",") || "none";
   const categories = hasFileCategoryRestriction(user)
     ? normalizeFileCategories(user.allowedFileCategories ?? undefined).join(",")
     : "all-categories";

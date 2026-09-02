@@ -13,7 +13,11 @@ export function normalizeFileTypeGroup(value: unknown): FileTypeGroup {
 
 export function getDefaultFileTypeGroup(fileType: string | undefined): FileTypeGroup {
   const normalized = (fileType ?? "").trim().toLowerCase();
-  return normalized === "amc" || normalized === "mpc" || normalized === "cars" || normalized === "o&m"
+  return normalized === "amc" ||
+    normalized === "mpc" ||
+    normalized === "cars" ||
+    normalized === "capsi" ||
+    normalized === "o&m"
     ? "contract"
     : "goodsServices";
 }
@@ -28,7 +32,10 @@ export function normalizeFileTypeGroups(
     if (!entry || typeof entry !== "object") continue;
     const fileType = "fileType" in entry ? String(entry.fileType ?? "").trim() : "";
     if (!fileType) continue;
-    configured.set(fileType.toLowerCase(), normalizeFileTypeGroup("group" in entry ? entry.group : undefined));
+    configured.set(
+      fileType.toLowerCase(),
+      normalizeFileTypeGroup("group" in entry ? entry.group : undefined),
+    );
   }
   const seen = new Set<string>();
   return (fileTypes ?? [])
@@ -46,7 +53,10 @@ export function normalizeFileTypeGroups(
 }
 
 export function isContractFileType(file: Pick<FileRecord, "fileType" | "fileTypeGroup">): boolean {
-  return normalizeFileTypeGroup(file.fileTypeGroup ?? getDefaultFileTypeGroup(file.fileType)) === "contract";
+  return (
+    normalizeFileTypeGroup(file.fileTypeGroup ?? getDefaultFileTypeGroup(file.fileType)) ===
+    "contract"
+  );
 }
 
 export function isDeliveryInspectionApplicableByGroup(
@@ -58,10 +68,18 @@ export function isDeliveryInspectionApplicableByGroup(
 export function isBiddingApplicableForFile(
   file: Pick<FileRecord, "mode" | "fileType"> & Partial<Pick<FileRecord, "gem" | "gemBiddingMode">>,
 ): boolean {
-  const mode = String(file.mode ?? "").trim().toUpperCase();
-  const fileType = String(file.fileType ?? "").trim().toLowerCase();
-  const gem = String(file.gem ?? "").trim().toLowerCase();
-  const gemBiddingMode = String(file.gemBiddingMode ?? "").trim().toLowerCase();
+  const mode = String(file.mode ?? "")
+    .trim()
+    .toUpperCase();
+  const fileType = String(file.fileType ?? "")
+    .trim()
+    .toLowerCase();
+  const gem = String(file.gem ?? "")
+    .trim()
+    .toLowerCase();
+  const gemBiddingMode = String(file.gemBiddingMode ?? "")
+    .trim()
+    .toLowerCase();
   return (
     mode !== "LPC" &&
     fileType !== "cars" &&
@@ -71,5 +89,9 @@ export function isBiddingApplicableForFile(
 }
 
 function isNo(value: unknown) {
-  return String(value ?? "").trim().toLowerCase() === "no";
+  return (
+    String(value ?? "")
+      .trim()
+      .toLowerCase() === "no"
+  );
 }

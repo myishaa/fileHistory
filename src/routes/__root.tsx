@@ -205,8 +205,7 @@ function LoginScreen() {
         await store.login(username, password);
       }
       await navigate({
-        to: "/search",
-        search: { dashboardFilter: undefined, division: undefined },
+        to: "/quick-entry",
       });
     } catch (error) {
       setError(error instanceof Error ? error.message : "Login failed.");

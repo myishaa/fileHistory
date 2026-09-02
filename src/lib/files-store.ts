@@ -79,6 +79,9 @@ export type FileRecord = {
   postTcecCommitteeNumber?: string;
   refloatBiddingDate?: string;
   refloatBidOpeningDate?: string;
+  refloatPostTcecDate?: string;
+  refloatPostTcecMinutesDate?: string;
+  refloatPostTcecCommitteeNo?: string;
   rst?: string;
   biddingStageOver?: string;
   cncDate?: string;
@@ -89,6 +92,8 @@ export type FileRecord = {
   soDate?: string;
   soValueCapital?: string;
   soValueRevenue?: string;
+  billAmountCapital?: string;
+  billAmountRevenue?: string;
   dpDate?: string;
   firm?: string;
   bqBasis?: string;
@@ -199,6 +204,36 @@ export type FileProcessingNotification = {
   createdAt: string;
 };
 
+export type BillReturnCycle = {
+  returnedDate?: string;
+  reason?: string;
+  resubmittedDate?: string;
+  remarks?: string;
+};
+
+export type FileStatusUpdate = {
+  id: string;
+  fileId: string;
+  divisionId?: string;
+  text: string;
+  createdByName: string;
+  createdByRole: string;
+  createdAt: string;
+  updatedByName?: string;
+  updatedAt?: string;
+  canEdit?: boolean;
+};
+
+export type QuickStatusFileSummary = {
+  id: string;
+  uniqueCode?: string;
+  controlNo?: string;
+  itemDescription?: string;
+  division?: string;
+  indentor?: string;
+  receivedDate?: string;
+};
+
 export type SupplyOrderDetail = {
   currentMilestone?: string;
   completedMilestones?: string[];
@@ -226,6 +261,8 @@ export type SupplyOrderDetail = {
   soDate?: string;
   soValueCapital?: string;
   soValueRevenue?: string;
+  billAmountCapital?: string;
+  billAmountRevenue?: string;
   dpDate?: string;
   firm?: string;
   firmUniqueNo?: string;
@@ -245,6 +282,7 @@ export type SupplyOrderDetail = {
   irReceiptDate?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -272,6 +310,7 @@ export type AdvancePaymentDetail = {
   stageAmountRevenue?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -294,6 +333,7 @@ export type StageDeliveryDetail = {
   irReceiptDate?: string;
   billPreparationDate?: string;
   billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
   paymentMode?: string;
   actualPaymentCapital?: string;
@@ -385,7 +425,13 @@ export type DivisionSplitTransferPayload = {
   notes?: string;
   deactivateSourceDivision: boolean;
 };
-export type AppUserRole = "admin" | "sub_admin" | "division_user" | "editor" | "viewer";
+export type AppUserRole =
+  | "admin"
+  | "sub_admin"
+  | "division_user"
+  | "editor"
+  | "viewer"
+  | "universal_viewer";
 export type AppUser = {
   id: string;
   name: string;
@@ -681,7 +727,7 @@ async function loadAll(force = false) {
       ] as const;
       const [divisions, messages, fileProcessingNotifications] = await Promise.all(baseRequests);
       const users =
-        auth.user.role === "admin"
+        auth.user.role === "admin" || auth.user.role === "universal_viewer"
           ? await request<{ users: AppUser[] }>("/api/users")
           : { users: [auth.user] };
 
@@ -1305,6 +1351,30 @@ export function saveReportPreferences<T extends Record<string, unknown>>(
   );
 }
 
+export type MerCashOutgoRow = {
+  financialYear: string;
+  monthKey: string;
+  capital: number;
+  revenue: number;
+  total: number;
+  updatedAt?: string;
+};
+
+export function fetchMerCashOutgo(financialYear: string) {
+  const params = new URLSearchParams({ financialYear });
+  return request<{ rows: MerCashOutgoRow[] }>(`/api/reports/mer-data?${params.toString()}`);
+}
+
+export function saveMerCashOutgo(
+  financialYear: string,
+  rows: Array<Pick<MerCashOutgoRow, "monthKey" | "capital" | "revenue">>,
+) {
+  return request<{ rows: MerCashOutgoRow[] }>("/api/reports/mer-data", {
+    method: "PUT",
+    body: JSON.stringify({ financialYear, rows }),
+  });
+}
+
 export function fetchFile(id: string) {
   return request<{ file: FileRecord }>(`/api/files/${id}`);
 }
@@ -1335,6 +1405,41 @@ export function fetchNextUniqueCode({
   params.set("division", division);
   if (divisionId) params.set("divisionId", divisionId);
   return request<{ uniqueCode: string }>(`/api/files/next-unique-code?${params.toString()}`);
+}
+
+export function lookupQuickStatusFiles({
+  controlNo,
+  description,
+}: {
+  controlNo?: string;
+  description?: string;
+}) {
+  const params = new URLSearchParams();
+  if (controlNo) params.set("controlNo", controlNo);
+  if (description) params.set("description", description);
+  return request<{ files: QuickStatusFileSummary[] }>(
+    `/api/files/quick-status/lookup?${params.toString()}`,
+  );
+}
+
+export function fetchQuickStatusContext(fileId: string) {
+  return request<{ file: FileRecord; statuses: FileStatusUpdate[] }>(
+    `/api/files/quick-status/${fileId}`,
+  );
+}
+
+export function createFileStatusUpdate(fileId: string, text: string) {
+  return request<{ statuses: FileStatusUpdate[] }>(`/api/files/quick-status/${fileId}/status`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function updateFileStatusUpdate(statusId: string, text: string) {
+  return request<{ statuses: FileStatusUpdate[] }>(`/api/files/quick-status/status/${statusId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ text }),
+  });
 }
 
 export function useFiles() {
@@ -1441,7 +1546,12 @@ export function useStoreStatus() {
 export function useAccessibleDivisions() {
   const divisions = useDivisions();
   const activeUser = useActiveUser();
-  if (!activeUser || activeUser.role === "admin" || activeUser.role === "sub_admin")
+  if (
+    !activeUser ||
+    activeUser.role === "admin" ||
+    activeUser.role === "sub_admin" ||
+    activeUser.role === "universal_viewer"
+  )
     return divisions;
   return divisions.filter((division) => activeUser.divisionIds.includes(division.id));
 }
@@ -1456,7 +1566,12 @@ export function useAccessibleFiles() {
         isFileVisibleForYear(file, settings.selectedYear, settings.financialYear),
       )
     : files;
-  if (!activeUser || activeUser.role === "admin" || activeUser.role === "sub_admin") {
+  if (
+    !activeUser ||
+    activeUser.role === "admin" ||
+    activeUser.role === "sub_admin" ||
+    activeUser.role === "universal_viewer"
+  ) {
     return yearFilteredFiles;
   }
   const allowedDivisionNames = new Set(accessibleDivisions.map((division) => division.name));
@@ -1477,7 +1592,13 @@ function userCanAccessFileCategory(user: AppUser, file: Pick<FileRecord, "fileTy
     if (category === "amc") return fileType === "amc";
     if (category === "mpc") return fileType === "mpc";
     if (category === "om") return fileType === "o&m";
-    return fileType !== "amc" && fileType !== "mpc" && fileType !== "cars" && fileType !== "o&m";
+    return (
+      fileType !== "amc" &&
+      fileType !== "mpc" &&
+      fileType !== "cars" &&
+      fileType !== "capsi" &&
+      fileType !== "o&m"
+    );
   });
 }
 

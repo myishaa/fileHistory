@@ -60,6 +60,8 @@ const fileProcessingFields = [
   ["biddingStageOver", "Bidding stage over"],
   ["postTcecDate", "Post-TCEC date"],
   ["postTcecMinutesDate", "Post-TCEC minutes date"],
+  ["refloatPostTcecDate", "Refloat Post-TCEC date"],
+  ["refloatPostTcecMinutesDate", "Refloat Post-TCEC minutes date"],
   ["cncDate", "CNC date"],
   ["cncApprovalDate", "CNC approval date"],
   ["demandCancelled", "Demand cancelled"],

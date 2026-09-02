@@ -64,6 +64,9 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "postTcecCommitteeNumber", label: "Post-TCEC committee" },
       { key: "postTcecDate", label: "Post-TCEC date" },
       { key: "postTcecMinutesDate", label: "Post-TCEC minutes date" },
+      { key: "refloatPostTcecCommitteeNo", label: "Refloat Post-TCEC committee" },
+      { key: "refloatPostTcecDate", label: "Refloat Post-TCEC date" },
+      { key: "refloatPostTcecMinutesDate", label: "Refloat Post-TCEC minutes date" },
     ],
   },
   {
@@ -117,6 +120,8 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "soDate", label: "S.O. date" },
       { key: "soValueCapital", label: "S.O. value (Capital)" },
       { key: "soValueRevenue", label: "S.O. value (Revenue)" },
+      { key: "billAmountCapital", label: "Bill amount (Capital)" },
+      { key: "billAmountRevenue", label: "Bill amount (Revenue)" },
       { key: "firm", label: "S.O. Firm" },
       { key: "firmUniqueNo", label: "S.O. Firm Unique No." },
       { key: "firmType", label: "Firm type" },

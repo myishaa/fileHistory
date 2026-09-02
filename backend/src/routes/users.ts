@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { AppUser, AppUserRole } from "../types.js";
-import { requireAdmin, type AuthRequest } from "../utils/auth.js";
+import { canUseAllDivisions, requireAdmin, requireAuth, type AuthRequest } from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { normalizeFileCategories } from "../utils/file-categories.js";
 import {
@@ -31,6 +31,7 @@ const allowedRoles = new Set<AppUserRole>([
   "division_user",
   "editor",
   "viewer",
+  "universal_viewer",
 ]);
 
 type UserRow = {
@@ -59,7 +60,10 @@ function mapUser(row: UserRow): AppUser {
 
 function readRole(value: unknown) {
   if (typeof value !== "string" || !allowedRoles.has(value as AppUserRole)) {
-    throw new HttpError(400, "role must be admin, sub_admin, editor, or viewer.");
+    throw new HttpError(
+      400,
+      "role must be admin, sub_admin, division_user, editor, viewer, or universal_viewer.",
+    );
   }
   return value as AppUserRole;
 }
@@ -131,7 +135,8 @@ async function ensureNotLastAdmin(userId: string, action: string) {
 usersRouter.get(
   "/",
   asyncHandler(async (request, response) => {
-    requireAdmin(request as AuthRequest);
+    const user = requireAuth(request as AuthRequest);
+    if (!canUseAllDivisions(user)) throw new HttpError(403, "Admin access required.");
     response.json({ users: await listUsers() });
   }),
 );

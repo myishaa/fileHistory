@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Add Bill Option Review Report</title>
+    <style>
+      @page {
+        size: A4;
+        margin: 15mm 14mm;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: #17202a;
+        background: #ffffff;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 10.3px;
+        line-height: 1.35;
+      }
+
+      .page {
+        min-height: 267mm;
+        page-break-after: always;
+        position: relative;
+      }
+
+      .page:last-child {
+        page-break-after: auto;
+      }
+
+      .header {
+        border-bottom: 2px solid #1f4e79;
+        padding-bottom: 7px;
+        margin-bottom: 10px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        color: #12395c;
+      }
+
+      h1 {
+        font-size: 22px;
+        line-height: 1.14;
+      }
+
+      h2 {
+        font-size: 15px;
+        margin-bottom: 7px;
+      }
+
+      h3 {
+        font-size: 11.6px;
+        margin: 9px 0 4px;
+      }
+
+      p {
+        margin: 0 0 7px;
+      }
+
+      ul,
+      ol {
+        margin: 4px 0 8px 18px;
+        padding: 0;
+      }
+
+      li {
+        margin-bottom: 4px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 7px 0 10px;
+      }
+
+      th,
+      td {
+        border: 1px solid #b9c8d6;
+        padding: 4px 5px;
+        vertical-align: top;
+      }
+
+      th {
+        background: #e8f1f8;
+        color: #12395c;
+        font-weight: 700;
+      }
+
+      .meta {
+        display: grid;
+        grid-template-columns: 33% 67%;
+        gap: 5px 10px;
+        margin-top: 9px;
+        font-size: 10px;
+      }
+
+      .meta div {
+        border-bottom: 1px solid #d5dde5;
+        padding-bottom: 3px;
+      }
+
+      .label {
+        color: #546575;
+        font-weight: 700;
+      }
+
+      .note {
+        border-left: 3px solid #1f4e79;
+        background: #f3f7fb;
+        padding: 7px 9px;
+        margin: 8px 0 10px;
+      }
+
+      .finding {
+        border-left: 3px solid #b3541e;
+        background: #fff6ef;
+        padding: 6px 8px;
+        margin: 6px 0;
+      }
+
+      .ok {
+        border-left-color: #2f7d50;
+        background: #f1f8f4;
+      }
+
+      .footer {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        color: #617181;
+        border-top: 1px solid #d9e2ea;
+        padding-top: 5px;
+        font-size: 9px;
+        display: flex;
+        justify-content: space-between;
+      }
+
+      .compact td,
+      .compact th {
+        padding: 3px 4px;
+      }
+
+      code {
+        font-family: Menlo, Consolas, monospace;
+        font-size: 9.2px;
+        color: #6d2b00;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="page">
+      <div class="header">
+        <h1>Review Report: Add Bill Option Under Payment View</h1>
+        <div class="meta">
+          <div><span class="label">Application:</span> Recordkeeper</div>
+          <div><span class="label">Area Reviewed:</span> Add File / Payment view, Add Bill option, reports and search linkage</div>
+          <div><span class="label">Prepared For:</span> Printing and operational review</div>
+          <div><span class="label">Prepared On:</span> 01 September 2026</div>
+        </div>
+      </div>
+
+      <h2>1. Executive Summary</h2>
+      <p>
+        The new Add Bill option is an explicit bill-entry facility inside the Payment view. It allows a user to create one or more bill records for a supply order, record bill amount, bill preparation date, bill sent date, return/resubmission cycles, payment date, payment mode, actual payment amount, and remarks.
+      </p>
+      <p>
+        The option is functionally connected to cash-outgo reporting, bill submission reporting, actual payment reporting, returned-bill reports, Cash Out Go Plan calculations, and payment pending/completed status filters. Internally, each added bill is converted into an effective payment-stage row so that report builders can treat it like a bill-level financial event.
+      </p>
+
+      <div class="note">
+        <strong>Overall assessment:</strong> The feature is useful and mostly integrated, but it is not yet a full bill ledger as described in the implementation note. The present build stores bill entries inside a JSON field on the supply order. This works, but some behavior should be corrected or clarified before relying on it as the final audited bill-management model.
+      </div>
+
+      <h3>Primary Strengths</h3>
+      <ul>
+        <li>Supports multiple bill entries against one supply order.</li>
+        <li>Supports normal, combined stage, supplementary, and advance bill types.</li>
+        <li>Connects bill preparation, bill sent, return, resubmission, and payment dates to reports.</li>
+        <li>Prevents double counting in several search/status paths by suppressing normal payment rows when explicit Add Bill rows exist.</li>
+        <li>Allows stage-wise amount breakup where required.</li>
+      </ul>
+
+      <h3>Main Corrections Recommended</h3>
+      <ol>
+        <li>Add chronology validation for Add Bill dates and return cycles.</li>
+        <li>Clarify or enforce exclusive use of either legacy payment fields or Add Bill rows for a supply order.</li>
+        <li>Improve partial-payment handling consistently across SQL reports and utility report builders.</li>
+        <li>Show bill amount as the amount source in Cash Out Go Plan for explicit Add Bill rows.</li>
+        <li>Link supplementary and previous-unpaid options to actual balance logic, not only free text/manual reference.</li>
+      </ol>
+
+      <div class="footer"><span>Add Bill Option Review Report</span><span>Page 1 of 5</span></div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <h2>2. How the Add Bill Option Works</h2>
+      </div>
+
+      <h3>Where the Option Appears</h3>
+      <p>
+        The Add Bill option appears under the Payment view of the Add/Edit File workflow. It is implemented in the frontend component <code>PaymentBillsBlock</code> in <code>src/routes/add.tsx</code>. The block is rendered only when the active subview is Payment.
+      </p>
+
+      <h3>Data Captured Per Bill</h3>
+      <table class="compact">
+        <thead>
+          <tr>
+            <th>Field / Option</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Bill Type</td>
+            <td>Normal, Combined stage, Supplementary, or Advance.</td>
+          </tr>
+          <tr>
+            <td>Amount Entry Mode</td>
+            <td>Combined total or stage-wise detail.</td>
+          </tr>
+          <tr>
+            <td>Bill Reference</td>
+            <td>Identifies the bill in the UI and report rows.</td>
+          </tr>
+          <tr>
+            <td>Supplementary Reason</td>
+            <td>Reason such as previous unpaid balance, GST unpaid, rate difference, penalty recovery/refund, balance payment, or other adjustment.</td>
+          </tr>
+          <tr>
+            <td>Previous Unpaid / Previous Bill Ref</td>
+            <td>Records whether the bill relates to an earlier unpaid bill and captures a reference.</td>
+          </tr>
+          <tr>
+            <td>Stage Selection</td>
+            <td>Links the bill to one or more supply-order stages where stage data exists.</td>
+          </tr>
+          <tr>
+            <td>Bill and Actual Amounts</td>
+            <td>Captures capital and revenue portions separately.</td>
+          </tr>
+          <tr>
+            <td>Bill Dates</td>
+            <td>Preparation date, sent-for-payment date, returned/resubmitted cycles, payment date.</td>
+          </tr>
+          <tr>
+            <td>Payment Mode and Remarks</td>
+            <td>Records mode of payment and any operational note.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Amount Modes</h3>
+      <p>
+        In Combined total mode, the user enters capital and/or revenue bill amount and actual payment amount directly on the bill. In Stage-wise detail mode, the user selects stages and enters line-wise values for each selected stage. If direct bill amounts are blank, report utilities can derive the bill amount from the line totals.
+      </p>
+
+      <h3>Return and Resubmission</h3>
+      <p>
+        Each Add Bill row can carry bill return cycles through the shared returned-bill block. A cycle records return and resubmission information and is then consumed by returned-bill reporting and milestone logic.
+      </p>
+
+      <h3>Save Behavior</h3>
+      <p>
+        Add Bill rows are saved as part of the parent Payment view save/update action. There is no separate bill-level save button. Empty placeholder bill rows are filtered out before saving; rows with real reference, amount, date, return cycle, stage selection, payment mode, or remarks are retained.
+      </p>
+
+      <div class="footer"><span>Add Bill Option Review Report</span><span>Page 2 of 5</span></div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <h2>3. Storage and Report Linkage</h2>
+      </div>
+
+      <h3>Storage Model</h3>
+      <p>
+        Add Bill data is stored in the <code>supply_orders.payment_bills</code> JSONB column. The migration file is <code>database/069_supply_order_payment_bills.sql</code>. The frontend and backend share the same bill shape, including bill type, amount mode, stage indexes, previous unpaid flags, supplementary reason, dates, return cycles, payment details, lines, and remarks.
+      </p>
+
+      <h3>Effective Payment Rows</h3>
+      <p>
+        Report code expands each saved payment bill into an effective payment row. This is done by <code>getPaymentBillOrderEntries</code> in both frontend and backend effective-delivery utilities. These generated rows carry <code>paymentBillEntry = "Yes"</code> and map Add Bill fields into the normal reporting structure.
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Report / Area</th>
+            <th>How Add Bill Links</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Items Delivered and Bills Yet to Be Prepared</td>
+            <td>Add Bill rows without bill preparation date can appear as bill-preparation pending items, depending on report mode and report builder path.</td>
+          </tr>
+          <tr>
+            <td>Bills Submitted to PCDA</td>
+            <td>Rows with bill sent-for-payment date and no payment date can appear as submitted/pending-payment rows.</td>
+          </tr>
+          <tr>
+            <td>Actual Cash Outgo / Spent Till Date FY</td>
+            <td>Rows with payment date contribute to actual cash-outgo rows using actual capital and revenue amounts.</td>
+          </tr>
+          <tr>
+            <td>Returned Bill Reports</td>
+            <td>Return cycles under an Add Bill row feed returned, pending returned, resubmitted, and returned-and-paid report groups.</td>
+          </tr>
+          <tr>
+            <td>Cash Out Go Plan</td>
+            <td>Add Bill entries are included as explicit payment entries. Their prep, sent, return, and payment dates affect plan classification and expected outgo timing.</td>
+          </tr>
+          <tr>
+            <td>Payment Pending / Completed Clickers</td>
+            <td>Search and status SQL include explicit Add Bill branches. When Add Bill rows exist, some normal supply-order payment branches are suppressed to prevent duplicate counting.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Milestone Interpretation</h3>
+      <p>
+        If payment date exists, the bill is treated as Payment. If sent date exists and payment is blank, it is treated as Bill Sent for Payment. If preparation date exists but sent date is blank, it is treated as Bill Preparation. If an open return cycle exists, returned-bill status is used.
+      </p>
+
+      <h3>Important Technical References</h3>
+      <ul>
+        <li><code>src/routes/add.tsx</code>: Add Bill user interface and cleaning before save.</li>
+        <li><code>src/lib/files-store.ts</code> and <code>backend/src/types.ts</code>: shared data structure.</li>
+        <li><code>src/lib/effective-deliveries.ts</code> and <code>backend/src/utils/effective-deliveries.ts</code>: conversion into report rows.</li>
+        <li><code>backend/src/routes/reports.ts</code> and <code>backend/src/utils/report-summary.ts</code>: report integration.</li>
+        <li><code>backend/src/routes/files.ts</code>: payment pending/completed search and milestone filters.</li>
+      </ul>
+
+      <div class="footer"><span>Add Bill Option Review Report</span><span>Page 3 of 5</span></div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <h2>4. Inconsistencies and Risk Areas</h2>
+      </div>
+
+      <div class="finding">
+        <strong>1. Design document and implementation differ.</strong>
+        The design note describes a fuller bill-payment ledger with dedicated bill, payment, and return-cycle rows. The current implementation stores bills as JSON under the supply order. This is workable, but it provides fewer database-level constraints and makes auditing/report consistency harder.
+      </div>
+
+      <div class="finding">
+        <strong>2. Bill type naming differs.</strong>
+        The design note uses language such as regular bills and separate adjustment/GST balance concepts. The current UI uses Normal, Combined stage, Supplementary, and Advance. Supplementary reasons are stored as reason text, not separate report categories.
+      </div>
+
+      <div class="finding">
+        <strong>3. Previous unpaid bill is mostly manual.</strong>
+        The UI captures whether a bill includes previous unpaid balance and allows a previous bill reference, but no confirmed automatic calculation or linkage to the earlier unpaid bill balance was found.
+      </div>
+
+      <div class="finding">
+        <strong>4. Partial payment handling may diverge between report paths.</strong>
+        SQL report routes include balance-oriented expressions for explicit bill rows in some places. The utility summary path may still use planned/bill amount more broadly. This can create different totals if two report paths are used for the same scenario.
+      </div>
+
+      <div class="finding">
+        <strong>5. Add Bill rows may display misleading amount source in Cash Out Go Plan.</strong>
+        Because the generated effective row uses a stage delivery label, Cash Out Go Plan may classify the source as a stage amount instead of bill amount for explicit Add Bill rows.
+      </div>
+
+      <div class="finding">
+        <strong>6. Date chronology validation appears incomplete for Add Bill rows.</strong>
+        The app has chronology warnings for normal supply-order, stage, and advance-payment fields, but an equivalent Add Bill-specific warning set was not found. The system should warn if bill sent date is before preparation date, payment date is before sent date, return date is before sent date, or resubmission date is before return date.
+      </div>
+
+      <div class="finding">
+        <strong>7. Mixed legacy payment fields and Add Bill rows can be ambiguous.</strong>
+        Some search/status branches suppress normal payment rows when Add Bill rows exist. That prevents double counting, but if a supply order mixes old payment fields and new bill rows, valid legacy payment data may be hidden from some views.
+      </div>
+
+      <div class="finding">
+        <strong>8. Stage-wise mode does not fully match the design note.</strong>
+        The design note expects stage amount suggestions and balance checks. The current UI supports stage-wise manual entry, but the review did not confirm automatic stage amount suggestion or warnings when billed totals exceed remaining supply-order value.
+      </div>
+
+      <div class="footer"><span>Add Bill Option Review Report</span><span>Page 4 of 5</span></div>
+    </section>
+
+    <section class="page">
+      <div class="header">
+        <h2>5. Recommended Corrections and Test Checklist</h2>
+      </div>
+
+      <h3>High Priority Corrections</h3>
+      <ol>
+        <li>
+          Add Add Bill chronology warnings: preparation date should not be after sent date; sent date should not be after payment date; return and resubmission cycles should follow correct order.
+        </li>
+        <li>
+          Make partial-payment calculation consistent across SQL report routes and utility summary builders. The same bill should produce the same pending and actual amount in every report.
+        </li>
+        <li>
+          Decide whether a supply order can mix legacy payment fields and Add Bill rows. If not, show a clear UI warning or migrate existing payment fields into Add Bill rows.
+        </li>
+        <li>
+          In Cash Out Go Plan, classify explicit Add Bill rows as bill amount source, not stage amount source.
+        </li>
+      </ol>
+
+      <h3>Medium Priority Improvements</h3>
+      <ol>
+        <li>Convert previous unpaid bill reference into an actual selectable/linkable bill with automatic unpaid balance pickup.</li>
+        <li>Add stage amount suggestions and overbilling warnings in stage-wise mode.</li>
+        <li>Give supplementary bill categories a reportable code, not only a display reason.</li>
+        <li>Allow report/search results to drill down directly to the relevant bill row inside the Payment view.</li>
+      </ol>
+
+      <h3>Functional Test Checklist</h3>
+      <table class="compact">
+        <thead>
+          <tr>
+            <th>Scenario</th>
+            <th>Expected Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Add normal bill with prep date only</td>
+            <td>Appears as bill prepared / pending sent where applicable.</td>
+          </tr>
+          <tr>
+            <td>Add bill with sent date but no payment</td>
+            <td>Appears under Bills Submitted to PCDA / payment pending.</td>
+          </tr>
+          <tr>
+            <td>Add bill with payment date and actual amount</td>
+            <td>Appears under actual cash outgo with capital/revenue split.</td>
+          </tr>
+          <tr>
+            <td>Add returned bill cycle without resubmission</td>
+            <td>Appears under pending returned bills and current returned status.</td>
+          </tr>
+          <tr>
+            <td>Add returned bill cycle with resubmission</td>
+            <td>Moves into resubmitted returned-bill reporting.</td>
+          </tr>
+          <tr>
+            <td>Add stage-wise combined bill</td>
+            <td>Line totals should equal report amount and should not double-count stages.</td>
+          </tr>
+          <tr>
+            <td>Add supplementary previous unpaid bill</td>
+            <td>Should either import unpaid balance automatically or clearly remain manual.</td>
+          </tr>
+          <tr>
+            <td>Add advance bill</td>
+            <td>Should be marked as advance in cash-outgo reporting and avoid duplicate advance-payment entries.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        <strong>Conclusion:</strong> The Add Bill option is connected to the major cash-outgo and payment reports, and it is suitable for structured bill capture. Before it becomes the single authoritative bill ledger, the main work is to strengthen validation, balance logic, previous-unpaid linkage, and consistency between report paths.
+      </div>
+
+      <div class="footer"><span>Add Bill Option Review Report</span><span>Page 5 of 5</span></div>
+    </section>
+  </body>
+</html>

@@ -272,6 +272,18 @@ type AnomalyRuleRow = {
 
 type AnomalyRuleField = { key: string; label: string; scope: string };
 
+function canViewAdminSettings(role: AppUserRole | undefined) {
+  return role === "admin" || role === "universal_viewer";
+}
+
+function isUniversalViewer(role: AppUserRole | undefined) {
+  return role === "universal_viewer";
+}
+
+function canViewAllDivisions(role: AppUserRole | undefined) {
+  return role === "admin" || role === "sub_admin" || role === "universal_viewer";
+}
+
 function SettingsPage() {
   const activeUser = useActiveUser();
   const locationSearch = useRouterState({ select: (state) => state.location.search });
@@ -342,7 +354,7 @@ function SettingsPage() {
     );
   }
 
-  if (activeUser?.role !== "admin") {
+  if (!canViewAdminSettings(activeUser?.role)) {
     return (
       <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">Admin settings</h1>
@@ -354,6 +366,7 @@ function SettingsPage() {
   }
 
   const adminSections: AdminSection[] = [
+    { key: "user", label: "User", content: <AccountSettings /> },
     { key: "workspace", label: "Workspace", content: <WorkspaceSettings /> },
     { key: "yearSetup", label: "Year Setup", content: <YearSetupPanel /> },
     { key: "mmgSummary", label: "MMG Summary", content: <MmgSummarySettings /> },
@@ -380,7 +393,10 @@ function SettingsPage() {
   ];
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
-  const selectedAdminSectionUnlocked = Boolean(unlockedAdminSections[selectedAdminSection.key]);
+  const universalViewer = isUniversalViewer(activeUser?.role);
+  const selectedAdminSectionUnlocked =
+    Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
+    (universalViewer && ["user", "presets"].includes(selectedAdminSection.key));
 
   useEffect(() => {
     const requestedSection =
@@ -425,6 +441,7 @@ function SettingsPage() {
             unlocked={selectedAdminSectionUnlocked}
             onLock={() => setAdminSectionUnlocked(selectedAdminSection.key, false)}
             onUnlock={() => setAdminSectionUnlocked(selectedAdminSection.key, true)}
+            hideUnlock={universalViewer}
           />
         </div>
       </div>
@@ -437,11 +454,13 @@ function LockedAdminSection({
   unlocked,
   onLock,
   onUnlock,
+  hideUnlock = false,
 }: {
   section: AdminSection;
   unlocked: boolean;
   onLock: () => void;
   onUnlock: () => void;
+  hideUnlock?: boolean;
 }) {
   const [verifying, setVerifying] = useState(false);
 
@@ -465,6 +484,7 @@ function LockedAdminSection({
 
   return (
     <div className="space-y-3">
+      {!hideUnlock ? (
       <div className="flex justify-end">
         <button
           type="button"
@@ -488,6 +508,7 @@ function LockedAdminSection({
           )}
         </button>
       </div>
+      ) : null}
       <fieldset
         disabled={!unlocked}
         className={
@@ -549,7 +570,9 @@ function AccountSettings() {
         <Field label="Divisions" value={assignedDivisionNames} />
       </div>
 
-      {(activeUser?.role === "editor" || activeUser?.role === "sub_admin") && (
+      {(activeUser?.role === "editor" ||
+        activeUser?.role === "sub_admin" ||
+        activeUser?.role === "universal_viewer") && (
         <div className="mt-5 max-w-sm">
           <ThemeTintField
             label="UI tint"
@@ -867,7 +890,7 @@ function TcecCommitteeSettings() {
   const [name, setName] = useState("");
   const committees = settings.tcecCommittees ?? [];
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateCommittees = (next: string[]) => {
     store.updateSettings({ tcecCommittees: next });
@@ -942,7 +965,7 @@ function FirmTypeSettings() {
   const [name, setName] = useState("");
   const firmTypes = normalizeFirmTypes(settings.firmTypes);
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateFirmTypes = (next: string[]) => {
     store.updateSettings({ firmTypes: normalizeFirmTypes(next) });
@@ -1021,7 +1044,7 @@ function ModeSettings() {
   const [name, setName] = useState("");
   const modes = normalizeModes(settings.modes);
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateModes = (next: string[]) => {
     store.updateSettings({ modes: normalizeModes(next) });
@@ -1115,7 +1138,7 @@ function FileTypeSettings() {
   const fileTypes = normalizeFileTypes(settings.fileTypes);
   const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateFileTypes = (next: string[], nextGroups: FileTypeGroupSetting[] = fileTypeGroups) => {
     const normalizedTypes = normalizeFileTypes(next);
@@ -1274,7 +1297,7 @@ function SpecialFileMarkerSettings() {
   const [description, setDescription] = useState("");
   const markers = normalizeSpecialFileMarkers(settings.specialFileMarkers);
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateMarkers = (next: SpecialFileMarker[]) => {
     store.updateSettings({ specialFileMarkers: normalizeSpecialFileMarkers(next) });
@@ -1454,11 +1477,11 @@ function ValueThresholdSettings() {
     setMessage("");
   }, [settings.selectedYear, settings.valueThresholdLevels]);
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const levelCount = levels.length;
-  const save = (nextLevels = levels) => {
-    const normalized = nextLevels.map((level, index) => ({
+  const normalizeLevelsForSave = (nextLevels = levels) =>
+    nextLevels.map((level, index) => ({
       ...level,
       label: level.label.trim() || `Level ${index + 1}`,
       levelNumber: index + 1,
@@ -1466,6 +1489,12 @@ function ValueThresholdSettings() {
       maxValue: formatThresholdAmountInput(level.maxValue) || "",
       appliesTo: level.appliesTo || defaultThresholdAppliesTo,
     }));
+  const thresholdsChanged = !isSettingsDirtyValueEqual(
+    normalizeLevelsForSave(levels),
+    normalizeLevelsForSave(formatThresholdLevels(settings.valueThresholdLevels ?? [])),
+  );
+  const save = (nextLevels = levels) => {
+    const normalized = normalizeLevelsForSave(nextLevels);
     const invalid = normalized.find((level) => {
       const min = parseOptionalPositiveNumber(level.minValue);
       const max = parseOptionalPositiveNumber(level.maxValue);
@@ -1605,7 +1634,8 @@ function ValueThresholdSettings() {
         <button
           type="button"
           onClick={() => save()}
-          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          disabled={!thresholdsChanged}
+          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Check className="size-4" /> Save thresholds
         </button>
@@ -2109,7 +2139,7 @@ function MilestoneSettings() {
   );
   const [position, setPosition] = useState(String(milestones.length + 1));
 
-  if (activeUser && activeUser.role !== "admin") return null;
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateMilestones = (next: string[]) => {
     store.updateSettings({ milestones: next });
@@ -2950,6 +2980,12 @@ function DivisionSettings() {
           <tbody>
             {divisions.map((division) => {
               const isEditing = editingId === division.id;
+              const editChanged =
+                editName.trim() !== division.name ||
+                editCode.trim() !== (division.code ?? "") ||
+                editAd !== (division.ad ?? "") ||
+                editMessagesEnabled !== (division.messagesEnabled !== false) ||
+                Boolean(editViewerPassword.trim());
               return (
                 <tr key={division.id} className="border-t border-border">
                   <td className="px-4 py-3">
@@ -3016,7 +3052,8 @@ function DivisionSettings() {
                           <button
                             type="button"
                             onClick={() => saveEdit(division.id)}
-                            className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10"
+                            disabled={!editChanged || !editName.trim()}
+                            className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <Check className="size-4" />
                           </button>
@@ -3226,6 +3263,7 @@ function FirmDatabaseSettings() {
   const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
   const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
+  const firmUniqueNoLabelChanged = (labelDraft.trim() || "Firm Unique No.") !== firmUniqueNoLabel;
 
   useEffect(() => {
     setLabelDraft(firmUniqueNoLabel);
@@ -3370,7 +3408,8 @@ function FirmDatabaseSettings() {
           <button
             type="button"
             onClick={() => void saveFirmUniqueNoLabel()}
-            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent"
+            disabled={!firmUniqueNoLabelChanged}
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Check className="size-4" /> Save label
           </button>
@@ -3477,6 +3516,14 @@ function FirmDatabaseSettings() {
             ) : (
               firms.map((firm) => {
                 const isEditing = editingId === firm.id;
+                const editChanged = !isSettingsDirtyValueEqual(cleanFirmDraft(editDraft), {
+                  firmName: firm.firmName ?? "",
+                  emailId: firm.emailId ?? "",
+                  city: firm.city ?? "",
+                  address: firm.address ?? "",
+                  firmUniqueNo: firm.firmUniqueNo ?? "",
+                  contactNo: firm.contactNo ?? "",
+                });
                 return (
                   <tr key={firm.id} className="border-t border-border align-top">
                     <FirmCell
@@ -3522,7 +3569,13 @@ function FirmDatabaseSettings() {
                             <button
                               type="button"
                               onClick={() => void saveEdit(firm.id)}
-                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10"
+                              disabled={
+                                !editChanged ||
+                                !canManage ||
+                                !isComplete(editDraft) ||
+                                !isValidEmailFormat(editDraft.emailId)
+                              }
+                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Check className="size-4" />
                             </button>
@@ -3751,7 +3804,7 @@ function IndentorSettings() {
   const divisions = useDivisions();
   const canManage = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const availableDivisions =
-    !activeUser || canManage
+    !activeUser || canViewAllDivisions(activeUser.role)
       ? divisions
       : divisions.filter((division) => activeUser.divisionIds.includes(division.id));
   const [draft, setDraft] = useState<IndentorDraft>(emptyIndentorDraft);
@@ -4027,6 +4080,15 @@ function IndentorSettings() {
             ) : (
               indentors.map((indentor) => {
                 const isEditing = editingId === indentor.id;
+                const editChanged = !isSettingsDirtyValueEqual(editDraft, {
+                  divisionId: indentor.divisionId,
+                  name: indentor.name,
+                  sfId: indentor.sfId,
+                  designation: indentor.designation,
+                  mobileNo: indentor.mobileNo,
+                  landlineNo: indentor.landlineNo,
+                  email: indentor.email,
+                });
                 return (
                   <tr key={indentor.id} className="border-t border-border align-top">
                     <td className="px-4 py-3">
@@ -4078,7 +4140,8 @@ function IndentorSettings() {
                               <button
                                 type="button"
                                 onClick={() => saveEdit(indentor.id)}
-                                className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10"
+                                disabled={!editChanged || !isComplete(editDraft)}
+                                className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <Check className="size-4" />
                               </button>
@@ -4266,6 +4329,18 @@ function UserSettings() {
             ) : (
               users.map((user) => {
                 const isEditing = editingId === user.id;
+                const editChanged =
+                  editName.trim() !== user.name ||
+                  editUsername.trim() !== user.username ||
+                  Boolean(editPassword.trim()) ||
+                  editRole !== user.role ||
+                  !isSettingsDirtyValueEqual([...editDivisionIds].sort(), [
+                    ...(user.divisionIds ?? []),
+                  ].sort()) ||
+                  !isSettingsDirtyValueEqual(
+                    normalizeUserFileCategories(editAllowedFileCategories),
+                    normalizeUserFileCategories(user.allowedFileCategories),
+                  );
                 return (
                   <tr key={user.id} className="border-t border-border align-top">
                     <td className="px-4 py-3">
@@ -4332,7 +4407,8 @@ function UserSettings() {
                             <button
                               type="button"
                               onClick={() => saveEdit(user.id)}
-                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10"
+                              disabled={!editChanged || !editName.trim() || !editUsername.trim()}
+                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Check className="size-4" />
                             </button>
@@ -4395,6 +4471,7 @@ function UserRoleSelect({
       <option value="admin">Admin</option>
       <option value="sub_admin">Sub admin</option>
       <option value="editor">Editor</option>
+      <option value="universal_viewer">Universal Viewer</option>
     </select>
   );
 }
@@ -4712,6 +4789,8 @@ function roleLabel(role: AppUserRole) {
   if (role === "admin") return "Admin";
   if (role === "sub_admin") return "Sub admin";
   if (role === "editor") return "Editor";
+  if (role === "universal_viewer") return "Universal Viewer";
+  if (role === "division_user") return "Division user";
   return "Viewer";
 }
 
@@ -4935,9 +5014,7 @@ function DivisionAdSelect({
       aria-label="AD"
       className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
     >
-      <option value="" disabled>
-        AD
-      </option>
+      <option value="">AD</option>
       <option value="Yes">Yes</option>
       <option value="No">No</option>
     </select>
@@ -5010,4 +5087,8 @@ function Field({ label, value }: { label: string; value: string }) {
       />
     </label>
   );
+}
+
+function isSettingsDirtyValueEqual(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }

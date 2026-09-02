@@ -94,7 +94,7 @@ export function SearchableDropdown({
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative w-full max-w-md">
       <input
         ref={setInputRef}
         value={value}
@@ -105,7 +105,7 @@ export function SearchableDropdown({
         placeholder={placeholder}
         data-testid={testId}
         autoComplete="off"
-        className={(className ?? "") + " pr-9"}
+        className={(className ?? "") + " block w-full pr-9"}
       />
       <button
         type="button"
@@ -127,6 +127,18 @@ export function SearchableDropdown({
       </button>
       {open && !disabled ? (
         <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => selectOption("")}
+            className={
+              "block min-h-8 w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
+              (value === "" ? "font-semibold text-primary" : "")
+            }
+            aria-label="Clear selection"
+          >
+            {placeholder || "Select"}
+          </button>
           {visibleOptions.length ? (
             visibleOptions.map((option) => (
               <button

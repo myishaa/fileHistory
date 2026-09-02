@@ -40,6 +40,7 @@ export function matchesFileCategorySelection(
     fileType !== "amc" &&
     fileType !== "mpc" &&
     fileType !== "cars" &&
+    fileType !== "capsi" &&
     fileType !== "o&m"
   ) {
     return true;

@@ -73,8 +73,8 @@ export function isCancelledFile(
 ) {
   if (isYes(file.demandCancelled)) return true;
   const supplyOrders = file.supplyOrders ?? [];
-  if (supplyOrders.length === 0) return isYes(file.soCancelled) || isYes(file.shortclosure);
-  return supplyOrders.every((order) => isYes(order.soCancelled) || isYes(order.shortclosure));
+  if (supplyOrders.length === 0) return isYes(file.soCancelled);
+  return supplyOrders.every((order) => isYes(order.soCancelled));
 }
 
 export function isInactiveFile(
@@ -103,7 +103,9 @@ export function isFileVisibleForYear(
   if (!year) return true;
   if (isAllActiveFilesYear(year)) return !isInactiveFile(file);
   if (isActivePlusCurrentFyClosedYear(year)) {
-    return !isInactiveFile(file) || isDateInFinancialYear(file.fileClosureDate, currentFinancialYear);
+    return (
+      !isInactiveFile(file) || isDateInFinancialYear(file.fileClosureDate, currentFinancialYear)
+    );
   }
   return file.year === year || file.activeYears?.includes(year);
 }
