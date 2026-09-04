@@ -247,6 +247,7 @@ const defaultManualMilestones = [
   "Job Completion",
   "Bill sent for payment",
   "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Advance Payment",
   "Payment",
 ];
@@ -3188,6 +3189,7 @@ const protectedLiveStatusMilestones = [
   "Refloat bidding",
   "Refloat Post-TCEC",
   "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Job Completion",
 ];
 
@@ -4860,6 +4862,10 @@ async function loadAnalyticsSqlSlice({
     `not ${isYesExpression("so.so_cancelled")}`,
     `not ${isYesExpression("so.shortclosure")}`,
   ];
+  const returnedBillReturnedDate = `nullif(return_cycle.cycle ->> 'returnedDate', '')::date`;
+  const returnedBillResubmittedDate = `nullif(return_cycle.cycle ->> 'resubmittedDate', '')::date`;
+  const supplementaryBillReturnedDate = `nullif(supplementary_return_cycle.cycle ->> 'returnedDate', '')::date`;
+  const supplementaryBillResubmittedDate = `nullif(supplementary_return_cycle.cycle ->> 'resubmittedDate', '')::date`;
   const supplyOrderClearingStart = getPreviousApplicableMilestoneCompletionSql(
     milestoneClearingDefinitions,
     milestoneClearingDefinitions.length,
@@ -4929,6 +4935,34 @@ async function loadAnalyticsSqlSlice({
        dateDiffCondition(paymentBillPreparationDate, paymentBillSentDate),
      ])}`,
     `select ${milestoneClearingDefinitions.length + 5} as sort_order,
+            'Bill returned for correction' as name,
+            ${clearingStatsSelect(returnedBillReturnedDate, returnedBillResubmittedDate)},
+            count(*)::integer as "sampleSize"
+     from files f
+     left join divisions d on d.id = f.division_id
+     join supply_orders so on so.file_id = f.id
+     ${finalPaymentStageJoin}
+     join lateral jsonb_array_elements(
+       coalesce(payment_stage.stage -> 'billReturnCycles', so.bill_return_cycles, '[]'::jsonb)
+     ) as return_cycle(cycle) on true
+     ${appendDashboardWhereClause(whereSql, [
+       ...finalPaymentBaseWhere,
+       dateDiffCondition(returnedBillReturnedDate, returnedBillResubmittedDate),
+     ])}`,
+    `select ${milestoneClearingDefinitions.length + 6} as sort_order,
+            'Supplementary bill returned for correction' as name,
+            ${clearingStatsSelect(supplementaryBillReturnedDate, supplementaryBillResubmittedDate)},
+            count(*)::integer as "sampleSize"
+     from files f
+     left join divisions d on d.id = f.division_id
+     join supply_orders so on so.file_id = f.id
+     join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill) on true
+     join lateral jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as supplementary_return_cycle(cycle) on true
+     ${appendDashboardWhereClause(whereSql, [
+       ...finalPaymentBaseWhere,
+       dateDiffCondition(supplementaryBillReturnedDate, supplementaryBillResubmittedDate),
+     ])}`,
+    `select ${milestoneClearingDefinitions.length + 7} as sort_order,
             'Payment' as name,
             ${clearingStatsSelect(paymentBillSentDate, paymentDate)},
             count(*)::integer as "sampleSize"
@@ -5834,7 +5868,11 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
   return appendFileClosedMilestone(
     dedupeLiveStatusMilestones(
       insertAdvancePaymentMilestone(
-        insertBillSentMilestone(insertJobCompletionMilestone(insertRefloatMilestones(configured))),
+        insertSupplementaryBillReturnedMilestone(
+          insertBillSentMilestone(
+            insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+          ),
+        ),
       ),
     ),
   );
@@ -5895,6 +5933,21 @@ function insertBillSentMilestone(milestones: string[]) {
   ];
 }
 
+function insertSupplementaryBillReturnedMilestone(milestones: string[]) {
+  const hasSupplementaryBillReturned = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection",
+  );
+  const paymentIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "payment",
+  );
+  if (hasSupplementaryBillReturned || paymentIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, paymentIndex),
+    "Supplementary bill returned for correction",
+    ...milestones.slice(paymentIndex),
+  ];
+}
+
 function insertAdvancePaymentMilestone(milestones: string[]) {
   const hasAdvancePayment = milestones.some(
     (milestone) => normalizeMilestoneName(milestone) === "advancepayment",
@@ -5937,6 +5990,9 @@ function normalizeLiveStatusMilestoneName(milestone: string) {
 }
 
 function getLiveStatusMilestoneLabel(milestone: string) {
+  if (normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection") {
+    return "Supp. bill returned";
+  }
   return normalizeMilestoneName(milestone) === "deliveryperiod" ? "D.P." : milestone;
 }
 
@@ -6081,6 +6137,31 @@ async function loadManualMilestoneSqlSlice({
                     `not ${hasFilledExpression("so_current.advance_payment_detail ->> 'paymentDate'")}`,
                   ],
                 )}
+	              )
+	              when ${normalizeMilestoneExpression("milestone.name")} = 'supplementarybillreturnedforcorrection' then (
+	                select count(*)::integer
+	                from supply_orders so_current
+	                join files f on f.id = so_current.file_id
+	                left join divisions d on d.id = f.division_id
+	                ${appendDashboardWhereClause(
+                    whereSql.replace(/^where/i, "where f.id is not null and"),
+                    [
+                      ...extraConditions,
+                      `not ${isCancelledExpression()}`,
+                      `not ${isYesExpression("so_current.so_cancelled")}`,
+                      `exists (
+                        select 1
+                        from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+                        where not ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
+                          and exists (
+                            select 1
+                            from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+                            where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
+                              and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+                          )
+                      )`,
+                    ],
+                  )}
 	              )
 	              when ${normalizeMilestoneExpression("milestone.name")} = 'deliveryperiod' then (
 	                select count(*)::integer
@@ -6471,10 +6552,10 @@ async function loadManualMilestoneSqlSlice({
        on ${isYesExpression("so_current.stage_delivery")}
          and ${isYesExpression("so_current.stage_payment")}
 	     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
-	       ...extraConditions,
-	       `not ${isCancelledExpression()}`,
-	       `not ${isYesExpression("so_current.so_cancelled")}`,
-	       `(
+         ...extraConditions,
+         `not ${isCancelledExpression()}`,
+         `not ${isYesExpression("so_current.so_cancelled")}`,
+         `(
          (
            current_stage.stage is null
            and ${hasFilledExpression("so_current.bill_preparation_date")}
@@ -6498,17 +6579,48 @@ async function loadManualMilestoneSqlSlice({
            )
          )
        )`,
+       ])}
+     group by 1`,
+    queryValues,
+  );
+  const supplementaryBillReturnedLiveCountsResult = await pool.query<{
+    division: string;
+    milestone: string;
+    count: number;
+  }>(
+    `select ${analyticsNameExpression("d.name", "Unassigned")} as division,
+            'Supplementary bill returned for correction'::text as milestone,
+            count(*)::integer as count
+     from supply_orders so_current
+     join files f on f.id = so_current.file_id
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
+       ...extraConditions,
+       `not ${isCancelledExpression()}`,
+       `not ${isYesExpression("so_current.so_cancelled")}`,
+       `exists (
+         select 1
+         from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+         where not ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
+           and exists (
+             select 1
+             from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+             where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
+               and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+           )
+       )`,
      ])}
      group by 1`,
     queryValues,
-	  );
-	  const liveCountRows = [
-	    ...liveCountsResult.rows,
-	    ...deliveryPeriodLiveCountsResult.rows,
-	    ...jobCompletionLiveCountsResult.rows,
-	    ...advancePaymentLiveCountsResult.rows,
-	    ...billSentForPaymentLiveCountsResult.rows,
-	  ];
+  );
+  const liveCountRows = [
+    ...liveCountsResult.rows,
+    ...deliveryPeriodLiveCountsResult.rows,
+    ...jobCompletionLiveCountsResult.rows,
+    ...advancePaymentLiveCountsResult.rows,
+    ...billSentForPaymentLiveCountsResult.rows,
+    ...supplementaryBillReturnedLiveCountsResult.rows,
+  ];
   const divisionNames = Array.from(
     new Set([
       ...divisions.map((division) => division.name),
@@ -7779,7 +7891,7 @@ dashboardRouter.get(
         : divisions.filter((division) => division.name === activeAnalyticsDivision);
     const liveMilestones = readList(request.query.liveMilestones);
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 2,
+      version: 5,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       divisionYear,

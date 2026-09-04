@@ -7,6 +7,7 @@ import {
   type FileRecord,
   type FirmDetail,
   type MasterFirm,
+  type SupplementaryBillDetail,
   type SupplyOrderDetail,
   type ValueThresholdLevel,
   useAccessibleDivisions,
@@ -256,9 +257,12 @@ const delayStatusMilestoneLabels: Record<string, string> = {
   irReceipt: "IR Receipt",
   billPreparation: "Bill preparation",
   billSentForPayment: "Bill sent for payment",
+  billReturnedForCorrection: "Bill returned for correction",
+  supplementaryBillReturnedForCorrection: "Supplementary bill returned for correction",
   payment: "Payment",
 };
 const biddingDelayMilestoneKey = "bidding";
+const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 const defaultNoKeys: FileKey[] = [
   "dpExtension",
   "gte",
@@ -316,12 +320,24 @@ type SupplyOrderKey =
   | "irPreparationDate"
   | "irReceiptDate"
   | "billPreparationDate"
+  | "billNo"
   | "billSentForPaymentDate"
   | "billReturnCycles"
   | "paymentDate"
   | "paymentMode"
   | "actualPaymentCapital"
   | "actualPaymentRevenue"
+  | "supplementaryBills"
+  | "supplementaryBillNo"
+  | "supplementaryBillAmountCapital"
+  | "supplementaryBillAmountRevenue"
+  | "supplementaryBillSentForPaymentDate"
+  | "supplementaryBillReturnCycles"
+  | "supplementaryBillPaymentDate"
+  | "supplementaryBillPaymentMode"
+  | "supplementaryBillActualPaymentCapital"
+  | "supplementaryBillActualPaymentRevenue"
+  | "supplementaryBillRemarks"
   | "soCancelled"
   | "soCancelledDate"
   | "deliveryPeriodStartDate"
@@ -396,12 +412,24 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
+  "billNo",
   "billSentForPaymentDate",
   "billReturnCycles",
   "paymentDate",
   "paymentMode",
   "actualPaymentCapital",
   "actualPaymentRevenue",
+  "supplementaryBills",
+  "supplementaryBillNo",
+  "supplementaryBillAmountCapital",
+  "supplementaryBillAmountRevenue",
+  "supplementaryBillSentForPaymentDate",
+  "supplementaryBillReturnCycles",
+  "supplementaryBillPaymentDate",
+  "supplementaryBillPaymentMode",
+  "supplementaryBillActualPaymentCapital",
+  "supplementaryBillActualPaymentRevenue",
+  "supplementaryBillRemarks",
   "soCancelled",
   "soCancelledDate",
   "shortclosure",
@@ -576,12 +604,33 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "irPreparationDate", label: "IR Preparation", type: "date" },
       { key: "irReceiptDate", label: "IR Receipt", type: "date" },
       { key: "billPreparationDate", label: "Bill preparation", type: "date" },
+      { key: "billNo", label: "Bill No." },
       { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
       { key: "billReturnCycles", label: "Bill returned for correction" },
       { key: "paymentDate", label: "Payment date", type: "date" },
       { key: "paymentMode", label: "Payment mode (Online/Offline)", options: paymentModeOptions },
       { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
       { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+      { key: "supplementaryBills", label: "Supplementary bills" },
+      { key: "supplementaryBillNo", label: "Supplementary Bill No." },
+      { key: "supplementaryBillAmountCapital", label: "Supplementary bill amount (Capital)" },
+      { key: "supplementaryBillAmountRevenue", label: "Supplementary bill amount (Revenue)" },
+      {
+        key: "supplementaryBillSentForPaymentDate",
+        label: "Supplementary bill sent for payment",
+      },
+      { key: "supplementaryBillReturnCycles", label: "Supplementary bill returned for correction" },
+      { key: "supplementaryBillPaymentDate", label: "Supplementary payment date" },
+      { key: "supplementaryBillPaymentMode", label: "Supplementary payment mode" },
+      {
+        key: "supplementaryBillActualPaymentCapital",
+        label: "Supplementary actual payment amount (Capital)",
+      },
+      {
+        key: "supplementaryBillActualPaymentRevenue",
+        label: "Supplementary actual payment amount (Revenue)",
+      },
+      { key: "supplementaryBillRemarks", label: "Supplementary bill remarks" },
       { key: "shortclosure", label: "Shortclosure (Yes/No)", options: yesNo },
       { key: "shortclosureDate", label: "Shortclosure date", type: "date" },
       { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
@@ -730,6 +779,7 @@ const stagedSupplyOrderExportKeys = new Set<string>([
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
+  "billNo",
   "billSentForPaymentDate",
   "paymentDate",
   "paymentMode",
@@ -754,11 +804,25 @@ const stagedDeliveryWorkflowKeys = new Set<string>([
 ]);
 const stagedPaymentWorkflowKeys = new Set<string>([
   "billPreparationDate",
+  "billNo",
   "billSentForPaymentDate",
   "paymentDate",
   "paymentMode",
   "actualPaymentCapital",
   "actualPaymentRevenue",
+]);
+const supplementaryBillTableKeys = new Set<string>([
+  "supplementaryBills",
+  "supplementaryBillNo",
+  "supplementaryBillAmountCapital",
+  "supplementaryBillAmountRevenue",
+  "supplementaryBillSentForPaymentDate",
+  "supplementaryBillReturnCycles",
+  "supplementaryBillPaymentDate",
+  "supplementaryBillPaymentMode",
+  "supplementaryBillActualPaymentCapital",
+  "supplementaryBillActualPaymentRevenue",
+  "supplementaryBillRemarks",
 ]);
 const TABLE_FIELDS_DEFAULT_KEY_PREFIX = "ofms.searchTableDefaultFields.v2";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
@@ -985,12 +1049,11 @@ function SearchPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [showTableOptions, setShowTableOptions] = useState(false);
   const [activeTablePresetId, setActiveTablePresetId] = useState(manualTablePresetId);
-  const [exportLayout, setExportLayout] = useState<FileSearchExportLayout>("rowwise");
   const [defaultTableColumnKeys, setDefaultTableColumnKeys] = useState<string[] | null>(() =>
     readDefaultTableColumnKeys(settings.activeUserId),
   );
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
-  const [expandedStageCells, setExpandedStageCells] = useState<Set<string>>(() => new Set());
+  const [expandedSearchFileIds, setExpandedSearchFileIds] = useState<Set<string>>(() => new Set());
   const [requiredFilledColumnKeys, setRequiredFilledColumnKeys] = useState<string[]>([]);
   const destinationFocus = useMemo(() => {
     const explicitFocus = getDestinationFocus(
@@ -1065,6 +1128,10 @@ function SearchPage() {
     () => printColumns.filter((column) => selectedTableColumnKeys.includes(column.key)),
     [selectedTableColumnKeys],
   );
+  const searchDisplayColumns = useMemo(
+    () => buildSearchDisplayColumns(selectedTableColumns),
+    [selectedTableColumns],
+  );
   const summaryTotalsOpen = summaryTotalsLockedOpen || summaryTotalsExpanded;
   const toggleSummaryTotalsLockedOpen = () => {
     setSummaryTotalsLockedOpen((current) => {
@@ -1088,11 +1155,25 @@ function SearchPage() {
   const activeSortColumnKey = sortColumns.some((column) => column.key === sortColumnKey)
     ? sortColumnKey
     : "none";
-  const toggleStageCellExpansion = (cellKey: string) => {
-    setExpandedStageCells((current) => {
+  const toggleSearchFileExpansion = (fileId: string) => {
+    setExpandedSearchFileIds((current) => {
       const next = new Set(current);
-      if (next.has(cellKey)) next.delete(cellKey);
-      else next.add(cellKey);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+  const expandAllVisibleSearchRows = () => {
+    setExpandedSearchFileIds((current) => {
+      const next = new Set(current);
+      visibleExpandableFileIds.forEach((fileId) => next.add(fileId));
+      return next;
+    });
+  };
+  const collapseAllVisibleSearchRows = () => {
+    setExpandedSearchFileIds((current) => {
+      const next = new Set(current);
+      visibleExpandableFileIds.forEach((fileId) => next.delete(fileId));
       return next;
     });
   };
@@ -1101,13 +1182,17 @@ function SearchPage() {
       ? serializeDrillPath([...drillPath, { label: "Search Files", href: currentSearchHref }])
       : search.drillPath;
     const fileFocusTarget = file.id ? destinationFocusTargets.get(file.id) : undefined;
+    const dashboardFileFocusTarget = getDashboardFilterFileFocusTarget(
+      file,
+      search.dashboardFilter,
+    );
     navigate({
       to: "/add",
       search: {
         fileId: file.id,
         section: destinationFocus.section,
         milestone: destinationFocus.milestone,
-        focusTarget: fileFocusTarget ?? destinationFocus.focusTarget,
+        focusTarget: fileFocusTarget ?? dashboardFileFocusTarget ?? destinationFocus.focusTarget,
         quickFocus: false,
         drillPath: nextDrillPath,
       },
@@ -1602,6 +1687,17 @@ function SearchPage() {
   const currentPage = Math.min(page, totalPages);
   const firstResultNumber = searchTotal === 0 ? 0 : (currentPage - 1) * pageSize + 1;
   const lastResultNumber = Math.min(searchTotal, (currentPage - 1) * pageSize + results.length);
+  const searchDisplayRows = useMemo(
+    () => buildSearchDisplayRows(results, selectedTableColumns, expandedSearchFileIds),
+    [expandedSearchFileIds, results, selectedTableColumns],
+  );
+  const visibleExpandableFileIds = useMemo(
+    () => results.filter(hasDetailedSearchRows).map((file) => file.id),
+    [results],
+  );
+  const allVisibleSearchRowsExpanded =
+    visibleExpandableFileIds.length > 0 &&
+    visibleExpandableFileIds.every((fileId) => expandedSearchFileIds.has(fileId));
 
   const selectedResultFiles = results.filter((file) => selectedFileIds.includes(file.id));
   const allVisibleRowsSelected =
@@ -1851,6 +1947,23 @@ function SearchPage() {
             </span>
           </div>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={
+                allVisibleSearchRowsExpanded
+                  ? collapseAllVisibleSearchRows
+                  : expandAllVisibleSearchRows
+              }
+              disabled={!visibleExpandableFileIds.length}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {allVisibleSearchRowsExpanded ? (
+                <ChevronDown className="size-3.5" />
+              ) : (
+                <ChevronRight className="size-3.5" />
+              )}
+              {allVisibleSearchRowsExpanded ? "Collapse all" : "Expand all"}
+            </button>
             <label className="inline-flex items-center gap-2">
               <span>Preset fields</span>
               <select
@@ -1873,7 +1986,7 @@ function SearchPage() {
                   selectedResultFiles.length ? selectedResultFiles : results,
                   selectedTableColumns,
                   selectedResultFiles.length ? undefined : searchFilterQuery,
-                  exportLayout,
+                  "rowwise",
                 )
               }
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
@@ -1887,7 +2000,7 @@ function SearchPage() {
                 exportSearchList(
                   selectedResultFiles.length ? selectedResultFiles : results,
                   selectedTableColumns,
-                  exportLayout,
+                  "rowwise",
                 )
               }
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
@@ -1895,17 +2008,6 @@ function SearchPage() {
               <FileSpreadsheet className="size-3.5" />{" "}
               {selectedResultFiles.length ? "Export selected" : "Export Excel"}
             </button>
-            <label className="inline-flex items-center gap-2">
-              <span>Export layout</span>
-              <select
-                value={exportLayout}
-                onChange={(event) => setExportLayout(event.target.value as FileSearchExportLayout)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="columnwise">Columnwise</option>
-                <option value="rowwise">Rowwise</option>
-              </select>
-            </label>
             <button
               type="button"
               onClick={() => setShowTableOptions((current) => !current)}
@@ -2509,7 +2611,7 @@ function SearchPage() {
             <div className="overflow-x-auto">
               <table
                 className="w-full text-sm"
-                style={{ minWidth: Math.max(880, selectedTableColumns.length * 150 + 280) }}
+                style={{ minWidth: Math.max(880, searchDisplayColumns.length * 150 + 320) }}
               >
                 <thead className="bg-secondary text-sm text-muted-foreground">
                   <tr>
@@ -2522,52 +2624,70 @@ function SearchPage() {
                         className="size-4 rounded border-input"
                       />
                     </th>
-                    {selectedTableColumns.map((column) => (
-                      <th key={column.key} className="text-left font-bold px-4 py-2.5">
+                    {searchDisplayColumns.map((displayColumn) => (
+                      <th key={displayColumn.key} className="text-left font-bold px-4 py-2.5">
                         <div className="flex max-w-full flex-col gap-1.5">
                           <label
                             className="inline-flex min-w-0 flex-1 items-center gap-2"
-                            title={`Show only rows where ${column.label} is filled`}
+                            title={
+                              displayColumn.sourceColumn
+                                ? `Show only rows where ${displayColumn.sourceColumn.label} is filled`
+                                : displayColumn.label
+                            }
                           >
-                            <input
-                              type="checkbox"
-                              checked={visibleRequiredFilledColumnKeys.includes(column.key)}
-                              onChange={() => toggleRequiredFilledColumn(column.key)}
-                              aria-label={`Require filled ${column.label}`}
-                              className="size-3.5 shrink-0 rounded border-input"
-                            />
-                            <span className="truncate">{column.label}</span>
+                            {displayColumn.sourceColumn ? (
+                              <input
+                                type="checkbox"
+                                checked={visibleRequiredFilledColumnKeys.includes(
+                                  displayColumn.sourceColumn.key,
+                                )}
+                                onChange={() =>
+                                  toggleRequiredFilledColumn(displayColumn.sourceColumn.key)
+                                }
+                                aria-label={`Require filled ${displayColumn.sourceColumn.label}`}
+                                className="size-3.5 shrink-0 rounded border-input"
+                              />
+                            ) : null}
+                            <span className="truncate">{displayColumn.label}</span>
                           </label>
-                          <div className="flex items-center gap-1 pl-5">
-                            <button
-                              type="button"
-                              onClick={() => setColumnHeaderSort(column.key, "asc")}
-                              aria-label={`Sort ${column.label} ascending`}
-                              title={`Sort ${column.label} ascending`}
-                              className={
-                                "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border transition " +
-                                (activeSortColumnKey === column.key && sortDirection === "asc"
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-                              }
-                            >
-                              <ArrowUp className="size-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setColumnHeaderSort(column.key, "desc")}
-                              aria-label={`Sort ${column.label} descending`}
-                              title={`Sort ${column.label} descending`}
-                              className={
-                                "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border transition " +
-                                (activeSortColumnKey === column.key && sortDirection === "desc"
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-                              }
-                            >
-                              <ArrowDown className="size-3" />
-                            </button>
-                          </div>
+                          {displayColumn.sourceColumn ? (
+                            <div className="flex items-center gap-1 pl-5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setColumnHeaderSort(displayColumn.sourceColumn.key, "asc")
+                                }
+                                aria-label={`Sort ${displayColumn.sourceColumn.label} ascending`}
+                                title={`Sort ${displayColumn.sourceColumn.label} ascending`}
+                                className={
+                                  "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border transition " +
+                                  (activeSortColumnKey === displayColumn.sourceColumn.key &&
+                                  sortDirection === "asc"
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+                                }
+                              >
+                                <ArrowUp className="size-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setColumnHeaderSort(displayColumn.sourceColumn.key, "desc")
+                                }
+                                aria-label={`Sort ${displayColumn.sourceColumn.label} descending`}
+                                title={`Sort ${displayColumn.sourceColumn.label} descending`}
+                                className={
+                                  "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border transition " +
+                                  (activeSortColumnKey === displayColumn.sourceColumn.key &&
+                                  sortDirection === "desc"
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+                                }
+                              >
+                                <ArrowDown className="size-3" />
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       </th>
                     ))}
@@ -2603,19 +2723,24 @@ function SearchPage() {
                         </button>
                       </td>
                       {summaryTotalsOpen ? (
-                        selectedTableColumns.map((column, index) => (
-                          <td key={column.key} className="max-w-[240px] px-4 py-3 align-top">
+                        searchDisplayColumns.map((displayColumn, index) => (
+                          <td key={displayColumn.key} className="max-w-[240px] px-4 py-3 align-top">
                             {index === 0 ? (
                               <span className="mb-1 block text-[10px] uppercase text-muted-foreground">
                                 Total
                               </span>
                             ) : null}
-                            {formatSearchSummaryCell(column, searchSummaryTotals)}
+                            {displayColumn.sourceColumn
+                              ? formatSearchSummaryCell(
+                                  displayColumn.sourceColumn,
+                                  searchSummaryTotals,
+                                )
+                              : ""}
                           </td>
                         ))
                       ) : (
                         <td
-                          colSpan={selectedTableColumns.length}
+                          colSpan={searchDisplayColumns.length}
                           className="px-4 py-3 text-muted-foreground"
                         >
                           Total row
@@ -2653,71 +2778,103 @@ function SearchPage() {
                   {results.length === 0 && (
                     <tr>
                       <td
-                        colSpan={selectedTableColumns.length + 2}
+                        colSpan={searchDisplayColumns.length + 2}
                         className="text-center text-sm text-muted-foreground py-10"
                       >
                         No files match your filters.
                       </td>
                     </tr>
                   )}
-                  {results.map((file, index) => (
+                  {searchDisplayRows.map((row, index) => (
                     <tr
-                      key={file.id}
-                      onClick={() => openTimeline(file)}
-                      data-testid={`search-result-${testIdSlug(file.uniqueCode || file.fileNo || file.id)}`}
+                      key={row.key}
+                      onClick={() => openTimeline(row.file)}
+                      data-testid={
+                        row.isFirstFileRow
+                          ? `search-result-${testIdSlug(
+                              row.file.uniqueCode || row.file.fileNo || row.file.id,
+                            )}`
+                          : undefined
+                      }
                       className={
                         "border-t border-border cursor-pointer transition-colors hover:bg-accent/60 " +
-                        (index % 2 === 0 ? "bg-card" : "bg-secondary/40")
+                        (row.isDetailRow
+                          ? "bg-secondary/20"
+                          : index % 2 === 0
+                            ? "bg-card"
+                            : "bg-secondary/40")
                       }
                     >
                       <td className="w-12 px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedFileIds.includes(file.id)}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={() => toggleFileSelection(file.id)}
-                          aria-label={`Select ${file.uniqueCode || file.imms || file.id}`}
-                          className="size-4 rounded border-input"
-                        />
+                        {row.isFirstFileRow ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedFileIds.includes(row.file.id)}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={() => toggleFileSelection(row.file.id)}
+                              aria-label={`Select ${
+                                row.file.uniqueCode || row.file.imms || row.file.id
+                              }`}
+                              className="size-4 rounded border-input"
+                            />
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleSearchFileExpansion(row.file.id);
+                              }}
+                              disabled={!hasDetailedSearchRows(row.file)}
+                              aria-label={
+                                row.expanded ? "Collapse file details" : "Expand file details"
+                              }
+                              title={row.expanded ? "Collapse file details" : "Expand file details"}
+                              className="inline-flex size-6 items-center justify-center rounded border border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {row.expanded ? (
+                                <ChevronDown className="size-3.5" />
+                              ) : (
+                                <ChevronRight className="size-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        ) : null}
                       </td>
-                      {selectedTableColumns.map((column) => (
+                      {row.cells.map((cell) => (
                         <td
-                          key={column.key}
+                          key={cell.key}
                           className="max-w-[240px] align-top px-4 py-3 text-muted-foreground"
                         >
                           <div className="max-h-24 overflow-y-auto whitespace-pre-line pr-1 leading-5">
-                            <SearchResultCell
-                              file={file}
-                              column={column}
-                              expandedStageCells={expandedStageCells}
-                              onToggleStageCell={toggleStageCellExpansion}
-                            />
+                            {cell.value}
                           </div>
                         </td>
                       ))}
                       <td className="px-4 py-3 text-right">
-                        <div className="flex flex-wrap justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              printVisibleFile(file, selectedTableColumns);
-                            }}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
-                          >
-                            <Printer className="size-3.5" /> Print
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              printFile(file);
-                            }}
-                            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
-                          >
-                            <Printer className="size-3.5" /> Print timeline
-                          </button>
-                        </div>
+                        {row.isFirstFileRow ? (
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                printVisibleFile(row.file, selectedTableColumns);
+                              }}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
+                            >
+                              <Printer className="size-3.5" /> Print
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                printFile(row.file);
+                              }}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-border bg-card text-foreground hover:bg-accent"
+                            >
+                              <Printer className="size-3.5" /> Print timeline
+                            </button>
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -2763,46 +2920,101 @@ function formatSearchSummaryCell(column: PrintColumn, totals: Record<string, num
   return "-";
 }
 
-function SearchResultCell({
-  file,
-  column,
-  expandedStageCells,
-  onToggleStageCell,
-}: {
+type SearchDisplayColumn = {
+  key: string;
+  label: string;
+  sourceColumn?: PrintColumn;
+  valueIndex: number;
+};
+
+type SearchDisplayRow = {
+  key: string;
   file: FileRecord;
-  column: PrintColumn;
-  expandedStageCells: Set<string>;
-  onToggleStageCell: (cellKey: string) => void;
-}) {
-  if (isCompactStageTableColumn(file, column.key)) {
-    const cellKey = `${file.id}:${column.key}`;
-    const expanded = expandedStageCells.has(cellKey);
-    const summary = getCompactStageTableSummary(file, column);
-    const details = getCompactStageTableDetails(file, column.key);
-    return (
-      <div className="space-y-1.5 whitespace-normal">
-        <div className="text-foreground">{summary || "Stages available"}</div>
-        {expanded ? (
-          <div className="max-h-52 overflow-y-auto rounded-md border border-border bg-background p-2 text-xs leading-5 text-muted-foreground">
-            {details.map((line) => (
-              <div key={line}>{line}</div>
-            ))}
-          </div>
-        ) : null}
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleStageCell(cellKey);
-          }}
-          className="text-xs font-medium text-primary hover:underline"
-        >
-          {expanded ? "Hide stages" : "View stages"}
-        </button>
-      </div>
-    );
-  }
-  return <>{column.getValue(file)}</>;
+  expanded: boolean;
+  isFirstFileRow: boolean;
+  isDetailRow: boolean;
+  cells: Array<{ key: string; value: string }>;
+};
+
+function buildSearchDisplayColumns(columns: PrintColumn[]): SearchDisplayColumn[] {
+  return columns.flatMap((column) => {
+    if (!isSupplyOrderKey(column.key)) {
+      return [{ key: column.key, label: column.label, sourceColumn: column, valueIndex: 0 }];
+    }
+    return getRowwiseSupplyOrderExportHeaders(column).map((label, valueIndex) => ({
+      key: valueIndex === 0 ? column.key : `${column.key}:${valueIndex}`,
+      label,
+      sourceColumn: column,
+      valueIndex,
+    }));
+  });
+}
+
+function buildSearchDisplayRows(
+  files: FileRecord[],
+  columns: PrintColumn[],
+  expandedFileIds: Set<string>,
+): SearchDisplayRow[] {
+  const displayColumns = buildSearchDisplayColumns(columns);
+  return files.flatMap((file) => {
+    const expanded = expandedFileIds.has(file.id);
+    if (!expanded) {
+      return [
+        {
+          key: `${file.id}:summary`,
+          file,
+          expanded,
+          isFirstFileRow: true,
+          isDetailRow: false,
+          cells: displayColumns.map((displayColumn) => ({
+            key: displayColumn.key,
+            value: getCompactSearchDisplayValue(file, displayColumn),
+          })),
+        },
+      ];
+    }
+
+    return getRowwiseSearchExportEntries(file, columns).map((entry, entryIndex) => ({
+      key: `${file.id}:detail:${entryIndex}`,
+      file,
+      expanded,
+      isFirstFileRow: entryIndex === 0,
+      isDetailRow: true,
+      cells: displayColumns.map((displayColumn) => ({
+        key: displayColumn.key,
+        value: getDetailedSearchDisplayValue(file, displayColumn, entry, entryIndex),
+      })),
+    }));
+  });
+}
+
+function getCompactSearchDisplayValue(file: FileRecord, displayColumn: SearchDisplayColumn) {
+  const column = displayColumn.sourceColumn;
+  if (!column) return "";
+  if (displayColumn.valueIndex > 0) return "";
+  return column.getValue(file) || "";
+}
+
+function getDetailedSearchDisplayValue(
+  file: FileRecord,
+  displayColumn: SearchDisplayColumn,
+  entry: RowwiseSearchExportEntry,
+  entryIndex: number,
+) {
+  const column = displayColumn.sourceColumn;
+  if (!column) return "";
+  if (!isSupplyOrderKey(column.key)) return entryIndex === 0 ? column.getValue(file) || "" : "";
+  const values = getRowwiseSupplyOrderExportValues(file, column.key, entry);
+  return String(values[displayColumn.valueIndex] ?? "");
+}
+
+function hasDetailedSearchRows(file: FileRecord) {
+  return rawSupplyOrders(file).some((order) => {
+    const stages = isYes(order.stageDelivery) ? (order.stageDeliveries?.length ?? 0) : 0;
+    const billReturns = normalizeBillReturnCycles(order.billReturnCycles).length;
+    const supplementaryBills = normalizeSupplementaryBillsForTable(order.supplementaryBills).length;
+    return stages > 0 || billReturns > 0 || supplementaryBills > 0;
+  });
 }
 
 function DrillPathTrail({
@@ -3833,6 +4045,8 @@ function getSupplyOrderCurrentMilestoneValue(file: FileRecord) {
 
 function getSupplyOrderValue(order: SupplyOrderDetail, key: SupplyOrderKey) {
   if (key === "billReturnCycles") return formatBillReturnCycles(order.billReturnCycles);
+  const supplementaryValue = getSupplementaryBillTableValue(order.supplementaryBills, key);
+  if (supplementaryValue !== undefined) return supplementaryValue;
   if (key === "soValueCapital" || key === "soValueRevenue") {
     return getSupplyOrderAmountFieldValue(order, key);
   }
@@ -3865,77 +4079,105 @@ function formatBillReturnCycles(cycles: BillReturnCycle[] | undefined) {
     .join("\n");
 }
 
-function isCompactStageTableColumn(file: FileRecord, key: string) {
-  if (stagedDeliveryWorkflowKeys.has(key)) {
-    return rawSupplyOrders(file).some(
-      (order) => isYes(order.stageDelivery) && (order.stageDeliveries?.length ?? 0) > 1,
-    );
+function getSupplementaryBillTableValue(
+  bills: SupplementaryBillDetail[] | undefined,
+  key: SupplyOrderKey,
+) {
+  const rows = normalizeSupplementaryBillsForTable(bills);
+  if (key === "supplementaryBills") return formatSupplementaryBills(rows);
+  if (key === "supplementaryBillNo") return formatSupplementaryBillField(rows, "billNo");
+  if (key === "supplementaryBillAmountCapital") {
+    return formatSupplementaryBillField(rows, "billAmountCapital");
   }
-  if (stagedPaymentWorkflowKeys.has(key)) {
-    return rawSupplyOrders(file).some(
-      (order) =>
-        isYes(order.stageDelivery) &&
-        isYes(order.stagePayment) &&
-        (order.stageDeliveries?.length ?? 0) > 1,
-    );
+  if (key === "supplementaryBillAmountRevenue") {
+    return formatSupplementaryBillField(rows, "billAmountRevenue");
   }
-  return false;
+  if (key === "supplementaryBillSentForPaymentDate") {
+    return formatSupplementaryBillField(rows, "billSentForPaymentDate", true);
+  }
+  if (key === "supplementaryBillReturnCycles") return formatSupplementaryBillReturnCycles(rows);
+  if (key === "supplementaryBillPaymentDate") {
+    return formatSupplementaryBillField(rows, "paymentDate", true);
+  }
+  if (key === "supplementaryBillPaymentMode") {
+    return formatSupplementaryBillField(rows, "paymentMode");
+  }
+  if (key === "supplementaryBillActualPaymentCapital") {
+    return formatSupplementaryBillField(rows, "actualPaymentCapital");
+  }
+  if (key === "supplementaryBillActualPaymentRevenue") {
+    return formatSupplementaryBillField(rows, "actualPaymentRevenue");
+  }
+  if (key === "supplementaryBillRemarks") return formatSupplementaryBillField(rows, "remarks");
+  return undefined;
 }
 
-function getCompactStageEntries(file: FileRecord, key: string) {
-  return rawSupplyOrders(file).flatMap((order, orderIndex) =>
-    (order.stageDeliveries ?? []).map((stage, stageIndex) => ({
-      label: `S.O. ${orderIndex + 1} Delivery-${stageIndex + 1}`,
-      value: getStageValueForTableSummary(stage, key),
-    })),
+function normalizeSupplementaryBillsForTable(bills: SupplementaryBillDetail[] | undefined) {
+  return (bills ?? []).filter((bill) =>
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+      formatBillReturnCycles(bill.billReturnCycles),
+    ].some((value) => String(value ?? "").trim()),
   );
 }
 
-function getCompactStageTableSummary(file: FileRecord, column: PrintColumn) {
-  const entries = getCompactStageEntries(file, column.key);
-  const stageCount = entries.length;
-  if (!stageCount) return "";
-  const values = entries.map((entry) => entry.value).filter(Boolean);
-  if (column.key === "stageDeliveryLabel") return `Stages: ${stageCount}`;
-  if (column.key === "stageAmountCapital" || column.key === "stageAmountRevenue") {
-    const total = values.reduce((sum, value) => sum + (parseAmount(value) ?? 0), 0);
-    return total
-      ? `Stages: ${stageCount}; total ${column.label}: ${formatThousandsAndLakhs(total)}`
-      : `Stages: ${stageCount}`;
-  }
-  if (isSupplyOrderDateField(column.key as SupplyOrderKey)) {
-    const sortedDates = values.map(toIsoDateForSort).filter(Boolean).sort();
-    if (sortedDates.length) {
-      const first = sortedDates[0] ?? "";
-      const last = sortedDates[sortedDates.length - 1] ?? "";
-      const range =
-        first === last
-          ? formatIsoDateForDisplay(first)
-          : `${formatIsoDateForDisplay(first)} to ${formatIsoDateForDisplay(last)}`;
-      return `Stages: ${stageCount}; ${column.label}: ${range}`;
-    }
-  }
-  const uniqueValues = Array.from(new Set(values));
-  if (!uniqueValues.length) return `Stages: ${stageCount}`;
-  return `Stages: ${stageCount}; ${column.label}: ${uniqueValues.slice(0, 2).join(", ")}${
-    uniqueValues.length > 2 ? ` +${uniqueValues.length - 2}` : ""
-  }`;
-}
-
-function getCompactStageTableDetails(file: FileRecord, key: string) {
-  const entries = getCompactStageEntries(file, key);
-  return entries.map((entry) => `${entry.label}: ${entry.value || ""}`);
-}
-
-function getStageValueForTableSummary(
-  stage: NonNullable<SupplyOrderDetail["stageDeliveries"]>[number],
-  key: string,
+function formatSupplementaryBillField(
+  bills: SupplementaryBillDetail[],
+  key: keyof SupplementaryBillDetail,
+  isDate = false,
 ) {
-  if (key === "stageDeliveryLabel") return "";
-  if (key === "stageAmountCapital") return String(stage.stageAmountCapital ?? "");
-  if (key === "stageAmountRevenue") return String(stage.stageAmountRevenue ?? "");
-  const value = String(stage[key as keyof typeof stage] ?? "");
-  return isSupplyOrderDateField(key as SupplyOrderKey) ? formatIsoDateForDisplay(value) : value;
+  return bills
+    .map((bill, index, rows) => {
+      const rawValue = String(bill[key] ?? "").trim();
+      if (!rawValue) return "";
+      const value = isDate ? formatIsoDateForDisplay(rawValue) : rawValue;
+      return rows.length > 1 ? `${index + 1}. ${value}` : value;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function formatSupplementaryBillReturnCycles(bills: SupplementaryBillDetail[]) {
+  return bills
+    .map((bill, index, rows) => {
+      const value = formatBillReturnCycles(bill.billReturnCycles);
+      if (!value) return "";
+      return rows.length > 1 ? `${index + 1}. ${value}` : value;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function formatSupplementaryBills(bills: SupplementaryBillDetail[]) {
+  return bills
+    .map((bill, index, rows) => {
+      const parts = [
+        bill.billNo ? `Bill No.: ${bill.billNo}` : "",
+        bill.billAmountCapital ? `Amount capital: ${bill.billAmountCapital}` : "",
+        bill.billAmountRevenue ? `Amount revenue: ${bill.billAmountRevenue}` : "",
+        bill.billSentForPaymentDate
+          ? `Submitted: ${formatIsoDateForDisplay(bill.billSentForPaymentDate)}`
+          : "",
+        formatBillReturnCycles(bill.billReturnCycles),
+        bill.paymentDate ? `Paid: ${formatIsoDateForDisplay(bill.paymentDate)}` : "",
+        bill.paymentMode ? `Mode: ${bill.paymentMode}` : "",
+        bill.actualPaymentCapital ? `Actual capital: ${bill.actualPaymentCapital}` : "",
+        bill.actualPaymentRevenue ? `Actual revenue: ${bill.actualPaymentRevenue}` : "",
+        bill.remarks ? `Remarks: ${bill.remarks}` : "",
+      ].filter(Boolean);
+      if (!parts.length) return "";
+      return rows.length > 1 ? `${index + 1}. ${parts.join("; ")}` : parts.join("; ");
+    })
+    .filter(Boolean)
+    .join("; ");
 }
 
 function toIsoDateForSort(value: string) {
@@ -5022,6 +5264,160 @@ function hasAdvancePaymentPending(file: FileRecord) {
   );
 }
 
+function hasSupplementaryBillPending(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillSubmitted);
+  });
+}
+
+function hasSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillPaid);
+  });
+}
+
+function hasReturnedSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isReturnedSupplementaryBillPaid);
+  });
+}
+
+function hasSupplementaryBillReturnHistoryFile(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(hasSupplementaryBillReturnHistory);
+  });
+}
+
+function hasSupplementaryBillReturned(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillReturned);
+  });
+}
+
+function hasSupplementaryBillResubmitted(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillResubmitted);
+  });
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is NonNullable<SupplyOrderDetail["supplementaryBills"]>[number] =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillData(bill: SupplementaryBillDetail) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleData))
+  );
+}
+
+function hasBillReturnCycleData(cycle: BillReturnCycle) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
+function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(hasBillReturnCycleData);
+}
+
+function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    !hasCompletedSupplementaryBillReturn(bill) &&
+    !hasFilledString(bill.paymentDate)
+  );
+}
+
+function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
+  return !hasFilledString(bill.paymentDate) && hasOpenSupplementaryBillReturn(bill);
+}
+
+function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    hasCompletedSupplementaryBillReturn(bill)
+  );
+}
+
+function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return hasSupplementaryBillData(bill) && hasFilledString(bill.paymentDate);
+}
+
+function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function getSupplementaryReturnedBillCashOutgoEventDate(
+  bill: SupplementaryBillDetail,
+  mode: string,
+) {
+  const cycles = bill.billReturnCycles ?? [];
+  const returnedDates = cycles
+    .filter((cycle) => hasFilledString(cycle.returnedDate))
+    .map((cycle) => cycle.returnedDate);
+  const openReturnedDates = cycles
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.returnedDate);
+  const resubmittedDates = cycles
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.resubmittedDate);
+
+  if (mode === "supplementaryReturnedBills") return earliestDate(returnedDates);
+  if (mode === "supplementaryPendingReturnedBills") {
+    if (hasFilledString(bill.paymentDate)) return undefined;
+    return earliestDate(openReturnedDates);
+  }
+  if (mode === "supplementaryReturnedBillsResubmitted") {
+    if (hasFilledString(bill.paymentDate) || openReturnedDates.length || !resubmittedDates.length) {
+      return undefined;
+    }
+    return earliestDate(resubmittedDates);
+  }
+  if (mode === "supplementaryReturnedBillsPaid") {
+    return returnedDates.length && hasFilledString(bill.paymentDate) ? bill.paymentDate : undefined;
+  }
+  return undefined;
+}
+
 function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
   return isYes(file.demandCancelled) || isYes(order.soCancelled);
 }
@@ -5150,7 +5546,10 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
     return daysInStage !== undefined && daysInStage > thresholdDays;
   })();
   return (
-    biddingMatch || mainMatch || isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey)
+    biddingMatch ||
+    mainMatch ||
+    isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey) ||
+    isSupplementaryBillReturnedDelayMatch(file, thresholdDays, selectedMilestoneKey)
   );
 }
 
@@ -5224,11 +5623,7 @@ function isOrderDelayStatusMatch(
     .filter((milestone) => selectedMilestoneKey === "all" || milestone.key === selectedMilestoneKey)
     .some((milestone) =>
       supplyOrderMilestoneRows(file, milestone.current).some((order) => {
-        const paymentPriorityDelay = isPaymentPriorityDelayForContract(
-          file,
-          order,
-          thresholdDays,
-        );
+        const paymentPriorityDelay = isPaymentPriorityDelayForContract(file, order, thresholdDays);
         if (isSupplyOrderCancelled(file, order)) return false;
         if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return false;
         if (milestone.key === "jobCompletion" && paymentPriorityDelay) {
@@ -5309,6 +5704,12 @@ function getOrderDelayMilestones() {
         hasOpenBillReturn(order) ? "" : order.billSentForPaymentDate,
     },
     {
+      key: "billReturnedForCorrection",
+      current: "billreturnedforcorrection",
+      start: (_file: FileRecord, order: SupplyOrderDetail) => getEarliestOpenBillReturnDate(order),
+      complete: (order: SupplyOrderDetail) => (hasOpenBillReturn(order) ? undefined : "9999-12-31"),
+    },
+    {
       key: "payment",
       current: "payment",
       start: (file: FileRecord, order: SupplyOrderDetail) =>
@@ -5318,6 +5719,46 @@ function getOrderDelayMilestones() {
       complete: (order: SupplyOrderDetail) => order.paymentDate,
     },
   ];
+}
+
+function isSupplementaryBillReturnedDelayMatch(
+  file: FileRecord,
+  thresholdDays: number,
+  selectedMilestoneKey: string,
+) {
+  if (
+    selectedMilestoneKey !== "all" &&
+    selectedMilestoneKey !== supplementaryBillReturnedDelayMilestoneKey
+  ) {
+    return false;
+  }
+  if (isYes(file.demandCancelled)) return false;
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some((bill) => {
+      if (!isSupplementaryBillReturned(bill)) return false;
+      const daysInStage = getDaysSinceDate(getEarliestOpenSupplementaryBillReturnDate(bill));
+      return daysInStage !== undefined && daysInStage > thresholdDays;
+    });
+  });
+}
+
+function getEarliestOpenBillReturnDate(order: SupplyOrderDetail) {
+  return normalizeOpenReturnDates(order.billReturnCycles)[0];
+}
+
+function getEarliestOpenSupplementaryBillReturnDate(bill: SupplementaryBillDetail) {
+  return normalizeOpenReturnDates(bill.billReturnCycles)[0];
+}
+
+function normalizeOpenReturnDates(cycles: SupplyOrderDetail["billReturnCycles"]) {
+  return (cycles ?? [])
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.returnedDate)
+    .filter((date): date is string => hasFilledString(date))
+    .sort();
 }
 
 function getSupplyOrderStageStartDate(file: FileRecord) {
@@ -5584,14 +6025,24 @@ function readCashOutgoFilter(filter: string) {
     "expectedReceipt",
     "expectedReceiptThrough",
     "expectedReceiptPendingBill",
+    "expectedReceiptPendingBillThrough",
     "billPreparation",
+    "billPreparationThrough",
     "billSent",
+    "billSentThrough",
     "actual",
     "actualThrough",
+    "expectedDpThrough",
+    "supplementaryBillSent",
+    "supplementaryActual",
     "returnedBills",
     "pendingReturnedBills",
     "returnedBillsResubmitted",
     "returnedBillsPaid",
+    "supplementaryReturnedBills",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryReturnedBillsPaid",
   ];
   if (
     !validModes.includes(mode) ||
@@ -5637,17 +6088,38 @@ function isMissingOrAfter(date: string | undefined, limit: string | undefined) {
   return !hasFilledString(date) || Boolean(limit && date! > limit);
 }
 
+function earliestDate(dates: Array<string | undefined>) {
+  return dates.filter(hasFilledString).sort()[0];
+}
+
+function getActiveSupplementaryBillSubmissionDate(bill: SupplementaryBillDetail) {
+  const resubmittedDates = (bill.billReturnCycles ?? [])
+    .map((cycle) => cycle.resubmittedDate)
+    .filter(hasFilledString)
+    .sort();
+  return resubmittedDates[resubmittedDates.length - 1] ?? bill.billSentForPaymentDate;
+}
+
 function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
   const parsed = readCashOutgoFilter(filter);
   if (!parsed || isCancelledFile(file)) return false;
   const orders =
     parsed.mode === "billPreparation" ||
+    parsed.mode === "billPreparationThrough" ||
     parsed.mode === "billSent" ||
+    parsed.mode === "billSentThrough" ||
     parsed.mode === "actual" ||
+    parsed.mode === "actualThrough" ||
+    parsed.mode === "supplementaryBillSent" ||
+    parsed.mode === "supplementaryActual" ||
     parsed.mode === "returnedBills" ||
     parsed.mode === "pendingReturnedBills" ||
     parsed.mode === "returnedBillsResubmitted" ||
-    parsed.mode === "returnedBillsPaid"
+    parsed.mode === "returnedBillsPaid" ||
+    parsed.mode === "supplementaryReturnedBills" ||
+    parsed.mode === "supplementaryPendingReturnedBills" ||
+    parsed.mode === "supplementaryReturnedBillsResubmitted" ||
+    parsed.mode === "supplementaryReturnedBillsPaid"
       ? filePaymentOrders(file)
       : fileSupplyOrders(file);
   return orders.some((order) => {
@@ -5709,38 +6181,85 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
         dateInRange(reportDate, parsed.fromDate, parsed.toDate)
       );
     }
-    if (parsed.mode === "billPreparation") {
+    if (parsed.mode === "billPreparation" || parsed.mode === "billPreparationThrough") {
       if (isSupplyOrderCancelled(file, order)) return false;
+      const throughDate =
+        parsed.mode === "billPreparationThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
       const reportDate = getReceiptPendingBillReportDate(file, order);
-      return (
+      const orderMatches =
         (isAdvancePayment || hasFilledString(reportDate)) &&
         hasFilledString(order.billPreparationDate) &&
-        (isAdvancePayment || isOnOrBefore(reportDate, toDate)) &&
-        isOnOrBefore(order.billPreparationDate, toDate) &&
-        (toDate
-          ? isMissingOrAfter(order.billSentForPaymentDate, toDate)
+        (isAdvancePayment || isOnOrBefore(reportDate, throughDate ?? toDate)) &&
+        isOnOrBefore(order.billPreparationDate, throughDate ?? toDate) &&
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.billSentForPaymentDate, throughDate ?? toDate) ||
+            hasOpenBillReturn(order)
           : !hasFilledString(order.billSentForPaymentDate)) &&
-        (toDate
-          ? isMissingOrAfter(order.paymentDate, toDate)
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.paymentDate, throughDate ?? toDate)
           : !hasFilledString(order.paymentDate)) &&
-        rangeMatches(order.billPreparationDate)
-      );
+        (throughDate
+          ? isOnOrBefore(order.billPreparationDate, throughDate) &&
+            dateInRange(order.billPreparationDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.billPreparationDate));
+      const supplementaryMatches = getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate)) return false;
+        const returnedDate = getSupplementaryReturnedBillCashOutgoEventDate(
+          bill,
+          "supplementaryPendingReturnedBills",
+        );
+        if (!returnedDate) return false;
+        if (throughDate) {
+          return (
+            isOnOrBefore(returnedDate, throughDate) &&
+            dateInRange(returnedDate, parsed.fromDate, throughDate)
+          );
+        }
+        return rangeMatches(returnedDate);
+      });
+      return orderMatches || supplementaryMatches;
     }
-    if (parsed.mode === "billSent") {
+    if (parsed.mode === "billSent" || parsed.mode === "billSentThrough") {
       if (isSupplyOrderCancelled(file, order)) return false;
       const reportDate = getReceiptPendingBillReportDate(file, order);
-      return (
+      const throughDate =
+        parsed.mode === "billSentThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
+      const orderMatches =
         (isAdvancePayment || hasFilledString(reportDate)) &&
         hasFilledString(order.billPreparationDate) &&
         hasFilledString(order.billSentForPaymentDate) &&
-        (isAdvancePayment || isOnOrBefore(reportDate, toDate)) &&
-        isOnOrBefore(order.billPreparationDate, toDate) &&
-        isOnOrBefore(order.billSentForPaymentDate, toDate) &&
-        (toDate
-          ? isMissingOrAfter(order.paymentDate, toDate)
+        (isAdvancePayment || isOnOrBefore(reportDate, throughDate ?? toDate)) &&
+        isOnOrBefore(order.billPreparationDate, throughDate ?? toDate) &&
+        isOnOrBefore(order.billSentForPaymentDate, throughDate ?? toDate) &&
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.paymentDate, throughDate ?? toDate)
           : !hasFilledString(order.paymentDate)) &&
-        rangeMatches(order.billSentForPaymentDate)
-      );
+        (throughDate
+          ? isOnOrBefore(order.billSentForPaymentDate, throughDate) &&
+            dateInRange(order.billSentForPaymentDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.billSentForPaymentDate));
+      const supplementaryMatches = getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) return false;
+        const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        if (!hasFilledString(submissionDate)) return false;
+        if (throughDate) {
+          return (
+            isOnOrBefore(submissionDate, throughDate) &&
+            isMissingOrAfter(bill.paymentDate, throughDate) &&
+            dateInRange(submissionDate, parsed.fromDate, throughDate)
+          );
+        }
+        return (
+          isOnOrBefore(submissionDate, toDate) &&
+          (toDate ? isMissingOrAfter(bill.paymentDate, toDate) : true) &&
+          rangeMatches(submissionDate)
+        );
+      });
+      return orderMatches || supplementaryMatches;
     }
     if (
       parsed.mode === "returnedBills" ||
@@ -5752,11 +6271,59 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       const eventDate = getReturnedBillCashOutgoEventDate(order, parsed.mode);
       return rangeMatches(eventDate);
     }
-    return (
-      hasFilledString(order.paymentDate) &&
-      !(isYes(order.soCancelled) && hasFilledString(order.soCancelledDate)) &&
-      rangeMatches(order.paymentDate)
-    );
+    if (
+      parsed.mode === "supplementaryReturnedBills" ||
+      parsed.mode === "supplementaryPendingReturnedBills" ||
+      parsed.mode === "supplementaryReturnedBillsResubmitted" ||
+      parsed.mode === "supplementaryReturnedBillsPaid"
+    ) {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some((bill) =>
+        rangeMatches(getSupplementaryReturnedBillCashOutgoEventDate(bill, parsed.mode)),
+      );
+    }
+    if (parsed.mode === "actual" || parsed.mode === "actualThrough") {
+      const throughDate =
+        parsed.mode === "actualThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
+      const orderMatches =
+        hasFilledString(order.paymentDate) &&
+        !(isYes(order.soCancelled) && hasFilledString(order.soCancelledDate)) &&
+        (throughDate
+          ? isOnOrBefore(order.paymentDate, throughDate) &&
+            dateInRange(order.paymentDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.paymentDate));
+      const supplementaryMatches = getSupplementaryBills(order).some(
+        (bill) =>
+          hasFilledString(bill.paymentDate) &&
+          (throughDate
+            ? isOnOrBefore(bill.paymentDate, throughDate) &&
+              dateInRange(bill.paymentDate, parsed.fromDate, throughDate)
+            : rangeMatches(bill.paymentDate)),
+      );
+      return orderMatches || supplementaryMatches;
+    }
+    if (parsed.mode === "supplementaryBillSent") {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) return false;
+        const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        return (
+          hasFilledString(submissionDate) &&
+          isOnOrBefore(submissionDate, toDate) &&
+          (toDate ? isMissingOrAfter(bill.paymentDate, toDate) : true) &&
+          rangeMatches(submissionDate)
+        );
+      });
+    }
+    if (parsed.mode === "supplementaryActual") {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some(
+        (bill) => hasFilledString(bill.paymentDate) && rangeMatches(bill.paymentDate),
+      );
+    }
+    return false;
   });
 }
 
@@ -5941,6 +6508,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = filter.slice("manualMilestoneCurrent:".length);
     const normalized = normalizeMilestoneName(milestone);
     if (normalized === "bankguarantee") return isBgToBeReceived(file);
+    if (normalized === "supplementarybillreturnedforcorrection") {
+      return hasSupplementaryBillReturned(file);
+    }
     if (normalized === "refloatbidding") {
       return !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver);
     }
@@ -6042,6 +6612,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "advancePaid") return hasAdvancePaymentPaid(file);
   if (filter === "advancePending") return hasAdvancePaymentPending(file);
+  if (filter === "supplementaryBill:any") return hasSupplementaryBillReturnHistoryFile(file);
+  if (filter === "supplementaryBill:submitted" || filter === "supplementaryBill:pending")
+    return hasSupplementaryBillPending(file);
+  if (filter === "supplementaryBill:returned") return hasSupplementaryBillReturned(file);
+  if (filter === "supplementaryBill:resubmitted") return hasSupplementaryBillResubmitted(file);
+  if (filter === "supplementaryBill:paid") return hasSupplementaryBillPaid(file);
+  if (filter === "supplementaryBill:returnPaid") return hasReturnedSupplementaryBillPaid(file);
   if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
@@ -6380,6 +6957,37 @@ function getDestinationFocus(
       focusTarget: `billreturnedforcorrection:${focusState}`,
     };
   }
+  if (dashboardFilter.startsWith("supplementaryBill:")) {
+    const [, rawState = "submitted"] = dashboardFilter.split(":");
+    const state = decodeStatusFilterPart(rawState);
+    const focusState =
+      state === "any" || state === "returned"
+        ? "returned"
+        : state === "resubmitted"
+          ? "resubmitted"
+          : state === "paid" || state === "returnPaid"
+            ? "paid"
+            : "submitted";
+    return {
+      section: "Supply order and payment",
+      milestone: undefined,
+      focusTarget: `supplementarybill:${focusState}`,
+    };
+  }
+  if (dashboardFilter.startsWith("statusSummary:")) {
+    const [, rawMilestone = "", rawStage = ""] = dashboardFilter.split(":");
+    const milestone = decodeStatusFilterPart(rawMilestone);
+    const stage = decodeStatusFilterPart(rawStage);
+    if (normalizeMilestoneName(milestone) === "supplementarybills") {
+      const state = normalizeStatusStage(stage);
+      const focusState = ["returned", "resubmitted", "paid"].includes(state) ? state : "submitted";
+      return {
+        section: "Supply order and payment",
+        milestone: undefined,
+        focusTarget: `supplementarybill:${focusState}`,
+      };
+    }
+  }
   if (dashboardFilter.startsWith("status4:")) {
     const [, rawMilestone = ""] = dashboardFilter.split(":");
     const milestone = decodeStatusFilterPart(rawMilestone);
@@ -6409,6 +7017,13 @@ function getDestinationFocus(
   if (simpleFileDestination) return simpleFileDestination;
   if (dashboardFilter.startsWith("manualMilestoneCurrent:")) {
     const milestone = dashboardFilter.slice("manualMilestoneCurrent:".length);
+    if (normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection") {
+      return {
+        section: "Supply order and payment",
+        milestone: undefined,
+        focusTarget: "supplementarybill:current",
+      };
+    }
     if (isSupplyOrderDrivenMilestoneName(milestone)) {
       return {
         section: "Supply order and payment",
@@ -6696,6 +7311,13 @@ function getDestinationFocus(
     if (milestoneKey === biddingDelayMilestoneKey) {
       return { section: "Bidding details", milestone: undefined, focusTarget: undefined };
     }
+    if (milestoneKey === supplementaryBillReturnedDelayMilestoneKey) {
+      return {
+        section: "Supply order and payment",
+        milestone: undefined,
+        focusTarget: "supplementarybill:returned",
+      };
+    }
     const milestone =
       milestoneDefinitions.find((item) => item.key === milestoneKey)?.label ??
       delayStatusMilestoneLabels[milestoneKey];
@@ -6904,14 +7526,23 @@ function getCashOutgoFocusTarget(filter: string) {
   for (const mode of [
     "actualThrough",
     "actual",
+    "billSentThrough",
     "billSent",
+    "supplementaryReturnedBillsPaid",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBills",
     "returnedBillsPaid",
     "returnedBillsResubmitted",
     "pendingReturnedBills",
     "returnedBills",
+    "billPreparationThrough",
     "billPreparation",
+    "expectedReceiptPendingBillThrough",
     "expectedReceiptPendingBill",
+    "expectedReceiptThrough",
     "expectedReceipt",
+    "expectedDpThrough",
     "expectedDp",
   ]) {
     if (modes.includes(mode)) return getCashOutgoModeFocusTarget(mode);
@@ -6919,17 +7550,168 @@ function getCashOutgoFocusTarget(filter: string) {
   return undefined;
 }
 
-function getCashOutgoModeFocusTarget(mode: string | undefined) {
-  if (mode === "expectedDp") return "payment:pending";
-  if (mode === "expectedReceipt" || mode === "expectedReceiptThrough") return "payment:pending";
-  if (mode === "expectedReceiptPendingBill") return "billpreparation:pending";
-  if (mode === "billPreparation") return "billsentforpayment:pending";
-  if (mode === "billSent") return "payment:pending";
-  if (mode === "returnedBills" || mode === "pendingReturnedBills") {
-    return "billreturnedforcorrection:pending";
+function getDashboardFilterFileFocusTarget(file: FileRecord, filter: string | undefined) {
+  if (!filter?.startsWith("cashOutgo")) return undefined;
+  return getCashOutgoFileFocusTarget(file, filter);
+}
+
+function getCashOutgoFileFocusTarget(file: FileRecord, filter: string) {
+  if (filter.startsWith("cashOutgo:")) {
+    const parsed = readCashOutgoFilter(filter);
+    return parsed ? getCashOutgoParsedFileFocusTarget(file, parsed) : undefined;
   }
-  if (mode === "returnedBillsResubmitted") return "billsentforpayment:completed";
-  if (mode === "returnedBillsPaid") return "payment:completed";
+  if (!filter.startsWith("cashOutgoAny:")) return undefined;
+  const [
+    ,
+    rawModes = "",
+    rawMonthKey = "",
+    rawOffsetDays = "0",
+    rawFromDate = "",
+    rawToDate = "",
+    rawAsOfDate = "",
+  ] = filter.split(":");
+  const modes = rawModes
+    .split(",")
+    .map((mode) => decodeStatusFilterPart(mode).trim())
+    .filter(Boolean);
+  for (const mode of getCashOutgoFocusPriorityModes()) {
+    if (!modes.includes(mode)) continue;
+    const modeFilter = [
+      "cashOutgo",
+      mode,
+      rawMonthKey,
+      rawOffsetDays,
+      rawFromDate,
+      rawToDate,
+      rawAsOfDate,
+    ].join(":");
+    if (!isCashOutgoFilterMatch(file, modeFilter)) continue;
+    const parsed = readCashOutgoFilter(modeFilter);
+    if (!parsed) continue;
+    return getCashOutgoParsedFileFocusTarget(file, parsed);
+  }
+  return undefined;
+}
+
+function getCashOutgoFocusPriorityModes() {
+  return [
+    "actualThrough",
+    "actual",
+    "billSentThrough",
+    "billSent",
+    "supplementaryReturnedBillsPaid",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBills",
+    "returnedBillsPaid",
+    "returnedBillsResubmitted",
+    "pendingReturnedBills",
+    "returnedBills",
+    "billPreparationThrough",
+    "billPreparation",
+    "expectedReceiptPendingBillThrough",
+    "expectedReceiptPendingBill",
+    "expectedReceiptThrough",
+    "expectedReceipt",
+    "expectedDpThrough",
+    "expectedDp",
+  ];
+}
+
+function getCashOutgoParsedFileFocusTarget(
+  file: FileRecord,
+  parsed: NonNullable<ReturnType<typeof readCashOutgoFilter>>,
+) {
+  return (
+    getSupplementaryCashOutgoMatchedFocusTarget(file, parsed) ??
+    getCashOutgoModeFocusTarget(parsed.mode)
+  );
+}
+
+function getSupplementaryCashOutgoMatchedFocusTarget(
+  file: FileRecord,
+  parsed: NonNullable<ReturnType<typeof readCashOutgoFilter>>,
+) {
+  if (parsed.mode === "supplementaryBillSent") return "supplementarybill:submitted";
+  if (parsed.mode === "supplementaryActual") return "supplementarybill:paid";
+  if (parsed.mode === "supplementaryReturnedBills") return "supplementarybill:anyreturned";
+  if (parsed.mode === "supplementaryPendingReturnedBills") return "supplementarybill:returned";
+  if (parsed.mode === "supplementaryReturnedBillsResubmitted")
+    return "supplementarybill:resubmitted";
+  if (parsed.mode === "supplementaryReturnedBillsPaid") return "supplementarybill:paid";
+  if (
+    parsed.mode !== "billPreparation" &&
+    parsed.mode !== "billPreparationThrough" &&
+    parsed.mode !== "billSent" &&
+    parsed.mode !== "billSentThrough" &&
+    parsed.mode !== "actual" &&
+    parsed.mode !== "actualThrough"
+  ) {
+    return undefined;
+  }
+
+  const throughDate = parsed.mode.endsWith("Through")
+    ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+    : undefined;
+  const toDate = parsed.toDate ?? parsed.asOfDate;
+  const dateMatches = (date: string | undefined) =>
+    throughDate
+      ? isOnOrBefore(date, throughDate) && dateInRange(date, parsed.fromDate, throughDate)
+      : monthMatches(date, parsed.monthKey) && dateInRange(date, parsed.fromDate, parsed.toDate);
+
+  for (const order of filePaymentOrders(file)) {
+    if (isSupplyOrderCancelled(file, order)) continue;
+    for (const bill of getSupplementaryBills(order)) {
+      if (parsed.mode === "billPreparation" || parsed.mode === "billPreparationThrough") {
+        if (hasFilledString(bill.paymentDate)) continue;
+        const returnedDate = getSupplementaryReturnedBillCashOutgoEventDate(
+          bill,
+          "supplementaryPendingReturnedBills",
+        );
+        if (dateMatches(returnedDate)) return "supplementarybill:returned";
+      }
+      if (parsed.mode === "billSent" || parsed.mode === "billSentThrough") {
+        if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) continue;
+        const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        if (!hasFilledString(submissionDate)) continue;
+        const stateMatches = throughDate
+          ? isOnOrBefore(submissionDate, throughDate) &&
+            isMissingOrAfter(bill.paymentDate, throughDate)
+          : isOnOrBefore(submissionDate, toDate) &&
+            (toDate ? isMissingOrAfter(bill.paymentDate, toDate) : true);
+        if (stateMatches && dateMatches(submissionDate)) return "supplementarybill:submitted";
+      }
+      if (parsed.mode === "actual" || parsed.mode === "actualThrough") {
+        if (hasFilledString(bill.paymentDate) && dateMatches(bill.paymentDate)) {
+          return "supplementarybill:paid";
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getCashOutgoModeFocusTarget(mode: string | undefined) {
+  if (mode === "expectedDp" || mode === "expectedDpThrough") return "payment:pending";
+  if (mode === "expectedReceipt" || mode === "expectedReceiptThrough") return "payment:pending";
+  if (mode === "expectedReceiptPendingBill" || mode === "expectedReceiptPendingBillThrough") {
+    return "billpreparation:pending";
+  }
+  if (mode === "billPreparation" || mode === "billPreparationThrough") {
+    return "billsentforpayment:pending";
+  }
+  if (mode === "billSent" || mode === "billSentThrough") return "payment:pending";
+  if (mode === "supplementaryBillSent") return "supplementarybill:submitted";
+  if (mode === "supplementaryActual") return "supplementarybill:paid";
+  if (mode === "returnedBills") return "billreturnedforcorrection:any";
+  if (mode === "pendingReturnedBills") return "billreturnedforcorrection:pending";
+  if (mode === "returnedBillsResubmitted") return "billreturnedforcorrection:resubmitted";
+  if (mode === "returnedBillsPaid") return "billreturnedforcorrection:paid";
+  if (mode === "supplementaryReturnedBills") return "supplementarybill:anyreturned";
+  if (mode === "supplementaryPendingReturnedBills") return "supplementarybill:returned";
+  if (mode === "supplementaryReturnedBillsResubmitted") return "supplementarybill:resubmitted";
+  if (mode === "supplementaryReturnedBillsPaid") return "supplementarybill:paid";
   if (mode === "actual" || mode === "actualThrough") return "payment:completed";
   return undefined;
 }
@@ -7014,6 +7796,13 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return orders.some(hasOpenBillReturn);
     if (stageKey === "completed") return orders.some(hasCompletedBillReturn);
     if (stageKey === "returnedpaid") return orders.some(hasReturnedBillPaid);
+  }
+
+  if (milestoneKey === "supplementarybills") {
+    if (stageKey === "submitted") return hasSupplementaryBillPending(file);
+    if (stageKey === "returned") return hasSupplementaryBillReturned(file);
+    if (stageKey === "resubmitted") return hasSupplementaryBillResubmitted(file);
+    if (stageKey === "paid") return hasSupplementaryBillPaid(file);
   }
 
   if (milestoneKey === "bankguarantee" || isBgMilestoneKey(milestoneKey)) {
@@ -7563,6 +8352,7 @@ function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
   }
 
   const title = file.uniqueCode || file.imms || "File record";
+  const table = buildSearchExportTable([file], columns, "rowwise");
   void downloadBackendExport({
     format: "pdf",
     title: "FileHistory File Record",
@@ -7570,12 +8360,8 @@ function printVisibleFile(file: FileRecord, columns: PrintColumn[]) {
     fileName: `${getExportFileName(title)}.pdf`,
     tables: [
       {
-        headers: ["S.No.", "Field", "Value"],
-        rows: columns.map((column, index) => [
-          index + 1,
-          column.label,
-          column.getValue(file) || "",
-        ]),
+        headers: table.headers,
+        rows: table.rows,
       },
     ],
   });
@@ -7671,21 +8457,24 @@ function buildRowwiseSearchExportTable(
     ...fileColumns.map((column) => column.label),
     "S.O.",
     "Delivery stage",
-    ...supplyOrderColumns.map((column) => column.label),
+    "Supplementary bill",
+    "Bill return cycle",
+    ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: Array<Array<string | number>> = [];
   files.forEach((file) => {
-    const rowEntries = getRowwiseSearchExportEntries(file);
+    const rowEntries = getRowwiseSearchExportEntries(file, supplyOrderColumns);
     rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         rows.length + 1,
         ...fileColumns.map((column) => (entryIndex === 0 ? column.getValue(file) || "" : "")),
         entry.order && isFirstRowwiseOrderRow(entry) ? String(entry.orderIndex + 1) : "",
         entry.stage ? `Delivery-${entry.stageIndex + 1}` : "",
-        ...supplyOrderColumns.map((column) => {
-          const value = getRowwiseSupplyOrderExportValue(file, column.key as SupplyOrderKey, entry);
-          return value || "";
-        }),
+        entry.supplementaryBill ? String(entry.supplementaryBillIndex + 1) : "",
+        entry.billReturnCycle ? String(entry.billReturnCycleIndex + 1) : "",
+        ...supplyOrderColumns.flatMap((column) =>
+          getRowwiseSupplyOrderExportValues(file, column.key as SupplyOrderKey, entry),
+        ),
       ]);
     });
   });
@@ -7697,35 +8486,209 @@ type RowwiseSearchExportEntry = {
   orderIndex: number;
   stage?: NonNullable<SupplyOrderDetail["stageDeliveries"]>[number];
   stageIndex: number;
+  supplementaryBill?: SupplementaryBillDetail;
+  supplementaryBillIndex: number;
+  billReturnCycle?: BillReturnCycle;
+  billReturnCycleIndex: number;
 };
 
-function getRowwiseSearchExportEntries(file: FileRecord): RowwiseSearchExportEntry[] {
+function getRowwiseSearchExportEntries(
+  file: FileRecord,
+  supplyOrderColumns: PrintColumn[],
+): RowwiseSearchExportEntry[] {
   const orders = rawSupplyOrders(file);
-  if (!orders.length) return [{ orderIndex: -1, stageIndex: -1 }];
+  if (!orders.length) {
+    return [
+      { orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 },
+    ];
+  }
+  const needsSupplementaryRows = supplyOrderColumns.some((column) =>
+    supplementaryBillTableKeys.has(column.key),
+  );
+  const needsBillReturnRows = supplyOrderColumns.some(
+    (column) => column.key === "billReturnCycles",
+  );
   return orders.flatMap((order, orderIndex) => {
-    if (!isYes(order.stageDelivery) || !order.stageDeliveries?.length) {
-      return [{ order, orderIndex, stageIndex: -1 }];
+    const entries: RowwiseSearchExportEntry[] = [];
+    if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+      entries.push(
+        ...order.stageDeliveries.map((stage, stageIndex) => ({
+          order,
+          orderIndex,
+          stage,
+          stageIndex,
+          supplementaryBillIndex: -1,
+          billReturnCycleIndex: -1,
+        })),
+      );
+    } else {
+      entries.push({
+        order,
+        orderIndex,
+        stageIndex: -1,
+        supplementaryBillIndex: -1,
+        billReturnCycleIndex: -1,
+      });
     }
-    return order.stageDeliveries.map((stage, stageIndex) => ({
-      order,
-      orderIndex,
-      stage,
-      stageIndex,
-    }));
+
+    if (needsBillReturnRows) {
+      normalizeBillReturnCycles(order.billReturnCycles).forEach(
+        (billReturnCycle, billReturnCycleIndex) => {
+          entries.push({
+            order,
+            orderIndex,
+            stageIndex: -1,
+            supplementaryBillIndex: -1,
+            billReturnCycle,
+            billReturnCycleIndex,
+          });
+        },
+      );
+    }
+
+    if (needsSupplementaryRows) {
+      normalizeSupplementaryBillsForTable(order.supplementaryBills).forEach(
+        (supplementaryBill, supplementaryBillIndex) => {
+          const cycles = normalizeBillReturnCycles(supplementaryBill.billReturnCycles);
+          if (
+            cycles.length &&
+            supplyOrderColumns.some((column) => column.key === "supplementaryBillReturnCycles")
+          ) {
+            cycles.forEach((billReturnCycle, billReturnCycleIndex) => {
+              entries.push({
+                order,
+                orderIndex,
+                stageIndex: -1,
+                supplementaryBill,
+                supplementaryBillIndex,
+                billReturnCycle,
+                billReturnCycleIndex,
+              });
+            });
+            return;
+          }
+          entries.push({
+            order,
+            orderIndex,
+            stageIndex: -1,
+            supplementaryBill,
+            supplementaryBillIndex,
+            billReturnCycleIndex: -1,
+          });
+        },
+      );
+    }
+
+    return entries;
   });
 }
 
-function getRowwiseSupplyOrderExportValue(
+function getRowwiseSupplyOrderExportHeaders(column: PrintColumn) {
+  if (column.key === "billReturnCycles") {
+    return [
+      "Bill returned date",
+      "Bill return reason",
+      "Bill resubmitted date",
+      "Bill return remarks",
+    ];
+  }
+  if (column.key === "supplementaryBillReturnCycles") {
+    return [
+      "Supplementary bill returned date",
+      "Supplementary bill return reason",
+      "Supplementary bill resubmitted date",
+      "Supplementary bill return remarks",
+    ];
+  }
+  if (column.key === "supplementaryBills") {
+    return [
+      "Supplementary Bill No.",
+      "Supplementary bill amount (Capital)",
+      "Supplementary bill amount (Revenue)",
+      "Supplementary bill sent for payment",
+      "Supplementary payment date",
+      "Supplementary payment mode",
+      "Supplementary actual payment amount (Capital)",
+      "Supplementary actual payment amount (Revenue)",
+      "Supplementary bill remarks",
+    ];
+  }
+  return [column.label];
+}
+
+function getRowwiseSupplyOrderExportValues(
   file: FileRecord,
   key: SupplyOrderKey,
   entry: RowwiseSearchExportEntry,
 ) {
-  if (!entry.order) return "";
-  if (entry.stage && shouldUseStageValueForRowwiseExport(entry.order, key)) {
-    return getStageSupplyOrderExportValueFromStage(entry.stage, key, entry.stageIndex);
+  if (!entry.order) return getEmptyRowwiseSupplyOrderExportValues(key);
+  if (key === "billReturnCycles") return getBillReturnCycleExportValues(entry.billReturnCycle);
+  if (key === "supplementaryBillReturnCycles") {
+    return getBillReturnCycleExportValues(
+      entry.supplementaryBill ? entry.billReturnCycle : undefined,
+    );
   }
-  if (!isFirstRowwiseOrderRow(entry)) return "";
-  return getSupplyOrderValue(entry.order, key);
+  if (key === "supplementaryBills") {
+    return getSupplementaryBillExportValues(entry.supplementaryBill);
+  }
+  if (supplementaryBillTableKeys.has(key)) {
+    return [
+      entry.supplementaryBill ? getSupplementaryBillSingleValue(entry.supplementaryBill, key) : "",
+    ];
+  }
+  if (entry.stage && shouldUseStageValueForRowwiseExport(entry.order, key)) {
+    return [getStageSupplyOrderExportValueFromStage(entry.stage, key, entry.stageIndex)];
+  }
+  if (!isFirstRowwiseOrderRow(entry)) return [""];
+  return [getSupplyOrderValue(entry.order, key)];
+}
+
+function getEmptyRowwiseSupplyOrderExportValues(key: SupplyOrderKey) {
+  if (key === "billReturnCycles" || key === "supplementaryBillReturnCycles") {
+    return ["", "", "", ""];
+  }
+  if (key === "supplementaryBills") return Array.from({ length: 9 }, () => "");
+  return [""];
+}
+
+function getBillReturnCycleExportValues(cycle: BillReturnCycle | undefined) {
+  return [
+    cycle?.returnedDate ? formatIsoDateForDisplay(cycle.returnedDate) : "",
+    cycle?.reason ?? "",
+    cycle?.resubmittedDate ? formatIsoDateForDisplay(cycle.resubmittedDate) : "",
+    cycle?.remarks ?? "",
+  ];
+}
+
+function getSupplementaryBillExportValues(bill: SupplementaryBillDetail | undefined) {
+  return [
+    bill?.billNo ?? "",
+    bill?.billAmountCapital ?? "",
+    bill?.billAmountRevenue ?? "",
+    bill?.billSentForPaymentDate ? formatIsoDateForDisplay(bill.billSentForPaymentDate) : "",
+    bill?.paymentDate ? formatIsoDateForDisplay(bill.paymentDate) : "",
+    bill?.paymentMode ?? "",
+    bill?.actualPaymentCapital ?? "",
+    bill?.actualPaymentRevenue ?? "",
+    bill?.remarks ?? "",
+  ];
+}
+
+function getSupplementaryBillSingleValue(bill: SupplementaryBillDetail, key: SupplyOrderKey) {
+  if (key === "supplementaryBillNo") return bill.billNo ?? "";
+  if (key === "supplementaryBillAmountCapital") return bill.billAmountCapital ?? "";
+  if (key === "supplementaryBillAmountRevenue") return bill.billAmountRevenue ?? "";
+  if (key === "supplementaryBillSentForPaymentDate") {
+    return bill.billSentForPaymentDate ? formatIsoDateForDisplay(bill.billSentForPaymentDate) : "";
+  }
+  if (key === "supplementaryBillPaymentDate") {
+    return bill.paymentDate ? formatIsoDateForDisplay(bill.paymentDate) : "";
+  }
+  if (key === "supplementaryBillPaymentMode") return bill.paymentMode ?? "";
+  if (key === "supplementaryBillActualPaymentCapital") return bill.actualPaymentCapital ?? "";
+  if (key === "supplementaryBillActualPaymentRevenue") return bill.actualPaymentRevenue ?? "";
+  if (key === "supplementaryBillRemarks") return bill.remarks ?? "";
+  return "";
 }
 
 function isFirstRowwiseOrderRow(entry: RowwiseSearchExportEntry) {

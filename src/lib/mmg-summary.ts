@@ -1,4 +1,9 @@
-import type { Division, FileRecord, SupplyOrderDetail } from "@/lib/files-store";
+import type {
+  Division,
+  FileRecord,
+  SupplementaryBillDetail,
+  SupplyOrderDetail,
+} from "@/lib/files-store";
 import {
   advancePaymentEntries as normalizedAdvancePaymentEntries,
   countExpectedSupplyOrderRows,
@@ -171,6 +176,11 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     group: "Payment",
   },
   { key: "paymentPending", label: "Payment pending", group: "Payment" },
+  {
+    key: "totalPendingPaymentStagesCases",
+    label: "Total pending payment stages/cases",
+    group: "Payment",
+  },
   { key: "paymentCompleted", label: "Payment completed", group: "Payment" },
   { key: "billsReturnedForCorrection", label: "Bills returned for correction", group: "Payment" },
   { key: "billsPendingCorrection", label: "Bills pending correction", group: "Payment" },
@@ -180,6 +190,32 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     group: "Payment",
   },
   { key: "returnedBillPaid", label: "Returned bill paid", group: "Payment" },
+  {
+    key: "supplementaryBillsSubmittedPaymentPending",
+    label: "Supplementary bills submitted/payment pending",
+    group: "Payment",
+  },
+  { key: "supplementaryBillsPaid", label: "Supplementary bills paid", group: "Payment" },
+  {
+    key: "supplementaryBillReturnedForCorrection",
+    label: "Supplementary bill returned for correction",
+    group: "Payment",
+  },
+  {
+    key: "pendingReturnedSupplementaryBills",
+    label: "Pending returned supplementary bills",
+    group: "Payment",
+  },
+  {
+    key: "returnedSupplementaryBillsResubmitted",
+    label: "Returned supplementary bills resubmitted",
+    group: "Payment",
+  },
+  {
+    key: "returnedSupplementaryBillsPaid",
+    label: "Returned supplementary bills paid",
+    group: "Payment",
+  },
   { key: "totalPaymentDueThisMonth", label: "Total payment due this month", group: "Payment" },
   {
     key: "billsSentForCurrentMonthDeliveries",
@@ -531,8 +567,8 @@ function getMmgSummaryValues(
   const actualPaymentEntries = paymentOrders.filter(
     ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
   );
-  const pendingPaymentEntries = paymentOrders.filter(
-    ({ file, order }) => isPaymentPendingEntry(file, order),
+  const pendingPaymentEntries = paymentOrders.filter(({ file, order }) =>
+    isPaymentPendingEntry(file, order),
   );
   const overduePaymentEntries = orders.filter(({ file, order }) =>
     isPaymentOverdueEntry(file, order, currentMonthKey),
@@ -545,6 +581,30 @@ function getMmgSummaryValues(
   );
   const advancePaymentEntries = normalizedAdvancePaymentEntries(files).filter(
     ({ file, order }) => !isCancelledOrder(file, order),
+  );
+  const supplementaryBillSubmittedEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isSupplementaryBillSubmitted,
+  );
+  const supplementaryBillReturnedEntries = getSupplementaryBillEntries(
+    rawOrders,
+    hasSupplementaryBillReturnHistory,
+  );
+  const pendingReturnedSupplementaryBillEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isSupplementaryBillReturned,
+  );
+  const returnedSupplementaryBillResubmittedEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isSupplementaryBillResubmitted,
+  );
+  const supplementaryBillPaidEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isSupplementaryBillPaid,
+  );
+  const returnedSupplementaryBillPaidEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isReturnedSupplementaryBillPaid,
   );
   const liveFiles = files.filter((file) => !isCancelledDemand(file) && !isFileClosed(file));
   const closedFiles = nonCancelledFiles.filter(isFileClosed);
@@ -824,7 +884,18 @@ function getMmgSummaryValues(
         ({ file, order }) => !isCancelledOrder(file, order) && hasReturnedBillPaid(order),
       ).length,
     ),
+    supplementaryBillsSubmittedPaymentPending: formatCount(
+      supplementaryBillSubmittedEntries.length,
+    ),
+    supplementaryBillsPaid: formatCount(supplementaryBillPaidEntries.length),
+    supplementaryBillReturnedForCorrection: formatCount(supplementaryBillReturnedEntries.length),
+    pendingReturnedSupplementaryBills: formatCount(pendingReturnedSupplementaryBillEntries.length),
+    returnedSupplementaryBillsResubmitted: formatCount(
+      returnedSupplementaryBillResubmittedEntries.length,
+    ),
+    returnedSupplementaryBillsPaid: formatCount(returnedSupplementaryBillPaidEntries.length),
     paymentPending: formatCount(entryFileIds(pendingPaymentEntries).length),
+    totalPendingPaymentStagesCases: formatCount(pendingPaymentEntries.length),
     paymentCompleted: formatCount(
       paymentOrders.filter(
         ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
@@ -1264,7 +1335,16 @@ function getMmgSummaryValues(
         ({ file, order }) => !isCancelledOrder(file, order) && hasReturnedBillPaid(order),
       ),
     ),
+    supplementaryBillsSubmittedPaymentPending: entryFileIds(supplementaryBillSubmittedEntries),
+    supplementaryBillsPaid: entryFileIds(supplementaryBillPaidEntries),
+    supplementaryBillReturnedForCorrection: entryFileIds(supplementaryBillReturnedEntries),
+    pendingReturnedSupplementaryBills: entryFileIds(pendingReturnedSupplementaryBillEntries),
+    returnedSupplementaryBillsResubmitted: entryFileIds(
+      returnedSupplementaryBillResubmittedEntries,
+    ),
+    returnedSupplementaryBillsPaid: entryFileIds(returnedSupplementaryBillPaidEntries),
     paymentPending: entryFileIds(pendingPaymentEntries),
+    totalPendingPaymentStagesCases: entryFileIds(pendingPaymentEntries),
     paymentCompleted: entryFileIds(
       paymentOrders.filter(
         ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
@@ -1538,11 +1618,7 @@ function getMmgSummaryValues(
       "deliveryperiod",
       "expired",
     ),
-    deliveryPeriodExtended: entryFocusTargets(
-      extendedDeliveryPeriodEntries,
-      "dpextension",
-      "yes",
-    ),
+    deliveryPeriodExtended: entryFocusTargets(extendedDeliveryPeriodEntries, "dpextension", "yes"),
     irPreparationPending: entryFocusTargets(
       orders.filter(
         ({ file, order }) =>
@@ -1663,7 +1739,38 @@ function getMmgSummaryValues(
       "billreturnedforcorrection",
       "paid",
     ),
+    supplementaryBillsSubmittedPaymentPending: entryFocusTargets(
+      supplementaryBillSubmittedEntries,
+      "supplementarybill",
+      "submitted",
+    ),
+    supplementaryBillsPaid: entryFocusTargets(
+      supplementaryBillPaidEntries,
+      "supplementarybill",
+      "paid",
+    ),
+    supplementaryBillReturnedForCorrection: entryFocusTargets(
+      supplementaryBillReturnedEntries,
+      "supplementarybill",
+      "returned",
+    ),
+    pendingReturnedSupplementaryBills: entryFocusTargets(
+      pendingReturnedSupplementaryBillEntries,
+      "supplementarybill",
+      "returned",
+    ),
+    returnedSupplementaryBillsResubmitted: entryFocusTargets(
+      returnedSupplementaryBillResubmittedEntries,
+      "supplementarybill",
+      "resubmitted",
+    ),
+    returnedSupplementaryBillsPaid: entryFocusTargets(
+      returnedSupplementaryBillPaidEntries,
+      "supplementarybill",
+      "paid",
+    ),
     paymentPending: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
+    totalPendingPaymentStagesCases: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
     paymentCompleted: entryFocusTargets(
       paymentOrders.filter(
         ({ file, order }) => !isCancelledOrder(file, order) && hasFilledString(order.paymentDate),
@@ -1893,7 +2000,9 @@ function getMmgSummaryValues(
       "placed",
     ),
     totalUnpaidSoValue: entryFocusTargets(
-      orders.filter(({ file, order }) => !isCancelledOrder(file, order) && !hasFilledString(order.paymentDate)),
+      orders.filter(
+        ({ file, order }) => !isCancelledOrder(file, order) && !hasFilledString(order.paymentDate),
+      ),
       "payment",
       "pending",
     ),
@@ -2102,6 +2211,95 @@ function paymentOrderEntries(files: FileRecord[]) {
   );
 }
 
+function getSupplementaryBillEntries(
+  entries: Array<{ file: FileRecord; order: SupplyOrderDetail; orderIndex?: number }>,
+  predicate: (bill: SupplementaryBillDetail) => boolean,
+) {
+  return entries.flatMap((entry) =>
+    !isCancelledOrder(entry.file, entry.order)
+      ? getSupplementaryBills(entry.order)
+          .map((bill, billIndex) => ({ ...entry, bill, stageIndex: billIndex }))
+          .filter(({ bill }) => predicate(bill))
+      : [],
+  );
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is SupplementaryBillDetail =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(hasBillReturnCycleData);
+}
+
+function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    !hasCompletedSupplementaryBillReturn(bill) &&
+    !hasFilledString(bill.paymentDate)
+  );
+}
+
+function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
+  return !hasFilledString(bill.paymentDate) && hasOpenSupplementaryBillReturn(bill);
+}
+
+function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    hasCompletedSupplementaryBillReturn(bill)
+  );
+}
+
+function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return hasSupplementaryBillData(bill) && hasFilledString(bill.paymentDate);
+}
+
+function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function hasSupplementaryBillData(bill: SupplementaryBillDetail) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || hasSupplementaryBillReturnHistory(bill)
+  );
+}
+
+function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasBillReturnCycleData(cycle: NonNullable<SupplyOrderDetail["billReturnCycles"]>[number]) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
 function fileSupplyOrders(file: FileRecord) {
   return normalizedFileSupplyOrders(file);
 }
@@ -2256,7 +2454,9 @@ function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isDeliveryPeriodExtendedEntry(file: FileRecord, order: SupplyOrderDetail) {
-  return !isCancelledOrder(file, order) && (isYes(order.dpExtension) || hasFilledString(order.revisedDp));
+  return (
+    !isCancelledOrder(file, order) && (isYes(order.dpExtension) || hasFilledString(order.revisedDp))
+  );
 }
 
 function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) {

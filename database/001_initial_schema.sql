@@ -240,6 +240,7 @@ create table supply_orders (
   ir_preparation_date date,
   ir_receipt_date date,
   bill_preparation_date date,
+  bill_no text,
   bill_sent_for_payment_date date,
   payment_date date,
   payment_mode text,
@@ -258,6 +259,7 @@ create table supply_orders (
   advance_payment text,
   advance_payment_detail jsonb not null default '{}'::jsonb,
   stage_deliveries jsonb not null default '[]'::jsonb,
+  supplementary_bills jsonb not null default '[]'::jsonb,
   sort_order integer not null default 0
 );
 

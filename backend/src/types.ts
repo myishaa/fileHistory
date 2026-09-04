@@ -183,6 +183,7 @@ export type SupplyOrderDetail = {
   irPreparationDate?: string;
   irReceiptDate?: string;
   billPreparationDate?: string;
+  billNo?: string;
   billSentForPaymentDate?: string;
   billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
@@ -202,7 +203,22 @@ export type SupplyOrderDetail = {
   deliveryPeriodStartDate?: string;
   stageDeliveryLabel?: string;
   stageDeliveries?: StageDeliveryDetail[];
+  supplementaryBills?: SupplementaryBillDetail[];
   firmRatingValues?: Record<string, string>;
+};
+
+export type SupplementaryBillDetail = {
+  id?: string;
+  billNo?: string;
+  billAmountCapital?: string;
+  billAmountRevenue?: string;
+  billSentForPaymentDate?: string;
+  billReturnCycles?: BillReturnCycle[];
+  paymentDate?: string;
+  paymentMode?: string;
+  actualPaymentCapital?: string;
+  actualPaymentRevenue?: string;
+  remarks?: string;
 };
 
 export type AdvancePaymentDetail = {
@@ -211,6 +227,7 @@ export type AdvancePaymentDetail = {
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
   billPreparationDate?: string;
+  billNo?: string;
   billSentForPaymentDate?: string;
   billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;
@@ -237,6 +254,7 @@ export type StageDeliveryDetail = {
   irPreparationDate?: string;
   irReceiptDate?: string;
   billPreparationDate?: string;
+  billNo?: string;
   billSentForPaymentDate?: string;
   billReturnCycles?: BillReturnCycle[];
   paymentDate?: string;

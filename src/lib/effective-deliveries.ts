@@ -174,7 +174,30 @@ export function isSupplyOrderMilestoneCurrent(
   order: SupplyOrderDetail,
   milestone: string,
 ) {
-  return getEffectiveSupplyOrderCurrentMilestone(file, order) === normalizeMilestoneName(milestone);
+  const normalized = normalizeMilestoneName(milestone);
+  const storedCurrent =
+    normalizeMilestoneName(order.currentMilestone) === normalized &&
+    isSupplyOrderMilestoneApplicable(file, order, normalized);
+  if (normalized === "financialsanction")
+    return isFinancialSanctionPendingOrder(file, order) || storedCurrent;
+  if (normalized === "supplyorder") return isSupplyOrderPendingOrder(order) || storedCurrent;
+  if (normalized === "deliveryperiod") return isDeliveryPeriodCurrentOrder(file, order);
+  if (normalized === "billreturnedforcorrection") return hasOpenBillReturn(order) || storedCurrent;
+  if (normalized === "jobcompletion") return isJobCompletionCurrentOrder(file, order);
+  if (normalized === "delivery") return isDueDeliveryOrder(file, order);
+  if (normalized === "psb" || normalized === "pwb" || normalized === "psbpwb") {
+    return isBgCheckboxCurrentOrder(file, order, normalized);
+  }
+  if (normalized === "irpreparation")
+    return isIrPreparationCurrentOrder(file, order) || storedCurrent;
+  if (normalized === "irreceipt") return isIrReceiptCurrentOrder(file, order) || storedCurrent;
+  if (normalized === "billpreparation")
+    return isBillPreparationCheckboxCurrentOrder(file, order) || storedCurrent;
+  if (normalized === "billsentforpayment") {
+    return !hasOpenBillReturn(order) && (isBillSentForPaymentCurrentOrder(order) || storedCurrent);
+  }
+  if (normalized === "payment") return isPaymentCurrentOrder(file, order) || storedCurrent;
+  return storedCurrent;
 }
 
 export function isValidDeliveryPeriodEntry(file: FileRecord, order: SupplyOrderDetail) {
@@ -248,6 +271,7 @@ function expandSupplyOrderStageEntries(
           : useCommonPayment
             ? order.billPreparationDate
             : "",
+        billNo: useStagePayment ? (stage.billNo ?? "") : useCommonPayment ? order.billNo : "",
         billSentForPaymentDate: useStagePayment
           ? (stage.billSentForPaymentDate ?? "")
           : useCommonPayment
@@ -305,6 +329,7 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     irPreparationDate: "",
     irReceiptDate: "",
     billPreparationDate: advance.billPreparationDate ?? "",
+    billNo: advance.billNo ?? "",
     billSentForPaymentDate: advance.billSentForPaymentDate ?? "",
     billReturnCycles: advance.billReturnCycles ?? [],
     paymentDate: advance.paymentDate ?? "",
@@ -519,6 +544,18 @@ function isBgCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: 
   return !isBgReceivedOrder(order, normalized);
 }
 
+function isBgCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+  const normalized = normalizeMilestoneName(category);
+  if (
+    !isBgCategoryApplicable(file, order, normalized) ||
+    !isFinancialSanctionCompletedOrder(order)
+  ) {
+    return false;
+  }
+  if (normalized === "pwb" && !hasFilledString(order.materialReceiptDate)) return false;
+  return !isBgReceivedOrder(order, normalized);
+}
+
 function isIrPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
   return (
     file.ir === "Yes" &&
@@ -540,6 +577,12 @@ function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetai
   if (isJobCompletionWorkflow(file)) {
     return hasFilledString(getNonInspectionPaymentDueDate(file, order));
   }
+  return file.ir === "Yes" && hasFilledString(order.irReceiptDate);
+}
+
+function isBillPreparationCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
+  if (hasFilledString(order.billPreparationDate)) return false;
+  if (isJobCompletionWorkflow(file)) return hasFilledString(order.jobCompletionDate);
   return file.ir === "Yes" && hasFilledString(order.irReceiptDate);
 }
 

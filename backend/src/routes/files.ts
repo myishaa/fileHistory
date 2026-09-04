@@ -2,10 +2,12 @@ import { Router } from "express";
 import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import type {
+  BillReturnCycle,
   FileMarker,
   FileRecord,
   FirmDetail,
   FileRemark,
+  SupplementaryBillDetail,
   SupplyOrderDetail,
 } from "../types.js";
 import {
@@ -400,6 +402,7 @@ const supplyOrderFields = {
   irPreparationDate: ["ir_preparation_date", "date"],
   irReceiptDate: ["ir_receipt_date", "date"],
   billPreparationDate: ["bill_preparation_date", "date"],
+  billNo: ["bill_no", "text"],
   billSentForPaymentDate: ["bill_sent_for_payment_date", "date"],
   billReturnCycles: ["bill_return_cycles", "jsonArray"],
   paymentDate: ["payment_date", "date"],
@@ -417,6 +420,7 @@ const supplyOrderFields = {
   advancePayment: ["advance_payment", "text"],
   advancePaymentDetail: ["advance_payment_detail", "jsonObject"],
   stageDeliveries: ["stage_deliveries", "jsonArray"],
+  supplementaryBills: ["supplementary_bills", "jsonArray"],
   firmRatingValues: ["firm_rating_values", "jsonObject"],
 } as const satisfies Record<string, readonly [string, ValueKind]>;
 
@@ -430,6 +434,7 @@ const stagedSupplyOrderExportKeys = new Set<string>([
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
+  "billNo",
   "billSentForPaymentDate",
   "paymentDate",
   "paymentMode",
@@ -443,6 +448,19 @@ const advancePaymentDetailExportKeys = new Set<string>([
   "advancePaymentDate",
   "advanceActualPaymentCapital",
   "advanceActualPaymentRevenue",
+]);
+
+const supplementaryBillExportKeys = new Set<string>([
+  "supplementaryBillNo",
+  "supplementaryBillAmountCapital",
+  "supplementaryBillAmountRevenue",
+  "supplementaryBillSentForPaymentDate",
+  "supplementaryBillReturnCycles",
+  "supplementaryBillPaymentDate",
+  "supplementaryBillPaymentMode",
+  "supplementaryBillActualPaymentCapital",
+  "supplementaryBillActualPaymentRevenue",
+  "supplementaryBillRemarks",
 ]);
 
 type FileRow = Record<string, unknown> & {
@@ -469,8 +487,10 @@ export function ensureSupplyOrderBillReturnsSchema() {
     .query(
       `alter table supply_orders
 	       add column if not exists bill_return_cycles jsonb not null default '[]'::jsonb,
+	       add column if not exists bill_no text,
 	       add column if not exists bill_amount_capital numeric(14, 2),
-	       add column if not exists bill_amount_revenue numeric(14, 2)`,
+	       add column if not exists bill_amount_revenue numeric(14, 2),
+	       add column if not exists supplementary_bills jsonb not null default '[]'::jsonb`,
     )
     .then(() => undefined);
   return supplyOrderBillReturnsSchemaReady;
@@ -932,7 +952,11 @@ function getFileExportValue(file: FileRecord, key: string) {
   const firmDetailValue = getFirmDetailExportValue(file, key);
   if (firmDetailValue !== undefined) return firmDetailValue;
   if (key === "noOfSo") return String(file.noOfSo || file.supplyOrders?.length || "");
-  if (key in supplyOrderFields || advancePaymentDetailExportKeys.has(key)) {
+  if (
+    key in supplyOrderFields ||
+    advancePaymentDetailExportKeys.has(key) ||
+    supplementaryBillExportKeys.has(key)
+  ) {
     return getRawSupplyOrders(file)
       .map((order) => getSupplyOrderExportValue(order, key).trim())
       .filter(Boolean)
@@ -1028,59 +1052,270 @@ function buildRowwiseFileSearchExportTable(
 ): FileSearchExportTable {
   const fileColumns = columns.filter((column) => !isSupplyOrderExportKey(column.key));
   const supplyOrderColumns = columns.filter((column) => isSupplyOrderExportKey(column.key));
-  const maxStageCount = Math.max(
-    0,
-    ...files.flatMap((file) =>
-      getRawSupplyOrders(file).map((order) => order.stageDeliveries?.length ?? 0),
-    ),
-  );
   const headers = [
     "S.No.",
     ...fileColumns.map((column) => column.label),
     "S.O. No.",
-    ...supplyOrderColumns.flatMap((column) => {
-      if (!stagedSupplyOrderExportKeys.has(column.key)) return [column.label];
-      return [
-        column.label,
-        ...Array.from(
-          { length: maxStageCount },
-          (_, index) => `Delivery-${index + 1} ${column.label}`,
-        ),
-      ];
-    }),
+    "Delivery stage",
+    "Supplementary bill",
+    "Bill return cycle",
+    ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: string[][] = [];
   files.forEach((file) => {
-    const orders = getRawSupplyOrders(file);
-    const rowsForFile = orders.length ? orders : [undefined];
-    rowsForFile.forEach((order, orderIndex) => {
+    const rowEntries = getRowwiseFileSearchExportEntries(file, supplyOrderColumns);
+    rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         String(rows.length + 1),
-        ...fileColumns.map((column) => getFileExportValue(file, column.key) || "Not set"),
-        order ? String(orderIndex + 1) : "",
-        ...supplyOrderColumns.flatMap((column) => {
-          if (!order) {
-            return stagedSupplyOrderExportKeys.has(column.key)
-              ? Array.from({ length: maxStageCount + 1 }, () => "")
-              : [""];
-          }
-          const mainValue = getSupplyOrderExportValue(order, column.key);
-          if (!stagedSupplyOrderExportKeys.has(column.key)) return [mainValue || "Not set"];
-          return [
-            mainValue || "",
-            ...Array.from({ length: maxStageCount }, (_, stageIndex) =>
-              getStageSupplyOrderExportValue(file, column.key, orderIndex, stageIndex),
-            ),
-          ];
-        }),
+        ...fileColumns.map((column) =>
+          entryIndex === 0 ? getFileExportValue(file, column.key) || "Not set" : "",
+        ),
+        entry.order && isFirstRowwiseFileSearchExportOrderRow(entry)
+          ? String(entry.orderIndex + 1)
+          : "",
+        entry.stage ? `Delivery-${entry.stageIndex + 1}` : "",
+        entry.supplementaryBill ? String(entry.supplementaryBillIndex + 1) : "",
+        entry.billReturnCycle ? String(entry.billReturnCycleIndex + 1) : "",
+        ...supplyOrderColumns.flatMap((column) =>
+          getRowwiseSupplyOrderExportValues(file, column.key, entry),
+        ),
       ]);
     });
   });
   return { headers, rows };
 }
 
+type RowwiseFileSearchExportEntry = {
+  order?: SupplyOrderDetail;
+  orderIndex: number;
+  stage?: NonNullable<SupplyOrderDetail["stageDeliveries"]>[number];
+  stageIndex: number;
+  supplementaryBill?: SupplementaryBillDetail;
+  supplementaryBillIndex: number;
+  billReturnCycle?: BillReturnCycle;
+  billReturnCycleIndex: number;
+};
+
+function getRowwiseFileSearchExportEntries(
+  file: FileRecord,
+  supplyOrderColumns: ExportColumn[],
+): RowwiseFileSearchExportEntry[] {
+  const orders = getRawSupplyOrders(file);
+  if (!orders.length) {
+    return [
+      { orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 },
+    ];
+  }
+  const needsSupplementaryRows = supplyOrderColumns.some((column) =>
+    isSupplementaryBillExportField(column.key),
+  );
+  const needsBillReturnRows = supplyOrderColumns.some(
+    (column) => column.key === "billReturnCycles",
+  );
+  const needsSupplementaryReturnRows = supplyOrderColumns.some(
+    (column) => column.key === "supplementaryBillReturnCycles",
+  );
+
+  return orders.flatMap((order, orderIndex) => {
+    const entries: RowwiseFileSearchExportEntry[] = [];
+    if (order.stageDelivery === "Yes" && order.stageDeliveries?.length) {
+      entries.push(
+        ...order.stageDeliveries.map((stage, stageIndex) => ({
+          order,
+          orderIndex,
+          stage,
+          stageIndex,
+          supplementaryBillIndex: -1,
+          billReturnCycleIndex: -1,
+        })),
+      );
+    } else {
+      entries.push({
+        order,
+        orderIndex,
+        stageIndex: -1,
+        supplementaryBillIndex: -1,
+        billReturnCycleIndex: -1,
+      });
+    }
+
+    if (needsBillReturnRows) {
+      normalizeBillReturnCyclesForExport(order.billReturnCycles).forEach(
+        (billReturnCycle, billReturnCycleIndex) => {
+          entries.push({
+            order,
+            orderIndex,
+            stageIndex: -1,
+            supplementaryBillIndex: -1,
+            billReturnCycle,
+            billReturnCycleIndex,
+          });
+        },
+      );
+    }
+
+    if (needsSupplementaryRows) {
+      normalizeSupplementaryBillsForExport(order.supplementaryBills).forEach(
+        (supplementaryBill, supplementaryBillIndex) => {
+          const cycles = normalizeBillReturnCyclesForExport(supplementaryBill.billReturnCycles);
+          if (cycles.length && needsSupplementaryReturnRows) {
+            cycles.forEach((billReturnCycle, billReturnCycleIndex) => {
+              entries.push({
+                order,
+                orderIndex,
+                stageIndex: -1,
+                supplementaryBill,
+                supplementaryBillIndex,
+                billReturnCycle,
+                billReturnCycleIndex,
+              });
+            });
+            return;
+          }
+          entries.push({
+            order,
+            orderIndex,
+            stageIndex: -1,
+            supplementaryBill,
+            supplementaryBillIndex,
+            billReturnCycleIndex: -1,
+          });
+        },
+      );
+    }
+
+    return entries;
+  });
+}
+
+function getRowwiseSupplyOrderExportHeaders(column: ExportColumn) {
+  if (column.key === "billReturnCycles") {
+    return [
+      "Bill returned date",
+      "Bill return reason",
+      "Bill resubmitted date",
+      "Bill return remarks",
+    ];
+  }
+  if (column.key === "supplementaryBillReturnCycles") {
+    return [
+      "Supplementary bill returned date",
+      "Supplementary bill return reason",
+      "Supplementary bill resubmitted date",
+      "Supplementary bill return remarks",
+    ];
+  }
+  if (column.key === "supplementaryBills") {
+    return [
+      "Supplementary Bill No.",
+      "Supplementary bill amount (Capital)",
+      "Supplementary bill amount (Revenue)",
+      "Supplementary bill sent for payment",
+      "Supplementary payment date",
+      "Supplementary payment mode",
+      "Supplementary actual payment amount (Capital)",
+      "Supplementary actual payment amount (Revenue)",
+      "Supplementary bill remarks",
+    ];
+  }
+  return [column.label];
+}
+
+function getRowwiseSupplyOrderExportValues(
+  file: FileRecord,
+  key: string,
+  entry: RowwiseFileSearchExportEntry,
+) {
+  if (!entry.order) return getEmptyRowwiseSupplyOrderExportValues(key);
+  if (key === "billReturnCycles") return getBillReturnCycleExportValues(entry.billReturnCycle);
+  if (key === "supplementaryBillReturnCycles") {
+    return getBillReturnCycleExportValues(
+      entry.supplementaryBill ? entry.billReturnCycle : undefined,
+    );
+  }
+  if (key === "supplementaryBills") {
+    return getSupplementaryBillExportValues(entry.supplementaryBill);
+  }
+  if (supplementaryBillExportKeys.has(key)) {
+    return [
+      entry.supplementaryBill
+        ? getSupplementaryBillSingleExportValue(entry.supplementaryBill, key)
+        : "",
+    ];
+  }
+  if (entry.stage && shouldUseStageValueForFileSearchExport(entry.order, key)) {
+    return [String((entry.stage as Record<string, unknown>)[key] ?? "")];
+  }
+  if (!isFirstRowwiseFileSearchExportOrderRow(entry)) return [""];
+  return [getSupplyOrderExportValue(entry.order, key)];
+}
+
+function isFirstRowwiseFileSearchExportOrderRow(entry: RowwiseFileSearchExportEntry) {
+  return entry.stageIndex <= 0 && !entry.supplementaryBill && !entry.billReturnCycle;
+}
+
+function shouldUseStageValueForFileSearchExport(order: SupplyOrderDetail, key: string) {
+  if (!stagedSupplyOrderExportKeys.has(key)) return false;
+  if (["billPreparationDate", "billNo", "billSentForPaymentDate", "paymentDate"].includes(key)) {
+    return order.stagePayment === "Yes";
+  }
+  return true;
+}
+
+function getEmptyRowwiseSupplyOrderExportValues(key: string) {
+  if (key === "billReturnCycles" || key === "supplementaryBillReturnCycles") {
+    return ["", "", "", ""];
+  }
+  if (key === "supplementaryBills") return Array.from({ length: 9 }, () => "");
+  return [""];
+}
+
+function getBillReturnCycleExportValues(cycle: BillReturnCycle | undefined) {
+  return [
+    cycle?.returnedDate ?? "",
+    cycle?.reason ?? "",
+    cycle?.resubmittedDate ?? "",
+    cycle?.remarks ?? "",
+  ];
+}
+
+function getSupplementaryBillExportValues(bill: SupplementaryBillDetail | undefined) {
+  return [
+    bill?.billNo ?? "",
+    bill?.billAmountCapital ?? "",
+    bill?.billAmountRevenue ?? "",
+    bill?.billSentForPaymentDate ?? "",
+    bill?.paymentDate ?? "",
+    bill?.paymentMode ?? "",
+    bill?.actualPaymentCapital ?? "",
+    bill?.actualPaymentRevenue ?? "",
+    bill?.remarks ?? "",
+  ];
+}
+
+function getSupplementaryBillSingleExportValue(bill: SupplementaryBillDetail, key: string) {
+  if (key === "supplementaryBillNo") return bill.billNo ?? "";
+  if (key === "supplementaryBillAmountCapital") return bill.billAmountCapital ?? "";
+  if (key === "supplementaryBillAmountRevenue") return bill.billAmountRevenue ?? "";
+  if (key === "supplementaryBillSentForPaymentDate") return bill.billSentForPaymentDate ?? "";
+  if (key === "supplementaryBillPaymentDate") return bill.paymentDate ?? "";
+  if (key === "supplementaryBillPaymentMode") return bill.paymentMode ?? "";
+  if (key === "supplementaryBillActualPaymentCapital") return bill.actualPaymentCapital ?? "";
+  if (key === "supplementaryBillActualPaymentRevenue") return bill.actualPaymentRevenue ?? "";
+  if (key === "supplementaryBillRemarks") return bill.remarks ?? "";
+  return "";
+}
+
+function isSupplementaryBillExportField(key: string) {
+  return key === "supplementaryBills" || supplementaryBillExportKeys.has(key);
+}
+
 function isSupplyOrderExportKey(key: string) {
-  return key in supplyOrderFields || advancePaymentDetailExportKeys.has(key);
+  return (
+    key in supplyOrderFields ||
+    advancePaymentDetailExportKeys.has(key) ||
+    supplementaryBillExportKeys.has(key)
+  );
 }
 
 function getMainSupplyOrderExportValue(file: FileRecord, key: string, orderIndex: number) {
@@ -1101,7 +1336,137 @@ function getStageSupplyOrderExportValue(
 function getSupplyOrderExportValue(order: SupplyOrderDetail, key: string) {
   const advanceValue = getAdvancePaymentDetailExportValue(order, key);
   if (advanceValue !== undefined) return advanceValue;
+  const supplementaryValue = getSupplementaryBillExportValue(order.supplementaryBills, key);
+  if (supplementaryValue !== undefined) return supplementaryValue;
+  if (key === "billReturnCycles") return formatBillReturnCyclesForExport(order.billReturnCycles);
+  if (key === "supplementaryBills") {
+    return formatSupplementaryBillsForExport(order.supplementaryBills);
+  }
   return String((order as Record<string, unknown>)[key] ?? "");
+}
+
+function getSupplementaryBillExportValue(
+  bills: SupplementaryBillDetail[] | undefined,
+  key: string,
+) {
+  const rows = normalizeSupplementaryBillsForExport(bills);
+  if (key === "supplementaryBillNo") return formatSupplementaryBillFieldForExport(rows, "billNo");
+  if (key === "supplementaryBillAmountCapital") {
+    return formatSupplementaryBillFieldForExport(rows, "billAmountCapital");
+  }
+  if (key === "supplementaryBillAmountRevenue") {
+    return formatSupplementaryBillFieldForExport(rows, "billAmountRevenue");
+  }
+  if (key === "supplementaryBillSentForPaymentDate") {
+    return formatSupplementaryBillFieldForExport(rows, "billSentForPaymentDate");
+  }
+  if (key === "supplementaryBillReturnCycles") {
+    return formatSupplementaryBillReturnCyclesForExport(rows);
+  }
+  if (key === "supplementaryBillPaymentDate") {
+    return formatSupplementaryBillFieldForExport(rows, "paymentDate");
+  }
+  if (key === "supplementaryBillPaymentMode") {
+    return formatSupplementaryBillFieldForExport(rows, "paymentMode");
+  }
+  if (key === "supplementaryBillActualPaymentCapital") {
+    return formatSupplementaryBillFieldForExport(rows, "actualPaymentCapital");
+  }
+  if (key === "supplementaryBillActualPaymentRevenue") {
+    return formatSupplementaryBillFieldForExport(rows, "actualPaymentRevenue");
+  }
+  if (key === "supplementaryBillRemarks") {
+    return formatSupplementaryBillFieldForExport(rows, "remarks");
+  }
+  return undefined;
+}
+
+function normalizeSupplementaryBillsForExport(bills: SupplementaryBillDetail[] | undefined) {
+  return (bills ?? []).filter((bill) =>
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+      formatBillReturnCyclesForExport(bill.billReturnCycles),
+    ].some((value) => String(value ?? "").trim()),
+  );
+}
+
+function normalizeBillReturnCyclesForExport(cycles: BillReturnCycle[] | undefined) {
+  return (cycles ?? []).filter((cycle) =>
+    [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some((value) =>
+      String(value ?? "").trim(),
+    ),
+  );
+}
+
+function formatSupplementaryBillFieldForExport(
+  bills: SupplementaryBillDetail[],
+  key: keyof SupplementaryBillDetail,
+) {
+  return bills
+    .map((bill, index, rows) => {
+      const value = String(bill[key] ?? "").trim();
+      if (!value) return "";
+      return rows.length > 1 ? `${index + 1}. ${value}` : value;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function formatSupplementaryBillReturnCyclesForExport(bills: SupplementaryBillDetail[]) {
+  return bills
+    .map((bill, index, rows) => {
+      const value = formatBillReturnCyclesForExport(bill.billReturnCycles);
+      if (!value) return "";
+      return rows.length > 1 ? `${index + 1}. ${value}` : value;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function formatSupplementaryBillsForExport(bills: SupplementaryBillDetail[] | undefined) {
+  return normalizeSupplementaryBillsForExport(bills)
+    .map((bill, index, rows) => {
+      const parts = [
+        bill.billNo ? `Bill No.: ${bill.billNo}` : "",
+        bill.billAmountCapital ? `Amount capital: ${bill.billAmountCapital}` : "",
+        bill.billAmountRevenue ? `Amount revenue: ${bill.billAmountRevenue}` : "",
+        bill.billSentForPaymentDate ? `Submitted: ${bill.billSentForPaymentDate}` : "",
+        formatBillReturnCyclesForExport(bill.billReturnCycles),
+        bill.paymentDate ? `Paid: ${bill.paymentDate}` : "",
+        bill.paymentMode ? `Mode: ${bill.paymentMode}` : "",
+        bill.actualPaymentCapital ? `Actual capital: ${bill.actualPaymentCapital}` : "",
+        bill.actualPaymentRevenue ? `Actual revenue: ${bill.actualPaymentRevenue}` : "",
+        bill.remarks ? `Remarks: ${bill.remarks}` : "",
+      ].filter(Boolean);
+      if (!parts.length) return "";
+      return rows.length > 1 ? `${index + 1}. ${parts.join("; ")}` : parts.join("; ");
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
+function formatBillReturnCyclesForExport(cycles: BillReturnCycle[] | undefined) {
+  return (cycles ?? [])
+    .map((cycle, index, rows) => {
+      const parts = [
+        cycle.returnedDate ? `Returned: ${cycle.returnedDate}` : "",
+        cycle.resubmittedDate ? `Resubmitted: ${cycle.resubmittedDate}` : "",
+        cycle.reason ? `Reason: ${cycle.reason}` : "",
+        cycle.remarks ? `Remarks: ${cycle.remarks}` : "",
+      ].filter(Boolean);
+      if (!parts.length) return "";
+      return rows.length > 1 ? `${index + 1}. ${parts.join("; ")}` : parts.join("; ");
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function getAdvancePaymentDetailExportValue(order: SupplyOrderDetail, key: string) {
@@ -2002,6 +2367,7 @@ function isRequiredSupplyOrderField(key: string) {
     key === "advancePaymentDate" ||
     key === "advanceActualPaymentCapital" ||
     key === "advanceActualPaymentRevenue" ||
+    supplementaryBillExportKeys.has(key) ||
     key in supplyOrderFields
   );
 }
@@ -2049,6 +2415,36 @@ function requiredSupplyOrderFieldSql(key: string) {
   if (key === "advanceActualPaymentRevenue") {
     return advancePaymentDetailJsonFieldFilledSql("actualPaymentRevenue");
   }
+  if (key === "supplementaryBillNo") return supplementaryBillJsonFieldFilledSql("billNo");
+  if (key === "supplementaryBillAmountCapital") {
+    return supplementaryBillJsonFieldFilledSql("billAmountCapital");
+  }
+  if (key === "supplementaryBillAmountRevenue") {
+    return supplementaryBillJsonFieldFilledSql("billAmountRevenue");
+  }
+  if (key === "supplementaryBillSentForPaymentDate") {
+    return supplementaryBillJsonFieldFilledSql("billSentForPaymentDate");
+  }
+  if (key === "supplementaryBillReturnCycles") {
+    return `exists (
+      select 1
+      from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as bill(value)
+      where jsonb_array_length(coalesce(bill.value -> 'billReturnCycles', '[]'::jsonb)) > 0
+    )`;
+  }
+  if (key === "supplementaryBillPaymentDate") {
+    return supplementaryBillJsonFieldFilledSql("paymentDate");
+  }
+  if (key === "supplementaryBillPaymentMode") {
+    return supplementaryBillJsonFieldFilledSql("paymentMode");
+  }
+  if (key === "supplementaryBillActualPaymentCapital") {
+    return supplementaryBillJsonFieldFilledSql("actualPaymentCapital");
+  }
+  if (key === "supplementaryBillActualPaymentRevenue") {
+    return supplementaryBillJsonFieldFilledSql("actualPaymentRevenue");
+  }
+  if (key === "supplementaryBillRemarks") return supplementaryBillJsonFieldFilledSql("remarks");
   const field = supplyOrderFields[key as keyof typeof supplyOrderFields];
   if (!field) return undefined;
   const [column, kind] = field;
@@ -2067,6 +2463,14 @@ function stageDeliveryJsonFieldFilledSql(field: string) {
 
 function advancePaymentDetailJsonFieldFilledSql(field: string) {
   return hasTextSql(`so.advance_payment_detail ->> '${field}'`);
+}
+
+function supplementaryBillJsonFieldFilledSql(field: string) {
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as bill(value)
+    where ${hasTextSql(`bill.value ->> '${field}'`)}
+  )`;
 }
 
 function isCancelledFileSql() {
@@ -2895,8 +3299,8 @@ function completedStageMilestoneSql(orderAlias: string, normalizedMilestone: str
 
 function currentStageMilestoneSql(orderAlias: string, normalizedMilestoneSql: string) {
   return `exists (
-			    select 1
-			    from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+				    select 1
+				    from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
 			    where ${isYesSql(`${orderAlias}.stage_delivery`)}
 			      and (
 			      (${normalizedSql("stage_row.stage ->> 'currentMilestone'")} = ${normalizedMilestoneSql}
@@ -2917,12 +3321,19 @@ function currentStageMilestoneSql(orderAlias: string, normalizedMilestoneSql: st
 		        and not exists (
 		          select 1
 		          from jsonb_array_elements(coalesce(stage_row.stage -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-		          where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
-		            and not ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
-		        ))
-		      or (${normalizedMilestoneSql} = 'billpreparation'
-		        and not ${hasTextSql("stage_row.stage ->> 'billPreparationDate'")}
-		        and (
+			          where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+			            and not ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+			        ))
+			      or (${normalizedMilestoneSql} = 'billreturnedforcorrection'
+			        and exists (
+			          select 1
+			          from jsonb_array_elements(coalesce(stage_row.stage -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+			          where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+			            and not ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+			        ))
+			      or (${normalizedMilestoneSql} = 'billpreparation'
+			        and not ${hasTextSql("stage_row.stage ->> 'billPreparationDate'")}
+			        and (
 		          (${isYesSql("f.ir")} and ${hasTextSql("stage_row.stage ->> 'irReceiptDate'")})
 		          or ((not ${isYesSql("f.ir")}
 		            or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
@@ -3069,11 +3480,18 @@ function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: s
 			                and ${normalizedMilestoneSql} <> 'billreturnedforcorrection'
 			                and ${normalizedMilestoneSql} <> 'billsentforpayment'
 			              )
-		              or ${currentStageMilestoneSql("so_current", normalizedMilestoneSql)}
-		              or ${inferredOrderCurrentMilestoneMatchesSql("so_current", normalizedMilestoneSql)}
-	            )
-          )
-        )
+			              or ${currentStageMilestoneSql("so_current", normalizedMilestoneSql)}
+			              or ${inferredOrderCurrentMilestoneMatchesSql("so_current", normalizedMilestoneSql)}
+			              or (${normalizedMilestoneSql} = 'billreturnedforcorrection'
+			                and exists (
+			                  select 1
+			                  from jsonb_array_elements(coalesce(so_current.advance_payment_detail -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+			                  where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+			                    and not ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+			                ))
+		            )
+	          )
+	        )
     )
   )`;
 }
@@ -3594,7 +4012,7 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
           )))`
         : milestone.key === "supplyOrder"
           ? supplyOrderPendingOrderSql("so")
-        : milestone.key === "payment"
+          : milestone.key === "payment"
             ? `${startDate} is not null
               and (not ${contractFileType}
                 or not ${jobCompletionDoneForDelay}
@@ -3626,6 +4044,54 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
       )`;
     });
   return clauses.length ? `(${clauses.join(" or ")})` : "false";
+}
+
+function returnedBillDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string) {
+  if (milestoneKey !== "all" && milestoneKey !== "billReturnedForCorrection") return "false";
+  const openReturnDateSql = (cyclesExpression: string) => `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(coalesce(${cyclesExpression}, '[]'::jsonb)) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+  const openReturnDelaySql = (cyclesExpression: string) => {
+    const dateExpression = openReturnDateSql(cyclesExpression);
+    return `(${dateExpression} is not null
+      and (current_date - (${dateExpression})::date) > ${thresholdPlaceholder}::integer)`;
+  };
+  return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+    `not ${isYesSql("so.so_cancelled")} and (
+      ${openReturnDelaySql("so.bill_return_cycles")}
+      or exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+        where ${openReturnDelaySql("stage_row.stage -> 'billReturnCycles'")}
+      )
+      or (${isYesSql("so.advance_payment")}
+        and ${openReturnDelaySql("so.advance_payment_detail -> 'billReturnCycles'")})
+    )`,
+  )}`;
+}
+
+function supplementaryBillReturnedDelayFilterSql(
+  milestoneKey: string,
+  thresholdPlaceholder: string,
+) {
+  if (milestoneKey !== "all" && milestoneKey !== "supplementaryBillReturnedForCorrection") {
+    return "false";
+  }
+  const openReturnDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+  return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+    `not ${isYesSql("so.so_cancelled")}
+     and exists (
+       select 1
+       from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+       where not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+         and ${openReturnDate} is not null
+         and (current_date - (${openReturnDate})::date) > ${thresholdPlaceholder}::integer
+     )`,
+  )}`;
 }
 
 function biddingDelayStatusSql(breakupKey: string | undefined, thresholdPlaceholder: string) {
@@ -3741,9 +4207,14 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
         and (current_date - ${startDate}::date) > ${thresholdPlaceholder}::integer)`;
     });
   const orderClause = orderDelayFilterSql(milestoneKey, thresholdPlaceholder);
+  const returnedBillClause = returnedBillDelayFilterSql(milestoneKey, thresholdPlaceholder);
+  const supplementaryBillReturnedClause = supplementaryBillReturnedDelayFilterSql(
+    milestoneKey,
+    thresholdPlaceholder,
+  );
   return clauses.length
-    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${clauses.join(" or ")}) or ${orderClause})`
-    : `((${workflowNotStartedClause}) or (${biddingClause}) or ${orderClause})`;
+    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${clauses.join(" or ")}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`
+    : `((${workflowNotStartedClause}) or (${biddingClause}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`;
 }
 
 function decodeStatusFilterPart(value: string | undefined) {
@@ -3821,6 +4292,16 @@ function statusSummaryFilterSql(filter: string) {
     if (stage === "Pending") return `${base} and ${billReturnStatusFilterSql("pending")}`;
     if (stage === "Completed") return `${base} and ${billReturnStatusFilterSql("resubmitted")}`;
     if (stage === "Returned paid") return `${base} and ${billReturnStatusFilterSql("paid")}`;
+    return "false";
+  }
+
+  if (milestoneName === "Supplementary bills") {
+    if (stage === "Submitted") return `${base} and ${supplementaryBillStatusSql("submitted")}`;
+    if (stage === "Returned") return `${base} and ${supplementaryBillStatusSql("returned")}`;
+    if (stage === "Resubmitted") {
+      return `${base} and ${supplementaryBillStatusSql("resubmitted")}`;
+    }
+    if (stage === "Paid") return `${base} and ${supplementaryBillStatusSql("paid")}`;
     return "false";
   }
 
@@ -4007,6 +4488,62 @@ function billReturnStatusFilterSql(state: "any" | "pending" | "resubmitted" | "p
   )}`;
 }
 
+function supplementaryBillStatusSql(state: "submitted" | "returned" | "resubmitted" | "paid") {
+  const hasSupplementaryBillData = `(
+    ${hasTextSql("supplementary_bill.bill ->> 'billNo'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'billAmountCapital'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'billAmountRevenue'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'paymentMode'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'actualPaymentCapital'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'actualPaymentRevenue'")}
+    or ${hasTextSql("supplementary_bill.bill ->> 'remarks'")}
+    or exists (
+      select 1
+      from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+      where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+        or ${hasTextSql("bill_return.cycle ->> 'reason'")}
+        or ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+        or ${hasTextSql("bill_return.cycle ->> 'remarks'")}
+    )
+  )`;
+  const openReturn = `exists (
+    select 1
+    from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+    where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+      and not ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+  )`;
+  const completedReturn = `exists (
+    select 1
+    from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+    where ${hasTextSql("bill_return.cycle ->> 'returnedDate'")}
+      and ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+  )`;
+  const stateCondition =
+    state === "paid"
+      ? hasTextSql("supplementary_bill.bill ->> 'paymentDate'")
+      : state === "returned"
+        ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${openReturn}`
+        : state === "resubmitted"
+          ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+             and not ${openReturn}
+             and ${completedReturn}`
+          : `${hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'")}
+             and not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+             and not ${openReturn}
+             and not ${completedReturn}`;
+  return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+    `not ${isYesSql("so.so_cancelled")}
+     and exists (
+       select 1
+       from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+       where ${hasSupplementaryBillData}
+         and ${stateCondition}
+     )`,
+  )}`;
+}
+
 function isBillReturnFilterState(
   state: string,
 ): state is "any" | "pending" | "resubmitted" | "paid" {
@@ -4023,17 +4560,27 @@ function readCashOutgoFilter(filter: string) {
   const asOfDate = decodeStatusFilterPart(rawAsOfDate);
   const validModes = [
     "expectedDp",
+    "expectedDpThrough",
     "expectedReceipt",
     "expectedReceiptThrough",
     "expectedReceiptPendingBill",
+    "expectedReceiptPendingBillThrough",
     "billPreparation",
+    "billPreparationThrough",
     "billSent",
+    "billSentThrough",
     "actual",
     "actualThrough",
+    "supplementaryBillSent",
+    "supplementaryActual",
     "returnedBills",
     "pendingReturnedBills",
     "returnedBillsResubmitted",
     "returnedBillsPaid",
+    "supplementaryReturnedBills",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryReturnedBillsPaid",
   ];
   if (
     !validModes.includes(mode) ||
@@ -4049,17 +4596,27 @@ function readCashOutgoFilter(filter: string) {
   return {
     mode: mode as
       | "expectedDp"
+      | "expectedDpThrough"
       | "expectedReceipt"
       | "expectedReceiptThrough"
       | "expectedReceiptPendingBill"
+      | "expectedReceiptPendingBillThrough"
       | "billPreparation"
+      | "billPreparationThrough"
       | "billSent"
+      | "billSentThrough"
       | "actual"
       | "actualThrough"
+      | "supplementaryBillSent"
+      | "supplementaryActual"
       | "returnedBills"
       | "pendingReturnedBills"
       | "returnedBillsResubmitted"
-      | "returnedBillsPaid",
+      | "returnedBillsPaid"
+      | "supplementaryReturnedBills"
+      | "supplementaryPendingReturnedBills"
+      | "supplementaryReturnedBillsResubmitted"
+      | "supplementaryReturnedBillsPaid",
     monthKey,
     offsetDays,
     fromDate: fromDate || undefined,
@@ -4079,9 +4636,11 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
   const monthPlaceholder = addSqlValue(values, parsed.monthKey);
   const usesOffset = [
     "expectedDp",
+    "expectedDpThrough",
     "expectedReceipt",
     "expectedReceiptThrough",
     "expectedReceiptPendingBill",
+    "expectedReceiptPendingBillThrough",
   ].includes(parsed.mode);
   const offsetPlaceholder = usesOffset ? addSqlValue(values, parsed.offsetDays) : undefined;
   const offsetInterval = `(${offsetPlaceholder}::integer * interval '1 day')`;
@@ -4226,8 +4785,23 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
     if (mode === "returnedBillsResubmitted") return `${hasResubmitted} and not ${hasOpen}`;
     return `${paymentDateExpression} is not null and ${hasResubmitted} and not ${hasOpen}`;
   };
+  const openBillReturnSql = (cyclesExpression: string) => `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${cyclesExpression}, '[]'::jsonb)) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = ''
+  )`;
+  const dateScopeSql = (dateExpression: string, through = false) => {
+    if (!through) {
+      return `${monthMatchesSql(dateExpression, monthPlaceholder)}${rangeSql(dateExpression)}`;
+    }
+    if (parsed.monthKey === "all") return "false";
+    const throughDate = getMonthEndDateFromMonthKey(parsed.monthKey);
+    return `${monthPlaceholder}::text is not null and ${dateExpression} <= date '${throughDate}'${rangeSql(dateExpression)}`;
+  };
 
-  if (parsed.mode === "expectedDp") {
+  if (parsed.mode === "expectedDp" || parsed.mode === "expectedDpThrough") {
+    const through = parsed.mode === "expectedDpThrough";
     const childDate = `(coalesce(so.revised_dp, so.dp_date) + ((${offsetPlaceholder}::integer + 1) * interval '1 day'))::date`;
     const legacyDate = `(coalesce(f.revised_dp, f.dp_date) + ((${offsetPlaceholder}::integer + 1) * interval '1 day'))::date`;
     const stageDate = `(${stageDpDate} + ((${offsetPlaceholder}::integer + 1) * interval '1 day'))::date`;
@@ -4248,7 +4822,7 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
               and ${asOfMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
             )
           )
-          and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childDate)}
+          and ${dateScopeSql(childDate, through)}
         )
         or ${stagePaymentRowExists(
           `${stageDpDate} is not null
@@ -4265,7 +4839,7 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
                 and ${asOfMissingOrAfterSql(stagePaymentDate) ?? `${stagePaymentDate} is null`}
               )
             )
-            and ${monthMatchesSql(stageDate, monthPlaceholder)}${rangeSql(stageDate)}`,
+            and ${dateScopeSql(stageDate, through)}`,
         )}
       )`,
       `coalesce(f.revised_dp, f.dp_date) is not null
@@ -4283,7 +4857,7 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
            and ${asOfMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
          )
        )
-       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyDate)}`,
+       and ${dateScopeSql(legacyDate, through)}`,
     )}`;
   }
 
@@ -4357,7 +4931,11 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
     )}`;
   }
 
-  if (parsed.mode === "expectedReceiptPendingBill") {
+  if (
+    parsed.mode === "expectedReceiptPendingBill" ||
+    parsed.mode === "expectedReceiptPendingBillThrough"
+  ) {
+    const through = parsed.mode === "expectedReceiptPendingBillThrough";
     const childBaseDate = orderReportBaseDate;
     const legacyBaseDate = legacyReportBaseDate;
     const childDate = `(${childBaseDate} + ${offsetInterval})::date`;
@@ -4370,14 +4948,14 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
           and ${toDateOnOrBeforeSql(childBaseDate) ?? "true"}
           and ${toDateMissingOrAfterSql("so.bill_preparation_date") ?? `not ${hasTextSql("so.bill_preparation_date")}`}
           and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
-          and ${monthMatchesSql(childDate, monthPlaceholder)}${rangeSql(childBaseDate)}
+          and ${dateScopeSql(childDate, through)}
         )
         or ${stagePaymentRowExists(
           `${stageReportBaseDate} is not null
             and ${toDateOnOrBeforeSql(stageReportBaseDate) ?? "true"}
             and ${toDateMissingOrAfterSql(stageBillPreparationDate) ?? `${stageBillPreparationDate} is null`}
             and ${toDateMissingOrAfterSql(stagePaymentDate) ?? `${stagePaymentDate} is null`}
-            and ${monthMatchesSql(stageDate, monthPlaceholder)}${rangeSql(stageReportBaseDate)}`,
+            and ${dateScopeSql(stageDate, through)}`,
         )}
       )`,
       `${legacyBaseDate} is not null
@@ -4385,13 +4963,20 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
        and ${toDateOnOrBeforeSql(legacyBaseDate) ?? "true"}
        and ${toDateMissingOrAfterSql("f.bill_preparation_date") ?? `not ${hasTextSql("f.bill_preparation_date")}`}
        and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
-       and ${monthMatchesSql(legacyDate, monthPlaceholder)}${rangeSql(legacyBaseDate)}`,
+       and ${dateScopeSql(legacyDate, through)}`,
     )}`;
   }
 
-  if (parsed.mode === "billPreparation") {
+  if (parsed.mode === "billPreparation" || parsed.mode === "billPreparationThrough") {
+    const through = parsed.mode === "billPreparationThrough";
     const childBaseDate = orderReportBaseDate;
     const legacyBaseDate = legacyReportBaseDate;
+    const supplementaryCycles = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+    const supplementaryPendingReturnedDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+      from jsonb_array_elements(${supplementaryCycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+    const supplementaryPaymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
     return `${activeFile} and ${supplyOrderChildSql(
       `not ${isYesSql("so.so_cancelled")} and (
         (
@@ -4399,27 +4984,34 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
           and ${hasTextSql("so.bill_preparation_date")}
           and ${toDateOnOrBeforeSql(childBaseDate) ?? "true"}
           and ${toDateOnOrBeforeSql("so.bill_preparation_date") ?? "true"}
-          and ${toDateMissingOrAfterSql("so.bill_sent_for_payment_date") ?? `not ${hasTextSql("so.bill_sent_for_payment_date")}`}
+          and (${toDateMissingOrAfterSql("so.bill_sent_for_payment_date") ?? `not ${hasTextSql("so.bill_sent_for_payment_date")}`} or ${openBillReturnSql("so.bill_return_cycles")})
           and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
-          and ${monthMatchesSql("so.bill_preparation_date", monthPlaceholder)}${rangeSql("so.bill_preparation_date")}
+          and ${dateScopeSql("so.bill_preparation_date", through)}
         )
         or ${stagePaymentRowExists(
           `${stageReportBaseDate} is not null
             and ${stageBillPreparationDate} is not null
             and ${toDateOnOrBeforeSql(stageReportBaseDate) ?? "true"}
             and ${toDateOnOrBeforeSql(stageBillPreparationDate) ?? "true"}
-            and ${toDateMissingOrAfterSql(stageBillSentForPaymentDate) ?? `${stageBillSentForPaymentDate} is null`}
+            and (${toDateMissingOrAfterSql(stageBillSentForPaymentDate) ?? `${stageBillSentForPaymentDate} is null`} or ${openBillReturnSql("stage_row.stage -> 'billReturnCycles'")})
             and ${toDateMissingOrAfterSql(stagePaymentDate) ?? `${stagePaymentDate} is null`}
-            and ${monthMatchesSql(stageBillPreparationDate, monthPlaceholder)}${rangeSql(stageBillPreparationDate)}`,
+            and ${dateScopeSql(stageBillPreparationDate, through)}`,
         )}
 	        or (
 	          ${isYesSql("so.advance_payment")}
 	          and ${advanceBillPreparationDate} is not null
 	          and ${toDateOnOrBeforeSql(advanceBillPreparationDate) ?? "true"}
-	          and ${toDateMissingOrAfterSql(advanceBillSentForPaymentDate) ?? `${advanceBillSentForPaymentDate} is null`}
+	          and (${toDateMissingOrAfterSql(advanceBillSentForPaymentDate) ?? `${advanceBillSentForPaymentDate} is null`} or ${openBillReturnSql("so.advance_payment_detail -> 'billReturnCycles'")})
 	          and ${toDateMissingOrAfterSql(advancePaymentDate) ?? `${advancePaymentDate} is null`}
-	          and ${monthMatchesSql(advanceBillPreparationDate, monthPlaceholder)}${rangeSql(advanceBillPreparationDate)}
+	          and ${dateScopeSql(advanceBillPreparationDate, through)}
 		        )
+        or exists (
+          select 1
+          from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+          where ${supplementaryPendingReturnedDate} is not null
+            and ${toDateMissingOrAfterSql(supplementaryPaymentDate) ?? `${supplementaryPaymentDate} is null`}
+            and ${dateScopeSql(supplementaryPendingReturnedDate, through)}
+        )
 		      )`,
       `${legacyBaseDate} is not null
        and not ${isYesSql("f.so_cancelled")}
@@ -4428,13 +5020,27 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
        and ${toDateOnOrBeforeSql("f.bill_preparation_date") ?? "true"}
        and ${toDateMissingOrAfterSql("f.bill_sent_for_payment_date") ?? `not ${hasTextSql("f.bill_sent_for_payment_date")}`}
        and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
-       and ${monthMatchesSql("f.bill_preparation_date", monthPlaceholder)}${rangeSql("f.bill_preparation_date")}`,
+       and ${dateScopeSql("f.bill_preparation_date", through)}`,
     )}`;
   }
 
-  if (parsed.mode === "billSent") {
+  if (parsed.mode === "billSent" || parsed.mode === "billSentThrough") {
+    const through = parsed.mode === "billSentThrough";
     const childBaseDate = orderReportBaseDate;
     const legacyBaseDate = legacyReportBaseDate;
+    const supplementaryCycles = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+    const supplementarySubmittedDate = `coalesce(
+      (select max(nullif(cycle ->> 'resubmittedDate', '')::date)
+       from jsonb_array_elements(${supplementaryCycles}) as cycle
+       where coalesce(cycle ->> 'resubmittedDate', '') <> ''),
+      nullif(supplementary_bill.bill ->> 'billSentForPaymentDate', '')::date
+    )`;
+    const supplementaryPaymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+    const supplementaryOpenReturn = `exists (
+      select 1 from jsonb_array_elements(${supplementaryCycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') = ''
+    )`;
     return `${activeFile} and ${supplyOrderChildSql(
       `not ${isYesSql("so.so_cancelled")} and (
         (
@@ -4444,8 +5050,9 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
           and ${toDateOnOrBeforeSql(childBaseDate) ?? "true"}
           and ${toDateOnOrBeforeSql("so.bill_preparation_date") ?? "true"}
           and ${toDateOnOrBeforeSql("so.bill_sent_for_payment_date") ?? "true"}
+          and not ${openBillReturnSql("so.bill_return_cycles")}
           and ${toDateMissingOrAfterSql("so.payment_date") ?? `not ${hasTextSql("so.payment_date")}`}
-          and ${monthMatchesSql("so.bill_sent_for_payment_date", monthPlaceholder)}${rangeSql("so.bill_sent_for_payment_date")}
+          and ${dateScopeSql("so.bill_sent_for_payment_date", through)}
         )
         or ${stagePaymentRowExists(
           `${stageReportBaseDate} is not null
@@ -4454,18 +5061,29 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
             and ${toDateOnOrBeforeSql(stageReportBaseDate) ?? "true"}
             and ${toDateOnOrBeforeSql(stageBillPreparationDate) ?? "true"}
             and ${toDateOnOrBeforeSql(stageBillSentForPaymentDate) ?? "true"}
+            and not ${openBillReturnSql("stage_row.stage -> 'billReturnCycles'")}
             and ${toDateMissingOrAfterSql(stagePaymentDate) ?? `${stagePaymentDate} is null`}
-            and ${monthMatchesSql(stageBillSentForPaymentDate, monthPlaceholder)}${rangeSql(stageBillSentForPaymentDate)}`,
+            and ${dateScopeSql(stageBillSentForPaymentDate, through)}`,
         )}
 	        or (
 	          ${isYesSql("so.advance_payment")}
 	          and ${advanceBillPreparationDate} is not null
 	          and ${advanceBillSentForPaymentDate} is not null
-	          and ${toDateOnOrBeforeSql(advanceBillPreparationDate) ?? "true"}
+          and ${toDateOnOrBeforeSql(advanceBillPreparationDate) ?? "true"}
           and ${toDateOnOrBeforeSql(advanceBillSentForPaymentDate) ?? "true"}
+	          and not ${openBillReturnSql("so.advance_payment_detail -> 'billReturnCycles'")}
 	          and ${toDateMissingOrAfterSql(advancePaymentDate) ?? `${advancePaymentDate} is null`}
-	          and ${monthMatchesSql(advanceBillSentForPaymentDate, monthPlaceholder)}${rangeSql(advanceBillSentForPaymentDate)}
+	          and ${dateScopeSql(advanceBillSentForPaymentDate, through)}
 		        )
+        or exists (
+          select 1
+          from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+          where ${supplementarySubmittedDate} is not null
+            and not ${supplementaryOpenReturn}
+            and ${toDateOnOrBeforeSql(supplementarySubmittedDate) ?? "true"}
+            and ${toDateMissingOrAfterSql(supplementaryPaymentDate) ?? `${supplementaryPaymentDate} is null`}
+            and ${dateScopeSql(supplementarySubmittedDate, through)}
+        )
 		      )`,
       `${legacyBaseDate} is not null
        and not ${isYesSql("f.so_cancelled")}
@@ -4475,7 +5093,50 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
        and ${toDateOnOrBeforeSql("f.bill_preparation_date") ?? "true"}
        and ${toDateOnOrBeforeSql("f.bill_sent_for_payment_date") ?? "true"}
        and ${toDateMissingOrAfterSql("f.payment_date") ?? `not ${hasTextSql("f.payment_date")}`}
-       and ${monthMatchesSql("f.bill_sent_for_payment_date", monthPlaceholder)}${rangeSql("f.bill_sent_for_payment_date")}`,
+       and ${dateScopeSql("f.bill_sent_for_payment_date", through)}`,
+    )}`;
+  }
+
+  if (parsed.mode === "supplementaryBillSent") {
+    const cycles = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+    const submittedDate = `coalesce(
+      (select max(nullif(cycle ->> 'resubmittedDate', '')::date)
+       from jsonb_array_elements(${cycles}) as cycle
+       where coalesce(cycle ->> 'resubmittedDate', '') <> ''),
+      nullif(supplementary_bill.bill ->> 'billSentForPaymentDate', '')::date
+    )`;
+    const paymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+    const hasOpenReturned = `exists (
+      select 1 from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') = ''
+    )`;
+    return `${activeFile} and ${supplyOrderChildSql(
+      `not ${isYesSql("so.so_cancelled")}
+       and exists (
+         select 1
+         from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+         where ${submittedDate} is not null
+           and not ${hasOpenReturned}
+           and ${toDateOnOrBeforeSql(submittedDate) ?? "true"}
+           and ${toDateMissingOrAfterSql(paymentDate) ?? `${paymentDate} is null`}
+           and ${dateScopeSql(submittedDate)}
+       )`,
+      "false",
+    )}`;
+  }
+
+  if (parsed.mode === "supplementaryActual") {
+    const paymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+    return `${activeFile} and ${supplyOrderChildSql(
+      `not ${isYesSql("so.so_cancelled")}
+       and exists (
+         select 1
+         from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+         where ${paymentDate} is not null
+           and ${dateScopeSql(paymentDate)}
+       )`,
+      "false",
     )}`;
   }
 
@@ -4513,6 +5174,68 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
     )}`;
   }
 
+  if (
+    parsed.mode === "supplementaryReturnedBills" ||
+    parsed.mode === "supplementaryPendingReturnedBills" ||
+    parsed.mode === "supplementaryReturnedBillsResubmitted" ||
+    parsed.mode === "supplementaryReturnedBillsPaid"
+  ) {
+    const cycles = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+    const paymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+    const returnedDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+      from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> '')`;
+    const pendingReturnedDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+      from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+    const resubmittedDate = `(select min(nullif(cycle ->> 'resubmittedDate', '')::date)
+      from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') <> '')`;
+    const hasReturned = `exists (
+      select 1 from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+    )`;
+    const hasOpenReturned = `exists (
+      select 1 from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') = ''
+    )`;
+    const hasResubmitted = `exists (
+      select 1 from jsonb_array_elements(${cycles}) as cycle
+      where coalesce(cycle ->> 'returnedDate', '') <> ''
+        and coalesce(cycle ->> 'resubmittedDate', '') <> ''
+    )`;
+    const date =
+      parsed.mode === "supplementaryReturnedBillsPaid"
+        ? paymentDate
+        : parsed.mode === "supplementaryReturnedBillsResubmitted"
+          ? resubmittedDate
+          : parsed.mode === "supplementaryPendingReturnedBills"
+            ? pendingReturnedDate
+            : returnedDate;
+    const state =
+      parsed.mode === "supplementaryReturnedBillsPaid"
+        ? `${paymentDate} is not null and ${hasReturned}`
+        : parsed.mode === "supplementaryReturnedBillsResubmitted"
+          ? `${hasResubmitted} and not ${hasOpenReturned} and ${paymentDate} is null`
+          : parsed.mode === "supplementaryPendingReturnedBills"
+            ? `${hasOpenReturned} and ${paymentDate} is null`
+            : hasReturned;
+    return `${activeFile} and ${supplyOrderChildSql(
+      `not ${isYesSql("so.so_cancelled")}
+       and exists (
+         select 1
+         from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+         where ${state}
+           and ${date} is not null
+           and ${dateScopeSql(date)}
+       )`,
+      "false",
+    )}`;
+  }
+
   return `${activeFile} and ${supplyOrderChildSql(
     `not (${isYesSql("so.so_cancelled")} and ${hasTextSql("so.so_cancelled_date")}) and (
       (
@@ -4528,6 +5251,12 @@ function cashOutgoFilterSql(filter: string, values: unknown[]) {
 	        and ${advancePaymentDate} is not null
 	        and ${monthMatchesSql(advancePaymentDate, monthPlaceholder)}${rangeSql(advancePaymentDate)}
 		      )
+      or exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+        where nullif(supplementary_bill.bill ->> 'paymentDate', '')::date is not null
+          and ${monthMatchesSql("nullif(supplementary_bill.bill ->> 'paymentDate', '')::date", monthPlaceholder)}${rangeSql("nullif(supplementary_bill.bill ->> 'paymentDate', '')::date")}
+      )
 		    )`,
     `${hasTextSql("f.payment_date")}
      and not (${isYesSql("f.so_cancelled")} and ${hasTextSql("f.so_cancelled_date")})
@@ -4600,6 +5329,7 @@ function actualThroughCashOutgoFilterSql(filter: string, values: unknown[]) {
     }`;
   const stagePaymentDate = stagePaymentDateSql();
   const advancePaymentDate = `nullif(so.advance_payment_detail ->> 'paymentDate', '')::date`;
+  const supplementaryPaymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
 
   return `not ${isCancelledFileSql()} and ${supplyOrderChildSql(
     `not (${isYesSql("so.so_cancelled")} and ${hasTextSql("so.so_cancelled_date")}) and (
@@ -4621,6 +5351,13 @@ function actualThroughCashOutgoFilterSql(filter: string, values: unknown[]) {
         and ${advancePaymentDate} is not null
         and ${advancePaymentDate} <= ${monthEndPlaceholder}::date
         ${rangeSql(advancePaymentDate)}
+      )
+      or exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+        where ${supplementaryPaymentDate} is not null
+          and ${supplementaryPaymentDate} <= ${monthEndPlaceholder}::date
+          ${rangeSql(supplementaryPaymentDate)}
       )
     )`,
     `${hasTextSql("f.payment_date")}
@@ -4920,6 +5657,11 @@ function dashboardFilterSql(
     if (!isBillReturnFilterState(state)) return "true";
     return billReturnStatusFilterSql(state);
   }
+  if (filter === "supplementaryBill:submitted" || filter === "supplementaryBill:pending")
+    return supplementaryBillStatusSql("submitted");
+  if (filter === "supplementaryBill:returned") return supplementaryBillStatusSql("returned");
+  if (filter === "supplementaryBill:resubmitted") return supplementaryBillStatusSql("resubmitted");
+  if (filter === "supplementaryBill:paid") return supplementaryBillStatusSql("paid");
   if (filter.startsWith("biddingDelay:")) {
     const [, rawDays = "0", breakupKey = ""] = filter.split(":");
     const thresholdDays = Number.parseInt(rawDays, 10);
@@ -5381,6 +6123,9 @@ function dashboardFilterSql(
     if (normalized === "bankguarantee") return bgToBeReceivedSql("psb");
     if (normalized === "payment") return paymentPendingSql();
     if (normalized === "jobcompletion") return jobCompletionFilterSql("live");
+    if (normalized === "supplementarybillreturnedforcorrection") {
+      return supplementaryBillStatusSql("returned");
+    }
     if (normalized === "refloatbidding") {
       return `not ${isCancelledFileSql()} and ${isYesSql("f.refloat")} and not ${isYesSql("f.bidding_stage_over")}`;
     }

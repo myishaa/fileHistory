@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
   type KeyboardEvent,
+  type MutableRefObject,
   type ReactNode,
   useEffect,
   useMemo,
@@ -25,6 +26,7 @@ import {
   type MasterFirm,
   type SpecialFileMarker,
   type BillReturnCycle,
+  type SupplementaryBillDetail,
   type AdvancePaymentDetail,
   type StageDeliveryDetail,
   type SupplyOrderDetail,
@@ -740,6 +742,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   irPreparationDate: "",
   irReceiptDate: "",
   billPreparationDate: "",
+  billNo: "",
   billSentForPaymentDate: "",
   paymentDate: "",
   billReturnCycles: [],
@@ -761,6 +764,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   advancePayment: "No",
   advancePaymentDetail: {},
   stageDeliveries: [],
+  supplementaryBills: [],
   firmRatingValues: {},
 };
 
@@ -770,6 +774,7 @@ const emptyAdvancePayment: Required<AdvancePaymentDetail> = {
   stageAmountCapital: "",
   stageAmountRevenue: "",
   billPreparationDate: "",
+  billNo: "",
   billSentForPaymentDate: "",
   paymentDate: "",
   billReturnCycles: [],
@@ -793,6 +798,7 @@ const emptyStageDelivery: Required<StageDeliveryDetail> = {
   irPreparationDate: "",
   irReceiptDate: "",
   billPreparationDate: "",
+  billNo: "",
   billSentForPaymentDate: "",
   paymentDate: "",
   billReturnCycles: [],
@@ -838,6 +844,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
+  { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "billReturnCycles", label: "Bill returned for correction" },
   { key: "billAmountCapital", label: "Bill amount" },
@@ -867,6 +874,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
+  { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "billReturnCycles", label: "Bill returned for correction" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
@@ -877,6 +885,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
 const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
   { key: "stageAmountCapital", label: "Advance amount" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
+  { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "billReturnCycles", label: "Bill returned for correction" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
@@ -924,6 +933,7 @@ const supplyOrderSubviewFields = {
   delivery: ["materialReceiptDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
   payment: [
     "billPreparationDate",
+    "billNo",
     "billSentForPaymentDate",
     "billReturnCycles",
     "billAmountCapital",
@@ -931,6 +941,7 @@ const supplyOrderSubviewFields = {
     "paymentMode",
     "actualPaymentCapital",
   ],
+  supplementaryBills: [],
   firmRating: [],
   miscellaneous: ["shortclosure", "shortclosureDate", "soCancelled", "soCancelledDate"],
 } satisfies Record<string, SupplyOrderKey[]>;
@@ -941,6 +952,7 @@ const supplyOrderSubviewTabs = [
   { key: "dp", label: "D.P." },
   { key: "delivery", label: "Delivery & Inspection" },
   { key: "payment", label: "Payment" },
+  { key: "supplementaryBills", label: "Supplementary Bills" },
   { key: "firmRating", label: "Firm Rating" },
   { key: "miscellaneous", label: "Shortclosure / Cancellation" },
 ] as const;
@@ -987,6 +999,7 @@ const supplyOrderFieldPrerequisites = {
   irPreparationDate: ["materialReceiptDate"],
   irReceiptDate: ["irPreparationDate"],
   billPreparationDate: ["materialReceiptDate"],
+  billNo: ["billPreparationDate"],
   billSentForPaymentDate: ["billPreparationDate"],
   billReturnCycles: ["billSentForPaymentDate"],
   billAmountCapital: ["billPreparationDate"],
@@ -1001,12 +1014,81 @@ const supplyOrderFieldPrerequisites = {
 
 type SupplyOrderSubviewKey = (typeof supplyOrderSubviewTabs)[number]["key"];
 
+type SupplementaryBillDraft = {
+  id: string;
+  billNo: string;
+  billAmountCapital: string;
+  billAmountRevenue: string;
+  billSentForPaymentDate: string;
+  billReturnCycles: BillReturnCycle[];
+  paymentDate: string;
+  paymentMode: string;
+  actualPaymentCapital: string;
+  actualPaymentRevenue: string;
+  remarks: string;
+};
+
+function createSupplementaryBillDraft(): SupplementaryBillDraft {
+  return {
+    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    billNo: "",
+    billAmountCapital: "",
+    billAmountRevenue: "",
+    billSentForPaymentDate: "",
+    billReturnCycles: [],
+    paymentDate: "",
+    paymentMode: "",
+    actualPaymentCapital: "",
+    actualPaymentRevenue: "",
+    remarks: "",
+  };
+}
+
+function normalizeSupplementaryBillDrafts(
+  bills: SupplementaryBillDetail[] | undefined,
+): SupplementaryBillDraft[] {
+  return (Array.isArray(bills) ? bills : []).map((bill, index) => ({
+    id: bill.id || `supplementary-bill-${index}`,
+    billNo: bill.billNo ?? "",
+    billAmountCapital: bill.billAmountCapital ?? "",
+    billAmountRevenue: bill.billAmountRevenue ?? "",
+    billSentForPaymentDate: bill.billSentForPaymentDate ?? "",
+    billReturnCycles: normalizeBillReturnCycles(bill.billReturnCycles),
+    paymentDate: bill.paymentDate ?? "",
+    paymentMode: bill.paymentMode ?? "",
+    actualPaymentCapital: bill.actualPaymentCapital ?? "",
+    actualPaymentRevenue: bill.actualPaymentRevenue ?? "",
+    remarks: bill.remarks ?? "",
+  }));
+}
+
+function cleanSupplementaryBills(
+  bills: SupplementaryBillDetail[] | undefined,
+): SupplementaryBillDetail[] {
+  return normalizeSupplementaryBillDrafts(bills)
+    .map((bill) => ({
+      id: bill.id,
+      billNo: bill.billNo.trim() || undefined,
+      billAmountCapital: bill.billAmountCapital || undefined,
+      billAmountRevenue: bill.billAmountRevenue || undefined,
+      billSentForPaymentDate: bill.billSentForPaymentDate || undefined,
+      billReturnCycles: normalizeBillReturnCycles(bill.billReturnCycles),
+      paymentDate: bill.paymentDate || undefined,
+      paymentMode: cleanPaymentModeValue(bill.paymentMode) || undefined,
+      actualPaymentCapital: bill.actualPaymentCapital || undefined,
+      actualPaymentRevenue: bill.actualPaymentRevenue || undefined,
+      remarks: bill.remarks.trim() || undefined,
+    }))
+    .filter((bill) => hasMeaningfulSupplyOrderDataValue("supplementaryBills", bill));
+}
+
 const supplyOrderSubviewMilestones = {
   supplyOrder: ["Financial Sanction", "Supply Order"],
   bg: ["PSB", "PWB", "PSB+PWB"],
   dp: ["Delivery Period"],
   delivery: ["Delivery", "Job Completion", "IR Preparation", "IR Receipt"],
   payment: ["Bill preparation", "Bill sent for payment", "Bill returned for correction", "Payment"],
+  supplementaryBills: [],
   firmRating: [],
   miscellaneous: [],
 } as const satisfies Record<SupplyOrderSubviewKey, readonly SupplyOrderMilestoneName[]>;
@@ -1257,6 +1339,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [saved, setSaved] = useState(false);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [demandCancelledUnlocked, setDemandCancelledUnlocked] = useState(false);
+  const [paidStageUnfreezeKeys, setPaidStageUnfreezeKeys] = useState<Set<string>>(() => new Set());
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
   const [focusedMilestone, setFocusedMilestone] = useState(milestone ?? "");
   const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -1282,6 +1365,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       setLoadedFile(undefined);
       setFileLoadStatus("idle");
       setDemandCancelledUnlocked(false);
+      setPaidStageUnfreezeKeys(new Set());
       return;
     }
 
@@ -1293,6 +1377,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setLoadedFile(file);
         setFileLoadStatus("loaded");
         setDemandCancelledUnlocked(false);
+        setPaidStageUnfreezeKeys(new Set());
       })
       .catch((error) => {
         if (cancelled) return;
@@ -1300,6 +1385,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setLoadedFile(undefined);
         setFileLoadStatus("error");
         setDemandCancelledUnlocked(false);
+        setPaidStageUnfreezeKeys(new Set());
       });
 
     return () => {
@@ -1310,6 +1396,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (readOnlyMode || demandCancelledUnlocked) return;
     const allowed = await requestDeletionPassword("unlock Demand cancelled");
     if (allowed) setDemandCancelledUnlocked(true);
+  };
+  const unlockPaidStage = async (orderIndex: number, stageIndex: number) => {
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    const allowed = await requestDeletionPassword(`unfreeze paid Delivery-${stageIndex + 1}`);
+    if (!allowed) return;
+    setPaidStageUnfreezeKeys((current) => {
+      const next = new Set(current);
+      next.add(stageFreezeKey(orderIndex, stageIndex));
+      return next;
+    });
   };
   const savedFormForLocks = useMemo(
     () =>
@@ -1838,8 +1934,27 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         : next;
     });
   };
-  const updateSupplyOrder = (index: number, key: SupplyOrderKey, value: string) => {
+  const updateSupplyOrder = async (index: number, key: SupplyOrderKey, value: string) => {
     if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    if (key === "stageDeliveryCount") {
+      const nextCount = getStageDeliveryCount(formatIntegerInput(value));
+      const order = supplyOrders[index];
+      const lockedOrder = savedSupplyOrdersForLocks[index];
+      const protectedStages = (order?.stageDeliveries ?? []).filter(
+        (_stage, stageIndex) =>
+          stageIndex >= nextCount &&
+          isPaidStageFrozen(
+            index,
+            stageIndex,
+            lockedOrder?.stageDeliveries?.[stageIndex],
+            paidStageUnfreezeKeys,
+          ),
+      );
+      if (protectedStages.length) {
+        const allowed = await requestDeletionPassword("reduce stages with paid payment rows");
+        if (!allowed) return;
+      }
+    }
     let rejectedMessage = "";
     setSupplyOrders((current) =>
       current.map((order, orderIndex) => {
@@ -1929,6 +2044,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           order.stageDeliveries ?? [],
           getStageDeliveryCount(order.stageDeliveryCount),
         );
+        if (
+          isPaidStageFrozen(
+            orderIndex,
+            stageIndex,
+            savedSupplyOrdersForLocks[orderIndex]?.stageDeliveries?.[stageIndex],
+            paidStageUnfreezeKeys,
+          )
+        ) {
+          return order;
+        }
         const nextStageDeliveries = stageDeliveries.map((stage, itemIndex) => {
           if (itemIndex !== stageIndex) return stage;
           const currentMilestone = stage.currentMilestone === milestone ? "" : milestone;
@@ -1954,6 +2079,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           order.stageDeliveries ?? [],
           getStageDeliveryCount(order.stageDeliveryCount),
         );
+        if (
+          isPaidStageFrozen(
+            orderIndex,
+            stageIndex,
+            savedSupplyOrdersForLocks[orderIndex]?.stageDeliveries?.[stageIndex],
+            paidStageUnfreezeKeys,
+          )
+        ) {
+          return order;
+        }
         const nextStageDeliveries = stageDeliveries.map((stage, itemIndex) =>
           itemIndex === stageIndex
             ? applyStageDeliveryRules(
@@ -1983,6 +2118,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           order.stageDeliveries ?? [],
           getStageDeliveryCount(order.stageDeliveryCount),
         );
+        if (
+          isPaidStageFrozen(
+            orderIndex,
+            stageIndex,
+            savedSupplyOrdersForLocks[orderIndex]?.stageDeliveries?.[stageIndex],
+            paidStageUnfreezeKeys,
+          )
+        ) {
+          return order;
+        }
         const stage = applyStageDeliveryRules(
           {
             ...stageDeliveries[stageIndex],
@@ -2023,6 +2168,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           order.stageDeliveries ?? [],
           getStageDeliveryCount(order.stageDeliveryCount),
         );
+        if (
+          isPaidStageFrozen(
+            orderIndex,
+            stageIndex,
+            savedSupplyOrdersForLocks[orderIndex]?.stageDeliveries?.[stageIndex],
+            paidStageUnfreezeKeys,
+          )
+        ) {
+          return order;
+        }
         const nextStageDeliveries = stageDeliveries.map((stage, itemIndex) =>
           itemIndex === stageIndex
             ? applyStageDeliveryRules({ ...stage, billReturnCycles }, formWithLockedYear)
@@ -2709,6 +2864,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         ),
       );
       setUnlockedSections(new Set());
+      setPaidStageUnfreezeKeys(new Set());
       setSaved(true);
       if (options?.returnToQuickEntry) {
         setTimeout(() => {
@@ -2946,6 +3102,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   gemDisabled={gemIsNo}
                   bgDisabled={bgIsNo}
                   irDisabled={irIsNo}
+                  paidStageUnfreezeKeys={paidStageUnfreezeKeys}
                   quickFocus={Boolean(
                     quickFocus && activeSection.title === "Supply order and payment",
                   )}
@@ -2967,6 +3124,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onAdvancePaymentBillReturnsChange={updateAdvancePaymentBillReturns}
                   onStageDeliveryChange={updateStageDelivery}
                   onStageDeliveryBillReturnsChange={updateStageDeliveryBillReturns}
+                  onPaidStageUnfreeze={unlockPaidStage}
                 />
               ) : (
                 <>
@@ -4216,6 +4374,7 @@ function SupplyOrdersBlock({
   gemDisabled,
   bgDisabled,
   irDisabled,
+  paidStageUnfreezeKeys,
   quickFocus,
   focusTarget,
   renderUpdateButton,
@@ -4231,6 +4390,7 @@ function SupplyOrdersBlock({
   onAdvancePaymentBillReturnsChange,
   onStageDeliveryChange,
   onStageDeliveryBillReturnsChange,
+  onPaidStageUnfreeze,
 }: {
   form: FormState;
   lockedForm: FormState;
@@ -4246,6 +4406,7 @@ function SupplyOrdersBlock({
   gemDisabled: boolean;
   bgDisabled: boolean;
   irDisabled: boolean;
+  paidStageUnfreezeKeys: Set<string>;
   quickFocus?: boolean;
   focusTarget?: string;
   renderUpdateButton?: (dirty?: boolean) => ReactNode;
@@ -4281,6 +4442,7 @@ function SupplyOrdersBlock({
     stageIndex: number,
     billReturnCycles: BillReturnCycle[],
   ) => void;
+  onPaidStageUnfreeze: (orderIndex: number, stageIndex: number) => void;
 }) {
   const orderFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const focusBlockRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -4290,6 +4452,7 @@ function SupplyOrdersBlock({
   const [activeSubview, setActiveSubview] = useState<SupplyOrderSubviewKey>("supplyOrder");
   const [downstreamOverrideUnlocked, setDownstreamOverrideUnlocked] = useState(false);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
+  const [openCardKeys, setOpenCardKeys] = useState<Set<string>>(new Set());
   const deliveryInspectionInactive = isDeliveryInspectionInactive(form);
   const effectiveIrDisabled = irDisabled || deliveryInspectionInactive;
   const focusConfigs = useMemo(() => parseSupplyOrderFocusTargets(focusTarget), [focusTarget]);
@@ -4356,6 +4519,12 @@ function SupplyOrdersBlock({
       return !isDirtyValueEqual(
         normalizeDirtyObject(order.firmRatingValues ?? {}),
         normalizeDirtyObject(lockedOrder?.firmRatingValues ?? {}),
+      );
+    }
+    if (activeSubview === "supplementaryBills") {
+      return !isDirtyValueEqual(
+        cleanSupplementaryBills(order.supplementaryBills),
+        cleanSupplementaryBills(lockedOrder?.supplementaryBills),
       );
     }
     const keys = expandSupplyOrderDirtyKeys(
@@ -4439,6 +4608,16 @@ function SupplyOrdersBlock({
     latestOrdersRef.current = orders;
   });
 
+  const setCardOpen = (key: string, open: boolean) => {
+    setOpenCardKeys((current) => {
+      if (open === current.has(key)) return current;
+      const next = new Set(current);
+      if (open) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
   const unlockDownstreamOverride = async () => {
     if (disabled || downstreamOverrideUnlocked) return;
     const allowed = await requestDeletionPassword("unlock downstream delivery/payment fields");
@@ -4460,6 +4639,33 @@ function SupplyOrdersBlock({
       firmUniqueNo: "",
       firmContactNo: "",
       firmCity: "",
+    });
+  };
+
+  const addSupplementaryBillDraft = (orderIndex: number) => {
+    if (disabled) return;
+    const currentBills = normalizeSupplementaryBillDrafts(orders[orderIndex]?.supplementaryBills);
+    onOrderPatch(orderIndex, {
+      supplementaryBills: [...currentBills, createSupplementaryBillDraft()],
+    });
+  };
+  const updateSupplementaryBillDraft = (
+    orderIndex: number,
+    draftId: string,
+    patch: Partial<SupplementaryBillDraft>,
+  ) => {
+    const currentBills = normalizeSupplementaryBillDrafts(orders[orderIndex]?.supplementaryBills);
+    onOrderPatch(orderIndex, {
+      supplementaryBills: currentBills.map((bill) =>
+        bill.id === draftId ? { ...bill, ...patch } : bill,
+      ),
+    });
+  };
+  const removeSupplementaryBillDraft = (orderIndex: number, draftId: string) => {
+    if (disabled) return;
+    const currentBills = normalizeSupplementaryBillDrafts(orders[orderIndex]?.supplementaryBills);
+    onOrderPatch(orderIndex, {
+      supplementaryBills: currentBills.filter((bill) => bill.id !== draftId),
     });
   };
 
@@ -4650,7 +4856,8 @@ function SupplyOrdersBlock({
 
       {!activeSubviewFields.length &&
       !activeSubviewMilestones.length &&
-      activeSubview !== "firmRating" ? (
+      activeSubview !== "firmRating" &&
+      activeSubview !== "supplementaryBills" ? (
         <div className="rounded-md border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
           No fields in this tab.
         </div>
@@ -4688,7 +4895,8 @@ function SupplyOrdersBlock({
 
       {activeSubviewFields.length ||
       activeSubviewMilestones.length ||
-      activeSubview === "firmRating"
+      activeSubview === "firmRating" ||
+      activeSubview === "supplementaryBills"
         ? orders.map((order, index) => {
             const lockedOrder = lockedOrders[index];
             const stageFields =
@@ -4750,14 +4958,23 @@ function SupplyOrdersBlock({
             );
             const orderFocusKey = `order:${index}`;
             const directOrderFocusMatch = focusBlockKeySet.has(orderFocusKey);
-            const childFocusMatch = focusBlockKeys.some(
-              (key) => key === `advance:${index}` || key.startsWith(`stage:${index}:`),
+            const supplementaryChildFocusMatch = focusBlockKeys.some((key) =>
+              key.startsWith(`supplementary:${index}:`),
             );
-            const orderOpen = directOrderFocusMatch || childFocusMatch;
+            const childFocusMatch = focusBlockKeys.some(
+              (key) =>
+                key === `advance:${index}` ||
+                key.startsWith(`stage:${index}:`) ||
+                key.startsWith(`supplementary:${index}:`),
+            );
+            const orderOpen =
+              openCardKeys.has(orderFocusKey) || directOrderFocusMatch || childFocusMatch;
             const focusClass = directOrderFocusMatch
               ? " border-primary bg-primary/5 ring-2 ring-primary/40"
               : childFocusMatch
-                ? " border-primary/70"
+                ? supplementaryChildFocusMatch
+                  ? ""
+                  : " border-primary/70"
                 : "";
             const downstreamLocked =
               isDownstreamSubview(activeSubview) &&
@@ -4771,7 +4988,8 @@ function SupplyOrdersBlock({
                 ref={(element) => {
                   focusBlockRefs.current[orderFocusKey] = element;
                 }}
-                open={orderOpen || undefined}
+                open={orderOpen}
+                onToggle={(event) => setCardOpen(orderFocusKey, event.currentTarget.open)}
                 className={
                   "group overflow-hidden rounded-md border bg-card shadow-sm " +
                   getCompletionBorderClass(completion.status) +
@@ -5043,6 +5261,15 @@ function SupplyOrdersBlock({
                               stageDeliveries,
                             ),
                           );
+                        const paidStageFrozen = isPaidStageFrozen(
+                          index,
+                          stageIndex,
+                          lockedOrder?.stageDeliveries?.[stageIndex],
+                          paidStageUnfreezeKeys,
+                        );
+                        const stageControlDisabled =
+                          disabled || downstreamLocked || paidStageFrozen;
+                        const stageOpen = openCardKeys.has(stageFocusKey) || stageFocusMatch;
                         return (
                           <details
                             key={stageIndex}
@@ -5050,7 +5277,8 @@ function SupplyOrdersBlock({
                             ref={(element) => {
                               focusBlockRefs.current[stageFocusKey] = element;
                             }}
-                            open={stageFocusMatch || undefined}
+                            open={stageOpen}
+                            onToggle={(event) => setCardOpen(stageFocusKey, event.currentTarget.open)}
                             className={
                               "group overflow-hidden rounded-md border bg-background/70 " +
                               getCompletionBorderClass(stageCompletion.status) +
@@ -5096,6 +5324,21 @@ function SupplyOrdersBlock({
                               </span>
                             </summary>
                             <div className="grid grid-cols-1 gap-4 border-t border-border p-4">
+                              {paidStageFrozen ? (
+                                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                                  <span className="font-medium">
+                                    Paid stage locked to protect payment data.
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => onPaidStageUnfreeze(index, stageIndex)}
+                                    disabled={disabled || downstreamLocked}
+                                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    <Lock className="size-3.5" /> Unfreeze with password
+                                  </button>
+                                </div>
+                              ) : null}
                               {stageMilestones.length ? (
                                 <SupplyOrderMilestonesBlock
                                   title={
@@ -5105,7 +5348,7 @@ function SupplyOrdersBlock({
                                   }
                                   milestones={stageMilestones}
                                   order={effectiveStageMilestoneRow}
-                                  disabled={disabled || downstreamLocked}
+                                  disabled={stageControlDisabled}
                                   lockFilledFields={lockFilledFields}
                                   lockedOrder={lockedOrder?.stageDeliveries?.[stageIndex]}
                                   fileType={form.fileType}
@@ -5137,7 +5380,7 @@ function SupplyOrdersBlock({
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.stageAmountCapital ?? ""}
                                       revenueValue={stage.stageAmountRevenue ?? ""}
-                                      disabled={disabled || downstreamLocked}
+                                      disabled={stageControlDisabled}
                                       lockFilledFields={lockFilledFields}
                                       testId={`add-field-supplyOrder-${index}-stage-${stageIndex}-stageAmountCapital`}
                                       lockedValueFilled={
@@ -5180,7 +5423,7 @@ function SupplyOrdersBlock({
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.actualPaymentCapital ?? ""}
                                       revenueValue={stage.actualPaymentRevenue ?? ""}
-                                      disabled={disabled || downstreamLocked}
+                                      disabled={stageControlDisabled}
                                       lockFilledFields={lockFilledFields}
                                       testId={`add-field-supplyOrder-${index}-stage-${stageIndex}-actualPaymentCapital`}
                                       lockedValueFilled={
@@ -5223,8 +5466,7 @@ function SupplyOrdersBlock({
                                         lockedOrder?.stageDeliveries?.[stageIndex]?.billReturnCycles
                                       }
                                       disabled={
-                                        disabled ||
-                                        downstreamLocked ||
+                                        stageControlDisabled ||
                                         (lockFilledFields &&
                                           hasFilledValue(
                                             String(
@@ -5256,8 +5498,7 @@ function SupplyOrdersBlock({
                                         value={String(stage[key] ?? "")}
                                         radioName={`supplyOrder-${index}-stage-${stageIndex}-${key}`}
                                         disabled={
-                                          disabled ||
-                                          downstreamLocked ||
+                                          stageControlDisabled ||
                                           (lockFilledFields &&
                                             hasFilledValue(String(lockedValue ?? ""))) ||
                                           isDpExtensionFieldInactive(form, key, stage)
@@ -5276,8 +5517,7 @@ function SupplyOrdersBlock({
                                           ldType={stage.ldType ?? ""}
                                           ldPercentage={stage.ldPercentage ?? ""}
                                           disabled={
-                                            disabled ||
-                                            downstreamLocked ||
+                                            stageControlDisabled ||
                                             (lockFilledFields && detailLocked)
                                           }
                                           onTypeChange={(value) =>
@@ -5308,8 +5548,7 @@ function SupplyOrdersBlock({
                                     value={String(stage[key] ?? "")}
                                     radioName={`supplyOrder-${index}-stage-${stageIndex}-${key}`}
                                     disabled={
-                                      disabled ||
-                                      downstreamLocked ||
+                                      stageControlDisabled ||
                                       (lockFilledFields &&
                                         hasFilledValue(String(lockedValue ?? ""))) ||
                                       isDpExtensionFieldInactive(form, key, stage) ||
@@ -5562,11 +5801,251 @@ function SupplyOrdersBlock({
                       {renderUpdateButton(orderSubviewDirty)}
                     </div>
                   ) : null}
+                  {activeSubview === "supplementaryBills" ? (
+                    <SupplementaryBillsDraftBlock
+                      orderIndex={index}
+                      bills={normalizeSupplementaryBillDrafts(order.supplementaryBills)}
+                      disabled={disabled || downstreamLocked}
+                      capitalSelected={form.valueCapitalSelected === "Yes"}
+                      revenueSelected={form.valueRevenueSelected === "Yes"}
+                      focusBlockRefs={focusBlockRefs}
+                      focusBlockKeySet={focusBlockKeySet}
+                      onAdd={() => addSupplementaryBillDraft(index)}
+                      onChange={(draftId, patch) =>
+                        updateSupplementaryBillDraft(index, draftId, patch)
+                      }
+                      onRemove={(draftId) => removeSupplementaryBillDraft(index, draftId)}
+                    />
+                  ) : null}
                 </div>
               </details>
             );
           })
         : null}
+    </div>
+  );
+}
+
+function SupplementaryBillsDraftBlock({
+  orderIndex,
+  bills,
+  disabled,
+  capitalSelected,
+  revenueSelected,
+  focusBlockRefs,
+  focusBlockKeySet,
+  onAdd,
+  onChange,
+  onRemove,
+}: {
+  orderIndex: number;
+  bills: SupplementaryBillDraft[];
+  disabled: boolean;
+  capitalSelected: boolean;
+  revenueSelected: boolean;
+  focusBlockRefs: MutableRefObject<Record<string, HTMLElement | null>>;
+  focusBlockKeySet: Set<string>;
+  onAdd: () => void;
+  onChange: (draftId: string, patch: Partial<SupplementaryBillDraft>) => void;
+  onRemove: (draftId: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold">Supplementary bills</div>
+          <div className="text-xs text-muted-foreground">
+            For unplanned payment authority deductions or adjustments.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={disabled}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Plus className="size-3.5" />
+          Add bill
+        </button>
+      </div>
+      {bills.length ? (
+        <div className="space-y-3">
+          {bills.map((bill, index) => {
+            const completion = getSupplementaryBillCompletion(bill, {
+              valueCapitalSelected: capitalSelected ? "Yes" : "No",
+              valueRevenueSelected: revenueSelected ? "Yes" : "No",
+            });
+            const status = getCompletionStatus(completion);
+            const isCurrentReturned = isSupplementaryBillFocusMatch(bill, "current");
+            const focusKey = `supplementary:${orderIndex}:${index}`;
+            const isFocused = focusBlockKeySet.has(focusKey);
+            return (
+            <div
+              key={bill.id}
+              ref={(element) => {
+                focusBlockRefs.current[focusKey] = element;
+              }}
+              className={
+                "rounded-md border bg-background/70 p-4 " +
+                getCompletionBorderClass(status) +
+                (isFocused ? " ring-2 ring-primary/40" : "")
+              }
+            >
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={"size-2.5 shrink-0 rounded-full " + getCompletionDotClass(status)}
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 text-sm font-medium">
+                    Supplementary bill {index + 1}
+                  </div>
+                  <span
+                    className={
+                      "rounded-full border px-2 py-0.5 text-[11px] font-medium " +
+                      getCompletionBadgeClass(status)
+                    }
+                  >
+                    {status === "complete" ? "Full" : status === "partial" ? "Partial" : "Nil"}
+                  </span>
+                  <label
+                    className={
+                      "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium " +
+                      (isCurrentReturned
+                        ? "border-primary/40 bg-primary/10 text-primary"
+                        : "border-border bg-secondary/30 text-muted-foreground")
+                    }
+                    title="Auto-derived from open supplementary bill return"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isCurrentReturned}
+                      readOnly
+                      tabIndex={-1}
+                      className="size-3 accent-primary"
+                      aria-label={`Supplementary bill ${index + 1} returned for correction current`}
+                    />
+                    Current
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemove(bill.id)}
+                  disabled={disabled}
+                  className="inline-flex size-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label={`Remove supplementary bill ${index + 1}`}
+                  title="Remove"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <DynamicField
+                  field={{ key: "billNo", label: "Bill No." } as ExtraField<FieldKey>}
+                  value={bill.billNo}
+                  disabled={disabled}
+                  radioName={`supplementaryBill-${bill.id}-billNo`}
+                  onChange={(value) => onChange(bill.id, { billNo: value })}
+                />
+                <AmountByValueTypeField
+                  label="Supplementary bill amount"
+                  capitalSelected={capitalSelected}
+                  revenueSelected={revenueSelected}
+                  capitalValue={bill.billAmountCapital}
+                  revenueValue={bill.billAmountRevenue}
+                  disabled={disabled}
+                  testId={`add-field-supplementaryBill-${bill.id}-billAmountCapital`}
+                  onChange={(patch) =>
+                    onChange(bill.id, {
+                      billAmountCapital: patch.capital ?? "",
+                      billAmountRevenue: patch.revenue ?? "",
+                    })
+                  }
+                />
+                <DynamicField
+                  field={
+                    {
+                      key: "billSentForPaymentDate",
+                      label: "Supplementary bill submitted",
+                      type: "date",
+                    } as ExtraField<SupplyOrderKey>
+                  }
+                  value={bill.billSentForPaymentDate}
+                  disabled={disabled}
+                  radioName={`supplementaryBill-${bill.id}-billSentForPaymentDate`}
+                  onChange={(value) => onChange(bill.id, { billSentForPaymentDate: value })}
+                />
+                <div className="md:col-span-2">
+                  <BillReturnCyclesBlock
+                    cycles={bill.billReturnCycles}
+                    disabled={disabled}
+                    lockFilledFields={false}
+                    testIdPrefix={`add-field-supplementaryBill-${bill.id}-billReturnCycles`}
+                    onChange={(cycles) => onChange(bill.id, { billReturnCycles: cycles })}
+                  />
+                </div>
+                <DynamicField
+                  field={
+                    {
+                      key: "paymentDate",
+                      label: "Supplementary bill paid",
+                      type: "date",
+                    } as ExtraField<SupplyOrderKey>
+                  }
+                  value={bill.paymentDate}
+                  disabled={disabled}
+                  radioName={`supplementaryBill-${bill.id}-paymentDate`}
+                  onChange={(value) => onChange(bill.id, { paymentDate: value })}
+                />
+                <DynamicField
+                  field={
+                    {
+                      key: "paymentMode",
+                      label: "Payment mode(Online/Offline)",
+                      options: paymentModeOptions,
+                    } as ExtraField<SupplyOrderKey>
+                  }
+                  value={bill.paymentMode}
+                  disabled={disabled}
+                  radioName={`supplementaryBill-${bill.id}-paymentMode`}
+                  onChange={(value) => onChange(bill.id, { paymentMode: value })}
+                />
+                <AmountByValueTypeField
+                  label="Supplementary payment amount"
+                  capitalSelected={capitalSelected}
+                  revenueSelected={revenueSelected}
+                  capitalValue={bill.actualPaymentCapital}
+                  revenueValue={bill.actualPaymentRevenue}
+                  disabled={disabled}
+                  testId={`add-field-supplementaryBill-${bill.id}-actualPaymentCapital`}
+                  onChange={(patch) =>
+                    onChange(bill.id, {
+                      actualPaymentCapital: patch.capital ?? "",
+                      actualPaymentRevenue: patch.revenue ?? "",
+                    })
+                  }
+                />
+                <div className="md:col-span-2">
+                  <DynamicField
+                    field={
+                      {
+                        key: "remarks",
+                        label: "Remarks",
+                        type: "textarea",
+                      } as ExtraField<FieldKey>
+                    }
+                    value={bill.remarks}
+                    disabled={disabled}
+                    radioName={`supplementaryBill-${bill.id}-remarks`}
+                    onChange={(value) => onChange(bill.id, { remarks: value })}
+                  />
+                </div>
+              </div>
+            </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5686,6 +6165,7 @@ function getSupplyOrderFocusSubview(kind: string, state = ""): SupplyOrderSubvie
   ) {
     return "payment";
   }
+  if (kind === "supplementarybill") return "supplementaryBills";
   return undefined;
 }
 
@@ -5708,6 +6188,16 @@ function getSupplyOrderFocusKeys(
       order.advancePaymentDetail ?? {},
       isYes(order.advancePayment ?? ""),
     );
+
+    if (config.kind === "supplementarybill") {
+      normalizeSupplementaryBillDrafts(order.supplementaryBills).forEach((bill, billIndex) => {
+        if (config.stageIndex !== undefined && config.stageIndex !== billIndex) return;
+        if (isSupplementaryBillFocusMatch(bill, config.state)) {
+          keys.push(`supplementary:${orderIndex}:${billIndex}`);
+        }
+      });
+      continue;
+    }
 
     if (
       isYes(order.stagePayment ?? "") &&
@@ -5765,8 +6255,10 @@ function getSupplyOrderFocusFieldKey(kind: string, state: string) {
 
 function getSupplyOrderParentFocusBlockKey(blockKey: string) {
   const [, rawOrderIndex] = blockKey.split(":");
-  if (!blockKey.startsWith("stage:") || rawOrderIndex === undefined) return undefined;
-  return `order:${rawOrderIndex}`;
+  if (rawOrderIndex === undefined) return undefined;
+  if (blockKey.startsWith("stage:")) return `order:${rawOrderIndex}`;
+  if (blockKey.startsWith("supplementary:")) return `order:${rawOrderIndex}`;
+  return undefined;
 }
 
 function isSupplyOrderFocusMatch(
@@ -5800,7 +6292,16 @@ function isAdvancePaymentFocusMatch(
   config: SupplyOrderFocusConfig,
   form: FormState,
 ) {
-  if (config.kind !== "payment" && config.kind !== "advancepayment") return false;
+  if (
+    config.kind !== "payment" &&
+    config.kind !== "advancepayment" &&
+    config.kind !== "billpreparation" &&
+    config.kind !== "billsentforpayment" &&
+    config.kind !== "billreturnedforcorrection" &&
+    config.kind !== "actualpayment"
+  ) {
+    return false;
+  }
   if (config.kind === "advancepayment" && config.state === "yes") return false;
   return isFocusRowMatch(payment, config, form);
 }
@@ -5924,6 +6425,14 @@ function isFocusRowMatch(
     return isYes(row.advancePayment ?? "");
   }
 
+  if (config.kind === "supplementarybill") {
+    const bills = Array.isArray(row.supplementaryBills) ? row.supplementaryBills : [];
+    return bills.some((bill) => {
+      if (!bill || typeof bill !== "object" || Array.isArray(bill)) return false;
+      return isSupplementaryBillFocusMatch(bill, state);
+    });
+  }
+
   if (config.kind === "securitybg") {
     return ["psb", "pwb", "psbpwb"].some((category) =>
       isFocusBgStateMatch(row, { ...config, kind: category }, form),
@@ -6042,12 +6551,18 @@ function isFocusRowMatch(
     const hasAnyReturn = normalizeBillReturnCycles(row.billReturnCycles).length > 0;
     const hasOpenReturn = hasOpenBillReturn(row);
     const hasResubmittedReturn = hasResubmittedBillReturn(row);
-    if (state === "pending" || state === "current") return hasOpenReturn;
+    if (state === "pending" || state === "current") {
+      return !hasFilledValue(row.paymentDate) && hasOpenReturn;
+    }
     if (state === "resubmitted" || state === "completed") {
-      return hasResubmittedReturn && !hasOpenReturn && !hasFilledValue(row.paymentDate);
+      return (
+        hasAnyReturn &&
+        !hasOpenReturn &&
+        (hasResubmittedReturn || hasFilledValue(row.paymentDate))
+      );
     }
     if (state === "paid" || state === "actual") {
-      return hasResubmittedReturn && !hasOpenReturn && hasFilledValue(row.paymentDate);
+      return hasAnyReturn && hasFilledValue(row.paymentDate);
     }
     return hasAnyReturn;
   }
@@ -6276,7 +6791,10 @@ type CompletionCount = {
 
 function isDownstreamSubview(activeSubview: SupplyOrderSubviewKey) {
   return (
-    activeSubview === "delivery" || activeSubview === "payment" || activeSubview === "firmRating"
+    activeSubview === "delivery" ||
+    activeSubview === "payment" ||
+    activeSubview === "firmRating" ||
+    activeSubview === "supplementaryBills"
   );
 }
 
@@ -6388,6 +6906,19 @@ function getSupplyOrderSubviewCompletion({
           { filled: 0, total: 0 },
         )
       : addSingleCompletion({ filled: 0, total: 0 }, isJobCompletionDone(order));
+    const status = getCompletionStatus(counts);
+    return {
+      ...counts,
+      status,
+      label: status === "complete" ? "Complete" : status === "partial" ? "Partial" : "Empty",
+    };
+  }
+
+  if (activeSubview === "supplementaryBills") {
+    const counts = normalizeSupplementaryBillDrafts(order.supplementaryBills).reduce(
+      (current, bill) => addCompletionCounts(current, getSupplementaryBillCompletion(bill, form)),
+      { filled: 0, total: 0 },
+    );
     const status = getCompletionStatus(counts);
     return {
       ...counts,
@@ -6516,6 +7047,7 @@ function shouldShowStageDeliveryField(activeSubview: SupplyOrderSubviewKey, key:
   return [
     "stageAmountCapital",
     "billPreparationDate",
+    "billNo",
     "billSentForPaymentDate",
     "billReturnCycles",
     "paymentDate",
@@ -6585,6 +7117,7 @@ function addSupplyOrderFieldCompletion(
       form,
     );
   }
+  if (key === "billReturnCycles" && !hasBillReturnHistory(order)) return counts;
   if (key === "billAmountCapital") {
     return addAmountCompletion(counts, order.billAmountCapital, order.billAmountRevenue, form);
   }
@@ -6606,6 +7139,7 @@ function addNestedPaymentFieldCompletion(
   if (key === "actualPaymentCapital") {
     return addAmountCompletion(counts, row.actualPaymentCapital, row.actualPaymentRevenue, form);
   }
+  if (key === "billReturnCycles" && !hasBillReturnHistory(row)) return counts;
   const value = (row as Record<string, string | undefined>)[key];
   return addSingleCompletion(
     counts,
@@ -6645,10 +7179,36 @@ function addSingleCompletion(counts: CompletionCount, filled: boolean) {
   };
 }
 
+function addCompletionCounts(left: CompletionCount, right: CompletionCount) {
+  return {
+    filled: left.filled + right.filled,
+    total: left.total + right.total,
+  };
+}
+
 function getCompletionStatus({ filled, total }: CompletionCount): SupplyOrderCompletionStatus {
   if (!total || filled === 0) return "empty";
   if (filled === total) return "complete";
   return "partial";
+}
+
+function getSupplementaryBillCompletion(
+  bill: SupplementaryBillDraft | SupplementaryBillDetail,
+  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+): CompletionCount {
+  let counts: CompletionCount = { filled: 0, total: 0 };
+  counts = addSingleCompletion(counts, hasFilledValue(bill.billNo));
+  counts = addAmountCompletion(counts, bill.billAmountCapital, bill.billAmountRevenue, form);
+  counts = addSingleCompletion(counts, hasFilledValue(bill.billSentForPaymentDate));
+  counts = addSingleCompletion(counts, hasFilledValue(bill.paymentDate));
+  counts = addSingleCompletion(counts, hasFilledValue(cleanPaymentModeValue(bill.paymentMode)));
+  counts = addAmountCompletion(counts, bill.actualPaymentCapital, bill.actualPaymentRevenue, form);
+  return normalizeBillReturnCycles(bill.billReturnCycles).reduce((current, cycle) => {
+    let cycleCounts = addSingleCompletion(current, hasFilledValue(cycle.returnedDate));
+    cycleCounts = addSingleCompletion(cycleCounts, hasFilledValue(cycle.reason));
+    cycleCounts = addSingleCompletion(cycleCounts, hasFilledValue(cycle.resubmittedDate));
+    return cycleCounts;
+  }, counts);
 }
 
 function hasMeaningfulSupplyOrderValue(
@@ -6789,6 +7349,29 @@ function hasResubmittedBillReturn(
   );
 }
 
+function isSupplementaryBillFocusMatch(bill: SupplementaryBillDetail, state: string) {
+  const hasOpenReturn = hasOpenBillReturn(bill);
+  const hasResubmittedReturn = hasResubmittedBillReturn(bill);
+  if (state === "anyreturned") {
+    return normalizeBillReturnCycles(bill.billReturnCycles).some((cycle) =>
+      hasFilledValue(cycle.returnedDate),
+    );
+  }
+  if (state === "paid" || state === "actual") return hasFilledValue(bill.paymentDate);
+  if (state === "returned" || state === "pending" || state === "current") {
+    return !hasFilledValue(bill.paymentDate) && hasOpenReturn;
+  }
+  if (state === "resubmitted" || state === "completed") {
+    return !hasFilledValue(bill.paymentDate) && !hasOpenReturn && hasResubmittedReturn;
+  }
+  return (
+    hasFilledValue(bill.billSentForPaymentDate) &&
+    !hasOpenReturn &&
+    !hasResubmittedReturn &&
+    !hasFilledValue(bill.paymentDate)
+  );
+}
+
 function isCompleteBillReturnDateValue(value: string) {
   return isCompleteDateValue(value) || /^\d{2}-\d{2}-\d{4}$/.test(value);
 }
@@ -6853,7 +7436,9 @@ function isAutoCurrentSupplyOrderMilestone(
       !isCompleteDateValue(String(row.combinedBgReceivedDate ?? ""))
     );
   }
-  if (milestone === "Bill returned for correction") return hasOpenBillReturn(row);
+  if (milestone === "Bill returned for correction") {
+    return !isCompleteDateValue(String(row.paymentDate ?? "")) && hasOpenBillReturn(row);
+  }
   if (milestone === "Bill preparation") {
     if (isCompleteDateValue(String(row.billPreparationDate ?? ""))) return false;
     if (isJobCompletionWorkflow(fileType, ir, fileTypeGroup)) {
@@ -7007,7 +7592,9 @@ function SupplyOrderMilestonesBlock({
                   ? isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped }) &&
                     !hasOpenBillReturn(order)
                   : milestone === "Bill returned for correction"
-                    ? hasResubmittedBillReturn(order) && !hasOpenBillReturn(order)
+                    ? hasBillReturnHistory(order) &&
+                      (isCompleteDateValue(order.paymentDate ?? "") ||
+                        (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order)))
                     : isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped })
               : completedSet.has(milestone);
         const lockedValueFilled =
@@ -7901,6 +8488,9 @@ function getSupplyOrderTimelineItemsForOrder(
   startOrder: number,
 ) {
   const dateFields = supplyOrderFields.filter((field) => field.type === "date");
+  const billSentIndex = dateFields.findIndex((field) => field.key === "billSentForPaymentDate");
+  const billReturnOrder =
+    startOrder + (billSentIndex === -1 ? dateFields.length : billSentIndex) + 0.1;
   const orderItems = dateFields
     .filter((field) => field.key !== "revisedDp" || isYes(order.dpExtension ?? ""))
     .map((field, fieldIndex) => {
@@ -7914,8 +8504,15 @@ function getSupplyOrderTimelineItemsForOrder(
     });
   return [
     ...orderItems,
+    ...getBillReturnTimelineItems(
+      order.billReturnCycles,
+      `so:${orderIndex}:billReturn`,
+      "Bill return",
+      billReturnOrder,
+    ),
     ...getStageTimelineItems(form, order, orderIndex, startOrder + dateFields.length),
     ...getAdvancePaymentTimelineItems(order, orderIndex, startOrder + dateFields.length + 50),
+    ...getSupplementaryBillTimelineItems(order, orderIndex, startOrder + dateFields.length + 70),
   ];
 }
 
@@ -7927,23 +8524,34 @@ function getStageTimelineItems(
 ) {
   if (!isYes(order.stageDelivery ?? "") || !order.stageDeliveries?.length) return [];
   const stageDateFields = stageDeliveryFields.filter((field) => field.type === "date");
+  const billSentIndex = stageDateFields.findIndex((field) => field.key === "billSentForPaymentDate");
   const stageLabel = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
     ? "Delivery Period"
     : "Delivery";
   return resizeStageDeliveries(
     order.stageDeliveries,
     getStageDeliveryCount(order.stageDeliveryCount),
-  ).flatMap((stage, stageIndex) =>
-    stageDateFields.map((field, fieldIndex) => {
+  ).flatMap((stage, stageIndex) => {
+    const stageStartOrder = startOrder + stageIndex * (stageDateFields.length + 2);
+    const stageItems = stageDateFields.map((field, fieldIndex) => {
       const key = field.key as StageDeliveryKey;
       return {
         id: `so:${orderIndex}:stage:${stageIndex}:${key}`,
         label: `${stageLabel}-${stageIndex + 1}: ${field.label}`,
         date: String(stage[key] ?? ""),
-        order: startOrder + stageIndex * stageDateFields.length + fieldIndex,
+        order: stageStartOrder + fieldIndex,
       };
-    }),
-  );
+    });
+    return [
+      ...stageItems,
+      ...getBillReturnTimelineItems(
+        stage.billReturnCycles,
+        `so:${orderIndex}:stage:${stageIndex}:billReturn`,
+        `${stageLabel}-${stageIndex + 1}: Bill return`,
+        stageStartOrder + (billSentIndex === -1 ? stageDateFields.length : billSentIndex) + 0.1,
+      ),
+    ];
+  });
 }
 
 function getAdvancePaymentTimelineItems(
@@ -7960,7 +8568,8 @@ function getAdvancePaymentTimelineItems(
   }
   const advance = applyAdvancePaymentRules(order.advancePaymentDetail ?? {}, true);
   const advanceDateFields = advancePaymentFields.filter((field) => field.type === "date");
-  return advanceDateFields.map((field, fieldIndex) => {
+  const billSentIndex = advanceDateFields.findIndex((field) => field.key === "billSentForPaymentDate");
+  const advanceItems = advanceDateFields.map((field, fieldIndex) => {
     const key = field.key as AdvancePaymentKey;
     return {
       id: `so:${orderIndex}:advance:${key}`,
@@ -7968,6 +8577,71 @@ function getAdvancePaymentTimelineItems(
       date: String(advance[key] ?? ""),
       order: startOrder + fieldIndex,
     };
+  });
+  return [
+    ...advanceItems,
+    ...getBillReturnTimelineItems(
+      advance.billReturnCycles,
+      `so:${orderIndex}:advance:billReturn`,
+      "Advance Payment: Bill return",
+      startOrder + (billSentIndex === -1 ? advanceDateFields.length : billSentIndex) + 0.1,
+    ),
+  ];
+}
+
+function getBillReturnTimelineItems(
+  cycles: BillReturnCycle[] | undefined,
+  idPrefix: string,
+  labelPrefix: string,
+  startOrder: number,
+) {
+  return normalizeBillReturnCycles(cycles).flatMap((cycle, cycleIndex) => {
+    const cycleLabel = `${labelPrefix} ${cycleIndex + 1}`;
+    return [
+      {
+        id: `${idPrefix}:${cycleIndex}:returned`,
+        label: `${cycleLabel}: Returned`,
+        date: String(cycle.returnedDate ?? ""),
+        order: startOrder + cycleIndex * 0.2,
+      },
+      {
+        id: `${idPrefix}:${cycleIndex}:resubmitted`,
+        label: `${cycleLabel}: Resubmitted`,
+        date: String(cycle.resubmittedDate ?? ""),
+        order: startOrder + cycleIndex * 0.2 + 0.1,
+      },
+    ];
+  });
+}
+
+function getSupplementaryBillTimelineItems(
+  order: SupplyOrderDetail,
+  orderIndex: number,
+  startOrder: number,
+) {
+  return cleanSupplementaryBills(order.supplementaryBills).flatMap((bill, billIndex) => {
+    const billLabel = `Supplementary Bill ${billIndex + 1}`;
+    const billStartOrder = startOrder + billIndex * 10;
+    return [
+      {
+        id: `so:${orderIndex}:supplementary:${billIndex}:submitted`,
+        label: `${billLabel}: Submitted`,
+        date: String(bill.billSentForPaymentDate ?? ""),
+        order: billStartOrder,
+      },
+      ...getBillReturnTimelineItems(
+        bill.billReturnCycles,
+        `so:${orderIndex}:supplementary:${billIndex}:billReturn`,
+        `${billLabel}: Bill return`,
+        billStartOrder + 0.1,
+      ),
+      {
+        id: `so:${orderIndex}:supplementary:${billIndex}:paid`,
+        label: `${billLabel}: Paid`,
+        date: String(bill.paymentDate ?? ""),
+        order: billStartOrder + 1,
+      },
+    ];
   });
 }
 
@@ -8924,7 +9598,11 @@ function isSupplyOrderMilestoneComplete(
     return isCompleteDateValue(order.billSentForPaymentDate ?? "") && !hasOpenBillReturn(order);
   }
   if (milestone === "Bill returned for correction") {
-    return hasResubmittedBillReturn(order) && !hasOpenBillReturn(order);
+    return (
+      hasBillReturnHistory(order) &&
+      (isCompleteDateValue(order.paymentDate ?? "") ||
+        (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order)))
+    );
   }
   if (milestone === "Payment") return isCompleteDateValue(order.paymentDate ?? "");
   return normalizeCompletedMilestones(order.completedMilestones).some(
@@ -9076,6 +9754,7 @@ function cleanSupplyOrderRows(
     irPreparationDate: row.irPreparationDate || undefined,
     irReceiptDate: row.irReceiptDate || undefined,
     billPreparationDate: row.billPreparationDate || undefined,
+    billNo: row.billNo?.trim() || undefined,
     billSentForPaymentDate: row.billSentForPaymentDate || undefined,
     billReturnCycles: normalizeBillReturnCycles(row.billReturnCycles),
     billAmountCapital: row.billAmountCapital || undefined,
@@ -9103,6 +9782,7 @@ function cleanSupplyOrderRows(
       isYes(row.advancePayment ?? ""),
     ),
     stageDeliveries: cleanStageDeliveryRows(row.stageDeliveries ?? [], form, row),
+    supplementaryBills: cleanSupplementaryBills(row.supplementaryBills),
   }));
 }
 
@@ -9133,6 +9813,7 @@ function getStageDeliveryWarnings(
     );
 
     warnings.push(...getSupplyOrderChronologyWarnings(order, orderLabel, form));
+    warnings.push(...getSupplementaryBillChronologyWarnings(order, orderLabel, form));
 
     if (isYes(order.soCancelled ?? "") && !hasFilledValue(order.soCancelledDate)) {
       warnings.push(`${orderLabel}: S.O. cancelled is Yes, but S.O. cancelled date is blank.`);
@@ -9192,19 +9873,6 @@ function getStageDeliveryWarnings(
         }
         if (stagePaymentEnabled && !hasFilledValue(stage.dpDate)) {
           warnings.push(`${stageLabel}: D.P. date is missing while Stage Payment is Yes.`);
-        }
-        if (
-          stagePaymentEnabled &&
-          isStagePaymentDetailsDue(stage) &&
-          ![
-            stage.billPreparationDate,
-            stage.billSentForPaymentDate,
-            stage.paymentDate,
-            stage.actualPaymentCapital,
-            stage.actualPaymentRevenue,
-          ].some(hasFilledValue)
-        ) {
-          warnings.push(`${stageLabel}: Stage payment is due, but payment details are missing.`);
         }
         if (hasWrongAmountSide(stage.stageAmountCapital, stage.stageAmountRevenue, form)) {
           warnings.push(`${stageLabel}: Stage amount has value on the wrong Capital/Revenue side.`);
@@ -9418,6 +10086,55 @@ function getAdvancePaymentChronologyWarnings(
   );
 }
 
+function getSupplementaryBillChronologyWarnings(
+  order: SupplyOrderDetail,
+  orderLabel: string,
+  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+) {
+  const warnings: string[] = [];
+  cleanSupplementaryBills(order.supplementaryBills).forEach((bill, billIndex) => {
+    const label = `${orderLabel} Supplementary bill ${billIndex + 1}`;
+    if (isDateBefore(bill.billSentForPaymentDate, order.soDate)) {
+      warnings.push(`${label}: Submitted date is earlier than S.O. date.`);
+    }
+    if (isDateBefore(bill.paymentDate, bill.billSentForPaymentDate)) {
+      warnings.push(`${label}: Payment date is earlier than submitted date.`);
+    }
+    normalizeBillReturnCycles(bill.billReturnCycles).forEach((cycle, cycleIndex) => {
+      const returnLabel = `${label} return ${cycleIndex + 1}`;
+      if (isDateBefore(cycle.returnedDate, bill.billSentForPaymentDate)) {
+        warnings.push(`${returnLabel}: Returned date is earlier than submitted date.`);
+      }
+      if (isDateBefore(cycle.resubmittedDate, cycle.returnedDate)) {
+        warnings.push(`${returnLabel}: Resubmitted date is earlier than returned date.`);
+      }
+      if (isDateBefore(bill.paymentDate, cycle.returnedDate)) {
+        warnings.push(`${label}: Payment date is earlier than returned date.`);
+      }
+      if (isDateBefore(bill.paymentDate, cycle.resubmittedDate)) {
+        warnings.push(`${label}: Payment date is earlier than resubmitted date.`);
+      }
+      if (
+        hasFilledValue(bill.paymentDate) &&
+        hasFilledValue(cycle.returnedDate) &&
+        !hasFilledValue(cycle.resubmittedDate)
+      ) {
+        warnings.push(`${returnLabel}: Resubmission date is missing before payment.`);
+      }
+    });
+    if (
+      hasFilledValue(bill.paymentDate) &&
+      !hasSelectedAmount(bill.actualPaymentCapital, bill.actualPaymentRevenue, form)
+    ) {
+      warnings.push(`${label}: Payment date is filled, but actual payment amount is missing.`);
+    }
+    if (hasFilledValue(bill.paymentDate) && !hasSelectablePaymentMode(bill.paymentMode)) {
+      warnings.push(`${label}: Payment date is filled, but payment mode is missing.`);
+    }
+  });
+  return warnings;
+}
+
 function getPaymentChronologyWarnings(
   label: string,
   dates: {
@@ -9589,6 +10306,7 @@ function cleanAdvancePaymentDetail(
     stageAmountCapital: normalized.stageAmountCapital || undefined,
     stageAmountRevenue: normalized.stageAmountRevenue || undefined,
     billPreparationDate: normalized.billPreparationDate || undefined,
+    billNo: normalized.billNo?.trim() || undefined,
     billSentForPaymentDate: normalized.billSentForPaymentDate || undefined,
     billReturnCycles: normalizeBillReturnCycles(normalized.billReturnCycles),
     paymentDate: normalized.paymentDate || undefined,
@@ -9642,6 +10360,7 @@ function cleanStageDeliveryRows(
       irPreparationDate: normalized.irPreparationDate || undefined,
       irReceiptDate: normalized.irReceiptDate || undefined,
       billPreparationDate: normalized.billPreparationDate || undefined,
+      billNo: normalized.billNo?.trim() || undefined,
       billSentForPaymentDate: normalized.billSentForPaymentDate || undefined,
       billReturnCycles: normalizeBillReturnCycles(normalized.billReturnCycles),
       paymentDate: normalized.paymentDate || undefined,
@@ -9766,6 +10485,28 @@ function resizeStageDeliveries(rows: StageDeliveryDetail[], count: number) {
   return Array.from({ length: count }, (_, index) =>
     applyStageDeliveryRules({ ...emptyStageDelivery, ...(rows[index] ?? {}) }),
   );
+}
+
+function stageFreezeKey(orderIndex: number, stageIndex: number) {
+  return `${orderIndex}:${stageIndex}`;
+}
+
+function hasPaidStagePayment(stage: StageDeliveryDetail | undefined) {
+  if (!stage) return false;
+  return (
+    hasFilledValue(stage.paymentDate) ||
+    hasNonZeroAmount(stage.actualPaymentCapital) ||
+    hasNonZeroAmount(stage.actualPaymentRevenue)
+  );
+}
+
+function isPaidStageFrozen(
+  orderIndex: number,
+  stageIndex: number,
+  stage: StageDeliveryDetail | undefined,
+  unfreezeKeys: Set<string>,
+) {
+  return hasPaidStagePayment(stage) && !unfreezeKeys.has(stageFreezeKey(orderIndex, stageIndex));
 }
 
 function clampSupplyOrderCount(value: string) {
@@ -10112,6 +10853,7 @@ function applySupplyOrderRules(
         applyStageDeliveryRules({
           ...stage,
           billPreparationDate: "",
+          billNo: "",
           billSentForPaymentDate: "",
           paymentDate: "",
           paymentMode: "",
@@ -10299,8 +11041,9 @@ function normalizeSupplyOrderMilestoneState(
     billSentForPaymentMilestone
       ? [billSentForPaymentMilestone]
       : []),
-    ...(hasResubmittedBillReturn(order) &&
-    !hasOpenBillReturn(order) &&
+    ...(hasBillReturnHistory(order) &&
+    (isCompleteDateValue(order.paymentDate ?? "") ||
+      (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order))) &&
     billReturnedForCorrectionMilestone
       ? [billReturnedForCorrectionMilestone]
       : []),
@@ -10386,7 +11129,6 @@ function normalizeSupplyOrderMilestoneState(
       normalizeMilestoneName(manualCurrentMilestone) === "billpreparation");
   const billSentForPaymentMovesToPayment =
     isCompleteDateValue(order.billSentForPaymentDate ?? "") &&
-    !hasOpenBillReturn(order) &&
     !isCompleteDateValue(order.paymentDate ?? "") &&
     Boolean(paymentMilestone) &&
     (!manualCurrentMilestone ||
@@ -10427,10 +11169,10 @@ function normalizeSupplyOrderMilestoneState(
                   ? billPreparationMilestone!
                   : billPreparationMovesToBillSent
                     ? billSentForPaymentMilestone!
-                    : jobCompletionMovesToPayment
-                      ? paymentMilestone!
-                      : billReturnedForCorrectionBecomesCurrent
-                        ? billReturnedForCorrectionMilestone!
+                    : billReturnedForCorrectionBecomesCurrent
+                      ? billReturnedForCorrectionMilestone!
+                      : jobCompletionMovesToPayment
+                        ? paymentMilestone!
                         : deliveryPeriodMovesToPayment
                           ? paymentMilestone!
                           : billSentForPaymentMovesToPayment
@@ -10496,6 +11238,10 @@ function autoFillStageDeliveries(
   const baseStages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
   let previousEndDate: string | undefined;
   const stages = baseStages.map((stage, index) => {
+    if (hasPaidStagePayment(stage)) {
+      previousEndDate = stage.revisedDp || stage.dpDate || previousEndDate;
+      return stage;
+    }
     const suggestedStartDate = index === 0 ? order.soDate : getNextLocalDate(previousEndDate);
     const effectiveStartDate = stage.deliveryPeriodStartDate || suggestedStartDate || "";
     const suggestedEndDate = getStageIntervalEndDate(effectiveStartDate, form?.fileType);

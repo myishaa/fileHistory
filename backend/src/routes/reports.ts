@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import type { AppSettings, FileRecord, SupplyOrderDetail } from "../types.js";
+import type {
+  AppSettings,
+  FileRecord,
+  SupplementaryBillDetail,
+  SupplyOrderDetail,
+} from "../types.js";
 import { ensureSupplyOrderBillReturnsSchema, loadFiles } from "./files.js";
 import { fromDbDate, fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildReportsSummary } from "../utils/report-summary.js";
@@ -24,7 +29,12 @@ import {
 } from "../utils/auth.js";
 import { cacheTtl, getCached } from "../utils/cache.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
-import { filePaymentEntries, filePaymentOrders } from "../utils/effective-deliveries.js";
+import {
+  filePaymentEntries,
+  filePaymentOrders,
+  rawSupplyOrders,
+} from "../utils/effective-deliveries.js";
+import { normalizeBillReturnCycles } from "../utils/refloat-returned-bill.js";
 
 export const reportsRouter = Router();
 
@@ -158,10 +168,14 @@ type ReportsSummaryPayload = {
   expectedCashOutgoBillPreparationRows: CashOutgoRow[];
   billSentForPaymentRows: CashOutgoRow[];
   actualCashOutgoRows: CashOutgoRow[];
-  returnedBillRows: CashOutgoRow[];
+  supplementaryBillSentForPaymentRows: CashOutgoRow[];
+  supplementaryActualCashOutgoRows: CashOutgoRow[];
   pendingReturnedBillRows: CashOutgoRow[];
   returnedBillResubmittedRows: CashOutgoRow[];
   returnedBillPaidRows: CashOutgoRow[];
+  supplementaryPendingReturnedBillRows: CashOutgoRow[];
+  supplementaryReturnedBillResubmittedRows: CashOutgoRow[];
+  supplementaryReturnedBillPaidRows: CashOutgoRow[];
   monthlyFileInflow: MonthCountRow[];
   monthWiseSupplyOrder: MonthCountRow[];
   monthWiseDeliverySchedule: MonthWiseDeliveryScheduleRow[];
@@ -330,6 +344,9 @@ const reportMilestoneDefinitions = [
   },
   { key: "payment", label: "Payment", totalLabel: "Total files", supplyOrderDate: "payment_date" },
 ] as const;
+
+const billReturnedDelayMilestoneKey = "billReturnedForCorrection";
+const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 
 const orderDelayMilestoneDefinitions = [
   {
@@ -654,6 +671,17 @@ function getEffectiveDpOffsetDays(settings: CashOutGoPlanSettings) {
   return settings.useCustomDpOffsetDays ? settings.dpOffsetDays : DEFAULT_DP_OFFSET_DAYS;
 }
 
+function getEffectiveRowBillPaymentOffsetDays(
+  settings: CashOutGoPlanSettings,
+  assumption: CashOutGoPlanAssumption,
+) {
+  return assumption.billOffsetDays ?? getEffectiveBillPaymentOffsetDays(settings);
+}
+
+function getRowBillPaymentOffsetOverride(assumption: CashOutGoPlanAssumption) {
+  return assumption.billOffsetDays === undefined ? "" : String(assumption.billOffsetDays);
+}
+
 async function loadCashOutGoPlanAssumptions() {
   await ensureCashOutGoPlanSchema();
   const result = await pool.query<{
@@ -776,11 +804,8 @@ function buildCashOutGoPlan(
   const currentMonthKey = today.slice(0, 7);
   const fyMonths = getFinancialYearMonthKeys(financialYear);
   const fyRange = getFinancialYearDateRange(financialYear);
-  const activeFyFiles = files.filter((file) =>
-    isFileVisibleForSelectedYear(file, financialYear, financialYear),
-  );
   const expenditureTillDate = buildExpenditureTillDateRows(
-    activeFyFiles,
+    files,
     merRows,
     financialYear,
     currentMonthKey,
@@ -790,7 +815,6 @@ function buildCashOutGoPlan(
   const deliveredRows: CashOutGoPlanDetailRow[] = [];
   const dpRows: CashOutGoPlanDetailRow[] = [];
   const dpExpiredRows: CashOutGoPlanDetailRow[] = [];
-  const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(settings);
 
@@ -824,13 +848,8 @@ function buildCashOutGoPlan(
             expectedSentDate,
             expectedSentDateOverride: assumption.expectedSentDate ?? "",
             actualSentDate: "",
-            billOffsetDays: settings.useCustomBillOffsetDays
-              ? (assumption.billOffsetDays ?? billPaymentOffsetDays)
-              : billPaymentOffsetDays,
-            billOffsetOverride:
-              settings.useCustomBillOffsetDays && assumption.billOffsetDays !== undefined
-                ? String(assumption.billOffsetDays)
-                : "",
+            billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+            billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           }),
         );
@@ -859,13 +878,8 @@ function buildCashOutGoPlan(
             expectedSentDate: "",
             expectedSentDateOverride: "",
             actualSentDate: activeSubmissionDate ?? "",
-            billOffsetDays: settings.useCustomBillOffsetDays
-              ? (assumption.billOffsetDays ?? billPaymentOffsetDays)
-              : billPaymentOffsetDays,
-            billOffsetOverride:
-              settings.useCustomBillOffsetDays && assumption.billOffsetDays !== undefined
-                ? String(assumption.billOffsetDays)
-                : "",
+            billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+            billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           }),
         );
@@ -890,13 +904,8 @@ function buildCashOutGoPlan(
             expectedSentDate,
             expectedSentDateOverride: assumption.expectedSentDate ?? "",
             actualSentDate: "",
-            billOffsetDays: settings.useCustomBillOffsetDays
-              ? (assumption.billOffsetDays ?? billPaymentOffsetDays)
-              : billPaymentOffsetDays,
-            billOffsetOverride:
-              settings.useCustomBillOffsetDays && assumption.billOffsetDays !== undefined
-                ? String(assumption.billOffsetDays)
-                : "",
+            billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+            billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           }),
         );
@@ -920,13 +929,8 @@ function buildCashOutGoPlan(
             expectedSentDate,
             expectedSentDateOverride: assumption.expectedSentDate ?? "",
             actualSentDate: "",
-            billOffsetDays: settings.useCustomBillOffsetDays
-              ? (assumption.billOffsetDays ?? billPaymentOffsetDays)
-              : billPaymentOffsetDays,
-            billOffsetOverride:
-              settings.useCustomBillOffsetDays && assumption.billOffsetDays !== undefined
-                ? String(assumption.billOffsetDays)
-                : "",
+            billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+            billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           }),
         );
@@ -959,18 +963,87 @@ function buildCashOutGoPlan(
               expectedSentDateOverride: assumption.expectedSentDate ?? "",
               actualSentDate: "",
               manualExpectedPaymentDate: dpExpired ? (assumption.expectedPaymentDate ?? "") : "",
-              billOffsetDays: settings.useCustomBillOffsetDays
-                ? (assumption.billOffsetDays ?? billPaymentOffsetDays)
-                : billPaymentOffsetDays,
-              billOffsetOverride:
-                settings.useCustomBillOffsetDays && assumption.billOffsetDays !== undefined
-                  ? String(assumption.billOffsetDays)
-                  : "",
+              billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+              billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
               today,
             }),
           );
         }
       }
+    });
+
+    rawSupplyOrders(file).forEach((order, orderIndex) => {
+      if (isYes(order.soCancelled)) return;
+      getSupplementaryBills(order).forEach((bill, billIndex) => {
+        if (hasFilledString(bill.paymentDate)) return;
+        const amount = getSupplementaryBillPlanAmount(file, bill);
+        if (amount.capital === 0 && amount.revenue === 0) return;
+        const rowKey = getSupplementaryBillCashOutGoPlanRowKey(file, order, orderIndex, bill, billIndex);
+        const assumption = assumptions.get(rowKey) ?? {};
+        const openReturn = getOpenSupplementaryBillReturn(bill);
+        if (openReturn) {
+          const expectedSentDate =
+            assumption.expectedSentDate ??
+            addDays(openReturn.returnedDate, billSubmissionOffsetDays) ??
+            "";
+          handRows.push(
+            makePlanDetailRow({
+              rowKey,
+              section: "hand",
+              file,
+              order,
+              sourceFocusTarget: getSupplementaryBillCashOutGoPlanSourceFocusTarget(
+                "returned",
+                orderIndex,
+                billIndex,
+              ),
+              amount,
+              amountSource: "Supplementary bill amount",
+              baseDate: openReturn.returnedDate ?? "",
+              expectedSentDate,
+              expectedSentDateOverride: assumption.expectedSentDate ?? "",
+              actualSentDate: "",
+              billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+              billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
+              today,
+            }),
+          );
+          return;
+        }
+
+        const activeSubmissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        if (!hasFilledString(activeSubmissionDate)) return;
+        const submittedDate = activeSubmissionDate ?? "";
+        if (
+          !includePreviousFySubmitted &&
+          fyRange &&
+          !isDateWithinRange(submittedDate, fyRange.start, fyRange.end)
+        ) {
+          return;
+        }
+        submittedRows.push(
+          makePlanDetailRow({
+            rowKey,
+            section: "submitted",
+            file,
+            order,
+            sourceFocusTarget: getSupplementaryBillCashOutGoPlanSourceFocusTarget(
+              hasCompletedSupplementaryBillReturn(bill) ? "resubmitted" : "submitted",
+              orderIndex,
+              billIndex,
+            ),
+            amount,
+            amountSource: "Supplementary bill amount",
+            baseDate: submittedDate,
+            expectedSentDate: "",
+            expectedSentDateOverride: "",
+            actualSentDate: submittedDate,
+            billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
+            billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
+            today,
+          }),
+        );
+      });
     });
   });
 
@@ -990,7 +1063,7 @@ function buildCashOutGoPlan(
       merRows,
       currentMonthKey,
       [...submittedRows, ...handRows, ...deliveredRows, ...dpRows, ...dpExpiredRows],
-      activeFyFiles,
+      files,
     ),
   };
 }
@@ -1001,25 +1074,20 @@ function buildExpenditureTillDateRows(
   financialYear: string,
   currentMonthKey: string,
 ) {
+  const actualPaymentsByMonth = getActualPaymentsByMonth(files);
   const rows = getFinancialYearMonthKeys(financialYear)
     .filter((monthKey) => monthKey < currentMonthKey)
     .map((monthKey) => {
       const mer = merRows.find((row) => row.monthKey === monthKey);
-      return makeCashOutgoRow(monthKey, mer?.capital ?? 0, mer?.revenue ?? 0);
+      const actual = actualPaymentsByMonth.get(monthKey) ?? { capital: 0, revenue: 0 };
+      const hasMerValue = Boolean((mer?.capital ?? 0) || (mer?.revenue ?? 0));
+      return makeCashOutgoRow(
+        monthKey,
+        hasMerValue ? (mer?.capital ?? 0) : actual.capital,
+        hasMerValue ? (mer?.revenue ?? 0) : actual.revenue,
+      );
     });
-  const currentActual = files.reduce(
-    (sum, file) => {
-      filePaymentOrders(file).forEach((order) => {
-        if (isYes(order.soCancelled) || !hasFilledString(order.paymentDate)) return;
-        if (order.paymentDate?.slice(0, 7) !== currentMonthKey) return;
-        const amount = getActualAmount(file, order);
-        sum.capital += amount.capital;
-        sum.revenue += amount.revenue;
-      });
-      return sum;
-    },
-    { capital: 0, revenue: 0 },
-  );
+  const currentActual = actualPaymentsByMonth.get(currentMonthKey) ?? { capital: 0, revenue: 0 };
   if (currentActual.capital || currentActual.revenue) {
     rows.push(makeCashOutgoRow(currentMonthKey, currentActual.capital, currentActual.revenue));
   }
@@ -1033,23 +1101,17 @@ function buildMonthwiseCashOutGoPlan(
   forecastRows: CashOutGoPlanDetailRow[],
   files: FileRecord[],
 ) {
-  const currentActual = files.reduce(
-    (sum, file) => {
-      filePaymentOrders(file).forEach((order) => {
-        if (isYes(order.soCancelled) || !hasFilledString(order.paymentDate)) return;
-        if (order.paymentDate?.slice(0, 7) !== currentMonthKey) return;
-        const amount = getActualAmount(file, order);
-        sum.capital += amount.capital;
-        sum.revenue += amount.revenue;
-      });
-      return sum;
-    },
-    { capital: 0, revenue: 0 },
-  );
+  const actualPaymentsByMonth = getActualPaymentsByMonth(files);
   return fyMonths.map((monthKey) => {
     if (monthKey < currentMonthKey) {
       const mer = merRows.find((row) => row.monthKey === monthKey);
-      return makeCashOutgoRow(monthKey, mer?.capital ?? 0, mer?.revenue ?? 0);
+      const actual = actualPaymentsByMonth.get(monthKey) ?? { capital: 0, revenue: 0 };
+      const hasMerValue = Boolean((mer?.capital ?? 0) || (mer?.revenue ?? 0));
+      return makeCashOutgoRow(
+        monthKey,
+        hasMerValue ? (mer?.capital ?? 0) : actual.capital,
+        hasMerValue ? (mer?.revenue ?? 0) : actual.revenue,
+      );
     }
     const forecast = forecastRows
       .filter((row) => row.expectedPaymentDate.slice(0, 7) === monthKey)
@@ -1060,10 +1122,44 @@ function buildMonthwiseCashOutGoPlan(
         }),
         { capital: 0, revenue: 0 },
       );
-    const capital = forecast.capital + (monthKey === currentMonthKey ? currentActual.capital : 0);
-    const revenue = forecast.revenue + (monthKey === currentMonthKey ? currentActual.revenue : 0);
+    const actual = actualPaymentsByMonth.get(monthKey) ?? { capital: 0, revenue: 0 };
+    const capital = forecast.capital + (monthKey === currentMonthKey ? actual.capital : 0);
+    const revenue = forecast.revenue + (monthKey === currentMonthKey ? actual.revenue : 0);
     return makeCashOutgoRow(monthKey, capital, revenue);
   });
+}
+
+function getActualPaymentsByMonth(files: FileRecord[]) {
+  const actualPaymentsByMonth = new Map<string, { capital: number; revenue: number }>();
+  const addAmount = (
+    paymentDate: string | undefined,
+    amount: { capital: number; revenue: number },
+  ) => {
+    const normalizedPaymentDate = typeof paymentDate === "string" ? paymentDate.trim() : "";
+    if (!normalizedPaymentDate) return;
+    const monthKey = normalizedPaymentDate.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return;
+    const existing = actualPaymentsByMonth.get(monthKey) ?? { capital: 0, revenue: 0 };
+    existing.capital += amount.capital;
+    existing.revenue += amount.revenue;
+    actualPaymentsByMonth.set(monthKey, existing);
+  };
+
+  files.forEach((file) => {
+    filePaymentOrders(file).forEach((order) => {
+      if (isYes(order.soCancelled) || !hasFilledString(order.paymentDate)) return;
+      addAmount(order.paymentDate, getActualAmount(file, order));
+    });
+
+    rawSupplyOrders(file).forEach((order) => {
+      if (isYes(order.soCancelled)) return;
+      getSupplementaryBills(order).forEach((bill) => {
+        addAmount(bill.paymentDate, getSupplementaryBillActualAmount(file, bill));
+      });
+    });
+  });
+
+  return actualPaymentsByMonth;
 }
 
 function makePlanDetailRow({
@@ -1160,6 +1256,26 @@ function getCashOutGoPlanRowKey(file: FileRecord, order: SupplyOrderDetail, orde
   return [file.id ?? "", soRef, label, orderIndex].join(":");
 }
 
+function getSupplementaryBillCashOutGoPlanRowKey(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  orderIndex: number,
+  bill: SupplementaryBillDetail,
+  billIndex: number,
+) {
+  const soRef = order.soNo || order.gemSoNo || String(orderIndex + 1);
+  const billRef = bill.id || bill.billNo || String(billIndex + 1);
+  return [file.id ?? "", soRef, "supplementary", billRef, orderIndex, billIndex].join(":");
+}
+
+function getSupplementaryBillCashOutGoPlanSourceFocusTarget(
+  state: "submitted" | "returned" | "resubmitted",
+  orderIndex: number,
+  billIndex: number,
+) {
+  return `supplementarybill:${state}:${orderIndex}:${billIndex}`;
+}
+
 function getPlanAmount(file: FileRecord, order: SupplyOrderDetail) {
   const isStageOrAdvance = hasFilledString(order.stageDeliveryLabel);
   const capitalSource =
@@ -1176,11 +1292,54 @@ function getPlanAmount(file: FileRecord, order: SupplyOrderDetail) {
   };
 }
 
+function getSupplementaryBillPlanAmount(file: FileRecord, bill: SupplementaryBillDetail) {
+  return {
+    capital: getInrAmountForPlan(bill.billAmountCapital, file),
+    revenue: getInrAmountForPlan(bill.billAmountRevenue, file),
+  };
+}
+
 function getActualAmount(file: FileRecord, order: SupplyOrderDetail) {
   return {
     capital: getInrAmountForPlan(order.actualPaymentCapital, file),
     revenue: getInrAmountForPlan(order.actualPaymentRevenue, file),
   };
+}
+
+function getSupplementaryBillActualAmount(file: FileRecord, bill: SupplementaryBillDetail) {
+  return {
+    capital: getInrAmountForPlan(bill.actualPaymentCapital, file),
+    revenue: getInrAmountForPlan(bill.actualPaymentRevenue, file),
+  };
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return (order.supplementaryBills ?? []).filter(
+    (bill): bill is SupplementaryBillDetail => Boolean(bill) && typeof bill === "object",
+  );
+}
+
+function getOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return normalizeBillReturnCycles(bill.billReturnCycles).find(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function getActiveSupplementaryBillSubmissionDate(bill: SupplementaryBillDetail) {
+  const latestResubmissionDate = normalizeBillReturnCycles(bill.billReturnCycles)
+    .map((cycle) => cycle.resubmittedDate)
+    .filter(hasFilledString)
+    .sort()
+    .at(-1);
+  return latestResubmissionDate || bill.billSentForPaymentDate;
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  const cycles = normalizeBillReturnCycles(bill.billReturnCycles);
+  return (
+    cycles.some((cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate)) &&
+    !cycles.some((cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate))
+  );
 }
 
 function getPlanAmountSource(order: SupplyOrderDetail) {
@@ -1235,6 +1394,19 @@ function makeCashOutgoRow(monthKey: string, capital: number, revenue: number): C
     revenue: Math.round(revenue),
     total: Math.round(capital + revenue),
   };
+}
+
+function combineCashOutgoRows(...rowGroups: CashOutgoRow[][]): CashOutgoRow[] {
+  const totals = new Map<string, { capital: number; revenue: number }>();
+  rowGroups.flat().forEach((row) => {
+    const current = totals.get(row.monthKey) ?? { capital: 0, revenue: 0 };
+    current.capital += row.capital;
+    current.revenue += row.revenue;
+    totals.set(row.monthKey, current);
+  });
+  return Array.from(totals.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([monthKey, totals]) => makeCashOutgoRow(monthKey, totals.capital, totals.revenue));
 }
 
 function getFinancialYearMonthKeys(financialYear: string) {
@@ -2517,7 +2689,7 @@ async function loadCashOutgoRows(
     | "pendingReturnedBills"
     | "returnedBillsResubmitted"
     | "returnedBillsPaid",
-  expectedCashOutgoDays = 0,
+  expectedCashOutgoDays = DEFAULT_DP_OFFSET_DAYS,
   dateRange?: { fromDate: string; toDate: string },
   asOfDate?: string,
 ): Promise<CashOutgoRow[]> {
@@ -2654,7 +2826,11 @@ async function loadCashOutgoRows(
 	          and (effective.advance_payment_yes or ${billPreparationBaseDateExpression} <= ${asOfDatePlaceholder}::date)
           and effective.bill_preparation_date is not null
           and effective.bill_preparation_date <= ${asOfDatePlaceholder}::date
-          and (effective.bill_sent_for_payment_date is null or effective.bill_sent_for_payment_date > ${asOfDatePlaceholder}::date)
+          and (
+            effective.bill_sent_for_payment_date is null
+            or effective.bill_sent_for_payment_date > ${asOfDatePlaceholder}::date
+            or ${hasOpenReturnedBillExpression}
+          )
           and (
 	            effective.payment_date is null
 	            or effective.payment_date > ${asOfDatePlaceholder}::date
@@ -2666,13 +2842,17 @@ async function loadCashOutgoRows(
 	          and (effective.advance_payment_yes or ${billPreparationBaseDateExpression} <= ${toDatePlaceholder}::date)
           and effective.bill_preparation_date is not null
           and effective.bill_preparation_date <= ${toDatePlaceholder}::date
-          and (effective.bill_sent_for_payment_date is null or effective.bill_sent_for_payment_date > ${toDatePlaceholder}::date)
+          and (
+            effective.bill_sent_for_payment_date is null
+            or effective.bill_sent_for_payment_date > ${toDatePlaceholder}::date
+            or ${hasOpenReturnedBillExpression}
+          )
           and (
 	            effective.payment_date is null
 	            or effective.payment_date > ${toDatePlaceholder}::date
           )`;
       }
-	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is null and effective.payment_date is null`;
+	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and (effective.bill_sent_for_payment_date is null or ${hasOpenReturnedBillExpression}) and effective.payment_date is null`;
     }
     if (mode === "billSent") {
       if (asOfDatePlaceholder) {
@@ -2681,9 +2861,10 @@ async function loadCashOutgoRows(
 	          and (effective.advance_payment_yes or ${billPreparationBaseDateExpression} <= ${asOfDatePlaceholder}::date)
           and effective.bill_preparation_date is not null
           and effective.bill_preparation_date <= ${asOfDatePlaceholder}::date
-          and effective.bill_sent_for_payment_date is not null
-          and effective.bill_sent_for_payment_date <= ${asOfDatePlaceholder}::date
-          and (
+	          and effective.bill_sent_for_payment_date is not null
+	          and effective.bill_sent_for_payment_date <= ${asOfDatePlaceholder}::date
+	          and not ${hasOpenReturnedBillExpression}
+	          and (
 	            effective.payment_date is null
 	            or effective.payment_date > ${asOfDatePlaceholder}::date
           )`;
@@ -2694,14 +2875,15 @@ async function loadCashOutgoRows(
 	          and (effective.advance_payment_yes or ${billPreparationBaseDateExpression} <= ${toDatePlaceholder}::date)
           and effective.bill_preparation_date is not null
           and effective.bill_preparation_date <= ${toDatePlaceholder}::date
-          and effective.bill_sent_for_payment_date is not null
-          and effective.bill_sent_for_payment_date <= ${toDatePlaceholder}::date
-          and (
+	          and effective.bill_sent_for_payment_date is not null
+	          and effective.bill_sent_for_payment_date <= ${toDatePlaceholder}::date
+	          and not ${hasOpenReturnedBillExpression}
+	          and (
 	            effective.payment_date is null
 	            or effective.payment_date > ${toDatePlaceholder}::date
           )`;
       }
-	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is not null and effective.payment_date is null`;
+	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is not null and not ${hasOpenReturnedBillExpression} and effective.payment_date is null`;
     }
     if (mode === "returnedBills") {
       return `${returnedDateExpression} is not null and not effective.so_cancelled_yes`;
@@ -2864,6 +3046,198 @@ async function loadCashOutgoRows(
      from effective
      where ${extraCondition}${dateRangeCondition}
        and (capital + revenue) > 0
+     group by 1, 2
+     order by 1 asc`,
+    queryValues,
+  );
+  return result.rows.map((row) => ({
+    monthKey: row.month_key,
+    month: row.month,
+    capital: Number(row.capital ?? 0),
+    revenue: Number(row.revenue ?? 0),
+    total: Number(row.total ?? 0),
+  }));
+}
+
+type SupplementaryReturnedBillCashOutgoMode =
+  | "supplementaryPendingReturnedBills"
+  | "supplementaryReturnedBillsResubmitted"
+  | "supplementaryReturnedBillsPaid";
+
+type SupplementaryCashOutgoMode = "billSent" | "actual";
+
+async function loadSupplementaryCashOutgoRows(
+  whereSql: string,
+  values: unknown[],
+  mode: SupplementaryCashOutgoMode,
+  dateRange?: { fromDate: string; toDate: string },
+  asOfDate?: string,
+): Promise<CashOutgoRow[]> {
+  await ensureSupplyOrderBillReturnsSchema();
+  const queryValues = [...values];
+  const fromDatePlaceholder = dateRange ? addValue(queryValues, dateRange.fromDate) : undefined;
+  const toDatePlaceholder = dateRange ? addValue(queryValues, dateRange.toDate) : undefined;
+  const asOfDatePlaceholder = asOfDate ? addValue(queryValues, asOfDate) : undefined;
+  const cyclesExpression = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+  const paymentDateExpression = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+  const submittedDateExpression = `coalesce(
+    (select max(nullif(cycle ->> 'resubmittedDate', '')::date)
+     from jsonb_array_elements(${cyclesExpression}) as cycle
+     where coalesce(cycle ->> 'resubmittedDate', '') <> ''),
+    nullif(supplementary_bill.bill ->> 'billSentForPaymentDate', '')::date
+  )`;
+  const hasOpenReturnedExpression = `exists (
+    select 1 from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = ''
+  )`;
+  const dateExpression = mode === "actual" ? paymentDateExpression : submittedDateExpression;
+  const dateRangeCondition =
+    fromDatePlaceholder && toDatePlaceholder
+      ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
+      : "";
+  const stateExpression =
+    mode === "actual"
+      ? `${paymentDateExpression} is not null`
+      : `${submittedDateExpression} is not null
+         and not ${hasOpenReturnedExpression}
+         and ${
+           asOfDatePlaceholder
+             ? `(${paymentDateExpression} is null or ${paymentDateExpression} > ${asOfDatePlaceholder}::date)
+                and ${submittedDateExpression} <= ${asOfDatePlaceholder}::date`
+             : toDatePlaceholder
+               ? `(${paymentDateExpression} is null or ${paymentDateExpression} > ${toDatePlaceholder}::date)
+                  and ${submittedDateExpression} <= ${toDatePlaceholder}::date`
+               : `${paymentDateExpression} is null`
+         }`;
+  const capitalExpression =
+    mode === "actual"
+      ? inrAmountExpression("supplementary_bill.bill ->> 'actualPaymentCapital'")
+      : inrAmountExpression("supplementary_bill.bill ->> 'billAmountCapital'");
+  const revenueExpression =
+    mode === "actual"
+      ? inrAmountExpression("supplementary_bill.bill ->> 'actualPaymentRevenue'")
+      : inrAmountExpression("supplementary_bill.bill ->> 'billAmountRevenue'");
+
+  const result = await pool.query<{
+    month_key: string;
+    month: string;
+    capital: string | number;
+    revenue: string | number;
+    total: string | number;
+  }>(
+    `select
+       to_char(${dateExpression}, 'YYYY-MM') as month_key,
+       ${formatMonthExpression(dateExpression)} as month,
+       round(coalesce(sum(${capitalExpression}), 0))::integer as capital,
+       round(coalesce(sum(${revenueExpression}), 0))::integer as revenue,
+       round(coalesce(sum(${capitalExpression} + ${revenueExpression}), 0))::integer as total
+     from files f
+     left join divisions d on d.id = f.division_id
+     join supply_orders so on so.file_id = f.id
+     join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill) on true
+     ${appendReportWhereClause(whereSql, [
+       `not ${isCancelledExpression()}`,
+       `not ${isYesExpression("so.so_cancelled")}`,
+       stateExpression,
+       `${dateExpression} is not null`,
+     ])}
+       ${dateRangeCondition}
+       and (${capitalExpression} + ${revenueExpression}) > 0
+     group by 1, 2
+     order by 1 asc`,
+    queryValues,
+  );
+  return result.rows.map((row) => ({
+    monthKey: row.month_key,
+    month: row.month,
+    capital: Number(row.capital ?? 0),
+    revenue: Number(row.revenue ?? 0),
+    total: Number(row.total ?? 0),
+  }));
+}
+
+async function loadSupplementaryReturnedBillCashOutgoRows(
+  whereSql: string,
+  values: unknown[],
+  mode: SupplementaryReturnedBillCashOutgoMode,
+  dateRange?: { fromDate: string; toDate: string },
+): Promise<CashOutgoRow[]> {
+  await ensureSupplyOrderBillReturnsSchema();
+  const queryValues = [...values];
+  const fromDatePlaceholder = dateRange ? addValue(queryValues, dateRange.fromDate) : undefined;
+  const toDatePlaceholder = dateRange ? addValue(queryValues, dateRange.toDate) : undefined;
+  const cyclesExpression = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+  const paymentDateExpression = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+  const returnedDateExpression = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> '')`;
+  const pendingReturnedDateExpression = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+  const resubmittedDateExpression = `(select min(nullif(cycle ->> 'resubmittedDate', '')::date)
+    from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') <> '')`;
+  const hasReturnedExpression = `exists (
+    select 1 from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+  )`;
+  const hasOpenReturnedExpression = `exists (
+    select 1 from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = ''
+  )`;
+  const hasResubmittedExpression = `exists (
+    select 1 from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') <> ''
+  )`;
+  const dateExpression =
+    mode === "supplementaryReturnedBillsPaid"
+      ? paymentDateExpression
+      : mode === "supplementaryReturnedBillsResubmitted"
+        ? resubmittedDateExpression
+        : pendingReturnedDateExpression;
+  const stateExpression =
+    mode === "supplementaryReturnedBillsPaid"
+      ? `${paymentDateExpression} is not null and ${hasReturnedExpression}`
+      : mode === "supplementaryReturnedBillsResubmitted"
+        ? `${hasResubmittedExpression} and not ${hasOpenReturnedExpression} and ${paymentDateExpression} is null`
+        : `${hasOpenReturnedExpression} and ${paymentDateExpression} is null`;
+  const dateRangeCondition =
+    fromDatePlaceholder && toDatePlaceholder
+      ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
+      : "";
+  const capitalExpression = inrAmountExpression("supplementary_bill.bill ->> 'billAmountCapital'");
+  const revenueExpression = inrAmountExpression("supplementary_bill.bill ->> 'billAmountRevenue'");
+
+  const result = await pool.query<{
+    month_key: string;
+    month: string;
+    capital: string | number;
+    revenue: string | number;
+    total: string | number;
+  }>(
+    `select
+       to_char(${dateExpression}, 'YYYY-MM') as month_key,
+       ${formatMonthExpression(dateExpression)} as month,
+       round(coalesce(sum(${capitalExpression}), 0))::integer as capital,
+       round(coalesce(sum(${revenueExpression}), 0))::integer as revenue,
+       round(coalesce(sum(${capitalExpression} + ${revenueExpression}), 0))::integer as total
+     from files f
+     left join divisions d on d.id = f.division_id
+     join supply_orders so on so.file_id = f.id
+     join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill) on true
+     ${appendReportWhereClause(whereSql, [
+       `not ${isCancelledExpression()}`,
+       `not ${isYesExpression("so.so_cancelled")}`,
+       stateExpression,
+       `${dateExpression} is not null`,
+     ])}
+       ${dateRangeCondition}
+       and (${capitalExpression} + ${revenueExpression}) > 0
      group by 1, 2
      order by 1 asc`,
     queryValues,
@@ -3264,6 +3638,115 @@ function orderDelayRowsSelects(
     });
 }
 
+function returnedBillDelayRowsSelects(
+  whereSql: string,
+  selectedMilestoneKey: string,
+  thresholdPlaceholder: string,
+) {
+  if (selectedMilestoneKey !== "all" && selectedMilestoneKey !== billReturnedDelayMilestoneKey) {
+    return [];
+  }
+  const supplyOrderIndex = reportMilestoneDefinitions.findIndex(
+    (milestone) => milestone.key === "supplyOrder",
+  );
+  const supplyOrderStageStartDate = delayStageStartExpression(
+    reportMilestoneDefinitions[supplyOrderIndex],
+    supplyOrderIndex,
+  );
+  const source = effectiveOrderDelayRowsSource(supplyOrderStageStartDate, true);
+  const baseFileRef =
+    "coalesce(nullif(f.file_no, ''), nullif(f.unique_code, ''), nullif(f.title, ''), f.id::text)";
+  const orderRef =
+    "coalesce(nullif(effective_order.so_no, ''), nullif(effective_order.gem_so_no, ''), 'S.O. ' || (effective_order.sort_order + 1)::text)";
+  const startDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(coalesce(effective_order.bill_return_cycles, '[]'::jsonb)) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+  const focusTarget = `('billreturnedforcorrection:pending:' || effective_order.sort_order::text ||
+    case
+      when effective_order.stage_index is not null and ${isYesExpression("effective_order.stage_payment")}
+      then ':' || (effective_order.stage_index - 1)::text
+      else ''
+    end)`;
+  return [
+    `select
+        f.id::text as "fileId",
+        (${baseFileRef} || ' / ' || ${orderRef}) as "fileRef",
+        coalesce(d.name, '') as division,
+        coalesce(f.indentor, '') as indentor,
+        coalesce(f.demand_description, '') as description,
+        '${billReturnedDelayMilestoneKey}' as "milestoneKey",
+        'Bill returned for correction' as milestone,
+        (${startDate})::text as "stageStartDate",
+        (current_date - (${startDate})::date)::integer as "daysInStage",
+        coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
+        'Supply order and payment' as "focusSection",
+        ${focusTarget} as "focusTarget"
+      from files f
+      left join divisions d on d.id = f.division_id
+      join lateral ${source} effective_order on true
+      ${appendReportWhereClause(whereSql, [
+        `not ${isYesExpression("f.demand_cancelled")}`,
+        `not ${isYesExpression("effective_order.so_cancelled")}`,
+        `effective_order.payment_date is null`,
+        `${startDate} is not null`,
+        `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
+      ])}`,
+  ];
+}
+
+function supplementaryReturnedBillDelayRowsSelects(
+  whereSql: string,
+  selectedMilestoneKey: string,
+  thresholdPlaceholder: string,
+) {
+  if (
+    selectedMilestoneKey !== "all" &&
+    selectedMilestoneKey !== supplementaryBillReturnedDelayMilestoneKey
+  ) {
+    return [];
+  }
+  const baseFileRef =
+    "coalesce(nullif(f.file_no, ''), nullif(f.unique_code, ''), nullif(f.title, ''), f.id::text)";
+  const orderRef =
+    "coalesce(nullif(so.so_no, ''), nullif(so.gem_so_no, ''), 'S.O. ' || (so.sort_order + 1)::text)";
+  const billRef =
+    "coalesce(nullif(supplementary_bill.bill ->> 'billNo', ''), 'Supp. bill ' || supplementary_bill.bill_index::text)";
+  const cyclesExpression = `coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)`;
+  const startDate = `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+    from jsonb_array_elements(${cyclesExpression}) as cycle
+    where coalesce(cycle ->> 'returnedDate', '') <> ''
+      and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
+  const paymentDate = `nullif(supplementary_bill.bill ->> 'paymentDate', '')::date`;
+  const focusTarget = `('supplementarybill:returned:' || so.sort_order::text || ':' || (supplementary_bill.bill_index - 1)::text)`;
+  return [
+    `select
+        f.id::text as "fileId",
+        (${baseFileRef} || ' / ' || ${orderRef} || ' / ' || ${billRef}) as "fileRef",
+        coalesce(d.name, '') as division,
+        coalesce(f.indentor, '') as indentor,
+        coalesce(f.demand_description, '') as description,
+        '${supplementaryBillReturnedDelayMilestoneKey}' as "milestoneKey",
+        'Supplementary bill returned for correction' as milestone,
+        (${startDate})::text as "stageStartDate",
+        (current_date - (${startDate})::date)::integer as "daysInStage",
+        coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
+        'Supply order and payment' as "focusSection",
+        ${focusTarget} as "focusTarget"
+      from files f
+      left join divisions d on d.id = f.division_id
+      join supply_orders so on so.file_id = f.id
+      join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) with ordinality as supplementary_bill(bill, bill_index) on true
+      ${appendReportWhereClause(whereSql, [
+        `not ${isYesExpression("f.demand_cancelled")}`,
+        `not ${isYesExpression("so.so_cancelled")}`,
+        `${paymentDate} is null`,
+        `${startDate} is not null`,
+        `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
+      ])}`,
+  ];
+}
+
 async function loadDelayRows(
   whereSql: string,
   values: unknown[],
@@ -3346,7 +3829,23 @@ async function loadDelayRows(
         })()
       : [];
   const orderSelects = orderDelayRowsSelects(whereSql, selectedMilestoneKey, thresholdPlaceholder);
-  const selects = [...fileSelects, ...financialSanctionFileSelects, ...orderSelects];
+  const returnedBillSelects = returnedBillDelayRowsSelects(
+    whereSql,
+    selectedMilestoneKey,
+    thresholdPlaceholder,
+  );
+  const supplementaryReturnedBillSelects = supplementaryReturnedBillDelayRowsSelects(
+    whereSql,
+    selectedMilestoneKey,
+    thresholdPlaceholder,
+  );
+  const selects = [
+    ...fileSelects,
+    ...financialSanctionFileSelects,
+    ...orderSelects,
+    ...returnedBillSelects,
+    ...supplementaryReturnedBillSelects,
+  ];
   if (!selects.length) return [];
   const result = await pool.query<DelayStatusRow>(
     `${selects.join("\nunion all\n")}
@@ -3622,13 +4121,17 @@ async function buildReportsSummarySql({
     expectedCashOutgoDpRows,
     expectedCashOutgoReceiptRows,
     expectedCashOutgoReceiptPendingBillRows,
-    expectedCashOutgoBillPreparationRows,
-    billSentForPaymentRows,
-    actualCashOutgoRows,
-    returnedBillRows,
+    orderExpectedCashOutgoBillPreparationRows,
+    orderBillSentForPaymentRows,
+    orderActualCashOutgoRows,
+    supplementaryBillSentForPaymentRows,
+    supplementaryActualCashOutgoRows,
     pendingReturnedBillRows,
     returnedBillResubmittedRows,
     returnedBillPaidRows,
+    supplementaryPendingReturnedBillRows,
+    supplementaryReturnedBillResubmittedRows,
+    supplementaryReturnedBillPaidRows,
     delayRows,
   ] = await Promise.all([
     loadReportFileCount(whereSql, [...values]),
@@ -3666,12 +4169,49 @@ async function buildReportsSummarySql({
     ),
     loadCashOutgoRows(whereSql, [...values], "billSent", 0, historicalRange, cashOutgoAsOfDate),
     loadCashOutgoRows(whereSql, [...values], "actual", 0, historicalRange),
-    loadCashOutgoRows(whereSql, [...values], "returnedBills", 0, historicalRange),
+    loadSupplementaryCashOutgoRows(
+      whereSql,
+      [...values],
+      "billSent",
+      historicalRange,
+      cashOutgoAsOfDate,
+    ),
+    loadSupplementaryCashOutgoRows(whereSql, [...values], "actual", historicalRange),
     loadCashOutgoRows(whereSql, [...values], "pendingReturnedBills", 0, historicalRange),
     loadCashOutgoRows(whereSql, [...values], "returnedBillsResubmitted", 0, historicalRange),
     loadCashOutgoRows(whereSql, [...values], "returnedBillsPaid", 0, historicalRange),
+    loadSupplementaryReturnedBillCashOutgoRows(
+      whereSql,
+      [...values],
+      "supplementaryPendingReturnedBills",
+      historicalRange,
+    ),
+    loadSupplementaryReturnedBillCashOutgoRows(
+      whereSql,
+      [...values],
+      "supplementaryReturnedBillsResubmitted",
+      historicalRange,
+    ),
+    loadSupplementaryReturnedBillCashOutgoRows(
+      whereSql,
+      [...values],
+      "supplementaryReturnedBillsPaid",
+      historicalRange,
+    ),
     loadDelayRows(whereSql, [...values], delayDays, delayMilestone),
   ]);
+  const billSentForPaymentRows = combineCashOutgoRows(
+    orderBillSentForPaymentRows,
+    supplementaryBillSentForPaymentRows,
+  );
+  const actualCashOutgoRows = combineCashOutgoRows(
+    orderActualCashOutgoRows,
+    supplementaryActualCashOutgoRows,
+  );
+  const expectedCashOutgoBillPreparationRows = combineCashOutgoRows(
+    orderExpectedCashOutgoBillPreparationRows,
+    supplementaryPendingReturnedBillRows,
+  );
   return {
     activeDivision: division,
     reportFileCount,
@@ -3682,10 +4222,14 @@ async function buildReportsSummarySql({
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
     actualCashOutgoRows,
-    returnedBillRows,
+    supplementaryBillSentForPaymentRows,
+    supplementaryActualCashOutgoRows,
     pendingReturnedBillRows,
     returnedBillResubmittedRows,
     returnedBillPaidRows,
+    supplementaryPendingReturnedBillRows,
+    supplementaryReturnedBillResubmittedRows,
+    supplementaryReturnedBillPaidRows,
     monthlyFileInflow: [],
     monthWiseSupplyOrder: [],
     monthWiseDeliverySchedule: [],
@@ -3710,7 +4254,10 @@ reportsRouter.get(
     const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
-    const expectedCashOutgoDays = readNonNegativeInteger(request.query.expectedCashOutgoDays, 0);
+    const expectedCashOutgoDays = readNonNegativeInteger(
+      request.query.expectedCashOutgoDays,
+      DEFAULT_DP_OFFSET_DAYS,
+    );
     const bgReceiptDelayDays =
       readNumberList(request.query.bgReceiptDelayDays) ?? defaultBgReceiptDelayDays;
     const warrantyBgBufferDays = readNonNegativeInteger(request.query.warrantyBgBufferDays, 60);

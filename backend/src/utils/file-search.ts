@@ -1,4 +1,10 @@
-import type { FileRecord, FirmDetail, SupplyOrderDetail } from "../types.js";
+import type {
+  BillReturnCycle,
+  FileRecord,
+  FirmDetail,
+  SupplementaryBillDetail,
+  SupplyOrderDetail,
+} from "../types.js";
 import {
   advancePaymentEntries,
   countExpectedSupplyOrderRows,
@@ -35,6 +41,7 @@ import {
 } from "./refloat-returned-bill.js";
 
 const biddingDelayMilestoneKey = "bidding";
+const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 
 export type FileSearchParams = {
   yearFilter?: string;
@@ -1923,6 +1930,173 @@ function hasAdvancePaymentPending(file: FileRecord) {
   );
 }
 
+function hasSupplementaryBillPending(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillSubmitted);
+  });
+}
+
+function hasSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillPaid);
+  });
+}
+
+function hasReturnedSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isReturnedSupplementaryBillPaid);
+  });
+}
+
+function hasSupplementaryBillReturnHistoryFile(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(hasSupplementaryBillReturnHistory);
+  });
+}
+
+function hasSupplementaryBillReturned(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillReturned);
+  });
+}
+
+function hasSupplementaryBillResubmitted(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillResubmitted);
+  });
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is NonNullable<SupplyOrderDetail["supplementaryBills"]>[number] =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillData(bill: SupplementaryBillDetail) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleData))
+  );
+}
+
+function hasBillReturnCycleData(cycle: BillReturnCycle) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
+function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(hasBillReturnCycleData);
+}
+
+function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    !hasCompletedSupplementaryBillReturn(bill) &&
+    !hasFilledString(bill.paymentDate)
+  );
+}
+
+function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
+  return !hasFilledString(bill.paymentDate) && hasOpenSupplementaryBillReturn(bill);
+}
+
+function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    hasCompletedSupplementaryBillReturn(bill)
+  );
+}
+
+function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return hasSupplementaryBillData(bill) && hasFilledString(bill.paymentDate);
+}
+
+function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function getActiveSupplementaryBillSubmissionDate(bill: SupplementaryBillDetail) {
+  const latestResubmissionDate = (bill.billReturnCycles ?? [])
+    .map((cycle) => cycle.resubmittedDate)
+    .filter(hasFilledString)
+    .sort()
+    .at(-1);
+  return latestResubmissionDate || bill.billSentForPaymentDate;
+}
+
+function earliestDate(dates: Array<string | undefined>) {
+  return dates.filter(hasFilledString).sort()[0];
+}
+
+function getSupplementaryReturnedBillCashOutgoEventDate(
+  bill: SupplementaryBillDetail,
+  mode: string,
+) {
+  const cycles = bill.billReturnCycles ?? [];
+  const returnedDates = cycles
+    .filter((cycle) => hasFilledString(cycle.returnedDate))
+    .map((cycle) => cycle.returnedDate);
+  const openReturnedDates = cycles
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.returnedDate);
+  const resubmittedDates = cycles
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.resubmittedDate);
+
+  if (mode === "supplementaryReturnedBills") return earliestDate(returnedDates);
+  if (mode === "supplementaryPendingReturnedBills") {
+    if (hasFilledString(bill.paymentDate)) return undefined;
+    return earliestDate(openReturnedDates);
+  }
+  if (mode === "supplementaryReturnedBillsResubmitted") {
+    if (hasFilledString(bill.paymentDate) || openReturnedDates.length || !resubmittedDates.length) {
+      return undefined;
+    }
+    return earliestDate(resubmittedDates);
+  }
+  if (mode === "supplementaryReturnedBillsPaid") {
+    return returnedDates.length && hasFilledString(bill.paymentDate) ? bill.paymentDate : undefined;
+  }
+  return undefined;
+}
+
 function isIrPreparationPending(file: FileRecord) {
   return (
     isDeliveryInspectionApplicable(file) &&
@@ -2005,7 +2179,10 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
     return daysInStage !== undefined && daysInStage > thresholdDays;
   })();
   return (
-    biddingMatch || mainMatch || isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey)
+    biddingMatch ||
+    mainMatch ||
+    isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey) ||
+    isSupplementaryBillReturnedDelayMatch(file, thresholdDays, selectedMilestoneKey)
   );
 }
 
@@ -2153,6 +2330,12 @@ function getOrderDelayMilestones() {
         hasOpenBillReturn(order) ? "" : order.billSentForPaymentDate,
     },
     {
+      key: "billReturnedForCorrection",
+      current: "billreturnedforcorrection",
+      start: (_file: FileRecord, order: SupplyOrderDetail) => getEarliestOpenBillReturnDate(order),
+      complete: (order: SupplyOrderDetail) => (hasOpenBillReturn(order) ? undefined : "9999-12-31"),
+    },
+    {
       key: "payment",
       current: "payment",
       start: (file: FileRecord, order: SupplyOrderDetail) =>
@@ -2162,6 +2345,46 @@ function getOrderDelayMilestones() {
       complete: (order: SupplyOrderDetail) => order.paymentDate,
     },
   ];
+}
+
+function isSupplementaryBillReturnedDelayMatch(
+  file: FileRecord,
+  thresholdDays: number,
+  selectedMilestoneKey: string,
+) {
+  if (
+    selectedMilestoneKey !== "all" &&
+    selectedMilestoneKey !== supplementaryBillReturnedDelayMilestoneKey
+  ) {
+    return false;
+  }
+  if (isYes(file.demandCancelled)) return false;
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some((bill) => {
+      if (!isSupplementaryBillReturned(bill)) return false;
+      const daysInStage = getDaysSinceDate(getEarliestOpenSupplementaryBillReturnDate(bill));
+      return daysInStage !== undefined && daysInStage > thresholdDays;
+    });
+  });
+}
+
+function getEarliestOpenBillReturnDate(order: SupplyOrderDetail) {
+  return normalizeOpenReturnDates(order.billReturnCycles)[0];
+}
+
+function getEarliestOpenSupplementaryBillReturnDate(bill: SupplementaryBillDetail) {
+  return normalizeOpenReturnDates(bill.billReturnCycles)[0];
+}
+
+function normalizeOpenReturnDates(cycles: SupplyOrderDetail["billReturnCycles"]) {
+  return (cycles ?? [])
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
+    .map((cycle) => cycle.returnedDate)
+    .filter((date): date is string => hasFilledString(date))
+    .sort();
 }
 
 function getSupplyOrderStageStartDate(file: FileRecord) {
@@ -2418,14 +2641,24 @@ function readCashOutgoFilter(filter: string) {
     "expectedReceipt",
     "expectedReceiptThrough",
     "expectedReceiptPendingBill",
+    "expectedReceiptPendingBillThrough",
     "billPreparation",
+    "billPreparationThrough",
     "billSent",
+    "billSentThrough",
     "actual",
     "actualThrough",
+    "expectedDpThrough",
+    "supplementaryBillSent",
+    "supplementaryActual",
     "returnedBills",
     "pendingReturnedBills",
     "returnedBillsResubmitted",
     "returnedBillsPaid",
+    "supplementaryReturnedBills",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryReturnedBillsPaid",
   ];
   if (
     !validModes.includes(mode) ||
@@ -2476,13 +2709,20 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
   if (!parsed || isCancelledFile(file)) return false;
   const orders =
     parsed.mode === "billPreparation" ||
+    parsed.mode === "billSentThrough" ||
     parsed.mode === "billSent" ||
     parsed.mode === "actual" ||
     parsed.mode === "actualThrough" ||
+    parsed.mode === "supplementaryBillSent" ||
+    parsed.mode === "supplementaryActual" ||
     parsed.mode === "returnedBills" ||
     parsed.mode === "pendingReturnedBills" ||
     parsed.mode === "returnedBillsResubmitted" ||
-    parsed.mode === "returnedBillsPaid"
+    parsed.mode === "returnedBillsPaid" ||
+    parsed.mode === "supplementaryReturnedBills" ||
+    parsed.mode === "supplementaryPendingReturnedBills" ||
+    parsed.mode === "supplementaryReturnedBillsResubmitted" ||
+    parsed.mode === "supplementaryReturnedBillsPaid"
       ? filePaymentOrders(file)
       : fileSupplyOrders(file);
   return orders.some((order) => {
@@ -2543,47 +2783,125 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
         rangeMatches(cashOutgoDate)
       );
     }
-    if (parsed.mode === "billPreparation") {
+    if (parsed.mode === "billPreparation" || parsed.mode === "billPreparationThrough") {
       if (isSupplyOrderCancelled(file, order)) return false;
+      const throughDate =
+        parsed.mode === "billPreparationThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
       const reportDate = getReceiptPendingBillReportDate(file, order);
-      return (
+      const orderMatches =
         (isAdvancePayment || hasFilledString(reportDate)) &&
         hasFilledString(order.billPreparationDate) &&
-        (isAdvancePayment || isOnOrBefore(reportDate, toDate)) &&
-        isOnOrBefore(order.billPreparationDate, toDate) &&
-        (toDate
-          ? isMissingOrAfter(order.billSentForPaymentDate, toDate)
+        (isAdvancePayment || isOnOrBefore(reportDate, throughDate ?? toDate)) &&
+        isOnOrBefore(order.billPreparationDate, throughDate ?? toDate) &&
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.billSentForPaymentDate, throughDate ?? toDate) ||
+            hasOpenBillReturn(order)
           : !hasFilledString(order.billSentForPaymentDate)) &&
-        (toDate
-          ? isMissingOrAfter(order.paymentDate, toDate)
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.paymentDate, throughDate ?? toDate)
           : !hasFilledString(order.paymentDate)) &&
-        rangeMatches(order.billPreparationDate)
-      );
+        (throughDate
+          ? isOnOrBefore(order.billPreparationDate, throughDate) &&
+            dateInRange(order.billPreparationDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.billPreparationDate));
+      const supplementaryMatches = getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate)) return false;
+        const returnedDate = getSupplementaryReturnedBillCashOutgoEventDate(
+          bill,
+          "supplementaryPendingReturnedBills",
+        );
+        if (!returnedDate) return false;
+        if (throughDate) {
+          return (
+            isOnOrBefore(returnedDate, throughDate) &&
+            dateInRange(returnedDate, parsed.fromDate, throughDate)
+          );
+        }
+        return rangeMatches(returnedDate);
+      });
+      return orderMatches || supplementaryMatches;
     }
-    if (parsed.mode === "billSent") {
+    if (parsed.mode === "billSent" || parsed.mode === "billSentThrough") {
       if (isSupplyOrderCancelled(file, order)) return false;
       const reportDate = getReceiptPendingBillReportDate(file, order);
-      return (
+      const throughDate =
+        parsed.mode === "billSentThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
+      const orderMatches =
         (isAdvancePayment || hasFilledString(reportDate)) &&
         hasFilledString(order.billPreparationDate) &&
         hasFilledString(order.billSentForPaymentDate) &&
-        (isAdvancePayment || isOnOrBefore(reportDate, toDate)) &&
-        isOnOrBefore(order.billPreparationDate, toDate) &&
-        isOnOrBefore(order.billSentForPaymentDate, toDate) &&
-        (toDate
-          ? isMissingOrAfter(order.paymentDate, toDate)
+        (isAdvancePayment || isOnOrBefore(reportDate, throughDate ?? toDate)) &&
+        isOnOrBefore(order.billPreparationDate, throughDate ?? toDate) &&
+        isOnOrBefore(order.billSentForPaymentDate, throughDate ?? toDate) &&
+        ((throughDate ?? toDate)
+          ? isMissingOrAfter(order.paymentDate, throughDate ?? toDate)
           : !hasFilledString(order.paymentDate)) &&
-        rangeMatches(order.billSentForPaymentDate)
-      );
+        (throughDate
+          ? isOnOrBefore(order.billSentForPaymentDate, throughDate) &&
+            dateInRange(order.billSentForPaymentDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.billSentForPaymentDate));
+      const supplementaryMatches = getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) return false;
+        const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        if (!hasFilledString(submissionDate)) return false;
+        if (throughDate) {
+          return (
+            isOnOrBefore(submissionDate, throughDate) &&
+            isMissingOrAfter(bill.paymentDate, throughDate) &&
+            dateInRange(submissionDate, parsed.fromDate, throughDate)
+          );
+        }
+        return (
+          isOnOrBefore(submissionDate, toDate) &&
+          (toDate ? isMissingOrAfter(bill.paymentDate, toDate) : true) &&
+          rangeMatches(submissionDate)
+        );
+      });
+      return orderMatches || supplementaryMatches;
     }
-    if (parsed.mode === "actualThrough") {
+    if (parsed.mode === "actual" || parsed.mode === "actualThrough") {
       const throughDate =
-        parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey);
-      return (
+        parsed.mode === "actualThrough"
+          ? (parsed.toDate ?? parsed.asOfDate ?? getMonthEndDateFromMonthKey(parsed.monthKey))
+          : undefined;
+      const orderMatches =
         hasFilledString(order.paymentDate) &&
         !(isYes(order.soCancelled) && hasFilledString(order.soCancelledDate)) &&
-        isOnOrBefore(order.paymentDate, throughDate) &&
-        dateInRange(order.paymentDate, parsed.fromDate, throughDate)
+        (throughDate
+          ? isOnOrBefore(order.paymentDate, throughDate) &&
+            dateInRange(order.paymentDate, parsed.fromDate, throughDate)
+          : rangeMatches(order.paymentDate));
+      const supplementaryMatches = getSupplementaryBills(order).some(
+        (bill) =>
+          hasFilledString(bill.paymentDate) &&
+          (throughDate
+            ? isOnOrBefore(bill.paymentDate, throughDate) &&
+              dateInRange(bill.paymentDate, parsed.fromDate, throughDate)
+            : rangeMatches(bill.paymentDate)),
+      );
+      return orderMatches || supplementaryMatches;
+    }
+    if (parsed.mode === "supplementaryBillSent") {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some((bill) => {
+        if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) return false;
+        const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
+        return (
+          hasFilledString(submissionDate) &&
+          isOnOrBefore(submissionDate, toDate) &&
+          (toDate ? isMissingOrAfter(bill.paymentDate, toDate) : true) &&
+          rangeMatches(submissionDate)
+        );
+      });
+    }
+    if (parsed.mode === "supplementaryActual") {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some(
+        (bill) => hasFilledString(bill.paymentDate) && rangeMatches(bill.paymentDate),
       );
     }
     if (
@@ -2596,11 +2914,18 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       const eventDate = getReturnedBillCashOutgoEventDate(order, parsed.mode);
       return rangeMatches(eventDate);
     }
-    return (
-      hasFilledString(order.paymentDate) &&
-      !(isYes(order.soCancelled) && hasFilledString(order.soCancelledDate)) &&
-      rangeMatches(order.paymentDate)
-    );
+    if (
+      parsed.mode === "supplementaryReturnedBills" ||
+      parsed.mode === "supplementaryPendingReturnedBills" ||
+      parsed.mode === "supplementaryReturnedBillsResubmitted" ||
+      parsed.mode === "supplementaryReturnedBillsPaid"
+    ) {
+      if (isSupplyOrderCancelled(file, order)) return false;
+      return getSupplementaryBills(order).some((bill) =>
+        rangeMatches(getSupplementaryReturnedBillCashOutgoEventDate(bill, parsed.mode)),
+      );
+    }
+    return false;
   });
 }
 
@@ -3002,6 +3327,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = filter.slice("manualMilestoneCurrent:".length);
     const normalized = normalizeMilestoneName(milestone);
     if (normalized === "bankguarantee") return isBgToBeReceived(file);
+    if (normalized === "supplementarybillreturnedforcorrection") {
+      return hasSupplementaryBillReturned(file);
+    }
     if (normalized === "refloatbidding") {
       return !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver);
     }
@@ -3089,6 +3417,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "advancePaid") return hasAdvancePaymentPaid(file);
   if (filter === "advancePending") return hasAdvancePaymentPending(file);
+  if (filter === "supplementaryBill:any") return hasSupplementaryBillReturnHistoryFile(file);
+  if (filter === "supplementaryBill:submitted" || filter === "supplementaryBill:pending")
+    return hasSupplementaryBillPending(file);
+  if (filter === "supplementaryBill:returned") return hasSupplementaryBillReturned(file);
+  if (filter === "supplementaryBill:resubmitted") return hasSupplementaryBillResubmitted(file);
+  if (filter === "supplementaryBill:paid") return hasSupplementaryBillPaid(file);
+  if (filter === "supplementaryBill:returnPaid") return hasReturnedSupplementaryBillPaid(file);
   if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
@@ -3338,6 +3673,13 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return orders.some(hasOpenBillReturn);
     if (stageKey === "completed") return orders.some(hasCompletedBillReturn);
     if (stageKey === "returnedpaid") return orders.some(hasReturnedBillPaid);
+  }
+
+  if (milestoneKey === "supplementarybills") {
+    if (stageKey === "submitted") return hasSupplementaryBillPending(file);
+    if (stageKey === "returned") return hasSupplementaryBillReturned(file);
+    if (stageKey === "resubmitted") return hasSupplementaryBillResubmitted(file);
+    if (stageKey === "paid") return hasSupplementaryBillPaid(file);
   }
 
   if (milestoneKey === "bankguarantee") {

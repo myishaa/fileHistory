@@ -3,6 +3,7 @@ import type {
   BillReturnCycle,
   Division,
   FileRecord,
+  SupplementaryBillDetail,
   SupplyOrderDetail,
 } from "../types.js";
 import {
@@ -75,6 +76,7 @@ const defaultManualMilestones = [
   "Job Completion",
   "Bill sent for payment",
   "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Advance Payment",
   "Payment",
   "File Closed",
@@ -84,6 +86,7 @@ const protectedLiveStatusMilestones = [
   "Refloat bidding",
   "Refloat Post-TCEC",
   "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Job Completion",
 ];
 const supplyOrderMilestoneNames = [
@@ -815,6 +818,123 @@ function countReturnedBillsPaid(files: FileRecord[]) {
   return countReturnedBillOrders(files, hasReturnedBillPaid);
 }
 
+function countSupplementaryBillPendingOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillSubmitted);
+}
+
+function countSupplementaryBillReturnedOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillReturned);
+}
+
+function countSupplementaryBillReturnHistoryOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, hasSupplementaryBillReturnHistory);
+}
+
+function countSupplementaryBillResubmittedOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillResubmitted);
+}
+
+function countSupplementaryBillPaidOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillPaid);
+}
+
+function countReturnedSupplementaryBillPaidOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isReturnedSupplementaryBillPaid);
+}
+
+function countSupplementaryBillOrders(
+  files: FileRecord[],
+  predicate: (bill: SupplementaryBillDetail) => boolean,
+) {
+  return files.reduce((count, file) => {
+    return (
+      count +
+      rawSupplyOrders(file).reduce((orderCount, order) => {
+        if (!isPaymentOrderActive(file, order)) return orderCount;
+        return orderCount + getSupplementaryBills(order).filter(predicate).length;
+      }, 0)
+    );
+  }, 0);
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is NonNullable<SupplyOrderDetail["supplementaryBills"]>[number] =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillData(
+  bill: NonNullable<SupplyOrderDetail["supplementaryBills"]>[number],
+) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleData))
+  );
+}
+
+function hasBillReturnCycleData(cycle: NonNullable<SupplyOrderDetail["billReturnCycles"]>[number]) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
+function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(hasBillReturnCycleData);
+}
+
+function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    !hasCompletedSupplementaryBillReturn(bill) &&
+    !hasFilledString(bill.paymentDate)
+  );
+}
+
+function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
+  return !hasFilledString(bill.paymentDate) && hasOpenSupplementaryBillReturn(bill);
+}
+
+function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    hasCompletedSupplementaryBillReturn(bill)
+  );
+}
+
+function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return hasSupplementaryBillData(bill) && hasFilledString(bill.paymentDate);
+}
+
+function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+  );
+}
+
 function countReturnedBillOrders(
   files: FileRecord[],
   predicate: (order: SupplyOrderDetail) => boolean,
@@ -905,7 +1025,11 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
   return appendFileClosedMilestone(
     dedupeLiveStatusMilestones(
       insertAdvancePaymentMilestone(
-        insertBillSentMilestone(insertJobCompletionMilestone(insertRefloatMilestones(configured))),
+        insertSupplementaryBillReturnedMilestone(
+          insertBillSentMilestone(
+            insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+          ),
+        ),
       ),
     ),
   );
@@ -966,6 +1090,21 @@ function insertBillSentMilestone(milestones: string[]) {
   ];
 }
 
+function insertSupplementaryBillReturnedMilestone(milestones: string[]) {
+  const hasSupplementaryBillReturned = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection",
+  );
+  const paymentIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "payment",
+  );
+  if (hasSupplementaryBillReturned || paymentIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, paymentIndex),
+    "Supplementary bill returned for correction",
+    ...milestones.slice(paymentIndex),
+  ];
+}
+
 function insertAdvancePaymentMilestone(milestones: string[]) {
   const hasAdvancePayment = milestones.some(
     (milestone) => normalizeMilestoneName(milestone) === "advancepayment",
@@ -1008,6 +1147,9 @@ function normalizeLiveStatusMilestoneName(milestone: string) {
 }
 
 function getLiveStatusMilestoneLabel(milestone: string) {
+  if (normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection") {
+    return "Supp. bill returned";
+  }
   return normalizeMilestoneName(milestone) === "deliveryperiod" ? "D.P." : milestone;
 }
 
@@ -1082,6 +1224,9 @@ function normalizeCompletedMilestones(value: string[] | undefined) {
 function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string) {
   const normalized = normalizeMilestoneName(milestoneName);
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
+  if (normalized === "supplementarybillreturnedforcorrection") {
+    return countSupplementaryBillReturnedOrders(files);
+  }
   if (normalized === "refloatbidding") {
     return files.filter(
       (file) => !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver),
@@ -1475,6 +1620,12 @@ function getMilestoneFlow(files: FileRecord[]) {
       const returnedBillsPending = countReturnedBillsPending(files);
       const returnedBillsResubmitted = countReturnedBillsResubmitted(files);
       const returnedBillsPaid = countReturnedBillsPaid(files);
+      const supplementaryPending = countSupplementaryBillPendingOrders(files);
+      const supplementaryReturnedForCorrection = countSupplementaryBillReturnHistoryOrders(files);
+      const supplementaryReturnedPending = countSupplementaryBillReturnedOrders(files);
+      const supplementaryReturnedResubmitted = countSupplementaryBillResubmittedOrders(files);
+      const supplementaryPaid = countSupplementaryBillPaidOrders(files);
+      const supplementaryReturnedPaid = countReturnedSupplementaryBillPaidOrders(files);
       return {
         key: milestone.key,
         label: milestone.label,
@@ -1494,6 +1645,12 @@ function getMilestoneFlow(files: FileRecord[]) {
         returnedBillsPending,
         returnedBillsResubmitted,
         returnedBillsPaid,
+        supplementaryPending,
+        supplementaryReturnedForCorrection,
+        supplementaryReturnedPending,
+        supplementaryReturnedResubmitted,
+        supplementaryPaid,
+        supplementaryReturnedPaid,
         activeLabel: "In process",
       };
     }
@@ -2112,6 +2269,26 @@ function getMilestoneClearingDurationRows(
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
     );
   }
+  if (definition.name === "Bill returned for correction") {
+    return files.flatMap((file) =>
+      effectivePaymentEntries([file])
+        .filter(({ file: entryFile, order }) => isPaymentOrderActive(entryFile, order))
+        .flatMap(({ file: entryFile, order }) =>
+          getReturnedBillClearingDurationRows(entryFile, order),
+        ),
+    );
+  }
+  if (definition.name === "Supplementary bill returned for correction") {
+    return files.flatMap((file) =>
+      rawSupplyOrders(file)
+        .filter((order) => isPaymentOrderActive(file, order))
+        .flatMap((order) =>
+          getSupplementaryBills(order).flatMap((bill) =>
+            getReturnedBillClearingDurationRows(file, bill),
+          ),
+        ),
+    );
+  }
   if (definition.name === "Supply Order") {
     const definitionIndex = milestoneClearingDefinitions.indexOf(definition);
     return files.flatMap((file) =>
@@ -2140,6 +2317,17 @@ function getMilestoneClearingDurationRows(
         ),
         definition.getEndDate(file),
       ),
+    )
+    .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+}
+
+function getReturnedBillClearingDurationRows(
+  file: FileRecord,
+  entry: Pick<SupplyOrderDetail, "billReturnCycles">,
+) {
+  return normalizeBillReturnCycles(entry.billReturnCycles)
+    .map((cycle) =>
+      getMilestoneClearingDurationRow(file, cycle.returnedDate, cycle.resubmittedDate),
     )
     .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
 }
@@ -2621,6 +2809,11 @@ const milestoneClearingDefinitions = [
     name: "Bill returned for correction",
     getStartDate: getEarliestBillReturnDate,
     getEndDate: getEarliestBillResubmissionDate,
+  },
+  {
+    name: "Supplementary bill returned for correction",
+    getStartDate: () => "",
+    getEndDate: () => "",
   },
   {
     name: "Payment",

@@ -4,6 +4,7 @@ import {
   type Division,
   type FileRecord,
   type BillReturnCycle,
+  type SupplementaryBillDetail,
   type SupplyOrderDetail,
   type ValueThresholdLevel,
   fetchFilesForYear,
@@ -486,6 +487,10 @@ const delayMilestoneOptions = [
   { key: "billPreparation", label: "Bill preparation" },
   { key: "billSentForPayment", label: "Bill sent for payment" },
   { key: "billReturnedForCorrection", label: "Bill returned for correction" },
+  {
+    key: "supplementaryBillReturnedForCorrection",
+    label: "Supplementary bill returned for correction",
+  },
   { key: "payment", label: "Payment" },
 ];
 const financeFirmTypeDistributionOptions = [
@@ -499,6 +504,7 @@ const firmAnalysisRoleOptions = [
   { key: "order", label: "Got order" },
 ] satisfies Array<{ key: FirmAnalysisRoleKey; label: string }>;
 const fileClosedMilestone = "File Closed";
+const dashboardSummaryQueryVersion = "5";
 const supplyOrderMilestoneNames = [
   "Financial Sanction",
   "Advance Payment",
@@ -738,6 +744,7 @@ export function Dashboard() {
 
   const dashboardSummaryQuery = useMemo(() => {
     const params = new URLSearchParams();
+    params.set("version", dashboardSummaryQueryVersion);
     params.set("division", activeDivision);
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
@@ -1938,10 +1945,14 @@ export function Dashboard() {
   };
   const openLiveStatusFilter = (division: string, milestoneName: string) => {
     const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
+    const dashboardFilter =
+      normalizeMilestoneName(filterMilestoneName) === "supplementarybillreturnedforcorrection"
+        ? "supplementaryBill:returned"
+        : `manualMilestoneCurrent:${filterMilestoneName}`;
     navigate({
       to: "/search",
       search: {
-        dashboardFilter: `manualMilestoneCurrent:${filterMilestoneName}`,
+        dashboardFilter,
         division,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath([
@@ -2551,6 +2562,20 @@ export function Dashboard() {
                       handleStatusFilter("billReturn:resubmitted")
                     }
                     onReturnedBillsPaidClick={() => handleStatusFilter("billReturn:paid")}
+                    onSupplementaryPendingClick={() =>
+                      handleStatusFilter("supplementaryBill:submitted")
+                    }
+                    onSupplementaryReturnedClick={() => handleStatusFilter("supplementaryBill:any")}
+                    onSupplementaryReturnedPendingClick={() =>
+                      handleStatusFilter("supplementaryBill:returned")
+                    }
+                    onSupplementaryResubmittedClick={() =>
+                      handleStatusFilter("supplementaryBill:resubmitted")
+                    }
+                    onSupplementaryPaidClick={() => handleStatusFilter("supplementaryBill:paid")}
+                    onReturnedSupplementaryPaidClick={() =>
+                      handleStatusFilter("supplementaryBill:returnPaid")
+                    }
                   />
                 );
               })}
@@ -3499,11 +3524,13 @@ function LiveStatusSection({
   lockedMilestoneNames?: string[];
   onCountClick: (division: string, milestoneName: string) => void;
 }) {
-  const liveTotal = milestones.reduce((sum, milestone) => sum + milestone.current, 0);
   const selectedMilestoneSet = new Set(visibleMilestoneNames);
   const displayedMilestones = milestones.filter((milestone) =>
     selectedMilestoneSet.has(milestone.name),
   );
+  const liveTotal = rows.length
+    ? rows.reduce((sum, row) => sum + row.total, 0)
+    : displayedMilestones.reduce((sum, milestone) => sum + milestone.current, 0);
   const lockMatchesCurrentSelection =
     lockedMilestoneNames !== undefined &&
     lockedMilestoneNames.length === visibleMilestoneNames.length &&
@@ -3590,6 +3617,7 @@ function LiveStatusSection({
           <div className="flex flex-wrap gap-1.5">
             {milestones.map((milestone) => {
               const checked = selectedMilestoneSet.has(milestone.name);
+              const currentCount = getLiveStatusMilestoneDisplayCount(rows, milestone);
               return (
                 <label
                   key={milestone.name}
@@ -3608,7 +3636,7 @@ function LiveStatusSection({
                   />
                   <span className="max-w-[150px] truncate">{milestone.label}</span>
                   <span className="rounded bg-secondary px-1.5 py-0.5 tabular-nums">
-                    {milestone.current}
+                    {currentCount}
                   </span>
                 </label>
               );
@@ -3644,7 +3672,7 @@ function LiveStatusSection({
                       {row.total}
                     </td>
                     {displayedMilestones.map((milestone) => {
-                      const count = row.counts[milestone.name] ?? 0;
+                      const count = getLiveStatusRowMilestoneCount(row, milestone);
                       return (
                         <td key={milestone.name} className="px-2 py-2 text-center">
                           {count > 0 ? (
@@ -3680,6 +3708,36 @@ function LiveStatusSection({
       </div>
     </section>
   );
+}
+
+function getLiveStatusRowMilestoneCount(
+  row: LiveStatusDivisionRow,
+  milestone: LiveStatusMilestone,
+) {
+  const exactCount = row.counts[milestone.name];
+  if (exactCount !== undefined) return exactCount;
+  const normalizedMilestone = normalizeMilestoneName(milestone.name);
+  const matchingEntry = Object.entries(row.counts).find(
+    ([name]) => normalizeMilestoneName(name) === normalizedMilestone,
+  );
+  return matchingEntry ? matchingEntry[1] : 0;
+}
+
+function getLiveStatusMilestoneDisplayCount(
+  rows: LiveStatusDivisionRow[],
+  milestone: LiveStatusMilestone,
+) {
+  if (
+    !rows.length ||
+    !rows.some((row) =>
+      Object.keys(row.counts).some(
+        (name) => normalizeMilestoneName(name) === normalizeMilestoneName(milestone.name),
+      ),
+    )
+  ) {
+    return milestone.current;
+  }
+  return rows.reduce((sum, row) => sum + getLiveStatusRowMilestoneCount(row, milestone), 0);
 }
 
 type Status4TableRow = {
@@ -4861,6 +4919,9 @@ function normalizeCompletedMilestones(value: string[] | undefined) {
 function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string) {
   const normalized = normalizeMilestoneName(milestoneName);
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
+  if (normalized === "supplementarybillreturnedforcorrection") {
+    return countSupplementaryBillReturnedOrders(files);
+  }
   if (normalized === "refloatbidding") {
     return files.filter(
       (file) => !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver),
@@ -5364,6 +5425,7 @@ type StatusMetric = {
   label: string;
   count: number;
   onClick?: () => void;
+  testId?: string;
   toneCount?: boolean;
 };
 
@@ -5393,7 +5455,12 @@ function StatusMetricBox({
   }
 
   return (
-    <button type="button" onClick={metric.onClick} className={className}>
+    <button
+      type="button"
+      onClick={metric.onClick}
+      data-testid={metric.testId}
+      className={className}
+    >
       {content}
     </button>
   );
@@ -6920,6 +6987,10 @@ function getMilestoneClearingHelper(name: string) {
       "Bill preparation clearing = Bill Preparation Date - IR Receipt Date for Material Receipt cases; otherwise from DP/Revised DP + 1 day for Job Completion cases.",
     billsentforpayment:
       "Bill sent for payment clearing = Bill Sent for Payment Date - Bill Preparation Date.",
+    billreturnedforcorrection:
+      "Bill returned for correction clearing = Resubmitted Date - Returned Date, counted per completed return cycle.",
+    supplementarybillreturnedforcorrection:
+      "Supplementary bill returned for correction clearing = Supplementary Resubmitted Date - Supplementary Returned Date, counted per completed supplementary return cycle.",
     payment: "Payment clearing = Payment Date - Bill Sent for Payment Date.",
   };
   return helpers[normalizeMilestoneName(name)];
@@ -7634,6 +7705,20 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
       dashboardFilter: "manualMilestoneCompleted:Bill sent for payment",
       focusSection: "Supply order and payment",
       focusTarget: "billsentforpayment:completed",
+    };
+  }
+  if (normalized === "billreturnedforcorrection") {
+    return {
+      dashboardFilter: "billReturn:resubmitted",
+      focusSection: "Supply order and payment",
+      focusTarget: "billreturnedforcorrection:resubmitted",
+    };
+  }
+  if (normalized === "supplementarybillreturnedforcorrection") {
+    return {
+      dashboardFilter: "supplementaryBill:resubmitted",
+      focusSection: "Supply order and payment",
+      focusTarget: "supplementarybill:resubmitted",
     };
   }
   if (normalized === "delivery") return { dashboardFilter: "deliveryCompleted" };
@@ -8496,6 +8581,12 @@ function MilestoneFlowNode({
   onReturnedBillsPendingClick,
   onReturnedBillsResubmittedClick,
   onReturnedBillsPaidClick,
+  onSupplementaryPendingClick,
+  onSupplementaryReturnedClick,
+  onSupplementaryReturnedPendingClick,
+  onSupplementaryResubmittedClick,
+  onSupplementaryPaidClick,
+  onReturnedSupplementaryPaidClick,
 }: {
   milestone: {
     key: string;
@@ -8526,6 +8617,12 @@ function MilestoneFlowNode({
     returnedBillsPending?: number;
     returnedBillsResubmitted?: number;
     returnedBillsPaid?: number;
+    supplementaryPending?: number;
+    supplementaryReturnedForCorrection?: number;
+    supplementaryReturnedPending?: number;
+    supplementaryReturnedResubmitted?: number;
+    supplementaryPaid?: number;
+    supplementaryReturnedPaid?: number;
   };
   index: number;
   isLast: boolean;
@@ -8549,6 +8646,12 @@ function MilestoneFlowNode({
   onReturnedBillsPendingClick: () => void;
   onReturnedBillsResubmittedClick: () => void;
   onReturnedBillsPaidClick: () => void;
+  onSupplementaryPendingClick: () => void;
+  onSupplementaryReturnedClick?: () => void;
+  onSupplementaryReturnedPendingClick?: () => void;
+  onSupplementaryResubmittedClick?: () => void;
+  onSupplementaryPaidClick: () => void;
+  onReturnedSupplementaryPaidClick?: () => void;
 }) {
   const tone = getMilestoneTone(milestone.active);
   const widthPercent =
@@ -8575,6 +8678,12 @@ function MilestoneFlowNode({
     onReturnedBillsPendingClick,
     onReturnedBillsResubmittedClick,
     onReturnedBillsPaidClick,
+    onSupplementaryPendingClick,
+    onSupplementaryReturnedClick,
+    onSupplementaryReturnedPendingClick,
+    onSupplementaryResubmittedClick,
+    onSupplementaryPaidClick,
+    onReturnedSupplementaryPaidClick,
   });
   const metricGridClass = "grid grid-cols-2 gap-1.5 sm:grid-cols-3";
 
@@ -8695,7 +8804,12 @@ function MetricButton({
   }
 
   return (
-    <button type="button" onClick={metric.onClick} className={baseClass}>
+    <button
+      type="button"
+      onClick={metric.onClick}
+      data-testid={metric.testId}
+      className={baseClass}
+    >
       {content}
     </button>
   );
@@ -8723,6 +8837,12 @@ function getStatusMetrics({
   onReturnedBillsPendingClick,
   onReturnedBillsResubmittedClick,
   onReturnedBillsPaidClick,
+  onSupplementaryPendingClick,
+  onSupplementaryReturnedClick,
+  onSupplementaryReturnedPendingClick,
+  onSupplementaryResubmittedClick,
+  onSupplementaryPaidClick,
+  onReturnedSupplementaryPaidClick,
 }: {
   milestone: {
     key: string;
@@ -8751,6 +8871,12 @@ function getStatusMetrics({
     returnedBillsPending?: number;
     returnedBillsResubmitted?: number;
     returnedBillsPaid?: number;
+    supplementaryPending?: number;
+    supplementaryReturnedForCorrection?: number;
+    supplementaryReturnedPending?: number;
+    supplementaryReturnedResubmitted?: number;
+    supplementaryPaid?: number;
+    supplementaryReturnedPaid?: number;
   };
   onTotalClick: () => void;
   onUnderProcessClick: () => void;
@@ -8772,6 +8898,12 @@ function getStatusMetrics({
   onReturnedBillsPendingClick: () => void;
   onReturnedBillsResubmittedClick: () => void;
   onReturnedBillsPaidClick: () => void;
+  onSupplementaryPendingClick?: () => void;
+  onSupplementaryReturnedClick?: () => void;
+  onSupplementaryReturnedPendingClick?: () => void;
+  onSupplementaryResubmittedClick?: () => void;
+  onSupplementaryPaidClick?: () => void;
+  onReturnedSupplementaryPaidClick?: () => void;
 }): StatusMetric[] {
   const total = {
     label: milestone.totalLabel,
@@ -8919,6 +9051,42 @@ function getStatusMetrics({
         label: "Returned paid",
         count: milestone.returnedBillsPaid ?? 0,
         onClick: onReturnedBillsPaidClick,
+      },
+      {
+        label: "Supplementary submitted",
+        count: milestone.supplementaryPending ?? 0,
+        onClick: onSupplementaryPendingClick,
+        testId: "status-counter-payment-supplementary-submitted",
+      },
+      {
+        label: "Supp. returned",
+        count: milestone.supplementaryReturnedForCorrection ?? 0,
+        onClick: onSupplementaryReturnedClick,
+        testId: "status-counter-payment-supplementary-returned",
+      },
+      {
+        label: "Supp. return pending",
+        count: milestone.supplementaryReturnedPending ?? 0,
+        onClick: onSupplementaryReturnedPendingClick,
+        testId: "status-counter-payment-supplementary-return-pending",
+      },
+      {
+        label: "Supp. resubmitted",
+        count: milestone.supplementaryReturnedResubmitted ?? 0,
+        onClick: onSupplementaryResubmittedClick,
+        testId: "status-counter-payment-supplementary-resubmitted",
+      },
+      {
+        label: "Supplementary paid",
+        count: milestone.supplementaryPaid ?? 0,
+        onClick: onSupplementaryPaidClick,
+        testId: "status-counter-payment-supplementary-paid",
+      },
+      {
+        label: "Supp. returned paid",
+        count: milestone.supplementaryReturnedPaid ?? 0,
+        onClick: onReturnedSupplementaryPaidClick,
+        testId: "status-counter-payment-supplementary-returned-paid",
       },
     ];
   }
@@ -10231,6 +10399,26 @@ function getMilestoneClearingDurationRows(
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
     );
   }
+  if (definition.name === "Bill returned for correction") {
+    return files.flatMap((file) =>
+      effectivePaymentEntries([file])
+        .filter(({ file: entryFile, order }) => isPaymentOrderActive(entryFile, order))
+        .flatMap(({ file: entryFile, order }) =>
+          getReturnedBillClearingDurationRows(entryFile, order),
+        ),
+    );
+  }
+  if (definition.name === "Supplementary bill returned for correction") {
+    return files.flatMap((file) =>
+      rawSupplyOrders(file)
+        .filter((order) => isPaymentOrderActive(file, order))
+        .flatMap((order) =>
+          getSupplementaryBills(order).flatMap((bill) =>
+            getReturnedBillClearingDurationRows(file, bill),
+          ),
+        ),
+    );
+  }
   if (definition.name === "Supply Order") {
     const definitionIndex = milestoneClearingDefinitions.indexOf(definition);
     return files.flatMap((file) =>
@@ -10261,6 +10449,17 @@ function getMilestoneClearingDurationRows(
         definition.getEndDate(file),
         getFileLevelPathCumulativeDays(file, definitionIndex, definition.getEndDate(file)),
       ),
+    )
+    .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+}
+
+function getReturnedBillClearingDurationRows(
+  file: FileRecord,
+  entry: Pick<SupplyOrderDetail, "billReturnCycles">,
+) {
+  return normalizeBillReturnCycles(entry.billReturnCycles)
+    .map((cycle) =>
+      getMilestoneClearingDurationRow(file, cycle.returnedDate, cycle.resubmittedDate),
     )
     .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
 }
@@ -10841,6 +11040,11 @@ const milestoneClearingDefinitions = [
     getEndDate: getEarliestBillResubmissionDate,
   },
   {
+    name: "Supplementary bill returned for correction",
+    getStartDate: () => "",
+    getEndDate: () => "",
+  },
+  {
     name: "Payment",
     getStartDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "billSentForPaymentDate"),
     getEndDate: getFirstPaymentDate,
@@ -11231,6 +11435,8 @@ const defaultManualMilestones = [
   "PSB+PWB",
   "Job Completion",
   "Bill sent for payment",
+  "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Advance Payment",
   "Payment",
   fileClosedMilestone,
@@ -11239,6 +11445,7 @@ const protectedLiveStatusMilestones = [
   "Refloat bidding",
   "Refloat Post-TCEC",
   "Bill returned for correction",
+  "Supplementary bill returned for correction",
   "Job Completion",
 ];
 
@@ -11250,7 +11457,11 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
   return appendFileClosedMilestone(
     dedupeLiveStatusMilestones(
       insertAdvancePaymentMilestone(
-        insertBillSentMilestone(insertJobCompletionMilestone(insertRefloatMilestones(configured))),
+        insertSupplementaryBillReturnedMilestone(
+          insertBillSentMilestone(
+            insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+          ),
+        ),
       ),
     ),
   );
@@ -11311,6 +11522,21 @@ function insertBillSentMilestone(milestones: string[]) {
   ];
 }
 
+function insertSupplementaryBillReturnedMilestone(milestones: string[]) {
+  const hasSupplementaryBillReturned = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection",
+  );
+  const paymentIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "payment",
+  );
+  if (hasSupplementaryBillReturned || paymentIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, paymentIndex),
+    "Supplementary bill returned for correction",
+    ...milestones.slice(paymentIndex),
+  ];
+}
+
 function insertAdvancePaymentMilestone(milestones: string[]) {
   const hasAdvancePayment = milestones.some(
     (milestone) => normalizeMilestoneName(milestone) === "advancepayment",
@@ -11353,6 +11579,9 @@ function normalizeLiveStatusMilestoneName(milestone: string) {
 }
 
 function getLiveStatusMilestoneLabel(milestone: string) {
+  if (normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection") {
+    return "Supp. bill returned";
+  }
   return normalizeMilestoneName(milestone) === "deliveryperiod" ? "D.P." : milestone;
 }
 
@@ -11412,6 +11641,9 @@ function getManualMilestoneFlow(
 function getManualMilestoneCurrentCount(files: FileRecord[], name: string) {
   const normalized = normalizeMilestoneName(name);
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
+  if (normalized === "supplementarybillreturnedforcorrection") {
+    return countSupplementaryBillReturnedOrders(files);
+  }
   if (normalized === "refloatbidding") {
     return files.filter(
       (file) => !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver),
@@ -11612,6 +11844,12 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
       const returnedBillsPending = countReturnedBillsPending(files);
       const returnedBillsResubmitted = countReturnedBillsResubmitted(files);
       const returnedBillsPaid = countReturnedBillsPaid(files);
+      const supplementaryPending = countSupplementaryBillPendingOrders(files);
+      const supplementaryReturnedForCorrection = countSupplementaryBillReturnHistoryOrders(files);
+      const supplementaryReturnedPending = countSupplementaryBillReturnedOrders(files);
+      const supplementaryReturnedResubmitted = countSupplementaryBillResubmittedOrders(files);
+      const supplementaryPaid = countSupplementaryBillPaidOrders(files);
+      const supplementaryReturnedPaid = countReturnedSupplementaryBillPaidOrders(files);
       return {
         key: milestone.key,
         label: milestone.label,
@@ -11631,6 +11869,12 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         returnedBillsPending,
         returnedBillsResubmitted,
         returnedBillsPaid,
+        supplementaryPending,
+        supplementaryReturnedForCorrection,
+        supplementaryReturnedPending,
+        supplementaryReturnedResubmitted,
+        supplementaryPaid,
+        supplementaryReturnedPaid,
         activeLabel: "In process",
       };
     }
@@ -12250,6 +12494,165 @@ function countAdvancePaymentPendingOrders(files: FileRecord[]) {
   ).length;
 }
 
+function countSupplementaryBillPendingOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillSubmitted);
+}
+
+function countSupplementaryBillReturnedOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillReturned);
+}
+
+function countSupplementaryBillReturnHistoryOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, hasSupplementaryBillReturnHistory);
+}
+
+function countSupplementaryBillResubmittedOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillResubmitted);
+}
+
+function countSupplementaryBillPaidOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isSupplementaryBillPaid);
+}
+
+function countReturnedSupplementaryBillPaidOrders(files: FileRecord[]) {
+  return countSupplementaryBillOrders(files, isReturnedSupplementaryBillPaid);
+}
+
+function countSupplementaryBillOrders(
+  files: FileRecord[],
+  predicate: (bill: SupplementaryBillDetail) => boolean,
+) {
+  return files.reduce((count, file) => {
+    return (
+      count +
+      rawSupplyOrders(file).reduce((orderCount, order) => {
+        if (!isPaymentOrderActive(file, order)) return orderCount;
+        return orderCount + getSupplementaryBills(order).filter(predicate).length;
+      }, 0)
+    );
+  }, 0);
+}
+
+function hasSupplementaryBillPending(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillSubmitted);
+  });
+}
+
+function hasSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillPaid);
+  });
+}
+
+function hasReturnedSupplementaryBillPaid(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isReturnedSupplementaryBillPaid);
+  });
+}
+
+function hasSupplementaryBillReturnHistoryFile(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(hasSupplementaryBillReturnHistory);
+  });
+}
+
+function hasSupplementaryBillReturned(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillReturned);
+  });
+}
+
+function hasSupplementaryBillResubmitted(file: FileRecord) {
+  return normalizedFilePaymentOrders(file).some((order) => {
+    if (!isPaymentOrderActive(file, order)) return false;
+    return getSupplementaryBills(order).some(isSupplementaryBillResubmitted);
+  });
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is NonNullable<SupplyOrderDetail["supplementaryBills"]>[number] =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillData(
+  bill: NonNullable<SupplyOrderDetail["supplementaryBills"]>[number],
+) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleData))
+  );
+}
+
+function hasBillReturnCycleData(cycle: NonNullable<SupplyOrderDetail["billReturnCycles"]>[number]) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
+function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(hasBillReturnCycleData);
+}
+
+function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    !hasCompletedSupplementaryBillReturn(bill) &&
+    !hasFilledString(bill.paymentDate)
+  );
+}
+
+function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
+  return !hasFilledString(bill.paymentDate) && hasOpenSupplementaryBillReturn(bill);
+}
+
+function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    !hasOpenSupplementaryBillReturn(bill) &&
+    hasCompletedSupplementaryBillReturn(bill)
+  );
+}
+
+function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return hasSupplementaryBillData(bill) && hasFilledString(bill.paymentDate);
+}
+
+function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+  );
+}
+
+function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
+  return (bill.billReturnCycles ?? []).some(
+    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+  );
+}
+
 function hasAdvancePaymentPaid(file: FileRecord) {
   return advancePaymentEntries([file]).some(
     ({ file: entryFile, order }) =>
@@ -12819,6 +13222,13 @@ const dashboardFilterTitles: Record<string, string> = {
   "billReturn:pending": "Returned bills pending",
   "billReturn:resubmitted": "Returned bills resubmitted",
   "billReturn:paid": "Returned bills paid",
+  "supplementaryBill:any": "Payment - Supplementary returned",
+  "supplementaryBill:submitted": "Payment - Supplementary submitted",
+  "supplementaryBill:pending": "Payment - Supplementary submitted",
+  "supplementaryBill:returned": "Payment - Supplementary returned",
+  "supplementaryBill:resubmitted": "Payment - Supplementary resubmitted",
+  "supplementaryBill:paid": "Payment - Supplementary paid",
+  "supplementaryBill:returnPaid": "Payment - Returned supplementary paid",
   miscLiveFiles: "Cancellation - Live files",
   miscFileClosed: "Cancellation - File closed",
   miscLd: "Cancellation - LD",
@@ -13116,6 +13526,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = filter.slice("manualMilestoneCurrent:".length);
     const normalized = normalizeMilestoneName(milestone);
     if (isBgMilestoneKey(normalized)) return isBgToBeReceived(file, milestone);
+    if (normalized === "supplementarybillreturnedforcorrection") {
+      return hasSupplementaryBillReturned(file);
+    }
     if (normalized === "refloatbidding") {
       return !isCancelledFile(file) && isYes(file.refloat) && !isYes(file.biddingStageOver);
     }
@@ -13214,6 +13627,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "paymentDue") return isPaymentDue(file);
   if (filter === "advancePaid") return hasAdvancePaymentPaid(file);
   if (filter === "advancePending") return hasAdvancePaymentPending(file);
+  if (filter === "supplementaryBill:any") return hasSupplementaryBillReturnHistoryFile(file);
+  if (filter === "supplementaryBill:submitted" || filter === "supplementaryBill:pending")
+    return hasSupplementaryBillPending(file);
+  if (filter === "supplementaryBill:returned") return hasSupplementaryBillReturned(file);
+  if (filter === "supplementaryBill:resubmitted") return hasSupplementaryBillResubmitted(file);
+  if (filter === "supplementaryBill:paid") return hasSupplementaryBillPaid(file);
+  if (filter === "supplementaryBill:returnPaid") return hasReturnedSupplementaryBillPaid(file);
   if (filter === "miscLiveFiles") return isLiveFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
@@ -13485,6 +13905,13 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "returnedpaid") return orders.some(hasReturnedBillPaid);
   }
 
+  if (milestoneKey === "supplementarybills") {
+    if (stageKey === "submitted") return hasSupplementaryBillPending(file);
+    if (stageKey === "returned") return hasSupplementaryBillReturned(file);
+    if (stageKey === "resubmitted") return hasSupplementaryBillResubmitted(file);
+    if (stageKey === "paid") return hasSupplementaryBillPaid(file);
+  }
+
   if (isBgMilestoneKey(milestoneKey)) {
     const category = milestoneKey;
     if (stageKey === "total" || stageKey === "totalfiles") {
@@ -13670,6 +14097,16 @@ function getStatusPageExportRows(
         onBgReturnedClick: noop,
         onAdvancePaidClick: noop,
         onAdvancePendingClick: noop,
+        onBillsReturnedClick: noop,
+        onReturnedBillsPendingClick: noop,
+        onReturnedBillsResubmittedClick: noop,
+        onReturnedBillsPaidClick: noop,
+        onSupplementaryPendingClick: noop,
+        onSupplementaryReturnedClick: noop,
+        onSupplementaryReturnedPendingClick: noop,
+        onSupplementaryResubmittedClick: noop,
+        onSupplementaryPaidClick: noop,
+        onReturnedSupplementaryPaidClick: noop,
       }),
       milestone.key,
     ).forEach((metric) => {
@@ -13781,7 +14218,9 @@ function getLiveStatusTableHtml(rows: LiveStatusDivisionRow[], milestones: LiveS
                         String(index + 1),
                         row.division,
                         String(row.total),
-                        ...milestones.map((milestone) => String(row.counts[milestone.name] ?? 0)),
+                        ...milestones.map((milestone) =>
+                          String(getLiveStatusRowMilestoneCount(row, milestone)),
+                        ),
                       ]
                         .map((value) => `<td>${escapeHtml(value)}</td>`)
                         .join("")}
@@ -13849,7 +14288,7 @@ async function downloadLiveStatusRows(
           index + 1,
           row.division,
           row.total,
-          ...milestones.map((milestone) => row.counts[milestone.name] ?? 0),
+          ...milestones.map((milestone) => getLiveStatusRowMilestoneCount(row, milestone)),
         ]),
       },
     ],
