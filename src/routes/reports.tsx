@@ -380,6 +380,8 @@ function ReportsPage() {
   const [cashOutGoPlanIncludePreviousFy, setCashOutGoPlanIncludePreviousFy] = useState(false);
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
+  const [selectedFileYear, setSelectedFileYear] = useState("all");
+  const [fileYearLocked, setFileYearLocked] = useState(false);
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
   const [mmgPreviousFiles, setMmgPreviousFiles] = useState<FileRecord[]>([]);
@@ -518,6 +520,53 @@ function ReportsPage() {
     activeDivision === "all"
       ? "all"
       : (divisions.find((division) => division.name === activeDivision)?.id ?? "all");
+  const fileYearOptions = useMemo(
+    () => Array.from(new Set(settings.financialYears ?? [])).filter(Boolean),
+    [settings.financialYears],
+  );
+  const fileYearOptionsKey = fileYearOptions.join("|");
+  const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const activeFileYear =
+    selectedFileYear === "all" || fileYearOptions.includes(selectedFileYear)
+      ? selectedFileYear
+      : "all";
+  useEffect(() => {
+    if (typeof window === "undefined" || !fileYearOptions.length) return;
+    const saved = window.localStorage.getItem(fileYearFilterStorageKey);
+    if (!saved) {
+      setFileYearLocked(false);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      const locked = parsed?.locked === true;
+      const year = typeof parsed?.year === "string" ? parsed.year : "all";
+      setFileYearLocked(locked);
+      if (locked) {
+        setSelectedFileYear(year === "all" || fileYearOptions.includes(year) ? year : "all");
+      }
+    } catch {
+      setFileYearLocked(false);
+    }
+  }, [fileYearFilterStorageKey, fileYearOptionsKey, fileYearOptions.length]);
+  const updateFileYearSelection = (year: string) => {
+    setSelectedFileYear(year);
+    if (fileYearLocked && typeof window !== "undefined") {
+      window.localStorage.setItem(fileYearFilterStorageKey, JSON.stringify({ locked: true, year }));
+    }
+  };
+  const toggleFileYearLock = () => {
+    const nextLocked = !fileYearLocked;
+    setFileYearLocked(nextLocked);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        fileYearFilterStorageKey,
+        JSON.stringify({ locked: nextLocked, year: activeFileYear }),
+      );
+    }
+  };
+  const fileMatchesActiveFileYear = (file: FileRecord) =>
+    activeFileYear === "all" || file.year === activeFileYear;
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays);
   const delayStatusThresholdDays = getDelayThresholdDays(delayStatusDays);
   const normalizedBgReceiptDelayDays = useMemo(
@@ -578,6 +627,7 @@ function ReportsPage() {
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayStatusMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     if (reportMode === "bgReceiptDelay") {
       params.set("bgReceiptDelayDays", normalizedBgReceiptDelayDays.join(","));
     }
@@ -594,6 +644,7 @@ function ReportsPage() {
     return params.toString();
   }, [
     activeDivision,
+    activeFileYear,
     delayStatusMilestoneKey,
     delayStatusThresholdDays,
     expectedCashOutgoOffsetDays,
@@ -770,7 +821,7 @@ function ReportsPage() {
   }, [effectiveFinancialYear]);
   const mmgFilteredFiles = filterFilesByCategory(
     filterFilesByReceivedDateRange(
-      filterMmgFilesByDivision(mmgFiles, activeDivision),
+      filterMmgFilesByDivision(mmgFiles, activeDivision).filter(fileMatchesActiveFileYear),
       activeReportScopeDateRange,
     ),
     selectedFileCategories,
@@ -778,8 +829,10 @@ function ReportsPage() {
   const mmgPreviousFilteredFiles = filterFilesByCategory(
     filterFilesByReceivedDateRange(
       filterMmgFilesByDivision(
-        mmgPreviousFiles.filter((file) =>
-          isPreviousFinancialYearFile(file, effectiveFinancialYear),
+        mmgPreviousFiles.filter(
+          (file) =>
+            isPreviousFinancialYearFile(file, effectiveFinancialYear) &&
+            fileMatchesActiveFileYear(file),
         ),
         activeDivision,
       ),
@@ -1094,7 +1147,7 @@ function ReportsPage() {
       .finally(() => setCashOutGoPlanSaving(false));
   };
   const monitoringSourceFiles = filterFilesByCategory(
-    filterMmgFilesByDivision(mmgFiles, activeDivision),
+    filterMmgFilesByDivision(mmgFiles, activeDivision).filter(fileMatchesActiveFileYear),
     selectedFileCategories,
   );
   const pendingLiabilityAgeingRows = useMemo(
@@ -1322,6 +1375,7 @@ function ReportsPage() {
         ),
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         selectedYear: getCashOutgoSearchYear(mode),
       },
     });
@@ -1346,6 +1400,7 @@ function ReportsPage() {
         ),
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1356,6 +1411,7 @@ function ReportsPage() {
         dashboardFilter,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1366,6 +1422,7 @@ function ReportsPage() {
         dashboardFilter: getDelayStatusDashboardFilter(delayStatusThresholdDays, milestoneKey),
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1376,6 +1433,7 @@ function ReportsPage() {
         dashboardFilter: `biddingDelay:${delayStatusThresholdDays}:${breakupKey}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1412,6 +1470,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         focusSection: "Supply order and payment",
         focusTarget: rows[0]?.sourceFocusTarget || getFallbackCashOutGoPlanFocusTarget(rows[0]),
         focusTargets: serializeCashOutGoPlanFocusTargets(rows),
@@ -1479,6 +1538,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1490,6 +1550,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${row.fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
       },
     });
   };
@@ -1502,6 +1563,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
       },
@@ -1519,6 +1581,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         selectedYear: settings.selectedYear,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...sourceFocus,
         focusTargets: serializeMmgSummaryFocusTargets(row.focusTargets),
       },
@@ -1548,6 +1611,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         focusTargets: String(row.focusTargets ?? "") || undefined,
@@ -1614,11 +1678,20 @@ function ReportsPage() {
         </aside>
         <div className="min-w-0 space-y-4">
           <div className="rounded-md border border-border bg-card p-3 shadow-[var(--shadow-card)]">
-            <FileCategoryFilter
-              selectedCategories={selectedFileCategories}
-              options={visibleFileCategoryOptions}
-              onChange={toggleFileCategory}
-            />
+            <div className="flex flex-wrap items-end gap-3">
+              <FileYearFilter
+                value={activeFileYear}
+                options={fileYearOptions}
+                locked={fileYearLocked}
+                onChange={updateFileYearSelection}
+                onLockToggle={toggleFileYearLock}
+              />
+              <FileCategoryFilter
+                selectedCategories={selectedFileCategories}
+                options={visibleFileCategoryOptions}
+                onChange={toggleFileCategory}
+              />
+            </div>
           </div>
           {reportsError ||
           (reportsLoading && !hasLoadedReports) ||
@@ -5461,6 +5534,49 @@ function FileCategoryFilter({
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+function FileYearFilter({
+  value,
+  options,
+  locked,
+  onChange,
+  onLockToggle,
+}: {
+  value: string;
+  options: string[];
+  locked: boolean;
+  onChange: (year: string) => void;
+  onLockToggle: () => void;
+}) {
+  return (
+    <div className="flex items-end gap-1.5">
+      <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
+        <span>File year</span>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        >
+          <option value="all">All file years</option>
+          {options.map((year) => (
+            <option key={year} value={year}>
+              {year}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        onClick={onLockToggle}
+        className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent"
+        title={locked ? "Unlock file year" : "Lock file year"}
+        aria-label={locked ? "Unlock file year" : "Lock file year"}
+      >
+        {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
+      </button>
     </div>
   );
 }

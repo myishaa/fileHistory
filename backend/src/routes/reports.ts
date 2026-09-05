@@ -1605,6 +1605,7 @@ function getReportWhereSql({
   scopeSql,
   scopeValues,
   selectedYear,
+  fileYear,
   currentFinancialYear,
   division,
   fileCategories,
@@ -1612,6 +1613,7 @@ function getReportWhereSql({
   scopeSql: string;
   scopeValues: unknown[];
   selectedYear: string | undefined;
+  fileYear?: string | undefined;
   currentFinancialYear?: string;
   division: string;
   fileCategories: FileCategoryKey[];
@@ -1625,6 +1627,10 @@ function getReportWhereSql({
     currentFinancialYear,
   );
   if (selectedYearCondition) conditions.push(selectedYearCondition);
+  if (fileYear?.trim() && fileYear.trim() !== "all") {
+    const placeholder = addValue(values, fileYear.trim());
+    conditions.push(`f.year = ${placeholder}::text`);
+  }
   if (division !== "all") {
     const placeholder = addValue(values, division.toLowerCase());
     conditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
@@ -4250,6 +4256,7 @@ reportsRouter.get(
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
     const division = readString(request.query.division) ?? "all";
     const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
@@ -4269,6 +4276,7 @@ reportsRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
+      fileYear,
       currentFinancialYear: settings.financialYear,
       division,
       fileCategories,
@@ -4277,6 +4285,7 @@ reportsRouter.get(
       version: 2,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
+      fileYear,
       division,
       fileCategories,
       delayDays,
@@ -4294,9 +4303,9 @@ reportsRouter.get(
         combinedScopeSql ? `where ${combinedScopeSql}` : "",
         scope.values,
       );
-      const selectedYearFiles = files.filter((file) =>
-        isFileVisibleForSelectedYear(file, selectedYear, settings.financialYear),
-      );
+      const selectedYearFiles = files
+        .filter((file) => isFileVisibleForSelectedYear(file, selectedYear, settings.financialYear))
+        .filter((file) => !fileYear || fileYear === "all" || file.year === fileYear);
       const categoryFiles = selectedYearFiles.filter((file) =>
         matchesFileCategorySelection(file, fileCategories),
       );

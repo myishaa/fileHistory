@@ -1,5 +1,6 @@
 const API_BASE_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:3000";
 const selectedYear = process.env.AUDIT_SELECTED_YEAR ?? "__all_active_files__";
+const fileYear = process.env.AUDIT_FILE_YEAR ?? "all";
 const username = process.env.AUDIT_USERNAME ?? "ovais";
 const password = process.env.AUDIT_PASSWORD ?? "ovais123";
 const maxPages = Number.parseInt(process.env.AUDIT_MAX_PAGES ?? "20", 10);
@@ -433,6 +434,7 @@ async function searchResult(filter, token, division) {
     page: "1",
     pageSize: "500",
   });
+  if (fileYear && fileYear !== "all") params.set("fileYear", fileYear);
   if (division && division !== "all") params.set("divisionFilter", division);
   const result = await api(`/api/files/search?${params.toString()}`, token);
   const total = n(result.total);
@@ -457,6 +459,7 @@ async function main() {
       division: "all",
       analyticsDivision: "all",
     });
+    if (fileYear && fileYear !== "all") params.set("fileYear", fileYear);
     const { summary } = await api(`/api/dashboard/summary?${params.toString()}`, token);
     const status3Params = new URLSearchParams({
       selectedYear,
@@ -466,6 +469,7 @@ async function main() {
       expectedCashOutgoDays: "10",
       delayMilestone: "all",
     });
+    if (fileYear && fileYear !== "all") status3Params.set("fileYear", fileYear);
     const status3Payload = await api(`/api/reports/summary?${status3Params.toString()}`, token);
     const counters = [
       ...collectSnapshotCounters(summary),
@@ -487,6 +491,23 @@ async function main() {
           ...counter,
           searchTotal: result.total,
           examples: yearLeaks,
+          truncated: result.truncated,
+        });
+        continue;
+      }
+      const fileYearLeaks =
+        fileYear && fileYear !== "all"
+          ? result.files
+              .filter((file) => file.year !== fileYear)
+              .map((file) => file.uniqueCode ?? file.fileNo ?? file.id)
+              .slice(0, 20)
+          : [];
+      if (fileYearLeaks.length) {
+        issues.push({
+          type: "fileYearLeak",
+          ...counter,
+          searchTotal: result.total,
+          examples: fileYearLeaks,
           truncated: result.truncated,
         });
         continue;
@@ -529,7 +550,13 @@ async function main() {
     }
     console.log(
       JSON.stringify(
-        { selectedYear, checked: counters.length, issues, ...(includeNotes ? { notes } : {}) },
+        {
+          selectedYear,
+          fileYear,
+          checked: counters.length,
+          issues,
+          ...(includeNotes ? { notes } : {}),
+        },
         null,
         2,
       ),

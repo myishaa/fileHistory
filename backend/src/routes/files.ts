@@ -1550,6 +1550,7 @@ function readAnalyticsNameList(value: unknown) {
 function readSearchParams(query: Record<string, unknown>): FileSearchParams {
   return {
     yearFilter: readQueryString(query.yearFilter),
+    fileYear: readQueryString(query.fileYear),
     indentor: readQueryString(query.indentor),
     divisionFilter: readQueryString(query.divisionFilter),
     valueFrom: readQueryString(query.valueFrom),
@@ -6666,6 +6667,10 @@ function buildSearchSql(
   if (params.yearFilter?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.yearFilter));
     conditions.push(`lower(coalesce(f.year, '')) like ${placeholder}`);
+  }
+  if (params.fileYear?.trim() && params.fileYear.trim() !== "all") {
+    const placeholder = addSqlValue(values, params.fileYear.trim());
+    conditions.push(`f.year = ${placeholder}::text`);
   }
   if (fileCategories) conditions.push(fileCategorySql(fileCategories));
   const dashboardFilter = params.dashboardFilter?.trim();

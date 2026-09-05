@@ -45,6 +45,7 @@ const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedFor
 
 export type FileSearchParams = {
   yearFilter?: string;
+  fileYear?: string;
   indentor?: string;
   divisionFilter?: string;
   valueFrom?: string;

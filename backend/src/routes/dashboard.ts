@@ -3318,6 +3318,7 @@ function getDashboardFileWhereSql({
   scopeSql,
   scopeValues,
   selectedYear,
+  fileYear,
   currentFinancialYear,
   activeDivision,
   activeAnalyticsDivision,
@@ -3326,6 +3327,7 @@ function getDashboardFileWhereSql({
   scopeSql: string;
   scopeValues: unknown[];
   selectedYear: string | undefined;
+  fileYear?: string | undefined;
   currentFinancialYear?: string;
   activeDivision: string;
   activeAnalyticsDivision: string;
@@ -3341,6 +3343,11 @@ function getDashboardFileWhereSql({
     currentFinancialYear,
   );
   if (selectedYearCondition) conditions.push(selectedYearCondition);
+
+  if (fileYear?.trim() && fileYear.trim() !== "all") {
+    const placeholder = addValue(values, fileYear.trim());
+    conditions.push(`f.year = ${placeholder}::text`);
+  }
 
   if (activeDivision !== "all") {
     const divisionNames = Array.from(
@@ -7680,6 +7687,7 @@ dashboardRouter.get(
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
     const divisionYear =
       selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
@@ -7701,6 +7709,7 @@ dashboardRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
+      fileYear,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7796,6 +7805,7 @@ dashboardRouter.get(
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
     const divisionYear =
       selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
@@ -7817,6 +7827,7 @@ dashboardRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
+      fileYear,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7840,6 +7851,7 @@ dashboardRouter.get(
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
     const divisionYear =
       selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
@@ -7864,6 +7876,7 @@ dashboardRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
+      fileYear,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7873,6 +7886,7 @@ dashboardRouter.get(
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear: undefined,
+      fileYear,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7894,6 +7908,7 @@ dashboardRouter.get(
       version: 5,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
+      fileYear,
       divisionYear,
       activeDivision,
       activeAnalyticsDivision,

@@ -85,6 +85,7 @@ export const Route = createFileRoute("/search")({
       dashboardFilter?: string;
       division?: string;
       selectedYear?: string;
+      fileYear?: string;
       fileCategories?: string;
       analyticsType?: "firm" | "indentor";
       analyticsNames?: string;
@@ -98,6 +99,7 @@ export const Route = createFileRoute("/search")({
       validated.dashboardFilter = search.dashboardFilter;
     if (typeof search.division === "string") validated.division = search.division;
     if (typeof search.selectedYear === "string") validated.selectedYear = search.selectedYear;
+    if (typeof search.fileYear === "string") validated.fileYear = search.fileYear;
     if (typeof search.fileCategories === "string") validated.fileCategories = search.fileCategories;
     if (search.analyticsType === "firm" || search.analyticsType === "indentor") {
       validated.analyticsType = search.analyticsType;
@@ -1347,6 +1349,7 @@ function SearchPage() {
     addFilterChip("Filled", label);
   });
   if (search.dashboardFilter) addFilterChip("Dashboard filter");
+  if (search.fileYear && search.fileYear !== "all") addFilterChip("File year", search.fileYear);
   if (search.fileCategories) addFilterChip("Category filter");
   if (search.analyticsNames) addFilterChip("Analytics selection");
   const activeFilterCount = activeFilterChips.length;
@@ -1438,6 +1441,7 @@ function SearchPage() {
     freeDate ||
     requiredFilledColumnKeys.length > 0 ||
     search.dashboardFilter ||
+    search.fileYear ||
     search.fileCategories ||
     search.analyticsNames;
 
@@ -1528,6 +1532,7 @@ function SearchPage() {
     appendSearchParam(params, "freeText", freeText);
     appendSearchParam(params, "freeDate", freeDate);
     appendSearchParam(params, "selectedYear", search.selectedYear ?? settings.selectedYear);
+    appendSearchParam(params, "fileYear", search.fileYear);
     appendSearchParam(params, "dashboardFilter", search.dashboardFilter);
     appendSearchParam(params, "fileCategories", search.fileCategories);
     appendSearchParam(params, "analyticsType", search.analyticsType);
@@ -1546,6 +1551,7 @@ function SearchPage() {
     visibleRequiredFilledColumnSignature,
     yearFilter,
     search.dashboardFilter,
+    search.fileYear,
     search.fileCategories,
     indentor,
     divisionFilter,

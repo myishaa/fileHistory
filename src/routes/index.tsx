@@ -62,7 +62,7 @@ import {
 import { isCancelledFile } from "@/lib/year-filter";
 import { formatIsoDateForDisplay } from "@/components/date-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ArrowRight, FileSpreadsheet, FileText, Info, Search } from "lucide-react";
+import { ArrowRight, FileSpreadsheet, FileText, Info, Lock, Search, Unlock } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
@@ -418,6 +418,7 @@ async function downloadDashboardStatusFiles({
   dashboardFilter,
   division,
   selectedYear,
+  fileYear,
   fileCategories,
   format,
   title,
@@ -425,6 +426,7 @@ async function downloadDashboardStatusFiles({
   dashboardFilter: string;
   division: string;
   selectedYear: string;
+  fileYear?: string;
   fileCategories: FileCategoryKey[];
   format: "excel" | "pdf";
   title: string;
@@ -436,6 +438,7 @@ async function downloadDashboardStatusFiles({
     query: {
       dashboardFilter,
       selectedYear,
+      ...(fileYear && fileYear !== "all" ? { fileYear } : {}),
       fileCategories: serializeFileCategories(fileCategories),
       ...(division === "all" ? {} : { divisionFilter: division }),
     },
@@ -625,6 +628,8 @@ export function Dashboard() {
   const [selectedCncFiscalYear, setSelectedCncFiscalYear] = useState("");
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
+  const [selectedFileYear, setSelectedFileYear] = useState("all");
+  const [fileYearLocked, setFileYearLocked] = useState(false);
   const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
     settings.liveStatusLockedFields,
   );
@@ -704,10 +709,58 @@ export function Dashboard() {
   const activeAnalyticsDivision = selectedAnalyticsDivisionIsAccessible
     ? selectedAnalyticsDivision
     : "all";
+  const fileYearOptions = useMemo(
+    () => Array.from(new Set(settings.financialYears ?? [])).filter(Boolean),
+    [settings.financialYears],
+  );
+  const fileYearOptionsKey = fileYearOptions.join("|");
+  const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const activeFileYear =
+    selectedFileYear === "all" || fileYearOptions.includes(selectedFileYear)
+      ? selectedFileYear
+      : "all";
+  useEffect(() => {
+    if (typeof window === "undefined" || !fileYearOptions.length) return;
+    const saved = window.localStorage.getItem(fileYearFilterStorageKey);
+    if (!saved) {
+      setFileYearLocked(false);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      const locked = parsed?.locked === true;
+      const year = typeof parsed?.year === "string" ? parsed.year : "all";
+      setFileYearLocked(locked);
+      if (locked) {
+        setSelectedFileYear(year === "all" || fileYearOptions.includes(year) ? year : "all");
+      }
+    } catch {
+      setFileYearLocked(false);
+    }
+  }, [fileYearFilterStorageKey, fileYearOptionsKey, fileYearOptions.length]);
+  const updateFileYearSelection = (year: string) => {
+    setSelectedFileYear(year);
+    if (fileYearLocked && typeof window !== "undefined") {
+      window.localStorage.setItem(fileYearFilterStorageKey, JSON.stringify({ locked: true, year }));
+    }
+  };
+  const toggleFileYearLock = () => {
+    const nextLocked = !fileYearLocked;
+    setFileYearLocked(nextLocked);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        fileYearFilterStorageKey,
+        JSON.stringify({ locked: nextLocked, year: activeFileYear }),
+      );
+    }
+  };
   const dashboardFiles = useMemo(
     () =>
-      activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision),
-    [activeDivision, files],
+      (activeDivision === "all"
+        ? files
+        : files.filter((file) => file.division === activeDivision)
+      ).filter((file) => activeFileYear === "all" || file.year === activeFileYear),
+    [activeDivision, activeFileYear, files],
   );
   const categoryFilteredDashboardFiles = useMemo(
     () => filterFilesByCategory(dashboardFiles, selectedFileCategories),
@@ -729,10 +782,20 @@ export function Dashboard() {
       activeAnalyticsDivision === "all"
         ? activeDashboardStatusFiles
         : filterFilesByCategory(
-            files.filter((file) => file.division === activeAnalyticsDivision),
+            files.filter(
+              (file) =>
+                file.division === activeAnalyticsDivision &&
+                (activeFileYear === "all" || file.year === activeFileYear),
+            ),
             selectedFileCategories,
           ).filter((file) => !isCancelledFile(file)),
-    [activeAnalyticsDivision, activeDashboardStatusFiles, files, selectedFileCategories],
+    [
+      activeAnalyticsDivision,
+      activeDashboardStatusFiles,
+      activeFileYear,
+      files,
+      selectedFileCategories,
+    ],
   );
   const filteredAnalyticsDivisions = useMemo(
     () =>
@@ -748,6 +811,7 @@ export function Dashboard() {
     params.set("division", activeDivision);
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     if (selectedLiveMilestones) {
       params.set("liveMilestones", selectedLiveMilestones.join(","));
@@ -756,6 +820,7 @@ export function Dashboard() {
   }, [
     activeDivision,
     activeAnalyticsDivision,
+    activeFileYear,
     selectedFileCategories,
     selectedLiveMilestones,
     settings.selectedYear,
@@ -768,16 +833,18 @@ export function Dashboard() {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     params.set("delayDays", "5");
     params.set("expectedCashOutgoDays", "10");
     params.set("delayMilestone", "all");
     return params.toString();
-  }, [activeDivision, selectedFileCategories, settings.selectedYear]);
+  }, [activeDivision, activeFileYear, selectedFileCategories, settings.selectedYear]);
   const analyticsDelayQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     params.set("delayDays", analyticsDelayDays || "0");
     params.set("expectedCashOutgoDays", "0");
@@ -785,6 +852,7 @@ export function Dashboard() {
     return params.toString();
   }, [
     activeAnalyticsDivision,
+    activeFileYear,
     analyticsDelayDays,
     analyticsDelayMilestoneKey,
     selectedFileCategories,
@@ -795,9 +863,16 @@ export function Dashboard() {
     params.set("division", activeDivision);
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     return params.toString();
-  }, [activeAnalyticsDivision, activeDivision, selectedFileCategories, settings.selectedYear]);
+  }, [
+    activeAnalyticsDivision,
+    activeDivision,
+    activeFileYear,
+    selectedFileCategories,
+    settings.selectedYear,
+  ]);
   useEffect(() => {
     const controller = new AbortController();
     const delay = hasLoadedDashboardSummaryRef.current ? 180 : 0;
@@ -1192,10 +1267,19 @@ export function Dashboard() {
       activeDivision === "all"
         ? status4SourceFiles
         : status4SourceFiles.filter((file) => file.division === activeDivision);
-    return filterFilesByCategory(divisionScopedFiles, selectedFileCategories).filter(
-      (file) => !isCancelledFile(file),
-    );
-  }, [activeDashboardStatusFiles, activeDivision, selectedFileCategories, status4SourceFiles]);
+    return filterFilesByCategory(
+      divisionScopedFiles.filter(
+        (file) => activeFileYear === "all" || file.year === activeFileYear,
+      ),
+      selectedFileCategories,
+    ).filter((file) => !isCancelledFile(file));
+  }, [
+    activeDashboardStatusFiles,
+    activeDivision,
+    activeFileYear,
+    selectedFileCategories,
+    status4SourceFiles,
+  ]);
   const miscellaneousCounts = dashboardSummary?.miscellaneousCounts ??
     localMiscellaneousCounts ?? {
       liveFiles: 0,
@@ -1242,11 +1326,15 @@ export function Dashboard() {
       activeDivision === "all"
         ? milestoneClearingSourceFiles
         : milestoneClearingSourceFiles.filter((file) => file.division === activeDivision);
-    return filterFilesByCategory(divisionScopedFiles, selectedFileCategories).filter(
-      (file) => !isCancelledFile(file),
-    );
+    return filterFilesByCategory(
+      divisionScopedFiles.filter(
+        (file) => activeFileYear === "all" || file.year === activeFileYear,
+      ),
+      selectedFileCategories,
+    ).filter((file) => !isCancelledFile(file));
   }, [
     activeDivision,
+    activeFileYear,
     filteredAnalyticsFiles,
     milestoneClearingSourceFiles,
     selectedFileCategories,
@@ -1937,6 +2025,7 @@ export function Dashboard() {
       search: {
         dashboardFilter,
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath(getDashboardDrillPath(activeDashboardTab, dashboardFilter)),
@@ -1954,6 +2043,7 @@ export function Dashboard() {
       search: {
         dashboardFilter,
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         division,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath([
@@ -1974,6 +2064,7 @@ export function Dashboard() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         drillPath: serializeDrillPath(getStatus4DrillPath(filter)),
       },
     });
@@ -1987,6 +2078,7 @@ export function Dashboard() {
         division: activeAnalyticsDivision === "all" ? undefined : activeAnalyticsDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         analyticsType: analyticsTransferType,
         analyticsNames: JSON.stringify(
           displayedAnalyticsPanel.rows
@@ -2016,6 +2108,7 @@ export function Dashboard() {
           (activeAnalyticsDivision === "all" ? undefined : activeAnalyticsDivision),
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         analyticsType: target.analyticsType,
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
@@ -2202,6 +2295,7 @@ export function Dashboard() {
         dashboardFilter,
         division: activeDivision,
         selectedYear: settings.selectedYear,
+        fileYear: activeFileYear,
         fileCategories: selectedFileCategories,
         format: statusActionMode === "excel" ? "excel" : "pdf",
         title,
@@ -2256,6 +2350,32 @@ export function Dashboard() {
             ))}
           </select>
         </label>
+        <div className="flex items-end gap-1.5">
+          <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
+            <span>File year</span>
+            <select
+              value={activeFileYear}
+              onChange={(event) => updateFileYearSelection(event.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+            >
+              <option value="all">All file years</option>
+              {fileYearOptions.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={toggleFileYearLock}
+            className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent"
+            title={fileYearLocked ? "Unlock file year" : "Lock file year"}
+            aria-label={fileYearLocked ? "Unlock file year" : "Lock file year"}
+          >
+            {fileYearLocked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
+          </button>
+        </div>
         <FileCategoryFilter
           selectedCategories={selectedFileCategories}
           options={visibleFileCategoryOptions}
