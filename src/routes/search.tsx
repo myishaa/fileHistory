@@ -4986,8 +4986,7 @@ function isJobCompletionPeriodOver(file: FileRecord) {
 }
 
 function isPendingDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
-  const dueDate = getDeliveryDueDate(order);
-  return isDueDeliveryOrder(file, order) && hasFilledString(dueDate) && !isDateBeforeToday(dueDate);
+  return isDueDeliveryOrder(file, order) && isCurrentDeliveryPeriodOrder(order);
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {

@@ -1953,6 +1953,7 @@ export function Dashboard() {
       to: "/search",
       search: {
         dashboardFilter,
+        selectedYear: settings.selectedYear,
         division,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath([
@@ -3405,20 +3406,22 @@ function SummaryMetric({
 
 function FloatingHelp({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <Info className="size-3.5" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
-        {children}
-      </TooltipContent>
-    </Tooltip>
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Info className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
+          {children}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -4702,7 +4705,9 @@ function Status3TableSection({
 
               return (
                 <tr key={row.milestone} className={rowClass}>
-                  <td className={cellClass}>{row.milestone}</td>
+                  <td className={cellClass}>
+                    <Status3MilestoneNameCell name={row.milestone} />
+                  </td>
                   {group.columns.map((column) => (
                     <td key={column} className="px-3 py-2.5 text-right tabular-nums">
                       <DashboardStatusSummaryValue
@@ -4753,6 +4758,30 @@ function DashboardStatusSummaryValue({
       {value}
     </button>
   );
+}
+
+function Status3MilestoneNameCell({ name }: { name: string }) {
+  const helper = getStatus3MilestoneHelper(name);
+  if (!helper) return name;
+  return (
+    <span className="inline-flex max-w-[16rem] items-center gap-1.5 align-middle">
+      <span className="truncate">{name}</span>
+      <FloatingHelp label={`${name} status logic`}>{helper}</FloatingHelp>
+    </span>
+  );
+}
+
+function getStatus3MilestoneHelper(name: string) {
+  if (name === "Delivery Period") {
+    return "Includes all file types after S.O. DP is entered. Valid means current/future DP, Expired means DP has passed, and Extended means revised DP is active. For IR No or contract files, completion is checked through Job Completion.";
+  }
+  if (name === "Delivery") {
+    return "Physical delivery/inspection only. Includes Goods & Services where IR is Yes. Excludes Goods & Services with IR No and contract files such as AMC, MPC, CARS, CAPSI, and O&M.";
+  }
+  if (name === "Job Completion") {
+    return "Non-delivery inspection workflow. Includes Goods & Services where IR is No and contract files such as AMC, MPC, CARS, CAPSI, and O&M. Due starts after the DP has passed and job completion is still blank.";
+  }
+  return undefined;
 }
 
 function testIdSlug(value: string) {
@@ -5097,18 +5126,33 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
       (normalized === "financialsanction"
         ? hasFilledString(order.financialSanctionDate) ||
           order.completedMilestones?.some((item) => normalizeMilestoneName(item) === normalized)
-        : normalized === "billsentforpayment"
-          ? !hasOpenBillReturn(order) &&
-            (hasFilledString(order.billSentForPaymentDate) ||
-              order.completedMilestones?.some(
-                (item) => normalizeMilestoneName(item) === normalized,
-              ))
-          : normalized === "billreturnedforcorrection"
-            ? hasCompletedBillReturn(order)
-            : order.completedMilestones?.some(
-                (item) => normalizeMilestoneName(item) === normalized,
-              )),
+        : isDateCompletedPaymentMilestoneOrder(order, normalized)
+          ? true
+          : normalized === "billsentforpayment"
+            ? !hasOpenBillReturn(order) &&
+              (hasFilledString(order.billSentForPaymentDate) ||
+                order.completedMilestones?.some(
+                  (item) => normalizeMilestoneName(item) === normalized,
+                ))
+            : normalized === "billreturnedforcorrection"
+              ? hasCompletedBillReturn(order)
+              : order.completedMilestones?.some(
+                  (item) => normalizeMilestoneName(item) === normalized,
+                )),
   );
+}
+
+function isDateCompletedPaymentMilestoneOrder(
+  order: SupplyOrderDetail,
+  normalizedMilestone: string,
+) {
+  if (normalizedMilestone === "irpreparation") return hasFilledString(order.irPreparationDate);
+  if (normalizedMilestone === "irreceipt") return hasFilledString(order.irReceiptDate);
+  if (normalizedMilestone === "billpreparation") return hasFilledString(order.billPreparationDate);
+  if (normalizedMilestone === "billsentforpayment") {
+    return !hasOpenBillReturn(order) && hasFilledString(order.billSentForPaymentDate);
+  }
+  return false;
 }
 
 function hasCompletedBillSentForPaymentOrder(file: FileRecord) {
@@ -13014,8 +13058,7 @@ function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPendingDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
-  const dueDate = getDeliveryDueDate(order);
-  return isDueDeliveryOrder(file, order) && hasFilledString(dueDate) && !isDateBeforeToday(dueDate);
+  return isDueDeliveryOrder(file, order) && isCurrentDeliveryPeriodOrder(order);
 }
 
 function getDeliveryDueDate(order: SupplyOrderDetail) {

@@ -2531,8 +2531,15 @@ function liveSupplyOrderSql() {
 }
 
 function paymentPendingSql() {
-  const nonDeliveryFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`;
+  const contractFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`;
+  const goodsServicesIrNo = `(not ${isYesSql("f.ir")} and not ${contractFileType})`;
+  const nonDeliveryFileType = `(${goodsServicesIrNo} or ${contractFileType})`;
   const activeOrder = `not ${isYesSql("so.so_cancelled")}`;
+  const childDpDate = `coalesce(so.revised_dp, so.dp_date)`;
+  const stageDpDate = `coalesce(
+    nullif(payment_stage.stage ->> 'revisedDp', '')::date,
+    nullif(payment_stage.stage ->> 'dpDate', '')::date
+  )`;
   const childDeliveryCompletion = `(not ${nonDeliveryFileType} and ${hasTextSql("so.material_receipt_date")})`;
   const stageDeliveryCompletion = `(not ${nonDeliveryFileType} and coalesce(payment_stage.stage ->> 'materialReceiptDate', '') <> '')`;
   const childPaymentStarted = `(${hasTextSql("so.bill_preparation_date")}
@@ -2541,9 +2548,11 @@ function paymentPendingSql() {
 		       or coalesce(payment_stage.stage ->> 'billSentForPaymentDate', '') <> '')`;
   const stageJobCompletionDone = `coalesce(payment_stage.stage ->> 'jobCompletionDate', '') <> ''`;
   const childJobCompletionDone = completedOrderMilestoneSql("so", "jobcompletion");
+  const childNonInspectionPaymentDue = `((${contractFileType} and ${childDpDate} is not null) or (${goodsServicesIrNo} and ${childJobCompletionDone}))`;
+  const stageNonInspectionPaymentDue = `((${contractFileType} and ${stageDpDate} is not null) or (${goodsServicesIrNo} and ${stageJobCompletionDone}))`;
   const childPaymentPending = `${hasTextSql("so.so_date")}
      and (${childPaymentStarted}
-		       or (${nonDeliveryFileType} and ${childJobCompletionDone})
+		       or ${childNonInspectionPaymentDue}
 	       or (not ${nonDeliveryFileType} and ${childDeliveryCompletion}))
      and not ${hasTextSql("so.payment_date")}
      and ${activeOrder}`;
@@ -2555,7 +2564,7 @@ function paymentPendingSql() {
        select 1
        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as payment_stage(stage)
        where (${stagePaymentStarted}
-	         or (${nonDeliveryFileType} and ${stageJobCompletionDone})
+	         or ${stageNonInspectionPaymentDue}
          or (not ${nonDeliveryFileType} and ${stageDeliveryCompletion})
 	       )
 	       and coalesce(payment_stage.stage ->> 'paymentDate', '') = ''
@@ -2602,6 +2611,10 @@ function deliveryJobFilterSql(state: "completed" | "pending" | "overdue") {
     nullif(delivery_stage.stage ->> 'revisedDp', '')::date,
     nullif(delivery_stage.stage ->> 'dpDate', '')::date
   )`;
+  const stageStartDate = `coalesce(
+    nullif(delivery_stage.stage ->> 'deliveryPeriodStartDate', '')::date,
+    so.so_date
+  )`;
   const orderDpDate = effectiveDpDateSql("so");
   const stageCompleted = `(not ${nonDeliveryFileType}
     and coalesce(delivery_stage.stage ->> 'materialReceiptDate', '') <> '')`;
@@ -2610,6 +2623,7 @@ function deliveryJobFilterSql(state: "completed" | "pending" | "overdue") {
   const stagePeriod =
     state === "pending"
       ? `${stageDpDate} is not null
+        and ${stageStartDate} <= current_date
         and ${stageDpDate} >= current_date`
       : `${stageDpDate} is not null and ${stageDpDate} < current_date`;
   const orderPeriod =
@@ -3657,7 +3671,11 @@ function milestonePreviousStageSql(milestone: (typeof statusSummaryMilestones)[n
   }
   if (milestone.key === "financialSanction") return financialSanctionPreviousStageSql();
   const eligible = milestoneEligibleSql(milestone);
-  const complete = milestoneCompleteSql(milestone);
+  const complete =
+    isSupplyOrderDrivenMilestoneName(milestone.label) &&
+    !["financialsanction", "supplyorder"].includes(normalizeMilestoneName(milestone.label))
+      ? supplyOrderDrivenCompletedMilestoneConditionSql(normalizeMilestoneName(milestone.label))
+      : milestoneCompleteSql(milestone);
   const pending = milestonePendingSql(milestone);
   const reviewed =
     "reviewedColumn" in milestone && milestone.reviewedColumn
@@ -4048,7 +4066,9 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
 
 function returnedBillDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string) {
   if (milestoneKey !== "all" && milestoneKey !== "billReturnedForCorrection") return "false";
-  const openReturnDateSql = (cyclesExpression: string) => `(select min(nullif(cycle ->> 'returnedDate', '')::date)
+  const openReturnDateSql = (
+    cyclesExpression: string,
+  ) => `(select min(nullif(cycle ->> 'returnedDate', '')::date)
     from jsonb_array_elements(coalesce(${cyclesExpression}, '[]'::jsonb)) as cycle
     where coalesce(cycle ->> 'returnedDate', '') <> ''
       and coalesce(cycle ->> 'resubmittedDate', '') = '')`;
@@ -4343,6 +4363,10 @@ function statusSummaryFilterSql(filter: string) {
     if (stage === "Total" || stage === milestone.totalLabel) {
       return `${base} and ((${completed}) or (${pending}))`;
     }
+    if (stage === "At previous stage" || stage === "At Previous Stage") {
+      return `${base} and ${milestonePreviousStageSql(milestone)}`;
+    }
+    return "false";
   }
 
   const applies = statusAppliesSql(milestone);
@@ -4488,7 +4512,9 @@ function billReturnStatusFilterSql(state: "any" | "pending" | "resubmitted" | "p
   )}`;
 }
 
-function supplementaryBillStatusSql(state: "submitted" | "returned" | "resubmitted" | "paid") {
+function supplementaryBillStatusSql(
+  state: "any" | "submitted" | "returned" | "resubmitted" | "paid" | "returnPaid",
+) {
   const hasSupplementaryBillData = `(
     ${hasTextSql("supplementary_bill.bill ->> 'billNo'")}
     or ${hasTextSql("supplementary_bill.bill ->> 'billAmountCapital'")}
@@ -4521,15 +4547,19 @@ function supplementaryBillStatusSql(state: "submitted" | "returned" | "resubmitt
       and ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
   )`;
   const stateCondition =
-    state === "paid"
-      ? hasTextSql("supplementary_bill.bill ->> 'paymentDate'")
-      : state === "returned"
-        ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${openReturn}`
-        : state === "resubmitted"
-          ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+    state === "any"
+      ? hasSupplementaryBillData
+      : state === "paid"
+        ? hasTextSql("supplementary_bill.bill ->> 'paymentDate'")
+        : state === "returnPaid"
+          ? `${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${completedReturn}`
+          : state === "returned"
+            ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${openReturn}`
+            : state === "resubmitted"
+              ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
              and not ${openReturn}
              and ${completedReturn}`
-          : `${hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'")}
+              : `${hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'")}
              and not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
              and not ${openReturn}
              and not ${completedReturn}`;
@@ -5659,9 +5689,11 @@ function dashboardFilterSql(
   }
   if (filter === "supplementaryBill:submitted" || filter === "supplementaryBill:pending")
     return supplementaryBillStatusSql("submitted");
+  if (filter === "supplementaryBill:any") return supplementaryBillStatusSql("any");
   if (filter === "supplementaryBill:returned") return supplementaryBillStatusSql("returned");
   if (filter === "supplementaryBill:resubmitted") return supplementaryBillStatusSql("resubmitted");
   if (filter === "supplementaryBill:paid") return supplementaryBillStatusSql("paid");
+  if (filter === "supplementaryBill:returnPaid") return supplementaryBillStatusSql("returnPaid");
   if (filter.startsWith("biddingDelay:")) {
     const [, rawDays = "0", breakupKey = ""] = filter.split(":");
     const thresholdDays = Number.parseInt(rawDays, 10);

@@ -885,28 +885,34 @@ function getExpectedCashOutgoByBillPreparationRows(
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
-	files.forEach((file) => {
-	  if (isYes(file.demandCancelled)) return;
-	  filePaymentOrders(file).forEach((order) => {
-	    const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
-	    if (!isPaymentOrderActive(file, order)) return;
-	    const reportDate = getReceiptPendingBillReportDate(file, order);
-	    if (!isAdvancePayment && !hasFilledString(reportDate)) return;
-	    if (!hasFilledString(order.billPreparationDate)) return;
-	    if (asOfDate) {
-	      if (!isAdvancePayment && !isOnOrBefore(reportDate, asOfDate)) return;
-	      if (!isOnOrBefore(order.billPreparationDate, asOfDate)) return;
-	      if (!isMissingOrAfter(order.billSentForPaymentDate, asOfDate) && !hasOpenBillReturn(order)) {
-	        return;
-	      }
-	      if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
-	    } else if (dateRange) {
-	      if (!isAdvancePayment && !isOnOrBefore(reportDate, dateRange.toDate)) return;
-	      if (!isOnOrBefore(order.billPreparationDate, dateRange.toDate)) return;
-	      if (!isMissingOrAfter(order.billSentForPaymentDate, dateRange.toDate) && !hasOpenBillReturn(order)) {
-	        return;
-	      }
-	      if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
+  files.forEach((file) => {
+    if (isYes(file.demandCancelled)) return;
+    filePaymentOrders(file).forEach((order) => {
+      const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
+      if (!isPaymentOrderActive(file, order)) return;
+      const reportDate = getReceiptPendingBillReportDate(file, order);
+      if (!isAdvancePayment && !hasFilledString(reportDate)) return;
+      if (!hasFilledString(order.billPreparationDate)) return;
+      if (asOfDate) {
+        if (!isAdvancePayment && !isOnOrBefore(reportDate, asOfDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, asOfDate)) return;
+        if (
+          !isMissingOrAfter(order.billSentForPaymentDate, asOfDate) &&
+          !hasOpenBillReturn(order)
+        ) {
+          return;
+        }
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else if (dateRange) {
+        if (!isAdvancePayment && !isOnOrBefore(reportDate, dateRange.toDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, dateRange.toDate)) return;
+        if (
+          !isMissingOrAfter(order.billSentForPaymentDate, dateRange.toDate) &&
+          !hasOpenBillReturn(order)
+        ) {
+          return;
+        }
+        if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
       } else if (hasFilledString(order.paymentDate)) {
         return;
       } else if (hasFilledString(order.billSentForPaymentDate) && !hasOpenBillReturn(order)) {
@@ -950,26 +956,26 @@ function getBillSentForPaymentRows(
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
-	files.forEach((file) => {
-	  if (isYes(file.demandCancelled)) return;
-	  filePaymentOrders(file).forEach((order) => {
-	    const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
-	    if (!isPaymentOrderActive(file, order)) return;
-	    const reportDate = getReceiptPendingBillReportDate(file, order);
-	    if (!isAdvancePayment && !hasFilledString(reportDate)) return;
-	    if (!hasFilledString(order.billPreparationDate)) return;
-	    if (!hasFilledString(order.billSentForPaymentDate)) return;
-	    if (hasOpenBillReturn(order)) return;
-	    if (asOfDate) {
-	      if (!isAdvancePayment && !isOnOrBefore(reportDate, asOfDate)) return;
-	      if (!isOnOrBefore(order.billPreparationDate, asOfDate)) return;
-	      if (!isOnOrBefore(order.billSentForPaymentDate, asOfDate)) return;
-	      if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
-	    } else if (dateRange) {
-	      if (!isAdvancePayment && !isOnOrBefore(reportDate, dateRange.toDate)) return;
-	      if (!isOnOrBefore(order.billPreparationDate, dateRange.toDate)) return;
-	      if (!isOnOrBefore(order.billSentForPaymentDate, dateRange.toDate)) return;
-	      if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
+  files.forEach((file) => {
+    if (isYes(file.demandCancelled)) return;
+    filePaymentOrders(file).forEach((order) => {
+      const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
+      if (!isPaymentOrderActive(file, order)) return;
+      const reportDate = getReceiptPendingBillReportDate(file, order);
+      if (!isAdvancePayment && !hasFilledString(reportDate)) return;
+      if (!hasFilledString(order.billPreparationDate)) return;
+      if (!hasFilledString(order.billSentForPaymentDate)) return;
+      if (hasOpenBillReturn(order)) return;
+      if (asOfDate) {
+        if (!isAdvancePayment && !isOnOrBefore(reportDate, asOfDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, asOfDate)) return;
+        if (!isOnOrBefore(order.billSentForPaymentDate, asOfDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, asOfDate)) return;
+      } else if (dateRange) {
+        if (!isAdvancePayment && !isOnOrBefore(reportDate, dateRange.toDate)) return;
+        if (!isOnOrBefore(order.billPreparationDate, dateRange.toDate)) return;
+        if (!isOnOrBefore(order.billSentForPaymentDate, dateRange.toDate)) return;
+        if (!isMissingOrAfter(order.paymentDate, dateRange.toDate)) return;
       } else if (hasFilledString(order.paymentDate)) {
         return;
       }
@@ -1167,10 +1173,14 @@ function getSupplementaryReturnedBillCashOutgoEventDate(
     .filter((cycle) => hasFilledString(cycle.returnedDate))
     .map((cycle) => cycle.returnedDate);
   const openReturnedDates = cycles
-    .filter((cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate))
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
     .map((cycle) => cycle.returnedDate);
   const resubmittedDates = cycles
-    .filter((cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate))
+    .filter(
+      (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+    )
     .map((cycle) => cycle.resubmittedDate);
 
   if (mode === "supplementaryPendingReturnedBills") {
@@ -1662,7 +1672,7 @@ function getCurrentOrderMilestoneDelayRows(
           : rawSupplyOrders(file).map((order, orderIndex) => ({ order, orderIndex }))
         : milestone.key === "billReturnedForCorrection"
           ? normalizedFilePaymentEntries(file)
-        : normalizedFileSupplyOrderEntries(file);
+          : normalizedFileSupplyOrderEntries(file);
     return entries.flatMap(({ order, orderIndex, stageIndex }) => {
       const normalizedCurrent = normalizeMilestoneName(milestone.current);
       const paymentPriorityDelay = isPaymentPriorityDelayForContract(file, order, thresholdDays);
@@ -2174,9 +2184,7 @@ function getStatusSummaryGroupTitle(columns: StatusSummaryDisplayColumn[]) {
   if (columns.includes("Received")) return "PSB / PWB";
   if (columns.includes("Valid")) return "Delivery Period";
   if (columns.includes("Refloat Due")) return "Pre-Bid Meeting";
-  if (
-    columns.some((column) => ["Submitted", "Returned", "Resubmitted", "Paid"].includes(column))
-  ) {
+  if (columns.some((column) => ["Submitted", "Returned", "Resubmitted", "Paid"].includes(column))) {
     return "Payment";
   }
   if (columns.includes("Returned paid")) return "Payment";
@@ -3094,9 +3102,11 @@ function countCompletedOrderDrivenMilestoneStatuses(
           isOrderActiveForMilestone(file, order, normalizedMilestone) &&
           (normalizedMilestone === "financialsanction"
             ? hasFilledString(order.financialSanctionDate)
-            : order.completedMilestones?.some(
-                (milestone) => normalizeMilestoneName(milestone) === normalizedMilestone,
-              )),
+            : isDateCompletedPaymentMilestoneOrder(order, normalizedMilestone)
+              ? true
+              : order.completedMilestones?.some(
+                  (milestone) => normalizeMilestoneName(milestone) === normalizedMilestone,
+                )),
       ).length
     );
   }, 0);
@@ -3125,16 +3135,31 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
     );
   }
   return orderDrivenMilestoneRows(file, normalized).some(
-      (order) =>
-        isOrderActiveForMilestone(file, order, normalized) &&
-        (normalized === "financialsanction"
-          ? hasFilledString(order.financialSanctionDate)
-          : normalized === "billsentforpayment"
-            ? !hasOpenBillReturn(order) && hasFilledString(order.billSentForPaymentDate)
-            : normalized === "billreturnedforcorrection"
-              ? hasCompletedBillReturn(order)
-          : order.completedMilestones?.some((item) => normalizeMilestoneName(item) === normalized)),
+    (order) =>
+      isOrderActiveForMilestone(file, order, normalized) &&
+      (normalized === "financialsanction"
+        ? hasFilledString(order.financialSanctionDate)
+        : isDateCompletedPaymentMilestoneOrder(order, normalized)
+          ? true
+          : normalized === "billreturnedforcorrection"
+            ? hasCompletedBillReturn(order)
+            : order.completedMilestones?.some(
+                (item) => normalizeMilestoneName(item) === normalized,
+              )),
   );
+}
+
+function isDateCompletedPaymentMilestoneOrder(
+  order: SupplyOrderDetail,
+  normalizedMilestone: string,
+) {
+  if (normalizedMilestone === "irpreparation") return hasFilledString(order.irPreparationDate);
+  if (normalizedMilestone === "irreceipt") return hasFilledString(order.irReceiptDate);
+  if (normalizedMilestone === "billpreparation") return hasFilledString(order.billPreparationDate);
+  if (normalizedMilestone === "billsentforpayment") {
+    return !hasOpenBillReturn(order) && hasFilledString(order.billSentForPaymentDate);
+  }
+  return false;
 }
 
 function countPendingDeliveryStatuses(files: FileRecord[]) {
@@ -3423,8 +3448,7 @@ function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPendingDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
-  const dueDate = getDeliveryPeriodDate(order);
-  return isDueDeliveryOrder(file, order) && hasFilledString(dueDate) && !isDateBeforeToday(dueDate);
+  return isDueDeliveryOrder(file, order) && isCurrentDeliveryPeriodOrder(order);
 }
 
 function isOverdueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
