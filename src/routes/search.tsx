@@ -39,6 +39,7 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   FileSpreadsheet,
   Filter,
   Lock,
@@ -50,6 +51,7 @@ import {
 } from "lucide-react";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { promptDeletionPassword } from "@/lib/delete-password";
 import {
   downloadBackendExport,
@@ -202,6 +204,73 @@ const firmSearchScopeOptions = [
 ];
 const defaultFirmSearchScopes = firmSearchScopeOptions.map((option) => option.key);
 const paymentModeOptions = ["Online", "Offline"];
+const searchFilterHelpers = {
+  freeSearch: [
+    "Searches broadly across file text fields.",
+    "Use structured filters when you need exact year, date, value, firm, or status logic.",
+  ],
+  filters: [
+    "Search results may already include filters received from Dashboard or Reports.",
+    "Reset filters clears manual filters and dashboard landing context.",
+    "Clicker results may focus a row or section inside each file.",
+  ],
+  year: [
+    "Searches the file's own initiation year.",
+    "This is different from the main/global Activity Year.",
+    "Use this only when you want files started in a particular FY.",
+  ],
+  value: [
+    "Filters by demand value entered in the file.",
+    "Capital/Revenue checkboxes restrict which demand value side is considered.",
+    "This is not S.O. value.",
+  ],
+  soValue: [
+    "Filters by supply order value recorded inside the file.",
+    "One file may have multiple S.O. rows.",
+    "Capital/Revenue checkboxes restrict which S.O. value side is considered.",
+  ],
+  paymentCriteria: [
+    "These are row/workflow based filters.",
+    "One file may match because of one S.O., stage payment, advance payment, or LD row.",
+    "A file can match more than one payment condition.",
+  ],
+  demandControlDates: [
+    "These filters use the specific demand/control date field selected.",
+    "Demand receipt and demand control may give different results for the same file.",
+  ],
+  approvalDates: [
+    "These filters use the selected approval or committee date field.",
+    "Each date is checked separately, such as TCEC minutes, IFA final, CFA approval, or CNC date.",
+  ],
+  supplyDeliveryDates: [
+    "These filters use the specific supply order or delivery date field selected.",
+    "S.O. date, D.P. period, and material receipt date may give different results for the same file.",
+  ],
+  bgPaymentClosureDates: [
+    "BG dates, payment date, and file closure date are separate activity dates.",
+    "Selecting one does not automatically filter by the others.",
+  ],
+  dpPeriod: [
+    "Filters by delivery period date or revised delivery period where applicable.",
+    "This is different from actual material receipt or job completion.",
+  ],
+  firm: [
+    "Firm search can look in BQ, invited, bidder, and S.O. firm records depending on selected checkboxes.",
+    "Firm name and Unique No. if selected together may match different firm entries inside the same file.",
+  ],
+  freeDate: [
+    "Searches for this date across many date fields.",
+    "Use specific date filters when you need exact field-level matching.",
+  ],
+  tableFields: [
+    "Controls which columns are visible in results and export.",
+    "It does not change which files are returned.",
+  ],
+  requiredFields: [
+    "Checking a column header means show only files where this field is filled.",
+    "It filters results; it is different from merely showing or hiding columns.",
+  ],
+} satisfies Record<string, string[]>;
 const defaultMilestones = [
   "Scrutiny",
   "High Value",
@@ -2027,6 +2096,7 @@ function SearchPage() {
             >
               <SlidersHorizontal className="size-3.5" /> Table fields
             </button>
+            <SearchHelper items={searchFilterHelpers.tableFields} label="Table fields help" />
             <label className="inline-flex items-center gap-2">
               <span>Rows</span>
               <select
@@ -2063,6 +2133,7 @@ function SearchPage() {
           placeholder="Free search"
           className="flex-1 h-10 bg-transparent outline-none text-sm"
         />
+        <SearchHelper items={searchFilterHelpers.freeSearch} label="Free search help" />
       </div>
 
       {(searchError || (searchLoading && !hasLoadedSearchResults)) && (
@@ -2094,6 +2165,7 @@ function SearchPage() {
               </span>
             ) : null}
           </button>
+          <SearchHelper items={searchFilterHelpers.filters} label="Search filters help" />
           {visibleFilterChips.length ? (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {visibleFilterChips.map((chip, index) => (
@@ -2157,7 +2229,7 @@ function SearchPage() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label="Year">
+            <FilterGroup label="Year" helper={searchFilterHelpers.year}>
               <FilterInput
                 value={yearFilter}
                 onChange={setYearFilter}
@@ -2179,7 +2251,7 @@ function SearchPage() {
               />
             </FilterGroup>
 
-            <FilterGroup label="Value">
+            <FilterGroup label="Value" helper={searchFilterHelpers.value}>
               <div className="grid grid-cols-2 gap-2 mb-2">
                 <FilterInput
                   value={valueFrom}
@@ -2195,7 +2267,7 @@ function SearchPage() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label="S.O. value">
+            <FilterGroup label="S.O. value" helper={searchFilterHelpers.soValue}>
               <div className="mb-2 grid grid-cols-2 gap-2">
                 <FilterInput
                   value={soValueFrom}
@@ -2237,7 +2309,7 @@ function SearchPage() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label="Payment criteria">
+            <FilterGroup label="Payment criteria" helper={searchFilterHelpers.paymentCriteria}>
               <CheckFilter
                 label="Advance Payment"
                 checked={advancePaymentFilter}
@@ -2313,7 +2385,11 @@ function SearchPage() {
               <CheckFilter label="RST" checked={rstFilter} onChange={setRstFilter} />
             </div>
 
-            <CollapsibleFilterGroup label="Demand & Control Dates" defaultOpen>
+            <CollapsibleFilterGroup
+              label="Demand & Control Dates"
+              helper={searchFilterHelpers.demandControlDates}
+              defaultOpen
+            >
               <DateRangeFilter
                 label="Demand Receipt Date"
                 from={demandReceiptFrom}
@@ -2330,7 +2406,10 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup label="Approval & Committee Dates">
+            <CollapsibleFilterGroup
+              label="Approval & Committee Dates"
+              helper={searchFilterHelpers.approvalDates}
+            >
               <DateRangeFilter
                 label="High Value Minutes Date"
                 from={highValueMinutesFrom}
@@ -2382,7 +2461,10 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup label="Supply Order & Delivery Dates">
+            <CollapsibleFilterGroup
+              label="Supply Order & Delivery Dates"
+              helper={searchFilterHelpers.supplyDeliveryDates}
+            >
               <DateRangeFilter
                 label="Financial Sanction date"
                 from={financialSanctionFrom}
@@ -2399,6 +2481,7 @@ function SearchPage() {
               />
               <DateRangeFilter
                 label="D.P. period"
+                helper={searchFilterHelpers.dpPeriod}
                 from={dpFrom}
                 to={dpTo}
                 onFromChange={setDpFrom}
@@ -2413,7 +2496,10 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup label="BG, Payment & Closure Dates">
+            <CollapsibleFilterGroup
+              label="BG, Payment & Closure Dates"
+              helper={searchFilterHelpers.bgPaymentClosureDates}
+            >
               <DateRangeFilter
                 label="BG received date"
                 from={bgReceivedFrom}
@@ -2451,7 +2537,7 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup label="Firm">
+            <CollapsibleFilterGroup label="Firm" helper={searchFilterHelpers.firm}>
               <div className="grid grid-cols-2 gap-2">
                 {firmSearchScopeOptions.map((scope) => (
                   <CheckFilter
@@ -2488,7 +2574,7 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 
-            <FilterGroup label="Free search date">
+            <FilterGroup label="Free search date" helper={searchFilterHelpers.freeDate}>
               <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
             </FilterGroup>
 
@@ -2532,7 +2618,13 @@ function SearchPage() {
             <div className="ml-auto w-full max-w-5xl rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-sm font-semibold">Search table fields</h3>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="text-sm font-semibold">Search table fields</h3>
+                    <SearchHelper
+                      items={searchFilterHelpers.requiredFields}
+                      label="Column header checkbox help"
+                    />
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     Choose which columns are visible in the search results table.
                   </p>
@@ -3108,12 +3200,18 @@ function SearchPaginationControls({
   );
 }
 
-function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+function FilterGroup({
+  label,
+  helper,
+  children,
+}: {
+  label: string;
+  helper?: string[];
+  children: React.ReactNode;
+}) {
   return (
     <div>
-      <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
-        {label}
-      </div>
+      <HelperLabel label={label} helper={helper} />
       {children}
     </div>
   );
@@ -3121,10 +3219,12 @@ function FilterGroup({ label, children }: { label: string; children: React.React
 
 function CollapsibleFilterGroup({
   label,
+  helper,
   children,
   defaultOpen = false,
 }: {
   label: string;
+  helper?: string[];
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
@@ -3134,7 +3234,10 @@ function CollapsibleFilterGroup({
       className="rounded-md border border-border bg-background/40 shadow-sm"
     >
       <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground outline-none hover:text-foreground">
-        {label}
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {helper ? <SearchHelper items={helper} label={`${label} help`} /> : null}
+        </span>
       </summary>
       <div className="space-y-3 border-t border-border p-3">{children}</div>
     </details>
@@ -3143,24 +3246,61 @@ function CollapsibleFilterGroup({
 
 function DateRangeFilter({
   label,
+  helper,
   from,
   to,
   onFromChange,
   onToChange,
 }: {
   label: string;
+  helper?: string[];
   from: string;
   to: string;
   onFromChange: (value: string) => void;
   onToChange: (value: string) => void;
 }) {
   return (
-    <FilterGroup label={label}>
+    <FilterGroup label={label} helper={helper}>
       <div className="grid grid-cols-2 gap-2">
         <FilterInput type="date" value={from} onChange={onFromChange} />
         <FilterInput type="date" value={to} onChange={onToChange} />
       </div>
     </FilterGroup>
+  );
+}
+
+function HelperLabel({ label, helper }: { label: string; helper?: string[] }) {
+  return (
+    <div className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+      {label}
+      {helper ? <SearchHelper items={helper} label={`${label} help`} /> : null}
+    </div>
+  );
+}
+
+function SearchHelper({ items, label }: { items: string[]; label: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            onClick={(event) => event.preventDefault()}
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
+          <ul className="list-disc space-y-1 pl-4">
+            {items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

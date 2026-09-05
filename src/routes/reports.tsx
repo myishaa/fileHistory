@@ -2427,8 +2427,29 @@ const supplementaryBillInclusionNotes = {
   expectedExpenditureTillMonth: "Includes supplementary bills submitted/resubmitted/returned.",
 } satisfies Partial<Record<ReportMode, string>>;
 const reportModeHelperText = {
-  supplementaryBillsPaid: "Returned and paid supplementary bills included.",
-} satisfies Partial<Record<ReportMode, string>>;
+  mmgSummary: [
+    "File Year restricts source files first.",
+    "Date range, when enabled, filters the summary by Demand received date.",
+  ],
+  demandProcessingAnalysis: [
+    "File Year restricts source files first.",
+    "Date range, when enabled, filters demand processing by the selected From date.",
+  ],
+  firmDatabase: [
+    "File Year restricts source files first.",
+    "Without date range, values come from S.O.s inside those selected files.",
+    "Date range, when enabled, further filters firm performance by S.O. date.",
+  ],
+  supplementaryBillsPaid: ["Returned and paid supplementary bills included."],
+} satisfies Partial<Record<ReportMode, HelperText>>;
+type HelperText = string | string[];
+const fileYearSubfilterHelper = [
+  "File Year is a subfilter applied after the main/global filter.",
+  "All file years means no extra file-year restriction.",
+  "Selecting a specific FY shows only files initiated in that FY from the already selected file set.",
+  "It does not change the activity-year meaning of the main/global filter.",
+  "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
+];
 type ReportModeSection = {
   title: string;
   modes: ReadonlyArray<ReportModeOption>;
@@ -4756,7 +4777,7 @@ function ExpectedCashOutgoReport({
 }: {
   rows: ExpectedCashOutgoRow[];
   title: string;
-  titleHelper?: string;
+  titleHelper?: HelperText;
   description: string;
   actions: ReactNode;
   selectedDays?: string;
@@ -4960,7 +4981,7 @@ function CurrentMonthLiabilityReport({
 }: {
   rows: ExpectedCashOutgoRow[];
   title: string;
-  titleHelper?: string;
+  titleHelper?: HelperText;
   description: string;
   actions: ReactNode;
   selectedDays: string;
@@ -5554,7 +5575,16 @@ function FileYearFilter({
   return (
     <div className="flex items-end gap-1.5">
       <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
-        <span>File year</span>
+        <span className="inline-flex items-center gap-1">
+          File year
+          <FloatingHelper
+            text={fileYearSubfilterHelper}
+            label="File year subfilter help"
+            side="top"
+            className="size-5 border-0 bg-transparent shadow-none"
+            iconClassName="size-3.5"
+          />
+        </span>
         <select
           value={value}
           onChange={(event) => onChange(event.target.value)}
@@ -7371,7 +7401,7 @@ function FloatingHelper({
   className = "",
   iconClassName = "size-4",
 }: {
-  text: string;
+  text: HelperText;
   label?: string;
   side?: "top" | "right" | "bottom" | "left";
   className?: string;
@@ -7394,11 +7424,27 @@ function FloatingHelper({
           </button>
         </TooltipTrigger>
         <TooltipContent side={side} align="center" className="max-w-xs leading-relaxed">
-          {text}
+          <ul className="list-disc space-y-1 pl-4">
+            {(Array.isArray(text) ? text : splitHelperText(text)).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
+}
+
+function splitHelperText(text: string) {
+  return text
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function flattenHelperText(text: HelperText | undefined) {
+  if (!text) return [];
+  return Array.isArray(text) ? text : splitHelperText(text);
 }
 
 function CashOutgoReport({
@@ -7414,7 +7460,7 @@ function CashOutgoReport({
 }: {
   rows: ExpectedCashOutgoRow[];
   title: string;
-  titleHelper?: string;
+  titleHelper?: HelperText;
   description?: string;
   emptyMessage: string;
   actions?: ReactNode;
@@ -7423,7 +7469,9 @@ function CashOutgoReport({
   onOpenAll?: () => void;
 }) {
   const totals = getExpectedCashOutgoTotals(rows);
-  const descriptionWithHelper = [description, titleHelper].filter(Boolean).join("\n");
+  const descriptionWithHelper = [description, ...flattenHelperText(titleHelper)]
+    .filter(Boolean)
+    .join("\n");
 
   return (
     <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">

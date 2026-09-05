@@ -1,7 +1,18 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, Check, Lock, Pencil, Plus, Trash2, Unlock, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  CircleHelp,
+  Lock,
+  Pencil,
+  Plus,
+  Trash2,
+  Unlock,
+  X,
+} from "lucide-react";
 import {
   createMasterFirm,
   deleteMasterFirm,
@@ -36,6 +47,7 @@ import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
 import { fileCategoryOptions, type FileCategoryKey } from "@/lib/file-categories";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { YearSetupPanel } from "@/routes/year-setup";
 import {
   displayFinancialYearLabel,
@@ -186,8 +198,117 @@ function validateNewFinancialYearLabel(label: string, years: string[]) {
 type AdminSection = {
   key: string;
   label: string;
+  helper: string[];
   content: ReactNode;
 };
+
+const settingsSectionHelpers = {
+  theme: [
+    "Controls your personal display theme and tint.",
+    "This does not change file data or workflow logic.",
+  ],
+  user: [
+    "Shows your account, role, and assigned divisions.",
+    "Some appearance settings here affect only your own view.",
+  ],
+  workspace: [
+    "Controls global workspace defaults such as selected FY, available years, theme, and deletion password.",
+    "Changes here can affect all users.",
+  ],
+  yearSetup: [
+    "Used for yearly allocation setup and financial-year preparation.",
+    "Allocation values from here are used in value reports and dashboard value views.",
+  ],
+  mmgSummary: [
+    "Controls which fields and labels appear in MMG Summary exports.",
+    "This changes report display/export fields, not file records.",
+  ],
+  demandProcessing: [
+    "Controls reusable Demand Processing Analysis presets.",
+    "Preset From/To dates decide how demand-processing time is measured in reports.",
+  ],
+  divisions: [
+    "Maintains division names, codes, AD flag, and division-level allocation context.",
+    "Division changes affect filters, access, dashboards, and reports.",
+  ],
+  indentors: [
+    "Maintains indentor master data and division mapping.",
+    "This helps keep file entry, filters, and reports consistent.",
+  ],
+  firms: [
+    "Maintains firm master data and the Firm Unique No. label.",
+    "Firm data is used for search, firm analysis, and firm performance reports.",
+  ],
+  firmRating: [
+    "Controls firm rating fields and maximum marks.",
+    "These settings affect rating score calculation in firm performance views.",
+  ],
+  fileTypes: [
+    "Controls available file types and their workflow group.",
+    "Workflow group affects delivery, inspection, and payment behavior in the app.",
+  ],
+  modes: [
+    "Controls available procurement modes such as OBM, PBM, SBM, LBM, and LPC.",
+    "These modes appear in file entry, filters, analytics, and reports.",
+  ],
+  firmTypes: [
+    "Controls firm type options such as MSE, MSE (Women), and Non-MSE.",
+    "These options are used in S.O. firm details and firm-type reporting.",
+  ],
+  fileMarkers: [
+    "Controls special marker codes that can be attached to files.",
+    "Markers help tag and filter special cases.",
+  ],
+  tcec: [
+    "Controls TCEC committee options.",
+    "These options are used in TCEC fields, analytics, and reports.",
+  ],
+  thresholds: [
+    "Controls value slabs used for count/value analysis.",
+    "Thresholds can apply to demand value, S.O. value, or both.",
+  ],
+  anomalyGovernance: [
+    "Shows suspected data issues and accepted/rejected anomaly decisions.",
+    "Custom rules here can affect what appears in anomaly checks.",
+  ],
+  milestones: [
+    "Controls the milestone sequence used for workflow tracking.",
+    "Changing milestones can affect Status-2, Status-4, and related search focus behavior.",
+  ],
+  presets: [
+    "Controls reusable Search table field presets.",
+    "Presets change visible/exported columns, not which files are returned.",
+  ],
+  users: [
+    "Controls authorised users, roles, division access, and file-category access.",
+    "Access changes affect what each user can view or edit.",
+  ],
+  archive: [
+    "Shows archived files and permanent delete options.",
+    "Permanent delete needs the configured deletion password.",
+  ],
+} satisfies Record<string, string[]>;
+
+const workspaceYearHelpers = {
+  selectedYear: [
+    "Selecting a year only opens that year for setup.",
+    "Use it to view or edit year-specific settings such as allocations.",
+    "It does not make that year the software's official current FY by itself.",
+    "Use Set as current if you want the software to treat this as the current FY.",
+  ],
+  setCurrent: [
+    "Makes the selected year the software's official current FY.",
+    "New files will use this year as the normal current FY.",
+    "The global year filter is also changed to this same year.",
+    "Use this when the office has moved to a new financial year.",
+  ],
+  lockSelection: [
+    "Locked means users cannot change the global year filter from the top bar.",
+    "Unlocked means users can change the global year filter from the top bar.",
+    "This does not lock the File Year subfilter.",
+    "It is useful when you want everyone to stay on one main year/filter context.",
+  ],
+} satisfies Record<string, string[]>;
 
 type AnomalyAcceptanceRow = {
   signature: string;
@@ -294,9 +415,9 @@ function SettingsPage() {
       <div className="space-y-4 max-w-6xl">
         <Tabs defaultValue="theme" className="space-y-4">
           <TabsList aria-label="Settings sections">
-            <TabsTrigger value="theme">UI theme</TabsTrigger>
-            <TabsTrigger value="indentors">Indentors</TabsTrigger>
-            <TabsTrigger value="presets">Preset table fields</TabsTrigger>
+            <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
+            <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
+            <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
           </TabsList>
           <TabsContent value="theme">
             <PreferenceSettings />
@@ -318,14 +439,20 @@ function SettingsPage() {
       <div className="space-y-4 max-w-6xl">
         <Tabs defaultValue="user" className="space-y-4">
           <TabsList aria-label="Settings sections">
-            <TabsTrigger value="user">User</TabsTrigger>
-            <TabsTrigger value="indentors">Indentors</TabsTrigger>
-          <TabsTrigger value="firms">Firm Database</TabsTrigger>
-          <TabsTrigger value="presets">Preset table fields</TabsTrigger>
-          {canEditMmgSummary ? (
-            <TabsTrigger value="anomalyGovernance">Anomaly Control</TabsTrigger>
-          ) : null}
-          {canEditMmgSummary ? <TabsTrigger value="mmgSummary">MMG Summary</TabsTrigger> : null}
+            <SettingsTabTrigger value="user" label="User" helperKey="user" />
+            <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
+            <SettingsTabTrigger value="firms" label="Firm Database" helperKey="firms" />
+            <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
+            {canEditMmgSummary ? (
+              <SettingsTabTrigger
+                value="anomalyGovernance"
+                label="Anomaly Control"
+                helperKey="anomalyGovernance"
+              />
+            ) : null}
+            {canEditMmgSummary ? (
+              <SettingsTabTrigger value="mmgSummary" label="MMG Summary" helperKey="mmgSummary" />
+            ) : null}
           </TabsList>
           <TabsContent value="user">
             <AccountSettings />
@@ -366,30 +493,126 @@ function SettingsPage() {
   }
 
   const adminSections: AdminSection[] = [
-    { key: "user", label: "User", content: <AccountSettings /> },
-    { key: "workspace", label: "Workspace", content: <WorkspaceSettings /> },
-    { key: "yearSetup", label: "Year Setup", content: <YearSetupPanel /> },
-    { key: "mmgSummary", label: "MMG Summary", content: <MmgSummarySettings /> },
+    {
+      key: "user",
+      label: "User",
+      helper: settingsSectionHelpers.user,
+      content: <AccountSettings />,
+    },
+    {
+      key: "workspace",
+      label: "Workspace",
+      helper: settingsSectionHelpers.workspace,
+      content: <WorkspaceSettings />,
+    },
+    {
+      key: "yearSetup",
+      label: "Year Setup",
+      helper: settingsSectionHelpers.yearSetup,
+      content: <YearSetupPanel />,
+    },
+    {
+      key: "mmgSummary",
+      label: "MMG Summary",
+      helper: settingsSectionHelpers.mmgSummary,
+      content: <MmgSummarySettings />,
+    },
     {
       key: "demandProcessing",
       label: "Demand processing presets",
+      helper: settingsSectionHelpers.demandProcessing,
       content: <DemandProcessingPresetSettings />,
     },
-    { key: "divisions", label: "Divisions", content: <DivisionSettings /> },
-    { key: "indentors", label: "Indentors", content: <IndentorSettings /> },
-    { key: "firms", label: "Firm Database", content: <FirmDatabaseSettings /> },
-    { key: "firmRating", label: "Firm Rating", content: <FirmRatingSettings /> },
-    { key: "fileTypes", label: "File Types", content: <FileTypeSettings /> },
-    { key: "modes", label: "Modes", content: <ModeSettings /> },
-    { key: "firmTypes", label: "Firm Types", content: <FirmTypeSettings /> },
-    { key: "fileMarkers", label: "File Markers", content: <SpecialFileMarkerSettings /> },
-    { key: "tcec", label: "TCEC Committee", content: <TcecCommitteeSettings /> },
-    { key: "thresholds", label: "Value thresholds", content: <ValueThresholdSettings /> },
-    { key: "anomalyGovernance", label: "Anomaly Control", content: <AnomalyGovernanceSettings /> },
-    { key: "milestones", label: "Milestones", content: <MilestoneSettings /> },
-    { key: "presets", label: "Preset table fields", content: <TableFieldPresetSettings /> },
-    { key: "users", label: "Authorised users", content: <UserSettings /> },
-    { key: "archive", label: "Archive", content: <ArchiveSettings /> },
+    {
+      key: "divisions",
+      label: "Divisions",
+      helper: settingsSectionHelpers.divisions,
+      content: <DivisionSettings />,
+    },
+    {
+      key: "indentors",
+      label: "Indentors",
+      helper: settingsSectionHelpers.indentors,
+      content: <IndentorSettings />,
+    },
+    {
+      key: "firms",
+      label: "Firm Database",
+      helper: settingsSectionHelpers.firms,
+      content: <FirmDatabaseSettings />,
+    },
+    {
+      key: "firmRating",
+      label: "Firm Rating",
+      helper: settingsSectionHelpers.firmRating,
+      content: <FirmRatingSettings />,
+    },
+    {
+      key: "fileTypes",
+      label: "File Types",
+      helper: settingsSectionHelpers.fileTypes,
+      content: <FileTypeSettings />,
+    },
+    {
+      key: "modes",
+      label: "Modes",
+      helper: settingsSectionHelpers.modes,
+      content: <ModeSettings />,
+    },
+    {
+      key: "firmTypes",
+      label: "Firm Types",
+      helper: settingsSectionHelpers.firmTypes,
+      content: <FirmTypeSettings />,
+    },
+    {
+      key: "fileMarkers",
+      label: "File Markers",
+      helper: settingsSectionHelpers.fileMarkers,
+      content: <SpecialFileMarkerSettings />,
+    },
+    {
+      key: "tcec",
+      label: "TCEC Committee",
+      helper: settingsSectionHelpers.tcec,
+      content: <TcecCommitteeSettings />,
+    },
+    {
+      key: "thresholds",
+      label: "Value thresholds",
+      helper: settingsSectionHelpers.thresholds,
+      content: <ValueThresholdSettings />,
+    },
+    {
+      key: "anomalyGovernance",
+      label: "Anomaly Control",
+      helper: settingsSectionHelpers.anomalyGovernance,
+      content: <AnomalyGovernanceSettings />,
+    },
+    {
+      key: "milestones",
+      label: "Milestones",
+      helper: settingsSectionHelpers.milestones,
+      content: <MilestoneSettings />,
+    },
+    {
+      key: "presets",
+      label: "Preset table fields",
+      helper: settingsSectionHelpers.presets,
+      content: <TableFieldPresetSettings />,
+    },
+    {
+      key: "users",
+      label: "Authorised users",
+      helper: settingsSectionHelpers.users,
+      content: <UserSettings />,
+    },
+    {
+      key: "archive",
+      label: "Archive",
+      helper: settingsSectionHelpers.archive,
+      content: <ArchiveSettings />,
+    },
   ];
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
@@ -418,19 +641,21 @@ function SettingsPage() {
             {adminSections.map((section) => {
               const selected = selectedAdminSection.key === section.key;
               return (
-                <button
-                  key={section.key}
-                  type="button"
-                  onClick={() => setActiveAdminSection(section.key)}
-                  className={
-                    "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                    (selected
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                  }
-                >
-                  {section.label}
-                </button>
+                <div key={section.key} className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveAdminSection(section.key)}
+                    className={
+                      "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                      (selected
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                    }
+                  >
+                    {section.label}
+                  </button>
+                  <SettingsHelper items={section.helper} label={`${section.label} help`} />
+                </div>
               );
             })}
           </div>
@@ -485,29 +710,29 @@ function LockedAdminSection({
   return (
     <div className="space-y-3">
       {!hideUnlock ? (
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={unlocked ? onLock : () => void unlock()}
-          disabled={verifying}
-          className={
-            "h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
-            (unlocked
-              ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-              : "border-border bg-background hover:bg-accent")
-          }
-        >
-          {unlocked ? (
-            <>
-              <Unlock className="size-4" /> Unlocked
-            </>
-          ) : (
-            <>
-              <Lock className="size-4" /> Edit
-            </>
-          )}
-        </button>
-      </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={unlocked ? onLock : () => void unlock()}
+            disabled={verifying}
+            className={
+              "h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
+              (unlocked
+                ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                : "border-border bg-background hover:bg-accent")
+            }
+          >
+            {unlocked ? (
+              <>
+                <Unlock className="size-4" /> Unlocked
+              </>
+            ) : (
+              <>
+                <Lock className="size-4" /> Edit
+              </>
+            )}
+          </button>
+        </div>
       ) : null}
       <fieldset
         disabled={!unlocked}
@@ -518,6 +743,49 @@ function LockedAdminSection({
         {section.content}
       </fieldset>
     </div>
+  );
+}
+
+function SettingsTabTrigger({
+  value,
+  label,
+  helperKey,
+}: {
+  value: string;
+  label: string;
+  helperKey: keyof typeof settingsSectionHelpers;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <TabsTrigger value={value}>{label}</TabsTrigger>
+      <SettingsHelper items={settingsSectionHelpers[helperKey]} label={`${label} help`} />
+    </span>
+  );
+}
+
+function SettingsHelper({ items, label }: { items: string[]; label: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            onClick={(event) => event.preventDefault()}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
+          <ul className="list-disc space-y-1 pl-4">
+            {items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -774,7 +1042,13 @@ function WorkspaceSettings() {
 
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(220px,0.7fr)_minmax(260px,1fr)]">
             <label className="block">
-              <div className="text-xs font-medium mb-1.5">Selected year</div>
+              <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium">
+                Selected year
+                <SettingsHelper
+                  items={workspaceYearHelpers.selectedYear}
+                  label="Selected year help"
+                />
+              </div>
               <select
                 value={selectedFinancialYear}
                 onChange={(event) => store.updateSettings({ selectedYear: event.target.value })}
@@ -824,6 +1098,7 @@ function WorkspaceSettings() {
               >
                 <Check className="size-4" /> Set as current
               </button>
+              <SettingsHelper items={workspaceYearHelpers.setCurrent} label="Set as current help" />
 
               <button
                 type="button"
@@ -845,6 +1120,7 @@ function WorkspaceSettings() {
                   </>
                 )}
               </button>
+              <SettingsHelper items={workspaceYearHelpers.lockSelection} label="Year lock help" />
 
               <button
                 type="button"
@@ -1153,10 +1429,10 @@ function FileTypeSettings() {
     if (!trimmed) return;
     const exists = fileTypes.some((fileType) => fileType.toLowerCase() === trimmed.toLowerCase());
     if (!exists) {
-      updateFileTypes([...fileTypes, trimmed], [
-        ...fileTypeGroups,
-        { fileType: trimmed, group: getDefaultFileTypeGroup(trimmed) },
-      ]);
+      updateFileTypes(
+        [...fileTypes, trimmed],
+        [...fileTypeGroups, { fileType: trimmed, group: getDefaultFileTypeGroup(trimmed) }],
+      );
     }
     setName("");
   };
@@ -1720,7 +1996,8 @@ function AnomalyGovernanceSettings() {
     void load();
   }, [settings.selectedYear]);
 
-  const fieldLabel = (key?: string) => fields.find((field) => field.key === key)?.label ?? key ?? "";
+  const fieldLabel = (key?: string) =>
+    fields.find((field) => field.key === key)?.label ?? key ?? "";
   const anomalySummary = (row: AnomalyAcceptanceRow) => ({
     title: row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception",
     detail:
@@ -1787,8 +2064,7 @@ function AnomalyGovernanceSettings() {
       "date_order",
     );
     if (!ruleType?.trim()) return;
-    const fieldB =
-      ruleType === "date_boundary" ? "" : window.prompt("Field B key:");
+    const fieldB = ruleType === "date_boundary" ? "" : window.prompt("Field B key:");
     if (ruleType !== "date_boundary" && !fieldB?.trim()) return;
     const operator =
       ruleType === "required_field"
@@ -1798,7 +2074,9 @@ function AnomalyGovernanceSettings() {
           : window.prompt("Operator: not_before or not_after", "not_before");
     if (!operator?.trim()) return;
     const fixedValue =
-      ruleType === "date_boundary" ? window.prompt("Fixed date (DD-MM-YYYY or YYYY-MM-DD):") : undefined;
+      ruleType === "date_boundary"
+        ? window.prompt("Fixed date (DD-MM-YYYY or YYYY-MM-DD):")
+        : undefined;
     if (ruleType === "date_boundary" && !fixedValue?.trim()) return;
     const thresholdDays =
       ruleType === "delay_days"
@@ -1832,7 +2110,9 @@ function AnomalyGovernanceSettings() {
   );
   const sentAnomalies = activeAnomalies.filter((row) => row.requestStatus === "pending");
   const fileAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_file");
-  const universalAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_universal");
+  const universalAcceptedAnomalies = acceptances.filter(
+    (row) => row.status === "approved_universal",
+  );
   const rejectedAnomalies = acceptances.filter((row) => row.status === "rejected");
   const revokedAnomalies = acceptances.filter((row) => row.status === "revoked");
   const decisionAnomalies =
@@ -1892,7 +2172,8 @@ function AnomalyGovernanceSettings() {
     return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
   };
   const renderActiveAnomalyGroups = (rows: SuspectedAnomalyRow[]) => {
-    if (!rows.length) return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
+    if (!rows.length)
+      return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
     return (
       <div className="space-y-3">
         {groupActive(rows).map((group) => (
@@ -1903,22 +2184,31 @@ function AnomalyGovernanceSettings() {
             </div>
             <div className="divide-y divide-border/70">
               {group.items.map((row) => (
-                <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.6fr]">
+                <div
+                  key={row.signature}
+                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.6fr]"
+                >
                   <div>
                     <span className="font-semibold">{row.fileRef}</span>
                     <span className="mt-1 block text-muted-foreground">{row.division || "-"}</span>
                     <span className="block text-muted-foreground">{row.block}</span>
                   </div>
                   <div>
-                    <div>{row.previousField || "Expected"}: {row.previousDate || "-"}</div>
-                    <div>{row.laterField || "Found"}: {row.laterDate || "-"}</div>
+                    <div>
+                      {row.previousField || "Expected"}: {row.previousDate || "-"}
+                    </div>
+                    <div>
+                      {row.laterField || "Found"}: {row.laterDate || "-"}
+                    </div>
                     {row.userExplanation ? (
                       <div className="mt-1 text-muted-foreground">
                         Message from {row.requestedByName || "User"}: {row.userExplanation}
                       </div>
                     ) : null}
                     {row.adminMessage ? (
-                      <div className="mt-1 font-medium text-destructive">Message to User: {row.adminMessage}</div>
+                      <div className="mt-1 font-medium text-destructive">
+                        Message to User: {row.adminMessage}
+                      </div>
                     ) : null}
                   </div>
                   <div className="flex flex-wrap items-start gap-1">
@@ -1927,13 +2217,25 @@ function AnomalyGovernanceSettings() {
                         {formatStatus(row.requestStatus)}
                       </span>
                     ) : null}
-                    <button type="button" onClick={() => void review(row.signature, "approve_file")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                    <button
+                      type="button"
+                      onClick={() => void review(row.signature, "approve_file")}
+                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    >
                       File
                     </button>
-                    <button type="button" onClick={() => void review(row.signature, "approve_universal")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                    <button
+                      type="button"
+                      onClick={() => void review(row.signature, "approve_universal")}
+                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    >
                       Universal
                     </button>
-                    <button type="button" onClick={() => void review(row.signature, "reject")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                    <button
+                      type="button"
+                      onClick={() => void review(row.signature, "reject")}
+                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    >
                       Send correction to user
                     </button>
                   </div>
@@ -1946,7 +2248,8 @@ function AnomalyGovernanceSettings() {
     );
   };
   const renderHistoryGroups = () => {
-    if (!decisionAnomalies.length) return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
+    if (!decisionAnomalies.length)
+      return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
     return (
       <div className="space-y-3">
         {groupHistory(decisionAnomalies).map((group) => (
@@ -1959,7 +2262,10 @@ function AnomalyGovernanceSettings() {
               {group.items.map((row) => {
                 const summary = anomalySummary(row);
                 return (
-                  <div key={row.signature} className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr_1fr]">
+                  <div
+                    key={row.signature}
+                    className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr_1fr]"
+                  >
                     <div className="flex items-start gap-2">
                       {canClearDecisionRows ? (
                         <input
@@ -1970,7 +2276,9 @@ function AnomalyGovernanceSettings() {
                           aria-label={`Select ${row.fileRef || "anomaly"}`}
                         />
                       ) : null}
-                      <span className="font-semibold">{row.fileRef || "File reference not available"}</span>
+                      <span className="font-semibold">
+                        {row.fileRef || "File reference not available"}
+                      </span>
                     </div>
                     <div>
                       {summary.detail ? <div>{summary.detail}</div> : null}
@@ -1979,16 +2287,28 @@ function AnomalyGovernanceSettings() {
                           Message from {row.requestedByName || "User"}: {row.reason}
                         </div>
                       ) : null}
-                      {row.adminMessage ? <div className="mt-1 font-medium text-destructive">Message to User: {row.adminMessage}</div> : null}
+                      {row.adminMessage ? (
+                        <div className="mt-1 font-medium text-destructive">
+                          Message to User: {row.adminMessage}
+                        </div>
+                      ) : null}
                     </div>
                     <div>
                       <div className="font-medium">{formatStatus(row.status)}</div>
-                      <div className="text-muted-foreground">{row.reviewedByName || row.revokedByName || row.requestedByName || "-"}</div>
-                      <div className="text-muted-foreground">{(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}</div>
+                      <div className="text-muted-foreground">
+                        {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
+                      </div>
+                      <div className="text-muted-foreground">
+                        {(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}
+                      </div>
                     </div>
                     <div>
                       {row.status === "approved_file" || row.status === "approved_universal" ? (
-                        <button type="button" onClick={() => void review(row.signature, "revoke")} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                        <button
+                          type="button"
+                          onClick={() => void review(row.signature, "revoke")}
+                          className="rounded border border-border px-2 py-1 hover:bg-accent"
+                        >
                           Revoke
                         </button>
                       ) : null}
@@ -2022,7 +2342,9 @@ function AnomalyGovernanceSettings() {
         </p>
       </div>
       {message ? (
-        <p className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">{message}</p>
+        <p className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+          {message}
+        </p>
       ) : null}
       {loading ? <p className="text-xs text-muted-foreground">Loading anomaly control...</p> : null}
 
@@ -2101,13 +2423,19 @@ function AnomalyGovernanceSettings() {
                     <td className="px-3 py-2">{rule.ruleType}</td>
                     <td className="px-3 py-2">
                       {fieldLabel(rule.fieldA)} {rule.operator}{" "}
-                      {rule.ruleType === "date_boundary" ? rule.fixedValue : fieldLabel(rule.fieldB)}
+                      {rule.ruleType === "date_boundary"
+                        ? rule.fixedValue
+                        : fieldLabel(rule.fieldB)}
                       {rule.thresholdDays !== undefined ? ` (${rule.thresholdDays} days)` : ""}
                     </td>
                     <td className="px-3 py-2">{rule.severity}</td>
                     <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
                     <td className="px-3 py-2">
-                      <button type="button" onClick={() => void toggleRule(rule)} className="rounded border border-border px-2 py-1 hover:bg-accent">
+                      <button
+                        type="button"
+                        onClick={() => void toggleRule(rule)}
+                        className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      >
                         {rule.enabled ? "Disable" : "Enable"}
                       </button>
                     </td>
@@ -2831,7 +3159,12 @@ function MmgSummarySettings() {
             type="button"
             onClick={() =>
               updateFields(
-                normalizeMmgSummaryFields([], settings.modes, settings.firmTypes, settings.fileTypes),
+                normalizeMmgSummaryFields(
+                  [],
+                  settings.modes,
+                  settings.firmTypes,
+                  settings.fileTypes,
+                ),
               )
             }
             className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
@@ -4334,9 +4667,10 @@ function UserSettings() {
                   editUsername.trim() !== user.username ||
                   Boolean(editPassword.trim()) ||
                   editRole !== user.role ||
-                  !isSettingsDirtyValueEqual([...editDivisionIds].sort(), [
-                    ...(user.divisionIds ?? []),
-                  ].sort()) ||
+                  !isSettingsDirtyValueEqual(
+                    [...editDivisionIds].sort(),
+                    [...(user.divisionIds ?? [])].sort(),
+                  ) ||
                   !isSettingsDirtyValueEqual(
                     normalizeUserFileCategories(editAllowedFileCategories),
                     normalizeUserFileCategories(user.allowedFileCategories),

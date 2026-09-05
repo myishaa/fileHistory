@@ -159,11 +159,63 @@ type AnalyticsPanel = {
   key: AnalyticsPanelKey;
   title: string;
   subtitle: string;
+  helper?: string[];
   exportNote?: string;
   divisionValueDisplayMode?: DivisionValueDisplayMode;
   columns: AnalyticsTableColumn[];
   rows: Array<Record<string, number | string>>;
 };
+
+const fileYearSubfilterHelper = [
+  "File Year is a subfilter applied after the main/global filter.",
+  "All file years means no extra file-year restriction.",
+  "Selecting a specific FY shows only files initiated in that FY from the already selected file set.",
+  "It does not change the activity-year meaning of the main/global filter.",
+  "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
+];
+
+const analyticsMainHelper = [
+  "Main filter and File Year first decide which files Analytics can use.",
+  "Panel-specific filters, such as Division or FY drill-down, then narrow or group those selected files further.",
+  "Value panels calculate intended, booked, committed, and S.O. values from the selected files.",
+  "Date-based panels group rows by their own activity dates, such as Pre-Bid, TCEC, or CNC date.",
+  "Use All file years when you want the complete picture for files active in the main selected period.",
+];
+
+const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
+  status: [
+    "Main filter and File Year first decide the file set.",
+    "Counts show current broad file status within those selected files.",
+    "Some counters may count events or rows, so count and landing file count may not always match exactly.",
+    "Clickers open Search Files with the same filter context.",
+  ],
+  liveStatus: [
+    "Main filter and File Year first decide the file set.",
+    "Shows live workflow milestone position for selected files.",
+    "Counts focus on current pending or active milestone state.",
+    "Clickers open Search Files with the same filter context.",
+  ],
+  status3: [
+    "Main filter and File Year first decide the file set.",
+    "Shows detailed supply order, delivery, IR, billing, and payment status inside selected files.",
+    "Some counters are file-level; some may count S.O., delivery stage, bill, or payment rows.",
+    "Count and landing file count may differ where one file has multiple matching rows.",
+  ],
+  status4: [
+    "Main filter and File Year first decide the file set.",
+    "Shows progress of selected files.",
+    "Counts show how many selected files are pending, active, or cleared at each milestone.",
+    "Clickers open Search Files with the same milestone context.",
+  ],
+  snapshot: [
+    "Main filter and File Year first decide the file set.",
+    "Shows a quick summary of the selected file set.",
+    "Value figures are calculated from selected files.",
+    "In active-file modes, allocation-related values use current FY allocation where allocation is shown.",
+  ],
+  analytics: analyticsMainHelper,
+};
+
 type AnalyticsSearchTarget = {
   dashboardFilter?: string;
   division?: string;
@@ -1734,6 +1786,10 @@ export function Dashboard() {
       key: "divisionFiles",
       title: "Division ranking by files",
       subtitle: "Number of files",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Count shows number of selected files under each division.",
+      ],
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
         sortAnalyticsRows(
@@ -1746,6 +1802,11 @@ export function Dashboard() {
       key: "divisionValue",
       title: "Division ranking by value",
       subtitle: "",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Intended, booked, committed, and S.O. values are calculated from those selected files, not from the date the value activity happened.",
+        "For All active files / Active + current FY closed, allocation uses the current FY allocation.",
+      ],
       columns: withRankAnalyticsColumns(
         getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics, divisionValueDisplayMode),
       ),
@@ -1755,6 +1816,11 @@ export function Dashboard() {
       key: "divisionTotalValue",
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Intended, booked, committed, and S.O. totals are calculated from those selected files, not from the date the value activity happened.",
+        "For All active files / Active + current FY closed, allocation uses the current FY allocation.",
+      ],
       columns: withRankAnalyticsColumns(
         getDivisionTotalValueAnalyticsColumns(
           visibleDivisionTotalValueMetrics,
@@ -1767,6 +1833,10 @@ export function Dashboard() {
       key: "divisionTurnaround",
       title: "Division turnaround ranking",
       subtitle: "Average days from Demand received date to first S.O.",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Average is calculated from Demand received date to first non-cancelled S.O. date inside selected files.",
+      ],
       columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
         sortAnalyticsRows(
@@ -1779,6 +1849,11 @@ export function Dashboard() {
       key: "topFirms",
       title: "Firms ranking by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Ranking uses non-cancelled S.O. values recorded inside those selected files.",
+        "It is not limited only to S.O.s placed during the selected year.",
+      ],
       columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Firm", "S.O. value")),
       rows: topFirmPagination.rows,
     },
@@ -1788,6 +1863,10 @@ export function Dashboard() {
       subtitle: selectedFirmAnalysisRow
         ? `BQ, invited, tender participation, and order conversion for ${selectedFirmAnalysisRow.name}`
         : "Select a firm to see BQ, invitation, tender participation, and order conversion.",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Firm counts are taken from BQ, invitation, tender participation, and S.O. entries inside those selected files.",
+      ],
       columns: getFirmAnalysisColumns(),
       rows: selectedFirmAnalysisDisplayRows,
     },
@@ -1795,6 +1874,10 @@ export function Dashboard() {
       key: "indentorsByFiles",
       title: "Top indentors by files",
       subtitle: "Number of files raised",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Count shows number of selected files raised by each indentor.",
+      ],
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Indentor")),
       rows: indentorsByFilesPagination.rows,
     },
@@ -1802,6 +1885,11 @@ export function Dashboard() {
       key: "indentorsByValue",
       title: "Top indentors by value",
       subtitle: "Total demand value",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Value uses demand capital plus revenue from those selected files.",
+        "It does not apply a separate activity-date filter.",
+      ],
       columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Indentor", "Total value")),
       rows: indentorsByValuePagination.rows,
     },
@@ -1809,6 +1897,10 @@ export function Dashboard() {
       key: "biddingMode",
       title: "Bidding mode mix",
       subtitle: "Distribution by mode",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Count shows selected files grouped by bidding mode.",
+      ],
       columns: getCountAnalyticsColumns("Mode"),
       rows: divisionFilteredAnalytics.biddingModeMix,
     },
@@ -1816,6 +1908,11 @@ export function Dashboard() {
       key: "fileValueThresholds",
       title: "Count and Value analysis",
       subtitle: getCountValueAnalysisSubtitle(countValueAnalysisMode),
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Count mode groups selected files by configured value slabs.",
+        "S.O. value mode uses supply order values recorded inside those selected files.",
+      ],
       columns: getCountValueAnalysisColumns(countValueAnalysisMode),
       rows: getCountValueAnalysisRows(divisionFilteredAnalytics, countValueAnalysisMode),
     },
@@ -1823,6 +1920,10 @@ export function Dashboard() {
       key: "paymentPending",
       title: "Payment pending by division",
       subtitle: "Material received but payment not completed",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Payment pending is calculated from the current workflow state inside those selected files.",
+      ],
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
         sortAnalyticsRows(
@@ -1840,6 +1941,10 @@ export function Dashboard() {
       subtitle: selectedPreBidFiscalYear
         ? `Month-wise Pre-Bid Meeting schedule for FY ${selectedPreBidFiscalYear}`
         : "FY-wise Pre-Bid Meeting schedule",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "FY and month grouping follows the Pre-Bid Meeting date inside selected files.",
+      ],
       columns: selectedPreBidFiscalYear
         ? getPreBidMeetingAnalyticsColumns()
         : getFiscalPreBidMeetingAnalyticsColumns(setSelectedPreBidFiscalYear),
@@ -1855,6 +1960,10 @@ export function Dashboard() {
         : tcecStatusStage === "pre"
           ? "Pre-TCEC FY-wise review and minutes status"
           : "Post-TCEC FY-wise review and minutes status",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "FY and committee grouping follows TCEC meeting and minutes dates inside selected files.",
+      ],
       columns: selectedTcecFiscalYear
         ? getTcecStatusColumns(tcecStatusStage, setSelectedTcecCommittee)
         : getFiscalTcecStatusColumns(tcecStatusStage, setSelectedTcecFiscalYear),
@@ -1866,6 +1975,10 @@ export function Dashboard() {
       subtitle: selectedCncFiscalYear
         ? `CNC date-wise review, approval, financial sanction, and S.O. status for FY ${selectedCncFiscalYear}`
         : "FY-wise CNC review, approval, financial sanction, and S.O. status",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "FY and date grouping follows CNC date inside selected files.",
+      ],
       columns: selectedCncFiscalYear
         ? getCncSummaryColumns()
         : getFiscalCncSummaryColumns(setSelectedCncFiscalYear),
@@ -1881,6 +1994,11 @@ export function Dashboard() {
           : `${suspectedAnomalyRows.length} active suspected data issue${
               suspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Rows show suspected data issues detected inside those selected files.",
+        "Accepted or suppressed anomaly rules may affect what remains visible.",
+      ],
       columns: getSuspectedAnomalyColumns(
         acceptSuspectedAnomaly,
         hasAnomalyAdminAccess(activeUser?.role) ? reviewSuspectedAnomaly : undefined,
@@ -1891,6 +2009,10 @@ export function Dashboard() {
       key: "delayStatus",
       title: "Delay status",
       subtitle: `Files stuck for more than ${Number.parseInt(analyticsDelayDays, 10) || 0} days. Average ${analyticsDelaySummary?.averageDays ?? 0} days; longest ${analyticsDelaySummary?.longestDays ?? 0} days.`,
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Delay is calculated from current pending milestone dates inside those selected files.",
+      ],
       columns: getCountAnalyticsColumns("Milestone"),
       rows: (analyticsDelaySummary?.byMilestone ?? []).map((row) => ({
         ...row,
@@ -1904,6 +2026,10 @@ export function Dashboard() {
         milestoneClearingViewMode === "chronological"
           ? "Milestones in chronological workflow order"
           : "Slowest milestones by average clearing time",
+      helper: [
+        "Main filter and File Year first decide the file set.",
+        "Clearing duration is calculated from milestone dates inside those selected files.",
+      ],
       columns:
         milestoneClearingViewMode === "chronological"
           ? getMilestoneClearingAnalyticsColumns("chronological")
@@ -2318,22 +2444,49 @@ export function Dashboard() {
             { key: "snapshot", label: "Snapshot" },
             { key: "analytics", label: "Analytics" },
             { key: "finance", label: "Finance" },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveDashboardTab(tab.key as DashboardTab)}
-              data-testid={`dashboard-tab-${tab.key}`}
-              className={
-                "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
-                (activeDashboardTab === tab.key
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
-              }
-            >
-              {tab.label}
-            </button>
-          ))}
+          ].map((tab) => {
+            const tabKey = tab.key as DashboardTab;
+            const helper = dashboardTabHelpers[tabKey];
+            return (
+              <div key={tab.key} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveDashboardTab(tabKey)}
+                  data-testid={`dashboard-tab-${tab.key}`}
+                  className={
+                    "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
+                    (activeDashboardTab === tab.key
+                      ? "bg-secondary text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                  }
+                >
+                  {tab.label}
+                </button>
+                {helper ? (
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={`${tab.label} help`}
+                          className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                        >
+                          <Info className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="bottom"
+                        align="start"
+                        className="max-w-xs text-xs leading-relaxed"
+                      >
+                        <HelperBulletList items={helper} />
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
         <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
           <span>Division</span>
@@ -2352,7 +2505,29 @@ export function Dashboard() {
         </label>
         <div className="flex items-end gap-1.5">
           <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
-            <span>File year</span>
+            <span className="inline-flex items-center gap-1">
+              File year
+              <TooltipProvider delayDuration={150}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="File year subfilter help"
+                      className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <Info className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    align="start"
+                    className="max-w-xs text-xs leading-relaxed"
+                  >
+                    <HelperBulletList items={fileYearSubfilterHelper} />
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </span>
             <select
               value={activeFileYear}
               onChange={(event) => updateFileYearSelection(event.target.value)}
@@ -2821,19 +2996,42 @@ export function Dashboard() {
                 {analyticsPanels.map((panel) => {
                   const selected = selectedAnalyticsPanel.key === panel.key;
                   return (
-                    <button
-                      key={panel.key}
-                      type="button"
-                      onClick={() => setActiveAnalyticsPanel(panel.key)}
-                      className={
-                        "w-full rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                        (selected
-                          ? "bg-primary text-primary-foreground shadow-sm"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                      }
-                    >
-                      {panel.title}
-                    </button>
+                    <div key={panel.key} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setActiveAnalyticsPanel(panel.key)}
+                        className={
+                          "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                          (selected
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                        }
+                      >
+                        {panel.title}
+                      </button>
+                      {panel.helper ? (
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                aria-label={`${panel.title} note`}
+                                className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                              >
+                                <Info className="size-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="right"
+                              align="start"
+                              className="max-w-xs text-xs leading-relaxed"
+                            >
+                              <HelperBulletList items={panel.helper} />
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
@@ -2842,6 +3040,7 @@ export function Dashboard() {
               <AnalyticsChartCard
                 title={displayedAnalyticsPanel.title}
                 subtitle={displayedAnalyticsPanel.subtitle}
+                helper={displayedAnalyticsPanel.helper}
                 actions={
                   <>
                     {analyticsDivisionFilterEnabled ? (
@@ -6495,25 +6694,61 @@ function CountValueAnalysisControls({
 function AnalyticsChartCard({
   title,
   subtitle,
+  helper,
   actions,
   children,
 }: {
   title: string;
   subtitle: string;
+  helper?: string;
   actions?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold">{title}</h3>
-          {subtitle ? <p className="text-xs text-muted-foreground">{subtitle}</p> : null}
+        <div className="flex min-w-0 items-start gap-1.5">
+          <div className="min-w-0">
+            <h3 className="text-sm font-bold">{title}</h3>
+            {subtitle ? <p className="text-xs text-muted-foreground">{subtitle}</p> : null}
+          </div>
+          {helper ? (
+            <TooltipProvider delayDuration={150}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`${title} note`}
+                    className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                  >
+                    <Info className="size-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="right"
+                  align="start"
+                  className="max-w-xs text-xs leading-relaxed"
+                >
+                  <HelperBulletList items={helper} />
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
       {children}
     </div>
+  );
+}
+
+function HelperBulletList({ items }: { items: string[] }) {
+  return (
+    <ul className="list-disc space-y-1 pl-4">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
   );
 }
 

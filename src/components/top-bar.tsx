@@ -149,11 +149,7 @@ export function TopBar() {
   };
   const yearOptions = Array.from(
     new Set(
-      [
-        settings.financialYear,
-        settings.selectedYear,
-        ...settings.financialYears,
-      ]
+      [settings.financialYear, settings.selectedYear, ...settings.financialYears]
         .map((year) => normalizeFinancialYearLabel(year))
         .filter(
           (year): year is string =>
@@ -314,14 +310,14 @@ export function TopBar() {
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
                   {globalFilterHelp.description}
                 </p>
-                <div className="mt-3 space-y-2 border-t border-border pt-2 text-xs leading-5">
+                <ul className="mt-3 list-disc space-y-2 border-t border-border pl-4 pt-2 text-xs leading-5">
                   {globalFilterHelp.options.map((option) => (
-                    <div key={option.label}>
-                      <div className="font-medium">{option.label}</div>
-                      <div className="text-muted-foreground">{option.description}</div>
-                    </div>
+                    <li key={option.label} className="pl-1">
+                      <span className="font-medium">{option.label}: </span>
+                      <span className="text-muted-foreground">{option.description}</span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             </div>
           </div>
@@ -365,7 +361,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       ? "Shows files that are not closed and not cancelled, across all financial years."
       : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
         ? `Shows all active files, plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
-        : `Shows files created in FY ${selectedFyLabel}, and files explicitly carried as active in FY ${selectedFyLabel}.`;
+        : `Shows files active during FY ${selectedFyLabel}, including older files continued into FY ${selectedFyLabel}.`;
 
   return {
     title,
@@ -374,15 +370,20 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "Specific FY",
         description:
-          "Includes files whose file year matches that FY, plus files marked active for that FY.",
+          "Shows files active during that FY, including older files continued into that FY.",
       },
       {
         label: "All active files",
-        description: "Includes open/live files from all years. Closed and cancelled files are excluded.",
+        description: "Shows all currently open files across all file years.",
       },
       {
         label: "Active + current FY closed",
-        description: `Includes all active files, plus files closed in current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}.`,
+        description: `Shows currently open files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
+      },
+      {
+        label: "Value Reports",
+        description:
+          "In active-file modes, allocation uses current FY allocation; intended, booked, committed, and S.O. values come from the selected files.",
       },
     ],
   };
