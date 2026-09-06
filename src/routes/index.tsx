@@ -78,6 +78,15 @@ type DashboardTab =
   | "status4"
   | "analytics"
   | "finance";
+const dashboardTabOptions = [
+  { key: "status", label: "Status-1" },
+  { key: "liveStatus", label: "Status-2" },
+  { key: "status3", label: "Status-3" },
+  { key: "status4", label: "Status-4" },
+  { key: "snapshot", label: "Snapshot" },
+  { key: "analytics", label: "Analytics" },
+  { key: "finance", label: "Finance" },
+] satisfies Array<{ key: DashboardTab; label: string }>;
 type StatusActionMode = "pdf" | "excel" | "search";
 type Status4DrillMode = "threshold" | "monthwise";
 type Status4DrillState = {
@@ -594,12 +603,17 @@ function isAnalyticsPanelKey(value: unknown): value is AnalyticsPanelKey {
     value === "biddingMode" ||
     value === "fileValueThresholds" ||
     value === "paymentPending" ||
+    value === "preBidMeetings" ||
     value === "tcecStatus" ||
     value === "cncSummary" ||
     value === "suspectedAnomaly" ||
     value === "delayStatus" ||
     value === "milestoneClearingTable"
   );
+}
+
+function isDashboardTab(value: unknown): value is DashboardTab {
+  return typeof value === "string" && dashboardTabOptions.some((option) => option.key === value);
 }
 
 export function Dashboard() {
@@ -636,7 +650,7 @@ export function Dashboard() {
     const requestedTab = typeof locationSearch.tab === "string" ? locationSearch.tab : undefined;
     const requestedPanel =
       typeof locationSearch.analyticsPanel === "string" ? locationSearch.analyticsPanel : undefined;
-    if (requestedTab === "analytics") setActiveDashboardTab("analytics");
+    setActiveDashboardTab(isDashboardTab(requestedTab) ? requestedTab : "status");
     if (isAnalyticsPanelKey(requestedPanel)) setActiveAnalyticsPanel(requestedPanel);
   }, [locationSearch.analyticsPanel, locationSearch.tab]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
@@ -2145,6 +2159,30 @@ export function Dashboard() {
     });
   };
 
+  const selectDashboardTab = (tab: DashboardTab) => {
+    setActiveDashboardTab(tab);
+    navigate({
+      to: "/dashboard",
+      search: {
+        tab,
+        analyticsPanel: tab === "analytics" ? activeAnalyticsPanel : undefined,
+      },
+      replace: true,
+    });
+  };
+
+  const selectAnalyticsPanel = (panel: AnalyticsPanelKey) => {
+    setActiveAnalyticsPanel(panel);
+    navigate({
+      to: "/dashboard",
+      search: {
+        tab: "analytics",
+        analyticsPanel: panel,
+      },
+      replace: true,
+    });
+  };
+
   const openSearchFilter = (dashboardFilter: string) => {
     navigate({
       to: "/search",
@@ -2197,6 +2235,7 @@ export function Dashboard() {
   };
   const openAnalyticsResultsInSearch = () => {
     if (!analyticsTransferType || displayedAnalyticsPanel.rows.length === 0) return;
+    const analyticsHref = getAnalyticsPanelHref(displayedAnalyticsPanel.key);
     navigate({
       to: "/search",
       search: {
@@ -2217,8 +2256,8 @@ export function Dashboard() {
         ),
         drillPath: serializeDrillPath([
           drillItem("Dashboard", "/dashboard"),
-          drillItem("Analytics", "/dashboard?tab=analytics"),
-          drillItem(displayedAnalyticsPanel.title, "/dashboard?tab=analytics"),
+          drillItem("Analytics", analyticsHref),
+          drillItem(displayedAnalyticsPanel.title, analyticsHref),
           drillItem("Send to Search Files"),
         ]),
       },
@@ -2244,7 +2283,11 @@ export function Dashboard() {
         focusTarget: target.focusTarget,
         drillPath: serializeDrillPath(
           target.drillPath ??
-            getAnalyticsDrillPath(displayedAnalyticsPanel.title, target.dashboardFilter),
+            getAnalyticsDrillPath(
+              displayedAnalyticsPanel.key,
+              displayedAnalyticsPanel.title,
+              target.dashboardFilter,
+            ),
         ),
       },
     });
@@ -2436,22 +2479,14 @@ export function Dashboard() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
-          {[
-            { key: "status", label: "Status-1" },
-            { key: "liveStatus", label: "Status-2" },
-            { key: "status3", label: "Status-3" },
-            { key: "status4", label: "Status-4" },
-            { key: "snapshot", label: "Snapshot" },
-            { key: "analytics", label: "Analytics" },
-            { key: "finance", label: "Finance" },
-          ].map((tab) => {
-            const tabKey = tab.key as DashboardTab;
+          {dashboardTabOptions.map((tab) => {
+            const tabKey = tab.key;
             const helper = dashboardTabHelpers[tabKey];
             return (
               <div key={tab.key} className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setActiveDashboardTab(tabKey)}
+                  onClick={() => selectDashboardTab(tabKey)}
                   data-testid={`dashboard-tab-${tab.key}`}
                   className={
                     "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
@@ -2999,7 +3034,7 @@ export function Dashboard() {
                     <div key={panel.key} className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => setActiveAnalyticsPanel(panel.key)}
+                        onClick={() => selectAnalyticsPanel(panel.key)}
                         className={
                           "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
                           (selected
@@ -3737,7 +3772,7 @@ function FloatingHelp({ label, children }: { label: string; children: ReactNode 
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
-          {children}
+          {typeof children === "string" ? <HelperBulletList items={children} /> : children}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -6742,14 +6777,46 @@ function AnalyticsChartCard({
   );
 }
 
-function HelperBulletList({ items }: { items: string[] }) {
+function HelperBulletList({ items }: { items: string[] | string }) {
+  const bullets = splitHelperText(items);
   return (
     <ul className="list-disc space-y-1 pl-4">
-      {items.map((item) => (
-        <li key={item}>{item}</li>
+      {bullets.map((item, index) => (
+        <li key={`${item}-${index}`}>{item}</li>
       ))}
     </ul>
   );
+}
+
+function splitHelperText(items: string[] | string) {
+  const source = Array.isArray(items) ? items : [items];
+  return source
+    .flatMap((item) => protectHelperAbbreviations(item).split("\n"))
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((item) =>
+      restoreHelperAbbreviations(item)
+        .trim()
+        .replace(/^[-*]\s+/, ""),
+    )
+    .filter(Boolean);
+}
+
+function protectHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S.O.", "S§O§")
+    .replaceAll("D.P.", "D§P§")
+    .replaceAll("F.Y.", "F§Y§")
+    .replaceAll("FY.", "FY§")
+    .replaceAll("No.", "No§");
+}
+
+function restoreHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S§O§", "S.O.")
+    .replaceAll("D§P§", "D.P.")
+    .replaceAll("F§Y§", "F.Y.")
+    .replaceAll("FY§", "FY.")
+    .replaceAll("No§", "No.");
 }
 
 function DashboardBreadcrumb({
@@ -7350,7 +7417,7 @@ function MilestoneClearingNameCell({ name }: { name: string }) {
             </span>
           </TooltipTrigger>
           <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
-            {helper}
+            <HelperBulletList items={helper} />
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -13753,6 +13820,10 @@ function getDashboardTabHref(tab: DashboardTab) {
   return "/dashboard";
 }
 
+function getAnalyticsPanelHref(panel: AnalyticsPanelKey) {
+  return `/dashboard?tab=analytics&analyticsPanel=${encodeURIComponent(panel)}`;
+}
+
 function splitDashboardFilterTitle(title: string) {
   return title
     .split(" - ")
@@ -13791,8 +13862,12 @@ function getStatus4DrillPath(filter: Status4SearchFilter) {
   return parts;
 }
 
-function getAnalyticsDrillPath(panelTitle: string, dashboardFilter: string | undefined) {
-  const analyticsHref = "/dashboard?tab=analytics";
+function getAnalyticsDrillPath(
+  panel: AnalyticsPanelKey,
+  panelTitle: string,
+  dashboardFilter: string | undefined,
+) {
+  const analyticsHref = getAnalyticsPanelHref(panel);
   return [
     drillItem("Dashboard", "/dashboard"),
     drillItem("Analytics", analyticsHref),

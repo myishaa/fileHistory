@@ -3279,6 +3279,7 @@ function HelperLabel({ label, helper }: { label: string; helper?: string[] }) {
 }
 
 function SearchHelper({ items, label }: { items: string[]; label: string }) {
+  const bullets = splitHelperText(items);
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -3294,14 +3295,44 @@ function SearchHelper({ items, label }: { items: string[]; label: string }) {
         </TooltipTrigger>
         <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
           <ul className="list-disc space-y-1 pl-4">
-            {items.map((item) => (
-              <li key={item}>{item}</li>
+            {bullets.map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
             ))}
           </ul>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
+}
+
+function splitHelperText(items: string[]) {
+  return items
+    .flatMap((item) => protectHelperAbbreviations(item).split("\n"))
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((item) =>
+      restoreHelperAbbreviations(item)
+        .trim()
+        .replace(/^[-*]\s+/, ""),
+    )
+    .filter(Boolean);
+}
+
+function protectHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S.O.", "S§O§")
+    .replaceAll("D.P.", "D§P§")
+    .replaceAll("F.Y.", "F§Y§")
+    .replaceAll("FY.", "FY§")
+    .replaceAll("No.", "No§");
+}
+
+function restoreHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S§O§", "S.O.")
+    .replaceAll("D§P§", "D.P.")
+    .replaceAll("F§Y§", "F.Y.")
+    .replaceAll("FY§", "FY.")
+    .replaceAll("No§", "No.");
 }
 
 function FilterInput({

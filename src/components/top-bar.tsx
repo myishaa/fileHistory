@@ -2,8 +2,8 @@ import { useRouterState } from "@tanstack/react-router";
 import {
   BarChart3,
   CalendarDays,
-  FilePlus2,
   CircleHelp,
+  FilePlus2,
   LayoutDashboard,
   Moon,
   ScanLine,
@@ -37,7 +37,6 @@ const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
-  { to: "/help", label: "Help", icon: CircleHelp },
 ] as const;
 
 export function TopBar() {

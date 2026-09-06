@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -103,6 +103,9 @@ import {
 } from "@/lib/firm-rating";
 
 export const Route = createFileRoute("/reports")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    mode: typeof search.mode === "string" ? search.mode : undefined,
+  }),
   component: ReportsPage,
 });
 
@@ -301,6 +304,7 @@ async function saveCashOutGoPlan(plan: CashOutGoPlanPayload) {
 }
 
 function ReportsPage() {
+  const locationSearch = useRouterState({ select: (state) => state.location.search });
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
   const activeUser = useActiveUser();
@@ -394,6 +398,12 @@ function ReportsPage() {
   const [hasLoadedReports, setHasLoadedReports] = useState(false);
   const [reportsError, setReportsError] = useState<string | undefined>();
   const hasLoadedReportsRef = useRef(false);
+  useEffect(() => {
+    const requestedMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
+    if (isReportMode(requestedMode)) {
+      setReportMode(requestedMode);
+    }
+  }, [locationSearch.mode]);
   const bgReceiptDelayStorageKey = `recordkeeper:bg-receipt-delay-days:${
     activeUser?.id ?? "anonymous"
   }`;
@@ -567,6 +577,8 @@ function ReportsPage() {
   };
   const fileMatchesActiveFileYear = (file: FileRecord) =>
     activeFileYear === "all" || file.year === activeFileYear;
+  const fileYearFilterDisabled = isFileYearFilterDisabledReport(reportMode);
+  const fileCategoryFilterDisabled = isFileCategoryFilterDisabledReport(reportMode);
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays);
   const delayStatusThresholdDays = getDelayThresholdDays(delayStatusDays);
   const normalizedBgReceiptDelayDays = useMemo(
@@ -578,9 +590,31 @@ function ReportsPage() {
   const currentFyToDate = formatLocalDate(new Date());
   const optionalCashOutgoDateFilterActive = isOptionalCashOutgoDateFilterReport(reportMode);
   const optionalReportScopeDateFilterActive = isReportScopeDateFilterReport(reportMode);
+  const cashOutgoCurrentFyShortcutActive =
+    optionalCashOutgoDateFilterActive &&
+    reportMode !== "itemsDeliveredBillsPending" &&
+    reportMode !== "itemsDeliveredBillsPrepared" &&
+    reportMode !== "billsSubmitted" &&
+    reportMode !== "pendingReturnedBills" &&
+    reportMode !== "returnedBillsResubmitted" &&
+    reportMode !== "returnedBillsPaid" &&
+    reportMode !== "supplementaryBillsSubmitted" &&
+    reportMode !== "supplementaryPendingReturnedBills" &&
+    reportMode !== "supplementaryReturnedBillsResubmitted" &&
+    reportMode !== "supplementaryReturnedBillsPaid";
+  useEffect(() => {
+    if (!cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) {
+      setCashOutgoCurrentFyFilter(false);
+    }
+  }, [cashOutgoCurrentFyFilter, cashOutgoCurrentFyShortcutActive]);
+  useEffect(() => {
+    if (reportScopeCurrentFyFilter) {
+      setReportScopeCurrentFyFilter(false);
+    }
+  }, [reportScopeCurrentFyFilter]);
   const activeHistoricalDateRange = useMemo(() => {
     if (optionalCashOutgoDateFilterActive) {
-      if (cashOutgoCurrentFyFilter) {
+      if (cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) {
         return { fromDate: currentFyFromDate, toDate: currentFyToDate };
       }
       if (cashOutgoDateRangeFilter) {
@@ -596,6 +630,7 @@ function ReportsPage() {
     cashOutgoDateRangeFilter,
     currentFyFromDate,
     currentFyToDate,
+    cashOutgoCurrentFyShortcutActive,
     historicalReportFromDate,
     historicalReportToDate,
     optionalCashOutgoDateFilterActive,
@@ -603,18 +638,12 @@ function ReportsPage() {
   ]);
   const activeReportScopeDateRange = useMemo(() => {
     if (!optionalReportScopeDateFilterActive) return undefined;
-    if (reportScopeCurrentFyFilter) {
-      return { fromDate: currentFyFromDate, toDate: currentFyToDate };
-    }
     if (reportScopeDateRangeFilter) {
       return { fromDate: reportScopeFromDate, toDate: reportScopeToDate };
     }
     return undefined;
   }, [
-    currentFyFromDate,
-    currentFyToDate,
     optionalReportScopeDateFilterActive,
-    reportScopeCurrentFyFilter,
     reportScopeDateRangeFilter,
     reportScopeFromDate,
     reportScopeToDate,
@@ -622,7 +651,9 @@ function ReportsPage() {
   const reportsQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
-    params.set("fileCategories", serializeFileCategories(selectedFileCategories));
+    if (!fileCategoryFilterDisabled) {
+      params.set("fileCategories", serializeFileCategories(selectedFileCategories));
+    }
     params.set("delayDays", String(delayStatusThresholdDays));
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayStatusMilestoneKey);
@@ -648,9 +679,8 @@ function ReportsPage() {
     delayStatusMilestoneKey,
     delayStatusThresholdDays,
     expectedCashOutgoOffsetDays,
+    fileCategoryFilterDisabled,
     activeHistoricalDateRange,
-    historicalReportFromDate,
-    historicalReportToDate,
     reportMode,
     normalizedBgReceiptDelayDays,
     normalizedWarrantyBgBufferDays,
@@ -1223,7 +1253,7 @@ function ReportsPage() {
   });
   const billingPaymentReportDescription = getBillingPaymentReportDescription(reportMode, {
     activeHistoricalDateRange,
-    cashOutgoCurrentFyFilter,
+    cashOutgoCurrentFyFilter: cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter,
     cashOutgoDateRangeFilter,
     currentFinancialYear: settings.financialYear,
     globalYear: settings.selectedYear,
@@ -1287,6 +1317,15 @@ function ReportsPage() {
       "excel",
     );
   const selectedReportMode = reportModes.find((mode) => mode.key === reportMode) ?? reportModes[0];
+  const getReportSearchDrillPath = (details: Array<string | undefined> = []) =>
+    serializeDrillPath([
+      { label: "Reports", href: "/reports" },
+      { label: selectedReportTitle, href: getReportModeHref(reportMode) },
+      ...details
+        .map((detail) => detail?.trim())
+        .filter((detail): detail is string => Boolean(detail))
+        .map((detail) => ({ label: detail, href: getReportModeHref(reportMode) })),
+    ]);
   const historicalDateRangeControls = isHistoricalDateRangeReport(reportMode)
     ? optionalCashOutgoDateFilterActive
       ? {
@@ -1294,13 +1333,18 @@ function ReportsPage() {
           toDate: historicalReportToDate,
           onFromDateChange: setHistoricalReportFromDate,
           onToDateChange: setHistoricalReportToDate,
-          currentFyEnabled: cashOutgoCurrentFyFilter,
+          helperText: getDateRangeHelperText(reportMode),
           dateRangeEnabled: cashOutgoDateRangeFilter,
-          currentFyLabel: `Current FY (${displayFinancialYearLabel(settings.financialYear)})`,
-          onCurrentFyEnabledChange: (checked: boolean) => {
-            setCashOutgoCurrentFyFilter(checked);
-            if (checked) setCashOutgoDateRangeFilter(false);
-          },
+          ...(cashOutgoCurrentFyShortcutActive
+            ? {
+                currentFyEnabled: cashOutgoCurrentFyFilter,
+                currentFyLabel: `Current FY (${displayFinancialYearLabel(settings.financialYear)})`,
+                onCurrentFyEnabledChange: (checked: boolean) => {
+                  setCashOutgoCurrentFyFilter(checked);
+                  if (checked) setCashOutgoDateRangeFilter(false);
+                },
+              }
+            : {}),
           onDateRangeEnabledChange: (checked: boolean) => {
             setCashOutgoDateRangeFilter(checked);
             if (checked) setCashOutgoCurrentFyFilter(false);
@@ -1311,6 +1355,7 @@ function ReportsPage() {
           toDate: historicalReportToDate,
           onFromDateChange: setHistoricalReportFromDate,
           onToDateChange: setHistoricalReportToDate,
+          helperText: getDateRangeHelperText(reportMode),
         }
     : undefined;
   const reportScopeDateRangeControls = optionalReportScopeDateFilterActive
@@ -1319,13 +1364,8 @@ function ReportsPage() {
         toDate: reportScopeToDate,
         onFromDateChange: setReportScopeFromDate,
         onToDateChange: setReportScopeToDate,
-        currentFyEnabled: reportScopeCurrentFyFilter,
+        helperText: getDateRangeHelperText(reportMode),
         dateRangeEnabled: reportScopeDateRangeFilter,
-        currentFyLabel: `Current FY (${displayFinancialYearLabel(settings.financialYear)})`,
-        onCurrentFyEnabledChange: (checked: boolean) => {
-          setReportScopeCurrentFyFilter(checked);
-          if (checked) setReportScopeDateRangeFilter(false);
-        },
         onDateRangeEnabledChange: (checked: boolean) => {
           setReportScopeDateRangeFilter(checked);
           if (checked) setReportScopeCurrentFyFilter(false);
@@ -1377,6 +1417,9 @@ function ReportsPage() {
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         selectedYear: getCashOutgoSearchYear(mode),
+        drillPath: getReportSearchDrillPath([
+          monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
+        ]),
       },
     });
   };
@@ -1401,6 +1444,9 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath([
+          monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
+        ]),
       },
     });
   };
@@ -1412,6 +1458,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath(),
       },
     });
   };
@@ -1423,6 +1470,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath([milestoneKey === "all" ? undefined : milestoneKey]),
       },
     });
   };
@@ -1434,6 +1482,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath([breakupKey]),
       },
     });
   };
@@ -1474,6 +1523,7 @@ function ReportsPage() {
         focusSection: "Supply order and payment",
         focusTarget: rows[0]?.sourceFocusTarget || getFallbackCashOutGoPlanFocusTarget(rows[0]),
         focusTargets: serializeCashOutGoPlanFocusTargets(rows),
+        drillPath: getReportSearchDrillPath(),
       },
     });
   };
@@ -1539,6 +1589,9 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath([
+          mode === "reverse" ? "Reverse / negative gap" : "Used rows",
+        ]),
       },
     });
   };
@@ -1551,6 +1604,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        drillPath: getReportSearchDrillPath([row.label]),
       },
     });
   };
@@ -1566,6 +1620,7 @@ function ReportsPage() {
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
+        drillPath: getReportSearchDrillPath(),
       },
     });
   };
@@ -1584,6 +1639,7 @@ function ReportsPage() {
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...sourceFocus,
         focusTargets: serializeMmgSummaryFocusTargets(row.focusTargets),
+        drillPath: getReportSearchDrillPath([row.label]),
       },
     });
   };
@@ -1615,6 +1671,7 @@ function ReportsPage() {
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         focusTargets: String(row.focusTargets ?? "") || undefined,
+        drillPath: getReportSearchDrillPath([String(row.label ?? "")]),
       },
     });
   };
@@ -1624,6 +1681,14 @@ function ReportsPage() {
         ? visibleFileCategoryKeys.filter((key) => new Set([...current, category]).has(key))
         : current.filter((key) => key !== category),
     );
+  };
+  const selectReportMode = (mode: ReportMode) => {
+    setReportMode(mode);
+    navigate({
+      to: "/reports",
+      search: { mode },
+      replace: true,
+    });
   };
 
   return (
@@ -1637,7 +1702,7 @@ function ReportsPage() {
               activeMode={reportMode}
               expanded={expandedReportGroups.supplyOrderDelivery}
               onToggle={() => toggleReportGroup("supplyOrderDelivery")}
-              onSelect={setReportMode}
+              onSelect={selectReportMode}
             />
             <CollapsibleReportGroup
               title="Cash Outgo"
@@ -1647,7 +1712,7 @@ function ReportsPage() {
               activeMode={reportMode}
               expanded={expandedReportGroups.cashOutgo}
               onToggle={() => toggleReportGroup("cashOutgo")}
-              onSelect={setReportMode}
+              onSelect={selectReportMode}
             />
             <CollapsibleReportGroup
               title="Monitoring / Exceptions"
@@ -1655,23 +1720,23 @@ function ReportsPage() {
               activeMode={reportMode}
               expanded={expandedReportGroups.monitoring}
               onToggle={() => toggleReportGroup("monitoring")}
-              onSelect={setReportMode}
+              onSelect={selectReportMode}
             />
             <div className="space-y-1 rounded-md border border-border bg-background/60 p-1.5">
               <ReportModeButton
                 mode={mmgReportMode}
                 selected={reportMode === mmgReportMode.key}
-                onSelect={setReportMode}
+                onSelect={selectReportMode}
               />
               <ReportModeButton
                 mode={demandProcessingReportMode}
                 selected={reportMode === demandProcessingReportMode.key}
-                onSelect={setReportMode}
+                onSelect={selectReportMode}
               />
               <ReportModeButton
                 mode={firmDatabaseReportMode}
                 selected={reportMode === firmDatabaseReportMode.key}
-                onSelect={setReportMode}
+                onSelect={selectReportMode}
               />
             </div>
           </div>
@@ -1683,12 +1748,14 @@ function ReportsPage() {
                 value={activeFileYear}
                 options={fileYearOptions}
                 locked={fileYearLocked}
+                disabled={fileYearFilterDisabled}
                 onChange={updateFileYearSelection}
                 onLockToggle={toggleFileYearLock}
               />
               <FileCategoryFilter
                 selectedCategories={selectedFileCategories}
                 options={visibleFileCategoryOptions}
+                disabled={fileCategoryFilterDisabled}
                 onChange={toggleFileCategory}
               />
             </div>
@@ -2415,6 +2482,7 @@ const reportModes = [
   { key: "pendingLiabilityAgeing", label: "Pending Liabilities" },
 ] satisfies Array<{ key: ReportMode; label: string }>;
 type ReportModeOption = (typeof reportModes)[number];
+type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {
   itemsDeliveredBillsPrepared:
     "Includes returned supplementary bills pending correction/resubmission.",
@@ -2440,6 +2508,13 @@ const reportModeHelperText = {
     "Without date range, values come from S.O.s inside those selected files.",
     "Date range, when enabled, further filters firm performance by S.O. date.",
   ],
+  merData: [
+    "MER corresponds to Global Filter F.Y.",
+    "For Active files, MER uses the official Current FY.",
+    "For Active + Current FY closed, MER uses the official Current FY.",
+    "For a specific FY, MER uses that selected FY.",
+    "File Year subfilter is not applied to this report.",
+  ],
   supplementaryBillsPaid: ["Returned and paid supplementary bills included."],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 type HelperText = string | string[];
@@ -2462,6 +2537,21 @@ function getReportModeOptions(keys: ReadonlyArray<ReportMode>): ReportModeOption
     if (!mode) throw new Error(`Unknown report mode: ${key}`);
     return mode;
   });
+}
+function isReportMode(value: unknown): value is ReportMode {
+  return typeof value === "string" && reportModeByKey.has(value as ReportMode);
+}
+function getReportModeHref(mode: ReportMode) {
+  return `/reports?mode=${encodeURIComponent(mode)}`;
+}
+function serializeDrillPath(parts: DrillPathItem[]) {
+  const cleanParts = parts
+    .map((part) => ({
+      label: part.label.trim(),
+      href: part.href?.trim() || undefined,
+    }))
+    .filter((part) => part.label);
+  return cleanParts.length ? JSON.stringify(cleanParts) : undefined;
 }
 const mmgReportMode = reportModes[0];
 const demandProcessingReportMode = reportModes[1];
@@ -2917,6 +3007,14 @@ function isHistoricalDateRangeReport(mode: ReportMode) {
   );
 }
 
+function isFileYearFilterDisabledReport(mode: ReportMode) {
+  return mode === "merData" || mode === "cashOutGoPlan";
+}
+
+function isFileCategoryFilterDisabledReport(mode: ReportMode) {
+  return mode === "merData" || mode === "cashOutGoPlan";
+}
+
 function isOptionalCashOutgoDateFilterReport(mode: ReportMode) {
   return (
     mode === "itemsDeliveredBillsPending" ||
@@ -2961,6 +3059,74 @@ function isReturnedBillReportMode(
 
 function isReportScopeDateFilterReport(mode: ReportMode) {
   return mode === "mmgSummary" || mode === "demandProcessingAnalysis" || mode === "firmDatabase";
+}
+
+function getDateRangeHelperText(mode: ReportMode): HelperText {
+  const commonPrefix = "Global filter, division, file category, and File Year are applied first.";
+  if (mode === "mmgSummary") {
+    return ["Date range filters source files by Demand received date.", commonPrefix];
+  }
+  if (mode === "demandProcessingAnalysis") {
+    return [
+      "Date range filters rows by the selected From field date in Demand Processing analysis.",
+      commonPrefix,
+    ];
+  }
+  if (mode === "firmDatabase") {
+    return ["Date range filters Firm Performance by S.O. date.", commonPrefix];
+  }
+  if (mode === "itemsDeliveredBillsPending") {
+    return [
+      "Date range filters by delivery/job completion date or D.P. basis date.",
+      "To date is also used as the as-on date for pending bill preparation checks.",
+      commonPrefix,
+    ];
+  }
+  if (mode === "itemsDeliveredBillsPrepared") {
+    return [
+      "Date range filters by Bill preparation date.",
+      "To date is also used as the as-on date for pending bill submission/payment checks.",
+      commonPrefix,
+    ];
+  }
+  if (mode === "billsSubmitted") {
+    return [
+      "Date range filters by Bill sent/submission date.",
+      "To date is also used as the as-on date for pending payment checks.",
+      commonPrefix,
+    ];
+  }
+  if (mode === "spentTillDateFy" || mode === "supplementaryBillsPaid") {
+    return ["Date range filters by payment date.", commonPrefix];
+  }
+  if (
+    mode === "pendingReturnedBills" ||
+    mode === "returnedBillsResubmitted" ||
+    mode === "returnedBillsPaid"
+  ) {
+    return [
+      "Date range filters by the returned-bill event date relevant to this report.",
+      commonPrefix,
+    ];
+  }
+  if (mode === "supplementaryBillsSubmitted") {
+    return [
+      "Date range filters by supplementary bill sent/resubmitted date.",
+      "To date is also used as the as-on date for pending payment checks.",
+      commonPrefix,
+    ];
+  }
+  if (
+    mode === "supplementaryPendingReturnedBills" ||
+    mode === "supplementaryReturnedBillsResubmitted" ||
+    mode === "supplementaryReturnedBillsPaid"
+  ) {
+    return [
+      "Date range filters by the supplementary returned-bill event date relevant to this report.",
+      commonPrefix,
+    ];
+  }
+  return ["Date range filters this report by its primary transaction date.", commonPrefix];
 }
 
 function isMonthSelectionReport(mode: ReportMode) {
@@ -4828,6 +4994,7 @@ type HistoricalDateRangeControlsProps = {
   currentFyEnabled?: boolean;
   dateRangeEnabled?: boolean;
   currentFyLabel?: string;
+  helperText?: HelperText;
   onCurrentFyEnabledChange?: (checked: boolean) => void;
   onDateRangeEnabledChange?: (checked: boolean) => void;
 };
@@ -4886,6 +5053,7 @@ function HistoricalDateRangeControls({
   currentFyEnabled,
   dateRangeEnabled,
   currentFyLabel = "Current FY",
+  helperText,
   onCurrentFyEnabledChange,
   onDateRangeEnabledChange,
 }: HistoricalDateRangeControlsProps) {
@@ -4895,28 +5063,52 @@ function HistoricalDateRangeControls({
     <>
       {optionalMode ? (
         <div className="flex min-h-9 items-center gap-3 rounded-md border border-border bg-secondary/20 px-3 text-xs font-medium text-foreground">
-          <label className="flex items-center gap-1.5">
-            <input
-              type="checkbox"
-              checked={Boolean(currentFyEnabled)}
-              onChange={(event) => onCurrentFyEnabledChange?.(event.target.checked)}
-              className="size-3.5 rounded border-input"
-            />
-            {currentFyLabel}
-          </label>
-          <label className="flex items-center gap-1.5">
-            <input
-              type="checkbox"
-              checked={Boolean(dateRangeEnabled)}
-              onChange={(event) => onDateRangeEnabledChange?.(event.target.checked)}
-              className="size-3.5 rounded border-input"
-            />
-            Date range
-          </label>
+          {onCurrentFyEnabledChange ? (
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={Boolean(currentFyEnabled)}
+                onChange={(event) => onCurrentFyEnabledChange(event.target.checked)}
+                className="size-3.5 rounded border-input"
+              />
+              {currentFyLabel}
+            </label>
+          ) : null}
+          {onDateRangeEnabledChange ? (
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={Boolean(dateRangeEnabled)}
+                onChange={(event) => onDateRangeEnabledChange(event.target.checked)}
+                className="size-3.5 rounded border-input"
+              />
+              Date range
+              {helperText ? (
+                <FloatingHelper
+                  text={helperText}
+                  label="Date range help"
+                  side="top"
+                  className="size-5 border-0 bg-transparent shadow-none"
+                  iconClassName="size-3.5"
+                />
+              ) : null}
+            </label>
+          ) : null}
         </div>
       ) : null}
       <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
-        <span>From</span>
+        <span className="inline-flex items-center gap-1">
+          From
+          {!optionalMode && helperText ? (
+            <FloatingHelper
+              text={helperText}
+              label="Date range help"
+              side="top"
+              className="size-5 border-0 bg-transparent shadow-none"
+              iconClassName="size-3.5"
+            />
+          ) : null}
+        </span>
         <DateInput
           value={fromDate}
           max={toDate}
@@ -5530,26 +5722,37 @@ function ReportHeaderActions({
 function FileCategoryFilter({
   selectedCategories,
   options,
+  disabled = false,
   onChange,
 }: {
   selectedCategories: FileCategoryKey[];
   options: typeof fileCategoryOptions;
+  disabled?: boolean;
   onChange: (category: FileCategoryKey, checked: boolean) => void;
 }) {
   return (
     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
       <span>File category</span>
-      <div className="flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-input bg-background px-2 py-1.5">
+      <div
+        className={
+          "flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-input bg-background px-2 py-1.5 " +
+          (disabled ? "opacity-60" : "")
+        }
+      >
         {options.map((option) => (
           <label
             key={option.key}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
+            className={
+              "inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground " +
+              (disabled ? "cursor-not-allowed" : "")
+            }
           >
             <input
               type="checkbox"
               checked={selectedCategories.includes(option.key)}
+              disabled={disabled}
               onChange={(event) => onChange(option.key, event.target.checked)}
-              className="size-4 rounded border-input"
+              className="size-4 rounded border-input disabled:cursor-not-allowed"
             />
             <span>{option.label}</span>
           </label>
@@ -5563,22 +5766,30 @@ function FileYearFilter({
   value,
   options,
   locked,
+  disabled = false,
   onChange,
   onLockToggle,
 }: {
   value: string;
   options: string[];
   locked: boolean;
+  disabled?: boolean;
   onChange: (year: string) => void;
   onLockToggle: () => void;
 }) {
+  const helperText = disabled
+    ? [
+        "File Year is not used for this report.",
+        "This report uses the effective FY from the Global Filter.",
+      ]
+    : fileYearSubfilterHelper;
   return (
     <div className="flex items-end gap-1.5">
       <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1">
           File year
           <FloatingHelper
-            text={fileYearSubfilterHelper}
+            text={helperText}
             label="File year subfilter help"
             side="top"
             className="size-5 border-0 bg-transparent shadow-none"
@@ -5587,8 +5798,9 @@ function FileYearFilter({
         </span>
         <select
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
         >
           <option value="all">All file years</option>
           {options.map((year) => (
@@ -5601,9 +5813,22 @@ function FileYearFilter({
       <button
         type="button"
         onClick={onLockToggle}
-        className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent"
-        title={locked ? "Unlock file year" : "Lock file year"}
-        aria-label={locked ? "Unlock file year" : "Lock file year"}
+        disabled={disabled}
+        className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+        title={
+          disabled
+            ? "File year is not used for this report"
+            : locked
+              ? "Unlock file year"
+              : "Lock file year"
+        }
+        aria-label={
+          disabled
+            ? "File year is not used for this report"
+            : locked
+              ? "Unlock file year"
+              : "Lock file year"
+        }
       >
         {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
       </button>
@@ -7425,8 +7650,8 @@ function FloatingHelper({
         </TooltipTrigger>
         <TooltipContent side={side} align="center" className="max-w-xs leading-relaxed">
           <ul className="list-disc space-y-1 pl-4">
-            {(Array.isArray(text) ? text : splitHelperText(text)).map((item) => (
-              <li key={item}>{item}</li>
+            {flattenHelperText(text).map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
             ))}
           </ul>
         </TooltipContent>
@@ -7436,15 +7661,39 @@ function FloatingHelper({
 }
 
 function splitHelperText(text: string) {
-  return text
+  const protectedText = protectHelperAbbreviations(text);
+  return protectedText
     .split("\n")
-    .map((item) => item.trim())
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((item) =>
+      restoreHelperAbbreviations(item)
+        .trim()
+        .replace(/^[-*]\s+/, ""),
+    )
     .filter(Boolean);
+}
+
+function protectHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S.O.", "S§O§")
+    .replaceAll("D.P.", "D§P§")
+    .replaceAll("F.Y.", "F§Y§")
+    .replaceAll("FY.", "FY§")
+    .replaceAll("No.", "No§");
+}
+
+function restoreHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S§O§", "S.O.")
+    .replaceAll("D§P§", "D.P.")
+    .replaceAll("F§Y§", "F.Y.")
+    .replaceAll("FY§", "FY.")
+    .replaceAll("No§", "No.");
 }
 
 function flattenHelperText(text: HelperText | undefined) {
   if (!text) return [];
-  return Array.isArray(text) ? text : splitHelperText(text);
+  return Array.isArray(text) ? text.flatMap(splitHelperText) : splitHelperText(text);
 }
 
 function CashOutgoReport({
@@ -7577,16 +7826,13 @@ function CashOutgoReport({
 }
 
 function ReportDescription({ description }: { description: string }) {
-  const lines = description
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const lines = splitHelperText(description);
 
   if (lines.length > 1) {
     return (
       <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
-        {lines.map((line) => (
-          <li key={line}>{line.replace(/^[-*]\s+/, "")}</li>
+        {lines.map((line, index) => (
+          <li key={`${line}-${index}`}>{line}</li>
         ))}
       </ul>
     );
