@@ -7,6 +7,7 @@ import type { FileTypeGroup, FileTypeGroupSetting } from "@/lib/file-type-groups
 import {
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
+  isAllFilesYear,
   isFileVisibleForYear,
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
@@ -577,6 +578,8 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:300
   "",
 );
 
+const globalYearSessionPrefix = "recordkeeper:global-year-filter";
+
 type StoreState = {
   files: FileRecord[];
   messages: FileMessage[];
@@ -609,6 +612,38 @@ let loadPromise: Promise<void> | undefined;
 function setState(patch: Partial<StoreState>) {
   state = { ...state, ...patch };
   emit();
+}
+
+function globalYearSessionKey(userId?: string) {
+  return `${globalYearSessionPrefix}:${userId ?? "anonymous"}`;
+}
+
+function readSessionSelectedYear(settings: AppSettings, userId?: string) {
+  if (typeof window === "undefined") return settings.selectedYear;
+  const saved = window.sessionStorage.getItem(globalYearSessionKey(userId));
+  const normalized = normalizeFinancialYearLabel(saved ?? undefined);
+  if (
+    normalized &&
+    (isAllFilesYear(normalized) ||
+      isAllActiveFilesYear(normalized) ||
+      isActivePlusCurrentFyClosedYear(normalized) ||
+      settings.financialYears.includes(normalized))
+  ) {
+    return normalized;
+  }
+  return settings.selectedYear;
+}
+
+function applySessionSelectedYear(settings: AppSettings, userId?: string) {
+  return normalizeSettingsYears({
+    ...settings,
+    selectedYear: readSessionSelectedYear(settings, userId),
+  });
+}
+
+function writeSessionSelectedYear(year: string, userId?: string) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(globalYearSessionKey(userId), year);
 }
 
 function upsertFile(files: FileRecord[], file: FileRecord) {
@@ -656,11 +691,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function divisionsPath(year?: string, includeInactive = false) {
+function divisionsPath(year?: string, includeInactive = false, currentFinancialYear?: string) {
   const params = new URLSearchParams();
   const divisionYear =
-    isAllActiveFilesYear(year) || isActivePlusCurrentFyClosedYear(year)
-      ? state.settings.financialYear
+    isAllFilesYear(year) || isAllActiveFilesYear(year) || isActivePlusCurrentFyClosedYear(year)
+      ? (currentFinancialYear ?? state.settings.financialYear)
       : year;
   if (divisionYear) params.set("year", divisionYear);
   if (includeInactive) params.set("includeInactive", "true");
@@ -680,6 +715,7 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
     normalizeFinancialYearLabel(settings.financialYear) ||
     normalizeFinancialYearLabel(defaultSettings.financialYear);
   const selectedYear =
+    isAllFilesYear(settings.selectedYear) ||
     isAllActiveFilesYear(settings.selectedYear) ||
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
       ? settings.selectedYear
@@ -688,7 +724,9 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
     new Set(
       [financialYear, selectedYear, ...(settings.financialYears ?? [])]
         .map((year) =>
-          isAllActiveFilesYear(year) || isActivePlusCurrentFyClosedYear(year)
+          isAllFilesYear(year) ||
+          isAllActiveFilesYear(year) ||
+          isActivePlusCurrentFyClosedYear(year)
             ? undefined
             : normalizeFinancialYearLabel(year),
         )
@@ -713,8 +751,17 @@ async function loadAll(force = false) {
       const auth = await request<{ user: AppUser | null }>("/api/auth/me");
       if (!auth.user) {
         const settings = await request<{ settings: AppSettings }>("/api/settings");
+        const effectiveSettings = applySessionSelectedYear(
+          normalizeSettingsYears({
+            ...defaultSettings,
+            ...settings.settings,
+            tableFieldPresets: settings.settings.tableFieldPresets?.length
+              ? settings.settings.tableFieldPresets
+              : defaultTableFieldPresets,
+          }),
+        );
         const divisions = await request<{ divisions: Division[] }>(
-          divisionsPath(settings.settings.selectedYear),
+          divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
         );
         setState({
           files: [],
@@ -724,13 +771,7 @@ async function loadAll(force = false) {
           indentors: [],
           users: [],
           authUser: undefined,
-          settings: normalizeSettingsYears({
-            ...defaultSettings,
-            ...settings.settings,
-            tableFieldPresets: settings.settings.tableFieldPresets?.length
-              ? settings.settings.tableFieldPresets
-              : defaultTableFieldPresets,
-          }),
+          settings: effectiveSettings,
           loading: false,
           loaded: true,
         });
@@ -738,8 +779,21 @@ async function loadAll(force = false) {
       }
 
       const settings = await request<{ settings: AppSettings }>("/api/settings");
+      const effectiveSettings = applySessionSelectedYear(
+        normalizeSettingsYears({
+          ...defaultSettings,
+          ...settings.settings,
+          activeUserId: auth.user.id,
+          tableFieldPresets: settings.settings.tableFieldPresets?.length
+            ? settings.settings.tableFieldPresets
+            : defaultTableFieldPresets,
+        }),
+        auth.user.id,
+      );
       const baseRequests = [
-        request<{ divisions: Division[] }>(divisionsPath(settings.settings.selectedYear)),
+        request<{ divisions: Division[] }>(
+          divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
+        ),
         request<{ messages: FileMessage[] }>("/api/messages"),
         request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
       ] as const;
@@ -757,14 +811,7 @@ async function loadAll(force = false) {
         indentors: [],
         users: users.users,
         authUser: auth.user,
-        settings: normalizeSettingsYears({
-          ...defaultSettings,
-          ...settings.settings,
-          activeUserId: auth.user.id,
-          tableFieldPresets: settings.settings.tableFieldPresets?.length
-            ? settings.settings.tableFieldPresets
-            : defaultTableFieldPresets,
-        }),
+        settings: effectiveSettings,
         loading: false,
         loaded: true,
       });
@@ -837,6 +884,12 @@ export const store = {
         body: JSON.stringify(patch),
       }),
     );
+  },
+  updateSessionSelectedYear(year: string) {
+    const settings = store.getSettings();
+    writeSessionSelectedYear(year, state.authUser?.id);
+    setState({ settings: normalizeSettingsYears({ ...settings, selectedYear: year }) });
+    void loadAll(true);
   },
   addFinancialYear(label: string, select = true) {
     runMutation(() =>

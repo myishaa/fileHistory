@@ -3182,6 +3182,7 @@ function normalizeDateLiteral(value: string | undefined) {
   return `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
 }
 
+const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const fileClosedMilestone = "File Closed";
@@ -3294,6 +3295,7 @@ function getSelectedYearCondition(
   currentFinancialYear?: string,
 ) {
   if (!selectedYear) return undefined;
+  if (selectedYear === allFilesYear) return undefined;
   if (selectedYear === allActiveFilesYear) {
     return activeFilesExpression();
   }
@@ -7689,7 +7691,9 @@ dashboardRouter.get(
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
     const divisionYear =
-      selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
+      selectedYear === allFilesYear ||
+      selectedYear === allActiveFilesYear ||
+      selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
         : selectedYear;
     const divisions = await loadDivisions(user, divisionYear);
@@ -7807,7 +7811,9 @@ dashboardRouter.get(
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
     const divisionYear =
-      selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
+      selectedYear === allFilesYear ||
+      selectedYear === allActiveFilesYear ||
+      selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
         : selectedYear;
     const divisions = await loadDivisions(user, divisionYear);
@@ -7853,7 +7859,9 @@ dashboardRouter.get(
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
     const divisionYear =
-      selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
+      selectedYear === allFilesYear ||
+      selectedYear === allActiveFilesYear ||
+      selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
         : selectedYear;
     const [valueThresholdLevels, divisions] = await Promise.all([

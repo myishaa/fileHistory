@@ -9,6 +9,7 @@ import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 
 export const liveRouter = Router();
 
+const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const trialMmgLiveOptions = new Set(["status1", "status2", "finance"]);
@@ -142,6 +143,12 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
 }
 
 function getSelectedYearWhere(selectedYear: string, currentFinancialYear: string) {
+  if (selectedYear === allFilesYear) {
+    return {
+      whereSql: "",
+      values: [],
+    };
+  }
   if (selectedYear === allActiveFilesYear) {
     return {
       whereSql: `where ${activeFilesExpression()}`,
@@ -174,7 +181,9 @@ liveRouter.get(
     const settings = await loadSettings();
     const selectedYear = settings.selectedYear || settings.financialYear;
     const divisionYear =
-      selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear
+      selectedYear === allFilesYear ||
+      selectedYear === allActiveFilesYear ||
+      selectedYear === activePlusCurrentFyClosedYear
         ? settings.financialYear
         : selectedYear;
     const selectedYearWhere = getSelectedYearWhere(selectedYear, settings.financialYear);

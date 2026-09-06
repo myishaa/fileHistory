@@ -1464,6 +1464,7 @@ function parseMoneyAmount(value: string | number | undefined) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const fileClosedMilestone = "File Closed";
@@ -1516,6 +1517,7 @@ function isFileVisibleForSelectedYear(
   currentFinancialYear: string,
 ) {
   if (!selectedYear) return true;
+  if (selectedYear === allFilesYear) return true;
   if (selectedYear === allActiveFilesYear) return !isInactiveFile(file);
   if (selectedYear === activePlusCurrentFyClosedYear) {
     return (
@@ -1581,6 +1583,7 @@ function getSelectedYearCondition(
   currentFinancialYear?: string,
 ) {
   if (!selectedYear) return undefined;
+  if (selectedYear === allFilesYear) return undefined;
   if (selectedYear === allActiveFilesYear) {
     return activeFilesExpression();
   }
@@ -2858,7 +2861,7 @@ async function loadCashOutgoRows(
 	            or effective.payment_date > ${toDatePlaceholder}::date
           )`;
       }
-	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and (effective.bill_sent_for_payment_date is null or ${hasOpenReturnedBillExpression}) and effective.payment_date is null`;
+      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and (effective.bill_sent_for_payment_date is null or ${hasOpenReturnedBillExpression}) and effective.payment_date is null`;
     }
     if (mode === "billSent") {
       if (asOfDatePlaceholder) {

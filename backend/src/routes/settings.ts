@@ -27,6 +27,7 @@ export const settingsRouter = Router();
 const themes = new Set<AppTheme>(["light", "dark"]);
 const themeTints = new Set<AppThemeTint>(["plain", "yellow", "green", "blue", "pink", "lavender"]);
 const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>(["capital", "revenue", "both"]);
+const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 
@@ -54,6 +55,11 @@ type SettingsRow = {
   firm_unique_no_label: string;
   firm_rating_config: unknown;
   active_user_id: string | null;
+};
+
+type UserUiPreferencesRow = {
+  theme: AppTheme | null;
+  theme_tint: AppThemeTint | null;
 };
 
 const defaultFirmRatingConfig: FirmRatingConfig = {
@@ -84,6 +90,7 @@ function normalizeYearLabel(value: unknown, field = "financialYear") {
   const label = requireString(value, field).trim();
   if (!label) throw new HttpError(400, `${field} is required.`);
   if (
+    label !== allFilesYear &&
     label !== allActiveFilesYear &&
     label !== activePlusCurrentFyClosedYear &&
     normalizeFinancialYearKey(label) === undefined
@@ -282,6 +289,30 @@ async function ensureUserReportPreferencesTable() {
   );
 }
 
+async function ensureUserUiPreferencesTable() {
+  await pool.query(
+    `create table if not exists user_ui_preferences (
+       user_id uuid primary key references app_users(id) on delete cascade,
+       theme text check (theme in ('light', 'dark')),
+       theme_tint text check (
+         theme_tint in ('plain', 'yellow', 'green', 'blue', 'pink', 'lavender')
+       ),
+       updated_at timestamptz not null default now()
+     )`,
+  );
+}
+
+async function loadUserUiPreferences(userId: string) {
+  await ensureUserUiPreferencesTable();
+  return getCached(`settings:ui-preferences:${userId}`, cacheTtl.settingsMs, async () => {
+    const result = await pool.query<UserUiPreferencesRow>(
+      "select theme, theme_tint from user_ui_preferences where user_id = $1",
+      [userId],
+    );
+    return result.rows[0];
+  });
+}
+
 async function loadUserLiveStatusFields(ownerKey: string) {
   await ensureUserLiveStatusPreferencesTable();
   return getCached(`settings:live-status-fields:${ownerKey}`, cacheTtl.settingsMs, async () => {
@@ -311,7 +342,12 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     new Set(
       [row.financial_year, row.selected_year, ...financialYears]
         .filter(Boolean)
-        .filter((year) => year !== allActiveFilesYear && year !== activePlusCurrentFyClosedYear),
+        .filter(
+          (year) =>
+            year !== allFilesYear &&
+            year !== allActiveFilesYear &&
+            year !== activePlusCurrentFyClosedYear,
+        ),
     ),
   ).sort((a, b) => b.localeCompare(a));
   const globalPresets = tagPresets(row.table_field_presets, "global");
@@ -321,13 +357,14 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
       ? tagPresets(await loadUserTableFieldPresets(ownerKey), "personal", ownerKey)
       : [];
   const liveStatusLockedFields = ownerKey ? await loadUserLiveStatusFields(ownerKey) : undefined;
+  const uiPreferences = user?.id ? await loadUserUiPreferences(user.id) : undefined;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
     financialYears: mergedFinancialYears,
     yearSelectionLocked: row.year_selection_locked,
-    theme: row.theme,
-    themeTint: row.theme_tint,
+    theme: uiPreferences?.theme ?? row.theme,
+    themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
     deletionPassword: row.deletion_password,
     tcecCommittees: await loadTcecCommittees(row.selected_year, row.tcec_committees),
     firmTypes: fromDbJsonArray(row.firm_types).filter(
@@ -598,24 +635,24 @@ function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
       : {};
   const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
   const normalized = fields.reduce<FirmRatingConfig["fields"]>((result, item, index) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return result;
-      const candidate = item as Record<string, unknown>;
-      const label = toDbText(candidate.label) || `Rating ${index + 1}`;
-      const rawId = toDbText(candidate.id) || label;
-      const id =
-        rawId
-          .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
-          .replace(/^[^a-zA-Z]+/, "")
-          .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
-      const weightText = toDbText(candidate.weight);
-      const parsedWeight = Number.parseFloat(weightText ?? "");
-      result.push({
-        id,
-        label,
-        weight: Number.isFinite(parsedWeight) && parsedWeight > 0 ? String(parsedWeight) : "1",
-      });
-      return result;
-    }, []);
+    if (!item || typeof item !== "object" || Array.isArray(item)) return result;
+    const candidate = item as Record<string, unknown>;
+    const label = toDbText(candidate.label) || `Rating ${index + 1}`;
+    const rawId = toDbText(candidate.id) || label;
+    const id =
+      rawId
+        .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
+        .replace(/^[^a-zA-Z]+/, "")
+        .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+    const weightText = toDbText(candidate.weight);
+    const parsedWeight = Number.parseFloat(weightText ?? "");
+    result.push({
+      id,
+      label,
+      weight: Number.isFinite(parsedWeight) && parsedWeight > 0 ? String(parsedWeight) : "1",
+    });
+    return result;
+  }, []);
 
   return { fields: normalized.length ? normalized : defaultFirmRatingConfig.fields };
 }
@@ -628,6 +665,23 @@ async function replaceUserLiveStatusFields(ownerKey: string, fieldKeys: string[]
      on conflict (owner_key)
      do update set field_keys = excluded.field_keys, updated_at = now()`,
     [ownerKey, JSON.stringify(fieldKeys)],
+  );
+}
+
+async function replaceUserUiPreferences(
+  userId: string,
+  preferences: { theme?: AppTheme; themeTint?: AppThemeTint },
+) {
+  await ensureUserUiPreferencesTable();
+  await pool.query(
+    `insert into user_ui_preferences (user_id, theme, theme_tint)
+     values ($1, $2, $3)
+     on conflict (user_id)
+     do update set
+       theme = coalesce(excluded.theme, user_ui_preferences.theme),
+       theme_tint = coalesce(excluded.theme_tint, user_ui_preferences.theme_tint),
+       updated_at = now()`,
+    [userId, preferences.theme ?? null, preferences.themeTint ?? null],
   );
 }
 
@@ -692,7 +746,6 @@ settingsRouter.patch(
     const body = requireObjectBody(request.body);
     const bodyFields = Object.keys(body);
     const userEditableFields = new Set([
-      "selectedYear",
       "theme",
       "themeTint",
       "tableFieldPresets",
@@ -731,15 +784,23 @@ settingsRouter.patch(
     }
     if ("selectedYear" in body) {
       const selectedYear = normalizeYearLabel(body.selectedYear, "selectedYear");
-      if (selectedYear !== allActiveFilesYear && selectedYear !== activePlusCurrentFyClosedYear) {
+      if (
+        selectedYear !== allFilesYear &&
+        selectedYear !== allActiveFilesYear &&
+        selectedYear !== activePlusCurrentFyClosedYear
+      ) {
         await ensureFinancialYear(selectedYear);
       }
       addField("selected_year", selectedYear);
     }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
-    if ("theme" in body) addField("theme", readTheme(body.theme));
-    if ("themeTint" in body) addField("theme_tint", readThemeTint(body.themeTint));
+    if ("theme" in body || "themeTint" in body) {
+      await replaceUserUiPreferences(user.id, {
+        ...("theme" in body ? { theme: readTheme(body.theme) } : {}),
+        ...("themeTint" in body ? { themeTint: readThemeTint(body.themeTint) } : {}),
+      });
+    }
     if ("deletionPassword" in body)
       addField("deletion_password", toDbText(body.deletionPassword) ?? "");
     if ("tcecCommittees" in body) {
@@ -866,6 +927,8 @@ settingsRouter.patch(
       !("tableFieldPresets" in body) &&
       !("liveStatusLockedFields" in body) &&
       !("mmgSummaryFields" in body) &&
+      !("theme" in body) &&
+      !("themeTint" in body) &&
       !("bgReceiptDelayDays" in body) &&
       !("specialFileMarkers" in body) &&
       !("firmUniqueNoLabel" in body)

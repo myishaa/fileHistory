@@ -26,6 +26,7 @@ import {
 import {
   ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
   ALL_ACTIVE_FILES_YEAR,
+  ALL_FILES_YEAR,
   displayFinancialYearLabel,
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
@@ -153,6 +154,7 @@ export function TopBar() {
         .filter(
           (year): year is string =>
             Boolean(year) &&
+            year !== ALL_FILES_YEAR &&
             year !== ALL_ACTIVE_FILES_YEAR &&
             year !== ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
         ),
@@ -277,10 +279,11 @@ export function TopBar() {
               <span className="text-[11px] font-medium text-muted-foreground">Year</span>
               <select
                 value={settings.selectedYear}
-                onChange={(event) => store.updateSettings({ selectedYear: event.target.value })}
+                onChange={(event) => store.updateSessionSelectedYear(event.target.value)}
                 disabled={!canSelectYear}
                 className="h-6 min-w-20 bg-transparent text-sm font-semibold text-foreground outline-none"
               >
+                <option value={ALL_FILES_YEAR}>All files</option>
                 <option value={ALL_ACTIVE_FILES_YEAR}>All active files</option>
                 <option value={ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR}>
                   Active + current FY closed
@@ -350,34 +353,43 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
   const currentFyRange = getFinancialYearDateRangeLabel(currentFinancialYear);
   const selectedFyLabel = displayFinancialYearLabel(normalizedSelected);
   const title =
-    normalizedSelected === ALL_ACTIVE_FILES_YEAR
-      ? "All active files"
-      : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
-        ? "Active + current FY closed"
-        : `FY ${selectedFyLabel}`;
+    normalizedSelected === ALL_FILES_YEAR
+      ? "All files"
+      : normalizedSelected === ALL_ACTIVE_FILES_YEAR
+        ? "All active files"
+        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
+          ? "Active + current FY closed"
+          : `FY ${selectedFyLabel}`;
   const description =
-    normalizedSelected === ALL_ACTIVE_FILES_YEAR
-      ? "Shows files that are not closed and not cancelled, across all financial years."
-      : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
-        ? `Shows all active files, plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
-        : `Shows files active during FY ${selectedFyLabel}, including older files continued into FY ${selectedFyLabel}.`;
+    normalizedSelected === ALL_FILES_YEAR
+      ? "Shows all accessible files, including active, closed, and cancelled files. Dashboard and report calculations keep their existing cancellation rules."
+      : normalizedSelected === ALL_ACTIVE_FILES_YEAR
+        ? "Shows files that are not closed and not cancelled, across all financial years."
+        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
+          ? `Shows all active files, plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
+          : `Shows files active during FY ${selectedFyLabel}, including older files continued into FY ${selectedFyLabel}.`;
 
   return {
     title,
     description,
     options: [
       {
-        label: "Specific FY",
+        label: "All files",
         description:
-          "Shows files active during that FY, including older files continued into that FY.",
+          "Shows all accessible files; use File Year Subfilter to narrow down the list based on file initiation date.",
       },
       {
         label: "All active files",
         description: "Shows all currently open files across all file years.",
       },
       {
-        label: "Active + current FY closed",
+        label: "Active + current FY closed (default)",
         description: `Shows currently open files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
+      },
+      {
+        label: "Specific FY",
+        description:
+          "Shows files active during that FY, including older files continued into that FY.",
       },
       {
         label: "Value Reports",

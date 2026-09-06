@@ -90,10 +90,12 @@ import {
 } from "@/lib/demand-processing-analysis";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
 import {
+  ALL_FILES_YEAR,
   ALL_ACTIVE_FILES_YEAR,
   displayFinancialYearLabel,
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
+  isAllFilesYear,
   isCancelledFile,
 } from "@/lib/year-filter";
 import {
@@ -384,7 +386,7 @@ function ReportsPage() {
   const [cashOutGoPlanIncludePreviousFy, setCashOutGoPlanIncludePreviousFy] = useState(false);
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
-  const [selectedFileYear, setSelectedFileYear] = useState("all");
+  const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
   const [fileYearLocked, setFileYearLocked] = useState(false);
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
@@ -534,42 +536,53 @@ function ReportsPage() {
     () => Array.from(new Set(settings.financialYears ?? [])).filter(Boolean),
     [settings.financialYears],
   );
-  const fileYearOptionsKey = fileYearOptions.join("|");
   const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const defaultFileYear = fileYearOptions.includes(settings.financialYear)
+    ? settings.financialYear
+    : (fileYearOptions[0] ?? "all");
+  const showAllFileYearsOption = !isAllFilesYear(settings.selectedYear);
   const activeFileYear =
-    selectedFileYear === "all" || fileYearOptions.includes(selectedFileYear)
+    (selectedFileYear === "all" && showAllFileYearsOption) ||
+    fileYearOptions.includes(selectedFileYear)
       ? selectedFileYear
-      : "all";
+      : defaultFileYear;
   useEffect(() => {
     if (typeof window === "undefined" || !fileYearOptions.length) return;
-    const saved = window.localStorage.getItem(fileYearFilterStorageKey);
+    const saved = window.sessionStorage.getItem(fileYearFilterStorageKey);
     if (!saved) {
       setFileYearLocked(false);
+      setSelectedFileYear(defaultFileYear);
       return;
     }
     try {
       const parsed = JSON.parse(saved);
       const locked = parsed?.locked === true;
-      const year = typeof parsed?.year === "string" ? parsed.year : "all";
+      const year = typeof parsed?.year === "string" ? parsed.year : defaultFileYear;
       setFileYearLocked(locked);
-      if (locked) {
-        setSelectedFileYear(year === "all" || fileYearOptions.includes(year) ? year : "all");
-      }
+      setSelectedFileYear(
+        (year === "all" && showAllFileYearsOption) || fileYearOptions.includes(year)
+          ? year
+          : defaultFileYear,
+      );
     } catch {
       setFileYearLocked(false);
+      setSelectedFileYear(defaultFileYear);
     }
-  }, [fileYearFilterStorageKey, fileYearOptionsKey, fileYearOptions.length]);
+  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions, showAllFileYearsOption]);
   const updateFileYearSelection = (year: string) => {
     setSelectedFileYear(year);
-    if (fileYearLocked && typeof window !== "undefined") {
-      window.localStorage.setItem(fileYearFilterStorageKey, JSON.stringify({ locked: true, year }));
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(
+        fileYearFilterStorageKey,
+        JSON.stringify({ locked: fileYearLocked, year }),
+      );
     }
   };
   const toggleFileYearLock = () => {
     const nextLocked = !fileYearLocked;
     setFileYearLocked(nextLocked);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(
+      window.sessionStorage.setItem(
         fileYearFilterStorageKey,
         JSON.stringify({ locked: nextLocked, year: activeFileYear }),
       );
@@ -787,6 +800,7 @@ function ReportsPage() {
   const today = formatLocalDate(new Date());
   const currentMonthKey = getCurrentMonthKey();
   const effectiveFinancialYear =
+    isAllFilesYear(settings.selectedYear) ||
     isAllActiveFilesYear(settings.selectedYear) ||
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
       ? settings.financialYear
@@ -1749,6 +1763,7 @@ function ReportsPage() {
                 options={fileYearOptions}
                 locked={fileYearLocked}
                 disabled={fileYearFilterDisabled}
+                showAllOption={showAllFileYearsOption}
                 onChange={updateFileYearSelection}
                 onLockToggle={toggleFileYearLock}
               />
@@ -2520,7 +2535,9 @@ const reportModeHelperText = {
 type HelperText = string | string[];
 const fileYearSubfilterHelper = [
   "File Year is a subfilter applied after the main/global filter.",
-  "All file years means no extra file-year restriction.",
+  "Current FY is selected by default for each browser tab session.",
+  "After you change File Year, that choice stays for the current tab session.",
+  "All file years means no extra file-year restriction, and is hidden when Global Filter is All files.",
   "Selecting a specific FY shows only files initiated in that FY from the already selected file set.",
   "It does not change the activity-year meaning of the main/global filter.",
   "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
@@ -3297,10 +3314,12 @@ function getBillingPaymentReportDescription(
       ? `from ${formatDateDisplay(context.activeHistoricalDateRange.fromDate)} to ${formatDateDisplay(
           context.activeHistoricalDateRange.toDate,
         )}`
-      : isAllActiveFilesYear(context.globalYear) ||
-          isActivePlusCurrentFyClosedYear(context.globalYear)
-        ? ""
-        : "as per global filter";
+      : context.globalYear === ALL_FILES_YEAR
+        ? "across all files in the global filter"
+        : isAllActiveFilesYear(context.globalYear) ||
+            isActivePlusCurrentFyClosedYear(context.globalYear)
+          ? ""
+          : "as per global filter";
   if (!scope) return "";
   const subfilterActive = context.cashOutgoCurrentFyFilter || context.cashOutgoDateRangeFilter;
   const activeOnlyNote =
@@ -5767,6 +5786,7 @@ function FileYearFilter({
   options,
   locked,
   disabled = false,
+  showAllOption = true,
   onChange,
   onLockToggle,
 }: {
@@ -5774,6 +5794,7 @@ function FileYearFilter({
   options: string[];
   locked: boolean;
   disabled?: boolean;
+  showAllOption?: boolean;
   onChange: (year: string) => void;
   onLockToggle: () => void;
 }) {
@@ -5802,7 +5823,7 @@ function FileYearFilter({
           onChange={(event) => onChange(event.target.value)}
           className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
         >
-          <option value="all">All file years</option>
+          {showAllOption ? <option value="all">All file years</option> : null}
           {options.map((year) => (
             <option key={year} value={year}>
               {year}

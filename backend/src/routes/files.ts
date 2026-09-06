@@ -45,13 +45,19 @@ import {
 } from "../utils/file-processing-notifications.js";
 
 export const filesRouter = Router();
+const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const fileClosedMilestone = "File Closed";
 
 function normalizeFinancialYearLabel(value: unknown) {
   const label = typeof value === "string" ? value.trim() : "";
-  if (!label || label === allActiveFilesYear || label === activePlusCurrentFyClosedYear) {
+  if (
+    !label ||
+    label === allFilesYear ||
+    label === allActiveFilesYear ||
+    label === activePlusCurrentFyClosedYear
+  ) {
     return label;
   }
   const fullYearMatch = label.match(/^(\d{4})-(\d{4})$/);
@@ -7051,6 +7057,7 @@ function getThresholdFinancialYear(
   currentFinancialYear: string | undefined,
 ) {
   return selectedYear &&
+    selectedYear !== allFilesYear &&
     selectedYear !== allActiveFilesYear &&
     selectedYear !== activePlusCurrentFyClosedYear
     ? selectedYear
@@ -7473,7 +7480,9 @@ filesRouter.get(
     }
     if (categoryScope.sql) conditions.push(categoryScope.sql);
 
-    if (request.query.year === allActiveFilesYear) {
+    if (request.query.year === allFilesYear) {
+      // No status/year condition.
+    } else if (request.query.year === allActiveFilesYear) {
       conditions.push(activeFilesSql());
     } else if (request.query.year === activePlusCurrentFyClosedYear) {
       conditions.push(activePlusCurrentFyClosedSql(values, await loadCurrentFinancialYear()));
@@ -7515,7 +7524,9 @@ filesRouter.get(
     const currentFinancialYear = await loadCurrentFinancialYear();
     const thresholdFinancialYear = getThresholdFinancialYear(selectedYear, currentFinancialYear);
     if (!isFinanceCarryForwardDashboardFilter(searchParams.dashboardFilter)) {
-      if (selectedYear === allActiveFilesYear) {
+      if (selectedYear === allFilesYear) {
+        // No status/year condition.
+      } else if (selectedYear === allActiveFilesYear) {
         conditions.push(activeFilesSql());
       } else if (selectedYear === activePlusCurrentFyClosedYear) {
         conditions.push(activePlusCurrentFyClosedSql(values, currentFinancialYear));
@@ -7578,7 +7589,9 @@ filesRouter.post(
     const currentFinancialYear = await loadCurrentFinancialYear();
     const thresholdFinancialYear = getThresholdFinancialYear(selectedYear, currentFinancialYear);
     if (!isFinanceCarryForwardDashboardFilter(searchParams.dashboardFilter)) {
-      if (selectedYear === allActiveFilesYear) {
+      if (selectedYear === allFilesYear) {
+        // No status/year condition.
+      } else if (selectedYear === allActiveFilesYear) {
         conditions.push(activeFilesSql());
       } else if (selectedYear === activePlusCurrentFyClosedYear) {
         conditions.push(activePlusCurrentFyClosedSql(values, currentFinancialYear));

@@ -1,10 +1,15 @@
 import type { FileRecord } from "@/lib/files-store";
 
 export const ALL_ACTIVE_FILES_YEAR = "__all_active_files__";
+export const ALL_FILES_YEAR = "__all_files__";
 export const ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR = "__active_plus_current_fy_closed__";
 
 export function isAllActiveFilesYear(year: string | undefined) {
   return year === ALL_ACTIVE_FILES_YEAR;
+}
+
+export function isAllFilesYear(year: string | undefined) {
+  return year === ALL_FILES_YEAR;
 }
 
 export function isActivePlusCurrentFyClosedYear(year: string | undefined) {
@@ -25,7 +30,14 @@ function isDateInFinancialYear(date: string | undefined, financialYear: string |
 
 export function normalizeFinancialYearLabel(year: string | undefined) {
   const label = year?.trim() ?? "";
-  if (!label || isAllActiveFilesYear(label) || isActivePlusCurrentFyClosedYear(label)) return label;
+  if (
+    !label ||
+    isAllFilesYear(label) ||
+    isAllActiveFilesYear(label) ||
+    isActivePlusCurrentFyClosedYear(label)
+  ) {
+    return label;
+  }
 
   const fullYearMatch = label.match(/^(\d{4})-(\d{4})$/);
   if (fullYearMatch) return `${fullYearMatch[1]}-${fullYearMatch[2].slice(-2)}`;
@@ -41,6 +53,7 @@ export function normalizeFinancialYearLabel(year: string | undefined) {
 export function displayFinancialYearLabel(year: string | undefined) {
   const label = normalizeFinancialYearLabel(year);
   if (!label) return "";
+  if (isAllFilesYear(label)) return "All files";
   if (isAllActiveFilesYear(label)) return "All active files";
   if (isActivePlusCurrentFyClosedYear(label)) return "Active + current FY closed";
   return label;
@@ -101,6 +114,7 @@ export function isFileVisibleForYear(
   currentFinancialYear?: string,
 ) {
   if (!year) return true;
+  if (isAllFilesYear(year)) return true;
   if (isAllActiveFilesYear(year)) return !isInactiveFile(file);
   if (isActivePlusCurrentFyClosedYear(year)) {
     return (
