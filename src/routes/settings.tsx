@@ -1,6 +1,6 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -19,20 +19,28 @@ import {
   fetchFilesForYear,
   fetchIndentors,
   fetchMasterFirms,
+  listArchivedMasterFirms,
+  permanentlyDeleteArchivedMasterFirm,
+  restoreArchivedMasterFirm,
   store,
   updateMasterFirm,
   useActiveUser,
   useDivisions,
   useSettings,
   useUsers,
+  type AppUser,
   type AppUserRole,
   type Division,
   type DemandProcessingDayRange,
   type FileRecord,
   type FirmRatingConfig,
   type Indentor,
+  type IpAccessConfig,
+  type IpAccessMode,
+  type IpLoginAttempt,
   type MasterFirm,
   type SpecialFileMarker,
+  type TrustedIpAddress,
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
 } from "@/lib/files-store";
@@ -45,14 +53,23 @@ import {
 } from "@/lib/demand-processing-analysis";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
-import { fileCategoryOptions, type FileCategoryKey } from "@/lib/file-categories";
+import {
+  fileCategoryOptions,
+  getAllFileCategoryKeys,
+  getFileCategoryOptions,
+  type FileCategoryKey,
+  type FileCategoryOption,
+} from "@/lib/file-categories";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { YearSetupPanel } from "@/routes/year-setup";
 import {
+  ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
   displayFinancialYearLabel,
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
+  isAllFilesYear,
+  normalizeMilestoneName,
 } from "@/lib/year-filter";
 import { defaultFirmRatingFields, normalizeFirmRatingConfig } from "@/lib/firm-rating";
 import {
@@ -216,8 +233,8 @@ const settingsSectionHelpers = {
     "Changes here can affect all users.",
   ],
   yearSetup: [
-    "Used for yearly allocation setup and financial-year preparation.",
-    "Allocation values from here are used in value reports and dashboard value views.",
+    "Choose the FY to prepare division allocations and other year-specific setup.",
+    "Saved allocation values are used in dashboard value views and value reports for that FY.",
   ],
   mmgSummary: [
     "Controls which fields and labels appear in MMG Summary exports.",
@@ -283,6 +300,12 @@ const settingsSectionHelpers = {
     "Controls authorised users, roles, division access, and file-category access.",
     "Access changes affect what each user can view or edit.",
   ],
+  ipAccess: [
+    "Controls login access by trusted IP address.",
+    "Default mode is Off, so existing login behavior is unchanged unless Admin enables monitoring or restriction.",
+    "Use Notify mode first to collect real IP addresses before switching to Restrict mode.",
+    "Archived IP attempts are kept in a separate bin and are never permanently deleted from this screen.",
+  ],
   archive: [
     "Shows archived files and permanent delete options.",
     "Permanent delete needs the configured deletion password.",
@@ -290,23 +313,145 @@ const settingsSectionHelpers = {
 } satisfies Record<string, string[]>;
 
 const workspaceYearHelpers = {
-  selectedYear: [
-    "Selecting a year only opens that year for setup.",
-    "Use it to view or edit year-specific settings such as allocations.",
-    "It does not make that year the software's official current FY by itself.",
-    "Use Set as current if you want the software to treat this as the current FY.",
-  ],
   setCurrent: [
-    "Makes the selected year the software's official current FY.",
-    "New files will use this year as the normal current FY.",
-    "The global year filter is also changed to this same year.",
+    "Makes the chosen FY the software's official current FY.",
+    "New files will use this year as the current FY.",
+    "Global Active-files filter options will treat this FY as the current FY.",
     "Use this when the office has moved to a new financial year.",
   ],
   lockSelection: [
-    "Locked means users cannot change the global year filter from the top bar.",
-    "Unlocked means users can change the global year filter from the top bar.",
-    "This does not lock the File Year subfilter.",
-    "It is useful when you want everyone to stay on one main year/filter context.",
+    "When unlocked, new files can be added by selecting any of the two FYs options available on Add File page.",
+    "When locked, new files can be added only to current FY.",
+    "Use Unlocked during the FY transition period when it is permitted to raise demands for next FY in current FY itself.",
+  ],
+} satisfies Record<string, string[]>;
+
+const deletionPasswordHelper = [
+  "Required for deleting files, financial years, and permanently deleting archived records.",
+  "Keep it known only to admins who are allowed to perform delete actions.",
+  "Changing it applies to future delete confirmations.",
+];
+
+const settingsControlHelpers = {
+  workspaceDelete: [
+    "Deletes only the selected FY from workspace year options.",
+    "Current FY and any FY having files cannot be deleted.",
+    "This action needs the deletion password.",
+  ],
+  firmTypeName: [
+    "Firm type values appear in Supply Order firm details.",
+    "Renaming changes the available label for future selection and reporting.",
+  ],
+  firmTypeAdd: [
+    "Adds a new firm type option for Supply Order firm details.",
+    "The option becomes available wherever firm type selection or reporting is used.",
+  ],
+  firmTypeDelete: [
+    "Removes this firm type option from Settings.",
+    "Use cautiously if old files or reports still refer to this label.",
+  ],
+  fileTypeGroup: [
+    "Goods & Services follows normal delivery, inspection, and bill behavior.",
+    "MPC/AMC/O&M/CARS follows contract-style workflow behavior.",
+  ],
+  fileTypeDelete: [
+    "Deletes only a non-default file type option.",
+    "Deletion is blocked if any existing file uses this file type.",
+    "Rename is allowed, but workflow group changes are restricted once used.",
+  ],
+  genericDelete: [
+    "Removes this option from Settings.",
+    "Use cautiously because old records or reports may still refer to this label.",
+  ],
+  userDelete: [
+    "Moves this user account out of active use.",
+    "This action needs the deletion password.",
+  ],
+  archiveRestore: [
+    "Restores the archived item back to active records.",
+    "Review details after restore if related settings have changed.",
+  ],
+  archiveDelete: [
+    "Permanently deletes the archived item.",
+    "This action needs the deletion password and cannot be undone from this screen.",
+  ],
+  ipMode: [
+    "Off allows normal login and does not enforce trusted IPs.",
+    "Notify allows login but records and notifies Admin when a new IP is used.",
+    "Restrict blocks login from IPs that are not active in the trusted list.",
+  ],
+  ipCurrent: [
+    "Shows the IP address detected for the current browser/backend request.",
+    "Add it as trusted before enabling Restrict mode.",
+  ],
+  ipAddCurrent: [
+    "Adds the currently detected IP to the trusted list.",
+    "Use this when you are logged in from an authorised PC.",
+  ],
+  ipManualAddress: [
+    "Enter an IP address that should be trusted for login.",
+    "Keep the value exact because Restrict mode checks this address.",
+  ],
+  ipRemarks: [
+    "Use remarks to identify the PC, office, user, or location.",
+    "Remarks help Admin review trusted IPs later.",
+  ],
+  ipAddTrusted: [
+    "Adds the entered IP address as trusted.",
+    "Trusted IPs can be made active or inactive later.",
+  ],
+  trustedIpRemarks: [
+    "Edit remarks to keep the trusted IP identifiable.",
+    "Changes are saved when the field loses focus.",
+  ],
+  trustedIpActive: [
+    "Active trusted IPs are allowed in Restrict mode.",
+    "Inactive trusted IPs remain saved but are not allowed for login.",
+  ],
+  ipAttemptArchive: [
+    "Moves this new IP attempt to the separate archive/bin.",
+    "It is hidden from the active list but not permanently deleted.",
+  ],
+  ipAttemptBin: [
+    "Shows archived new-IP login attempts.",
+    "These attempts are retained for audit and are not permanently deleted here.",
+  ],
+  anomalyWorkflow: [
+    "Current shows active suspected issues.",
+    "Received request shows user acceptance requests waiting for Admin.",
+    "Accepted, rejected, and revoked tabs show decision history.",
+  ],
+  anomalyRefresh: [
+    "Reloads anomaly requests, decisions, and custom rules.",
+    "Use this after another user has submitted or reviewed an anomaly.",
+  ],
+  anomalyFileAccept: [
+    "Accepts this anomaly only for the selected file.",
+    "The same rule can still flag other files.",
+  ],
+  anomalyUniversalAccept: [
+    "Accepts this anomaly rule universally.",
+    "Future matching rows may be suppressed across files.",
+  ],
+  anomalyReject: [
+    "Sends a correction message back to the user.",
+    "The anomaly remains unresolved until the file data is corrected or re-reviewed.",
+  ],
+  anomalyRevoke: [
+    "Cancels a previous accepted decision.",
+    "The anomaly can appear again if the underlying data still matches the rule.",
+  ],
+  anomalyClear: [
+    "Clears selected rejected or revoked decision rows from the visible history.",
+    "This action asks for your account password.",
+  ],
+  anomalyRuleAdd: [
+    "Creates a custom anomaly rule.",
+    "Custom rules can change which suspected issues appear in anomaly checks.",
+  ],
+  anomalyRuleToggle: [
+    "Enables or disables this custom anomaly rule.",
+    "Disabled rules stop creating matching anomaly results.",
   ],
 } satisfies Record<string, string[]>;
 
@@ -608,6 +753,12 @@ function SettingsPage() {
       content: <UserSettings />,
     },
     {
+      key: "ipAccess",
+      label: "IP Access",
+      helper: settingsSectionHelpers.ipAccess,
+      content: <IpAccessSettings />,
+    },
+    {
       key: "archive",
       label: "Archive",
       helper: settingsSectionHelpers.archive,
@@ -764,6 +915,7 @@ function SettingsTabTrigger({
 }
 
 function SettingsHelper({ items, label }: { items: string[]; label: string }) {
+  const bullets = splitHelperText(items);
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -779,14 +931,61 @@ function SettingsHelper({ items, label }: { items: string[]; label: string }) {
         </TooltipTrigger>
         <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
           <ul className="list-disc space-y-1 pl-4">
-            {items.map((item) => (
-              <li key={item}>{item}</li>
+            {bullets.map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
             ))}
           </ul>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
+}
+
+function HelpedControl({
+  helper,
+  label,
+  children,
+}: {
+  helper: string[];
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {children}
+      <SettingsHelper items={helper} label={label} />
+    </span>
+  );
+}
+
+function splitHelperText(items: string[]) {
+  return items
+    .flatMap((item) => protectHelperAbbreviations(item).split("\n"))
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((item) =>
+      restoreHelperAbbreviations(item)
+        .trim()
+        .replace(/^[-*]\s+/, ""),
+    )
+    .filter(Boolean);
+}
+
+function protectHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S.O.", "S§O§")
+    .replaceAll("D.P.", "D§P§")
+    .replaceAll("F.Y.", "F§Y§")
+    .replaceAll("FY.", "FY§")
+    .replaceAll("No.", "No§");
+}
+
+function restoreHelperAbbreviations(text: string) {
+  return text
+    .replaceAll("S§O§", "S.O.")
+    .replaceAll("D§P§", "D.P.")
+    .replaceAll("F§Y§", "F.Y.")
+    .replaceAll("FY§", "FY.")
+    .replaceAll("No§", "No.");
 }
 
 function PreferenceSettings() {
@@ -956,22 +1155,31 @@ function WorkspaceSettings() {
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
   const [newFinancialYearError, setNewFinancialYearError] = useState("");
-  const selectedFinancialYear =
-    isAllActiveFilesYear(settings.selectedYear) ||
-    isActivePlusCurrentFyClosedYear(settings.selectedYear)
-      ? settings.financialYear
-      : settings.selectedYear;
-  const financialYears = Array.from(
-    new Set(
-      [settings.financialYear, selectedFinancialYear, ...settings.financialYears]
-        .filter(Boolean)
-        .filter((year) => !isAllActiveFilesYear(year) && !isActivePlusCurrentFyClosedYear(year)),
-    ),
-  ).sort((a, b) => b.localeCompare(a));
+  const [workspaceYear, setWorkspaceYear] = useState(settings.financialYear);
+  const financialYears = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [settings.financialYear, settings.setupYear, workspaceYear, ...settings.financialYears]
+            .filter(Boolean)
+            .filter(
+              (year) =>
+                !isAllFilesYear(year) &&
+                !isAllActiveFilesYear(year) &&
+                !isActivePlusCurrentFyClosedYear(year),
+            ),
+        ),
+      ).sort((a, b) => b.localeCompare(a)),
+    [settings.financialYear, settings.financialYears, settings.setupYear, workspaceYear],
+  );
   const suggestedFinancialYear = getNextFinancialYearLabel(financialYears);
   useEffect(() => {
+    if (financialYears.includes(workspaceYear)) return;
+    setWorkspaceYear(settings.financialYear);
+  }, [financialYears, settings.financialYear, workspaceYear]);
+  useEffect(() => {
     let cancelled = false;
-    fetchFilesForYear(selectedFinancialYear)
+    fetchFilesForYear(workspaceYear)
       .then((payload) => {
         if (!cancelled) setSelectedYearFileCount(payload.files.length);
       })
@@ -982,9 +1190,9 @@ function WorkspaceSettings() {
     return () => {
       cancelled = true;
     };
-  }, [selectedFinancialYear]);
+  }, [workspaceYear]);
   const canDeleteSelectedYear =
-    selectedFinancialYear !== settings.financialYear &&
+    workspaceYear !== settings.financialYear &&
     selectedYearFileCount === 0 &&
     financialYears.length > 1;
 
@@ -1003,8 +1211,9 @@ function WorkspaceSettings() {
 
   const setCurrentFinancialYear = () => {
     store.updateSettings({
-      financialYear: selectedFinancialYear,
-      selectedYear: selectedFinancialYear,
+      financialYear: workspaceYear,
+      selectedYear: ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
+      setupYear: workspaceYear,
     });
   };
 
@@ -1014,8 +1223,9 @@ function WorkspaceSettings() {
 
   const deleteSelectedFinancialYear = async () => {
     if (!canDeleteSelectedYear) return;
-    if (await requestDeletionPassword(`delete financial year "${selectedFinancialYear}"`)) {
-      store.deleteFinancialYear(selectedFinancialYear);
+    if (await requestDeletionPassword(`delete financial year "${workspaceYear}"`)) {
+      store.deleteFinancialYear(workspaceYear);
+      setWorkspaceYear(settings.financialYear);
     }
   };
 
@@ -1032,7 +1242,7 @@ function WorkspaceSettings() {
             <div>
               <h3 className="text-sm font-semibold">Financial years</h3>
               <p className="text-xs text-muted-foreground">
-                Select a year for allocation editing, or set it as the current file year.
+                Manage the official current FY and Add File year lock.
               </p>
             </div>
             <span className="rounded bg-background px-2 py-1 text-xs text-muted-foreground">
@@ -1042,16 +1252,10 @@ function WorkspaceSettings() {
 
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(220px,0.7fr)_minmax(260px,1fr)]">
             <label className="block">
-              <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium">
-                Selected year
-                <SettingsHelper
-                  items={workspaceYearHelpers.selectedYear}
-                  label="Selected year help"
-                />
-              </div>
+              <div className="mb-1.5 text-xs font-medium">FY</div>
               <select
-                value={selectedFinancialYear}
-                onChange={(event) => store.updateSettings({ selectedYear: event.target.value })}
+                value={workspaceYear}
+                onChange={(event) => setWorkspaceYear(event.target.value)}
                 className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
               >
                 {financialYears.map((year) => (
@@ -1062,43 +1266,50 @@ function WorkspaceSettings() {
               </select>
             </label>
 
-            <label className="block">
-              <div className="text-xs font-medium mb-1.5">Add year</div>
-              <input
-                value={newFinancialYear || suggestedFinancialYear}
-                onChange={(event) => {
-                  setNewFinancialYear(event.target.value);
-                  setNewFinancialYearError("");
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") addFinancialYear();
-                }}
-                placeholder={suggestedFinancialYear}
-                className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-              />
+            <div className="block">
+              <label htmlFor="workspace-add-year" className="mb-1.5 block text-xs font-medium">
+                Add year
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="workspace-add-year"
+                  value={newFinancialYear || suggestedFinancialYear}
+                  onChange={(event) => {
+                    setNewFinancialYear(event.target.value);
+                    setNewFinancialYearError("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") addFinancialYear();
+                  }}
+                  placeholder={suggestedFinancialYear}
+                  className="h-10 min-w-0 flex-1 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+                />
+                <button
+                  type="button"
+                  onClick={addFinancialYear}
+                  className="h-10 shrink-0 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+                >
+                  <Plus className="size-4" /> Add Year
+                </button>
+              </div>
               {newFinancialYearError ? (
                 <div className="mt-1.5 text-xs text-destructive">{newFinancialYearError}</div>
               ) : null}
-            </label>
+            </div>
 
             <div className="flex flex-wrap items-center gap-3 xl:col-span-2">
               <button
                 type="button"
-                onClick={addFinancialYear}
-                className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
-              >
-                <Plus className="size-4" /> Add Year
-              </button>
-
-              <button
-                type="button"
                 onClick={setCurrentFinancialYear}
-                disabled={selectedFinancialYear === settings.financialYear}
+                disabled={workspaceYear === settings.financialYear}
                 className="h-10 min-w-40 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
-                <Check className="size-4" /> Set as current
+                <Check className="size-4" /> Set as Current FY
               </button>
-              <SettingsHelper items={workspaceYearHelpers.setCurrent} label="Set as current help" />
+              <SettingsHelper
+                items={workspaceYearHelpers.setCurrent}
+                label="Set as Current FY help"
+              />
 
               <button
                 type="button"
@@ -1122,21 +1333,19 @@ function WorkspaceSettings() {
               </button>
               <SettingsHelper items={workspaceYearHelpers.lockSelection} label="Year lock help" />
 
-              <button
-                type="button"
-                onClick={deleteSelectedFinancialYear}
-                disabled={!canDeleteSelectedYear}
-                title={
-                  selectedFinancialYear === settings.financialYear
-                    ? "Current financial year cannot be deleted"
-                    : selectedYearFileCount > 0
-                      ? "Years with files cannot be deleted"
-                      : "Delete selected year"
-                }
-                className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              <HelpedControl
+                helper={settingsControlHelpers.workspaceDelete}
+                label="Delete financial year help"
               >
-                <Trash2 className="size-4" /> Delete
-              </button>
+                <button
+                  type="button"
+                  onClick={deleteSelectedFinancialYear}
+                  disabled={!canDeleteSelectedYear}
+                  className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  <Trash2 className="size-4" /> Delete
+                </button>
+              </HelpedControl>
             </div>
           </div>
         </div>
@@ -1154,6 +1363,7 @@ function WorkspaceSettings() {
           label="Deletion password"
           value={settings.deletionPassword}
           onChange={(value) => store.updateSettings({ deletionPassword: value })}
+          helper={deletionPasswordHelper}
         />
       </div>
     </div>
@@ -1199,13 +1409,15 @@ function TcecCommitteeSettings() {
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="Committee name" />
-        <button
-          type="button"
-          onClick={add}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
-        >
-          <Plus className="size-4" /> Add
-        </button>
+        <HelpedControl helper={settingsControlHelpers.firmTypeAdd} label="Add firm type help">
+          <button
+            type="button"
+            onClick={add}
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          >
+            <Plus className="size-4" /> Add
+          </button>
+        </HelpedControl>
       </div>
 
       <div className="mt-4 rounded-md border border-border">
@@ -1218,14 +1430,19 @@ function TcecCommitteeSettings() {
             {committees.map((committee) => (
               <li key={committee} className="flex items-center justify-between gap-3 px-4 py-3">
                 <span className="text-sm font-medium">{committee}</span>
-                <button
-                  type="button"
-                  onClick={() => remove(committee)}
-                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                  aria-label={`Delete ${committee}`}
+                <HelpedControl
+                  helper={settingsControlHelpers.genericDelete}
+                  label={`Delete ${committee} help`}
                 >
-                  <Trash2 className="size-4" />
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(committee)}
+                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                    aria-label={`Delete ${committee}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </HelpedControl>
               </li>
             ))}
           </ul>
@@ -1267,7 +1484,10 @@ function FirmTypeSettings() {
 
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <h2 className="text-sm font-semibold mb-1">Firm Types</h2>
+      <div className="mb-1 inline-flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold">Firm Types</h2>
+        <SettingsHelper items={settingsControlHelpers.firmTypeName} label="Firm types help" />
+      </div>
       <p className="text-xs text-muted-foreground mb-5">
         Add and edit the firm type values shown in Supply Order forms and search filters.
       </p>
@@ -1297,14 +1517,19 @@ function FirmTypeSettings() {
                   onChange={(event) => rename(index, event.target.value)}
                   className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 />
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                  aria-label={`Delete ${firmType}`}
+                <HelpedControl
+                  helper={settingsControlHelpers.firmTypeDelete}
+                  label={`Delete ${firmType} help`}
                 >
-                  <Trash2 className="size-4" />
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(index)}
+                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                    aria-label={`Delete ${firmType}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </HelpedControl>
               </li>
             ))}
           </ul>
@@ -1388,14 +1613,19 @@ function ModeSettings() {
                       Default
                     </span>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => remove(index)}
-                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                      aria-label={`Delete ${mode}`}
+                    <HelpedControl
+                      helper={settingsControlHelpers.genericDelete}
+                      label={`Delete ${mode} help`}
                     >
-                      <Trash2 className="size-4" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => remove(index)}
+                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                        aria-label={`Delete ${mode}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </HelpedControl>
                   )}
                 </li>
               );
@@ -1411,6 +1641,7 @@ function FileTypeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
   const [name, setName] = useState("");
+  const [newFileTypeGroup, setNewFileTypeGroup] = useState<FileTypeGroup>("goodsServices");
   const fileTypes = normalizeFileTypes(settings.fileTypes);
   const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
 
@@ -1431,10 +1662,11 @@ function FileTypeSettings() {
     if (!exists) {
       updateFileTypes(
         [...fileTypes, trimmed],
-        [...fileTypeGroups, { fileType: trimmed, group: getDefaultFileTypeGroup(trimmed) }],
+        [...fileTypeGroups, { fileType: trimmed, group: newFileTypeGroup }],
       );
     }
     setName("");
+    setNewFileTypeGroup("goodsServices");
   };
 
   const rename = (index: number, value: string) => {
@@ -1475,8 +1707,23 @@ function FileTypeSettings() {
         Add file types and assign the workflow group used by future files.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_260px_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="File type" />
+        <div className="flex items-center gap-1">
+          <select
+            value={newFileTypeGroup}
+            onChange={(event) => setNewFileTypeGroup(event.target.value as FileTypeGroup)}
+            className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+            aria-label="Workflow group for new file type"
+          >
+            {fileTypeGroupOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <SettingsHelper items={settingsControlHelpers.fileTypeGroup} label="File type group help" />
+        </div>
         <button
           type="button"
           onClick={add}
@@ -1511,36 +1758,49 @@ function FileTypeSettings() {
                         : "bg-background")
                     }
                   />
-                  <select
-                    value={
-                      fileTypeGroups.find(
-                        (entry) =>
-                          entry.fileType.trim().toLowerCase() === fileType.trim().toLowerCase(),
-                      )?.group ?? getDefaultFileTypeGroup(fileType)
-                    }
-                    onChange={(event) => updateGroup(fileType, event.target.value as FileTypeGroup)}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                    aria-label={`Workflow group for ${fileType}`}
-                  >
-                    {fileTypeGroupOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={
+                        fileTypeGroups.find(
+                          (entry) =>
+                            entry.fileType.trim().toLowerCase() === fileType.trim().toLowerCase(),
+                        )?.group ?? getDefaultFileTypeGroup(fileType)
+                      }
+                      onChange={(event) =>
+                        updateGroup(fileType, event.target.value as FileTypeGroup)
+                      }
+                      className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                      aria-label={`Workflow group for ${fileType}`}
+                    >
+                      {fileTypeGroupOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <SettingsHelper
+                      items={settingsControlHelpers.fileTypeGroup}
+                      label={`${fileType} workflow group help`}
+                    />
+                  </div>
                   {protectedFileType ? (
                     <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
                       Default
                     </span>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => remove(index)}
-                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                      aria-label={`Delete ${fileType}`}
+                    <HelpedControl
+                      helper={settingsControlHelpers.fileTypeDelete}
+                      label={`Delete ${fileType} help`}
                     >
-                      <Trash2 className="size-4" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => remove(index)}
+                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                        aria-label={`Delete ${fileType}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </HelpedControl>
                   )}
                 </li>
               );
@@ -1651,14 +1911,19 @@ function SpecialFileMarkerSettings() {
                   onChange={(event) => updateDescription(index, event.target.value)}
                   className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 />
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  className="size-9 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                  aria-label={`Delete ${marker.code}`}
+                <HelpedControl
+                  helper={settingsControlHelpers.genericDelete}
+                  label={`Delete ${marker.code} help`}
                 >
-                  <Trash2 className="size-4" />
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(index)}
+                    className="size-9 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                    aria-label={`Delete ${marker.code}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </HelpedControl>
               </li>
             ))}
           </ul>
@@ -1738,11 +2003,7 @@ function createThresholdLevels(count: number, existing: ValueThresholdLevel[]) {
 function ValueThresholdSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
-  const selectedYear =
-    isAllActiveFilesYear(settings.selectedYear) ||
-    isActivePlusCurrentFyClosedYear(settings.selectedYear)
-      ? settings.financialYear
-      : settings.selectedYear;
+  const selectedYear = settings.setupYear || settings.financialYear;
   const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>
     formatThresholdLevels(settings.valueThresholdLevels ?? []),
   );
@@ -1751,7 +2012,7 @@ function ValueThresholdSettings() {
   useEffect(() => {
     setLevels(formatThresholdLevels(settings.valueThresholdLevels ?? []));
     setMessage("");
-  }, [settings.selectedYear, settings.valueThresholdLevels]);
+  }, [settings.setupYear, settings.valueThresholdLevels]);
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -1786,7 +2047,7 @@ function ValueThresholdSettings() {
     }
     setLevels(normalized);
     setMessage("Thresholds saved.");
-    store.updateSettings({ selectedYear, valueThresholdLevels: normalized });
+    store.updateSettings({ setupYear: selectedYear, valueThresholdLevels: normalized });
   };
 
   const updateCount = (count: number) => {
@@ -2217,27 +2478,42 @@ function AnomalyGovernanceSettings() {
                         {formatStatus(row.requestStatus)}
                       </span>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() => void review(row.signature, "approve_file")}
-                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                    <HelpedControl
+                      helper={settingsControlHelpers.anomalyFileAccept}
+                      label="File anomaly acceptance help"
                     >
-                      File
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void review(row.signature, "approve_universal")}
-                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      <button
+                        type="button"
+                        onClick={() => void review(row.signature, "approve_file")}
+                        className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      >
+                        File
+                      </button>
+                    </HelpedControl>
+                    <HelpedControl
+                      helper={settingsControlHelpers.anomalyUniversalAccept}
+                      label="Universal anomaly acceptance help"
                     >
-                      Universal
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void review(row.signature, "reject")}
-                      className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      <button
+                        type="button"
+                        onClick={() => void review(row.signature, "approve_universal")}
+                        className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      >
+                        Universal
+                      </button>
+                    </HelpedControl>
+                    <HelpedControl
+                      helper={settingsControlHelpers.anomalyReject}
+                      label="Send anomaly correction help"
                     >
-                      Send correction to user
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => void review(row.signature, "reject")}
+                        className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      >
+                        Send correction to user
+                      </button>
+                    </HelpedControl>
                   </div>
                 </div>
               ))}
@@ -2304,22 +2580,32 @@ function AnomalyGovernanceSettings() {
                     </div>
                     <div>
                       {row.status === "approved_file" || row.status === "approved_universal" ? (
-                        <button
-                          type="button"
-                          onClick={() => void review(row.signature, "revoke")}
-                          className="rounded border border-border px-2 py-1 hover:bg-accent"
+                        <HelpedControl
+                          helper={settingsControlHelpers.anomalyRevoke}
+                          label="Revoke anomaly decision help"
                         >
-                          Revoke
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => void review(row.signature, "revoke")}
+                            className="rounded border border-border px-2 py-1 hover:bg-accent"
+                          >
+                            Revoke
+                          </button>
+                        </HelpedControl>
                       ) : null}
                       {canClearDecisionRows ? (
-                        <button
-                          type="button"
-                          onClick={() => void clearSelected([row.signature])}
-                          className="rounded border border-border px-2 py-1 text-destructive hover:bg-destructive/10"
+                        <HelpedControl
+                          helper={settingsControlHelpers.anomalyClear}
+                          label="Clear anomaly history help"
                         >
-                          Clear
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => void clearSelected([row.signature])}
+                            className="rounded border border-border px-2 py-1 text-destructive hover:bg-destructive/10"
+                          >
+                            Clear
+                          </button>
+                        </HelpedControl>
                       ) : null}
                     </div>
                   </div>
@@ -2350,14 +2636,22 @@ function AnomalyGovernanceSettings() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold">Anomaly workflow</h3>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
-          >
-            Refresh
-          </button>
+          <span className="inline-flex items-center gap-1.5">
+            <h3 className="text-sm font-semibold">Anomaly workflow</h3>
+            <SettingsHelper
+              items={settingsControlHelpers.anomalyWorkflow}
+              label="Anomaly workflow help"
+            />
+          </span>
+          <HelpedControl helper={settingsControlHelpers.anomalyRefresh} label="Refresh anomaly help">
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
+            >
+              Refresh
+            </button>
+          </HelpedControl>
         </div>
         <div className="flex flex-wrap gap-2">
           {workflowTabs.map((tab) => (
@@ -2376,13 +2670,18 @@ function AnomalyGovernanceSettings() {
             </button>
           ))}
           {canClearDecisionRows && selectedDecisionSignatures.length ? (
-            <button
-              type="button"
-              onClick={() => void clearSelected(selectedDecisionSignatures)}
-              className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
+            <HelpedControl
+              helper={settingsControlHelpers.anomalyClear}
+              label="Clear selected anomaly history help"
             >
-              Clear selected ({selectedDecisionSignatures.length})
-            </button>
+              <button
+                type="button"
+                onClick={() => void clearSelected(selectedDecisionSignatures)}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
+              >
+                Clear selected ({selectedDecisionSignatures.length})
+              </button>
+            </HelpedControl>
           ) : null}
         </div>
         {workflowTab === "current"
@@ -2395,13 +2694,15 @@ function AnomalyGovernanceSettings() {
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
-          <button
-            type="button"
-            onClick={() => void createRule()}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
-          >
-            <Plus className="size-3.5" /> Add rule
-          </button>
+          <HelpedControl helper={settingsControlHelpers.anomalyRuleAdd} label="Add anomaly rule help">
+            <button
+              type="button"
+              onClick={() => void createRule()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
+            >
+              <Plus className="size-3.5" /> Add rule
+            </button>
+          </HelpedControl>
         </div>
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="min-w-full text-left text-xs">
@@ -2431,13 +2732,18 @@ function AnomalyGovernanceSettings() {
                     <td className="px-3 py-2">{rule.severity}</td>
                     <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
                     <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => void toggleRule(rule)}
-                        className="rounded border border-border px-2 py-1 hover:bg-accent"
+                      <HelpedControl
+                        helper={settingsControlHelpers.anomalyRuleToggle}
+                        label={`${rule.name} rule status help`}
                       >
-                        {rule.enabled ? "Disable" : "Enable"}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => void toggleRule(rule)}
+                          className="rounded border border-border px-2 py-1 hover:bg-accent"
+                        >
+                          {rule.enabled ? "Disable" : "Enable"}
+                        </button>
+                      </HelpedControl>
                     </td>
                   </tr>
                 ))
@@ -2464,6 +2770,9 @@ function MilestoneSettings() {
     settings.milestones && settings.milestones.length > 0
       ? settings.milestones
       : defaultMilestoneSequence,
+  );
+  const [protectedMilestoneKeys] = useState(
+    () => new Set(milestones.map((milestone) => normalizeMilestoneName(milestone))),
   );
   const [position, setPosition] = useState(String(milestones.length + 1));
 
@@ -2571,14 +2880,25 @@ function MilestoneSettings() {
                   >
                     <ArrowDown className="size-4" />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => remove(milestone)}
-                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                    aria-label={`Delete ${milestone}`}
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
+                  {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                      Existing
+                    </span>
+                  ) : (
+                    <HelpedControl
+                      helper={settingsControlHelpers.genericDelete}
+                      label={`Delete ${milestone} help`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => remove(milestone)}
+                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                        aria-label={`Delete ${milestone}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </HelpedControl>
+                  )}
                 </span>
               </li>
             ))}
@@ -2725,14 +3045,19 @@ function TableFieldPresetSettings() {
                 >
                   Clear
                 </button>
-                <button
-                  type="button"
-                  onClick={removePreset}
-                  disabled={!selectedPresetEditable}
-                  className="h-10 rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                <HelpedControl
+                  helper={settingsControlHelpers.genericDelete}
+                  label="Delete table preset help"
                 >
-                  Delete
-                </button>
+                  <button
+                    type="button"
+                    onClick={removePreset}
+                    disabled={!selectedPresetEditable}
+                    className="h-10 rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                </HelpedControl>
               </div>
               {!selectedPresetEditable ? (
                 <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
@@ -2912,13 +3237,18 @@ function DemandProcessingPresetSettings() {
                     />
                     Visible
                   </label>
-                  <button
-                    type="button"
-                    onClick={removePreset}
-                    className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                  <HelpedControl
+                    helper={settingsControlHelpers.genericDelete}
+                    label="Delete demand processing preset help"
                   >
-                    Delete
-                  </button>
+                    <button
+                      type="button"
+                      onClick={removePreset}
+                      className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                    >
+                      Delete
+                    </button>
+                  </HelpedControl>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -3092,13 +3422,18 @@ function DemandProcessingDayRangeSettings({
               />
             </label>
             <div className="flex items-end">
-              <button
-                type="button"
-                onClick={() => onRemove(range.id ?? "")}
-                className="h-9 w-full rounded-md border border-destructive/40 bg-background px-2 text-xs text-destructive hover:bg-destructive/10"
+              <HelpedControl
+                helper={settingsControlHelpers.genericDelete}
+                label="Delete day range help"
               >
-                Delete
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onRemove(range.id ?? "")}
+                  className="h-9 w-full rounded-md border border-destructive/40 bg-background px-2 text-xs text-destructive hover:bg-destructive/10"
+                >
+                  Delete
+                </button>
+              </HelpedControl>
             </div>
           </div>
         ))}
@@ -3407,19 +3742,24 @@ function DivisionSettings() {
                           >
                             <Pencil className="size-4" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (
-                                await requestDeletionPassword(`delete division "${division.name}"`)
-                              ) {
-                                store.deleteDivision(division.id);
-                              }
-                            }}
-                            className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                          <HelpedControl
+                            helper={settingsControlHelpers.genericDelete}
+                            label={`Delete ${division.name} help`}
                           >
-                            <Trash2 className="size-4" />
-                          </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (
+                                  await requestDeletionPassword(`delete division "${division.name}"`)
+                                ) {
+                                  store.deleteDivision(division.id);
+                                }
+                              }}
+                              className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                          </HelpedControl>
                         </>
                       )}
                     </div>
@@ -3930,14 +4270,19 @@ function FirmDatabaseSettings() {
                             >
                               <Pencil className="size-4" />
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => void removeFirm(firm.id)}
-                              disabled={!canManage}
-                              className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            <HelpedControl
+                              helper={settingsControlHelpers.genericDelete}
+                              label={`Delete ${firm.firmName || "firm"} help`}
                             >
-                              <Trash2 className="size-4" />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => void removeFirm(firm.id)}
+                                disabled={!canManage}
+                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </HelpedControl>
                           </>
                         )}
                       </div>
@@ -4495,13 +4840,18 @@ function IndentorSettings() {
                               >
                                 <Pencil className="size-4" />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => deleteIndentor(indentor.id)}
-                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                              <HelpedControl
+                                helper={settingsControlHelpers.genericDelete}
+                                label={`Delete ${indentor.name} help`}
                               >
-                                <Trash2 className="size-4" />
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteIndentor(indentor.id)}
+                                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 className="size-4" />
+                                </button>
+                              </HelpedControl>
                             </>
                           )}
                         </div>
@@ -4536,22 +4886,372 @@ function IndentorSettings() {
   );
 }
 
+function IpAccessSettings() {
+  const [config, setConfig] = useState<IpAccessConfig | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [ipAddress, setIpAddress] = useState("");
+  const [remarks, setRemarks] = useState("");
+  const [showArchive, setShowArchive] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setMessage("");
+    try {
+      const nextConfig = await store.getIpAccessConfig();
+      setConfig(nextConfig);
+      if (!ipAddress) setIpAddress(nextConfig.currentIp);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to load IP access settings.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const updateMode = async (mode: IpAccessMode) => {
+    if (
+      mode === "restrict" &&
+      !window.confirm(
+        "Restrict mode blocks login from IPs that are not active in the trusted list. Continue?",
+      )
+    ) {
+      return;
+    }
+    setConfig(await store.updateIpAccessMode(mode));
+  };
+
+  const addIp = async (value = ipAddress) => {
+    if (!value.trim()) return;
+    setConfig(await store.addTrustedIpAddress(value.trim(), remarks.trim()));
+    setIpAddress("");
+    setRemarks("");
+  };
+
+  const activeAttempts = config?.attempts ?? [];
+  const archivedAttempts = config?.archivedAttempts ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Login IP Access Control</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Monitor or restrict login based on trusted IP addresses.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
+          >
+            Refresh
+          </button>
+        </div>
+
+        {message ? (
+          <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {message}
+          </div>
+        ) : null}
+
+        <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <label className="block">
+            <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              Mode
+              <SettingsHelper items={settingsControlHelpers.ipMode} label="IP access mode help" />
+            </div>
+            <select
+              value={config?.mode ?? "off"}
+              onChange={(event) => void updateMode(event.target.value as IpAccessMode)}
+              disabled={loading || !config}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+            >
+              <option value="off">Off</option>
+              <option value="notify">Notify on new IP</option>
+              <option value="restrict">Restrict to trusted IPs</option>
+            </select>
+          </label>
+          <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+            <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
+              <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                Current detected IP
+                <SettingsHelper
+                  items={settingsControlHelpers.ipCurrent}
+                  label="Current detected IP help"
+                />
+              </div>
+              <div className="mt-1 font-mono text-sm font-semibold">
+                {config?.currentIp || "Not detected"}
+              </div>
+              {config?.emergencyBypassEnv ? (
+                <div className="mt-1 text-xs text-destructive">
+                  Emergency server bypass is active.
+                </div>
+              ) : null}
+            </div>
+            <HelpedControl helper={settingsControlHelpers.ipAddCurrent} label="Add current IP help">
+              <button
+                type="button"
+                onClick={() => config?.currentIp && void addIp(config.currentIp)}
+                disabled={!config?.currentIp}
+                className="h-10 self-end rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                Add current IP
+              </button>
+            </HelpedControl>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1.5fr_auto]">
+          <div className="flex items-center gap-1">
+            <DivisionInput value={ipAddress} onChange={setIpAddress} placeholder="IP address" />
+            <SettingsHelper items={settingsControlHelpers.ipManualAddress} label="IP address help" />
+          </div>
+          <div className="flex items-center gap-1">
+            <DivisionInput value={remarks} onChange={setRemarks} placeholder="Remarks" />
+            <SettingsHelper items={settingsControlHelpers.ipRemarks} label="IP remarks help" />
+          </div>
+          <HelpedControl helper={settingsControlHelpers.ipAddTrusted} label="Add trusted IP help">
+            <button
+              type="button"
+              onClick={() => void addIp()}
+              disabled={!ipAddress.trim()}
+              className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              Add trusted IP
+            </button>
+          </HelpedControl>
+        </div>
+      </div>
+
+      <TrustedIpTable
+        rows={config?.trustedIps ?? []}
+        onUpdate={async (id, patch) => setConfig(await store.updateTrustedIpAddress(id, patch))}
+      />
+
+      <IpAttemptTable
+        title={`New IP login history (${activeAttempts.length})`}
+        rows={activeAttempts}
+        archived={false}
+        onArchive={async (id) => setConfig(await store.archiveIpLoginAttempt(id))}
+      />
+
+      <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
+            New IP bin / archive ({archivedAttempts.length})
+            <SettingsHelper items={settingsControlHelpers.ipAttemptBin} label="New IP archive help" />
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowArchive((open) => !open)}
+            className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+          >
+            {showArchive ? "Hide" : "Show"}
+          </button>
+        </div>
+        {showArchive ? (
+          <div className="mt-4">
+            <IpAttemptTable title="Archived IP attempts" rows={archivedAttempts} archived />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function TrustedIpTable({
+  rows,
+  onUpdate,
+}: {
+  rows: TrustedIpAddress[];
+  onUpdate: (id: string, patch: { remarks?: string; active?: boolean }) => Promise<void>;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <h3 className="mb-3 text-sm font-semibold">Trusted IP addresses</h3>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[760px] text-sm">
+          <thead className="bg-secondary text-xs text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">IP address</th>
+              <th className="px-3 py-2 text-left font-medium">
+                <span className="inline-flex items-center gap-1">
+                  Remarks
+                  <SettingsHelper
+                    items={settingsControlHelpers.trustedIpRemarks}
+                    label="Trusted IP remarks help"
+                  />
+                </span>
+              </th>
+              <th className="px-3 py-2 text-left font-medium">
+                <span className="inline-flex items-center gap-1">
+                  Status
+                  <SettingsHelper
+                    items={settingsControlHelpers.trustedIpActive}
+                    label="Trusted IP status help"
+                  />
+                </span>
+              </th>
+              <th className="px-3 py-2 text-left font-medium">Added by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? (
+              rows.map((row) => (
+                <tr key={row.id} className="border-t border-border">
+                  <td className="px-3 py-2 font-mono">{row.ipAddress}</td>
+                  <td className="px-3 py-2">
+                    <input
+                      defaultValue={row.remarks}
+                      onBlur={(event) => void onUpdate(row.id, { remarks: event.target.value })}
+                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <label className="inline-flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={row.active}
+                        onChange={(event) => void onUpdate(row.id, { active: event.target.checked })}
+                      />
+                      {row.active ? "Active" : "Inactive"}
+                    </label>
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {row.createdByName || "-"}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
+                  No trusted IP addresses added.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function IpAttemptTable({
+  title,
+  rows,
+  archived,
+  onArchive,
+}: {
+  title: string;
+  rows: IpLoginAttempt[];
+  archived: boolean;
+  onArchive?: (id: string) => Promise<void>;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[980px] text-sm">
+          <thead className="bg-secondary text-xs text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">IP address</th>
+              <th className="px-3 py-2 text-left font-medium">User account</th>
+              <th className="px-3 py-2 text-left font-medium">Mode</th>
+              <th className="px-3 py-2 text-left font-medium">Result</th>
+              <th className="px-3 py-2 text-left font-medium">Reason</th>
+              <th className="px-3 py-2 text-left font-medium">Time</th>
+              <th className="px-3 py-2 text-right font-medium">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? (
+              rows.map((row) => (
+                <tr key={row.id} className="border-t border-border align-top">
+                  <td className="px-3 py-2 font-mono">{row.ipAddress}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium">{row.userName || row.username}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.userRole ? roleLabel(row.userRole) : "Unknown role"}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 capitalize">{ipModeLabel(row.mode)}</td>
+                  <td className="px-3 py-2 capitalize">{row.result}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{row.reason}</td>
+                  <td className="px-3 py-2">{formatDateTime(row.attemptedAt)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {!archived && onArchive ? (
+                      <HelpedControl
+                        helper={settingsControlHelpers.ipAttemptArchive}
+                        label={`${row.ipAddress} attempt archive help`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void onArchive(row.id)}
+                          className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+                        >
+                          Archive
+                        </button>
+                      </HelpedControl>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {row.archivedByName ? `By ${row.archivedByName}` : "Archived"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                  No IP attempts found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ipModeLabel(mode: IpAccessMode) {
+  if (mode === "notify") return "Notify";
+  if (mode === "restrict") return "Restrict";
+  return "Off";
+}
+
 function UserSettings() {
   const users = useUsers();
   const divisions = useDivisions();
   const settings = useSettings();
+  const fileAccessOptions = useMemo(
+    () => getFileCategoryOptions(normalizeFileTypes(settings.fileTypes)),
+    [settings.fileTypes],
+  );
+  const allFileAccessKeys = useMemo(
+    () => getAllFileCategoryKeys(normalizeFileTypes(settings.fileTypes)),
+    [settings.fileTypes],
+  );
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<AppUserRole>("editor");
+  const [emergencyIpBypass, setEmergencyIpBypass] = useState(false);
   const [divisionIds, setDivisionIds] = useState<string[]>([]);
   const [allowedFileCategories, setAllowedFileCategories] =
-    useState<FileCategoryKey[]>(allFileCategoryKeys);
+    useState<FileCategoryKey[]>(allFileAccessKeys);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editUsername, setEditUsername] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [editRole, setEditRole] = useState<AppUserRole>("editor");
+  const [editEmergencyIpBypass, setEditEmergencyIpBypass] = useState(false);
   const [editDivisionIds, setEditDivisionIds] = useState<string[]>([]);
   const [editAllowedFileCategories, setEditAllowedFileCategories] = useState<FileCategoryKey[]>([]);
 
@@ -4562,6 +5262,7 @@ function UserSettings() {
       username: username.trim(),
       password: password.trim(),
       role,
+      emergencyIpBypass: role === "admin" && emergencyIpBypass,
       divisionIds,
       allowedFileCategories,
     });
@@ -4569,8 +5270,9 @@ function UserSettings() {
     setUsername("");
     setPassword("");
     setRole("editor");
+    setEmergencyIpBypass(false);
     setDivisionIds([]);
-    setAllowedFileCategories(allFileCategoryKeys);
+    setAllowedFileCategories(allFileAccessKeys);
   };
 
   const startEdit = (user: (typeof users)[number]) => {
@@ -4579,8 +5281,11 @@ function UserSettings() {
     setEditUsername(user.username);
     setEditPassword("");
     setEditRole(user.role);
+    setEditEmergencyIpBypass(Boolean(user.emergencyIpBypass));
     setEditDivisionIds(user.divisionIds ?? []);
-    setEditAllowedFileCategories(normalizeUserFileCategories(user.allowedFileCategories));
+    setEditAllowedFileCategories(
+      normalizeUserFileCategories(user.allowedFileCategories, fileAccessOptions),
+    );
   };
 
   const saveEdit = (id: string) => {
@@ -4590,6 +5295,7 @@ function UserSettings() {
       username: editUsername.trim(),
       ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
       role: editRole,
+      emergencyIpBypass: editRole === "admin" && editEmergencyIpBypass,
       divisionIds: editDivisionIds,
       allowedFileCategories: editAllowedFileCategories,
     });
@@ -4618,6 +5324,14 @@ function UserSettings() {
       </div>
 
       <div className="mt-3">
+        <EmergencyIpBypassToggle
+          role={role}
+          checked={emergencyIpBypass}
+          onChange={setEmergencyIpBypass}
+        />
+      </div>
+
+      <div className="mt-3">
         <DivisionAccessPicker
           divisions={divisions}
           selectedIds={divisionIds}
@@ -4627,6 +5341,7 @@ function UserSettings() {
       <div className="mt-3">
         <div className="mb-1.5 text-xs font-medium text-muted-foreground">Allowed file types</div>
         <FileCategoryAccessPicker
+          options={fileAccessOptions}
           selectedCategories={allowedFileCategories}
           onChange={setAllowedFileCategories}
         />
@@ -4667,13 +5382,15 @@ function UserSettings() {
                   editUsername.trim() !== user.username ||
                   Boolean(editPassword.trim()) ||
                   editRole !== user.role ||
+                  (editRole === "admin" && editEmergencyIpBypass) !==
+                    Boolean(user.emergencyIpBypass) ||
                   !isSettingsDirtyValueEqual(
                     [...editDivisionIds].sort(),
                     [...(user.divisionIds ?? [])].sort(),
                   ) ||
                   !isSettingsDirtyValueEqual(
-                    normalizeUserFileCategories(editAllowedFileCategories),
-                    normalizeUserFileCategories(user.allowedFileCategories),
+                    normalizeUserFileCategories(editAllowedFileCategories, fileAccessOptions),
+                    normalizeUserFileCategories(user.allowedFileCategories, fileAccessOptions),
                   );
                 return (
                   <tr key={user.id} className="border-t border-border align-top">
@@ -4708,9 +5425,21 @@ function UserSettings() {
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {isEditing ? (
-                        <UserRoleSelect value={editRole} onChange={setEditRole} />
+                        <div className="space-y-2">
+                          <UserRoleSelect value={editRole} onChange={setEditRole} />
+                          <EmergencyIpBypassToggle
+                            role={editRole}
+                            checked={editEmergencyIpBypass}
+                            onChange={setEditEmergencyIpBypass}
+                          />
+                        </div>
                       ) : (
-                        roleLabel(user.role)
+                        <div>
+                          <div>{roleLabel(user.role)}</div>
+                          {user.role === "admin" && user.emergencyIpBypass ? (
+                            <div className="mt-1 text-xs text-destructive">Emergency IP bypass</div>
+                          ) : null}
+                        </div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
@@ -4727,11 +5456,12 @@ function UserSettings() {
                     <td className="px-4 py-3 text-muted-foreground">
                       {isEditing ? (
                         <FileCategoryAccessPicker
+                          options={fileAccessOptions}
                           selectedCategories={editAllowedFileCategories}
                           onChange={setEditAllowedFileCategories}
                         />
                       ) : (
-                        fileCategoryAccessLabel(user.allowedFileCategories)
+                        fileCategoryAccessLabel(user.allowedFileCategories, fileAccessOptions)
                       )}
                     </td>
                     <td className="px-4 py-3">
@@ -4763,17 +5493,22 @@ function UserSettings() {
                             >
                               <Pencil className="size-4" />
                             </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                if (await requestDeletionPassword(`delete user "${user.name}"`)) {
-                                  store.deleteUser(user.id);
-                                }
-                              }}
-                              className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                            <HelpedControl
+                              helper={settingsControlHelpers.userDelete}
+                              label={`Delete ${user.name} help`}
                             >
-                              <Trash2 className="size-4" />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (await requestDeletionPassword(`delete user "${user.name}"`)) {
+                                    store.deleteUser(user.id);
+                                  }
+                                }}
+                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </HelpedControl>
                           </>
                         )}
                       </div>
@@ -4813,6 +5548,9 @@ function UserRoleSelect({
 function ArchiveSettings() {
   const [archivedFiles, setArchivedFiles] = useState<FileRecord[]>([]);
   const [archivedDivisions, setArchivedDivisions] = useState<Division[]>([]);
+  const [archivedUsers, setArchivedUsers] = useState<AppUser[]>([]);
+  const [archivedFirms, setArchivedFirms] = useState<MasterFirm[]>([]);
+  const [archivedIndentors, setArchivedIndentors] = useState<Indentor[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
@@ -4820,12 +5558,34 @@ function ArchiveSettings() {
     setLoading(true);
     setError(undefined);
     try {
-      const [filesResult, divisionsResult] = await Promise.all([
+      const results = await Promise.allSettled([
         store.listArchivedFiles(),
         store.listArchivedDivisions(),
+        store.listArchivedUsers(),
+        listArchivedMasterFirms(),
+        store.listArchivedIndentors(),
       ]);
-      setArchivedFiles(filesResult.files);
-      setArchivedDivisions(divisionsResult.divisions);
+      const labels = ["Files", "Divisions", "Users", "Master firms", "Indentors"];
+      const failures: string[] = [];
+
+      if (results[0].status === "fulfilled") setArchivedFiles(results[0].value.files);
+      else failures.push(`${labels[0]}: ${getErrorMessage(results[0].reason)}`);
+
+      if (results[1].status === "fulfilled") setArchivedDivisions(results[1].value.divisions);
+      else failures.push(`${labels[1]}: ${getErrorMessage(results[1].reason)}`);
+
+      if (results[2].status === "fulfilled") setArchivedUsers(results[2].value.users);
+      else failures.push(`${labels[2]}: ${getErrorMessage(results[2].reason)}`);
+
+      if (results[3].status === "fulfilled") setArchivedFirms(results[3].value.firms);
+      else failures.push(`${labels[3]}: ${getErrorMessage(results[3].reason)}`);
+
+      if (results[4].status === "fulfilled") setArchivedIndentors(results[4].value.indentors);
+      else failures.push(`${labels[4]}: ${getErrorMessage(results[4].reason)}`);
+
+      if (failures.length) {
+        setError(`Some archive bins could not be loaded. ${failures.join("; ")}`);
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to load archive.");
     } finally {
@@ -4844,6 +5604,21 @@ function ArchiveSettings() {
 
   const restoreDivision = async (division: Division) => {
     await store.restoreArchivedDivision(division.id);
+    await loadArchive();
+  };
+
+  const restoreUser = async (user: AppUser) => {
+    await store.restoreArchivedUser(user.id);
+    await loadArchive();
+  };
+
+  const restoreFirm = async (firm: MasterFirm) => {
+    await restoreArchivedMasterFirm(firm.id);
+    await loadArchive();
+  };
+
+  const restoreIndentor = async (indentor: Indentor) => {
+    await store.restoreArchivedIndentor(indentor.id);
     await loadArchive();
   };
 
@@ -4870,12 +5645,42 @@ function ArchiveSettings() {
     await loadArchive();
   };
 
+  const permanentlyDeleteUser = async (user: AppUser) => {
+    const deletionPassword = await promptDeletionPassword(
+      `permanently delete archived user "${user.name}"`,
+    );
+    if (deletionPassword === null) return;
+    await store.permanentlyDeleteArchivedUser(user.id, deletionPassword);
+    await loadArchive();
+  };
+
+  const permanentlyDeleteFirm = async (firm: MasterFirm) => {
+    const label = firm.firmName || firm.emailId || firm.firmUniqueNo || firm.id;
+    const deletionPassword = await promptDeletionPassword(
+      `permanently delete archived firm "${label}"`,
+    );
+    if (deletionPassword === null) return;
+    await permanentlyDeleteArchivedMasterFirm(firm.id, deletionPassword);
+    await loadArchive();
+  };
+
+  const permanentlyDeleteIndentor = async (indentor: Indentor) => {
+    const deletionPassword = await promptDeletionPassword(
+      `permanently delete archived indentor "${indentor.name}"`,
+    );
+    if (deletionPassword === null) return;
+    await store.permanentlyDeleteArchivedIndentor(indentor.id, deletionPassword);
+    await loadArchive();
+  };
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold mb-1">Archive</h2>
-          <p className="text-xs text-muted-foreground">Review archived files and divisions.</p>
+          <p className="text-xs text-muted-foreground">
+            Review archived files, divisions, users, firms, and indentors.
+          </p>
         </div>
         <button
           type="button"
@@ -4892,138 +5697,426 @@ function ArchiveSettings() {
         </div>
       ) : null}
 
-      <div className="mb-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[640px] table-fixed text-sm">
-          <colgroup>
-            <col className="w-[30%]" />
-            <col className="w-[18%]" />
-            <col className="w-[18%]" />
-            <col className="w-[18%]" />
-            <col className="w-[16%]" />
-          </colgroup>
-          <thead className="bg-secondary text-xs text-muted-foreground">
-            <tr>
-              <th className="px-4 py-2.5 text-left font-medium">Archived division</th>
-              <th className="px-4 py-2.5 text-left font-medium">Code</th>
-              <th className="px-4 py-2.5 text-left font-medium">AD</th>
-              <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
-              <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr className="border-t border-border">
-                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                  Loading archived divisions...
-                </td>
+      <details open className="mb-5 overflow-hidden rounded-md border border-border">
+        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+          Divisions bin ({archivedDivisions.length})
+        </summary>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[30%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+              <col className="w-[16%]" />
+            </colgroup>
+            <thead className="bg-secondary text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 text-left font-medium">Archived division</th>
+                <th className="px-4 py-2.5 text-left font-medium">Code</th>
+                <th className="px-4 py-2.5 text-left font-medium">AD</th>
+                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
               </tr>
-            ) : archivedDivisions.length === 0 ? (
-              <tr className="border-t border-border">
-                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                  No archived divisions.
-                </td>
-              </tr>
-            ) : (
-              archivedDivisions.map((division) => (
-                <tr key={division.id} className="border-t border-border align-top">
-                  <td className="px-4 py-3 font-medium">{division.name}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{division.code || "Not set"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{division.ad || "No"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {division.archivedAt ? formatArchiveDate(division.archivedAt) : "Not set"}
-                  </td>
-                  <td className="py-3 pl-8 pr-4">
-                    <div className="flex justify-end gap-1">
-                      <button
-                        type="button"
-                        onClick={() => void restoreDivision(division)}
-                        className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                      >
-                        Restore
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void permanentlyDeleteDivision(division)}
-                        className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Delete
-                      </button>
-                    </div>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr className="border-t border-border">
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                    Loading archived divisions...
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : archivedDivisions.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                    No archived divisions.
+                  </td>
+                </tr>
+              ) : (
+                archivedDivisions.map((division) => (
+                  <tr key={division.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3 font-medium">{division.name}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {division.code || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{division.ad || "No"}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {division.archivedAt ? formatArchiveDate(division.archivedAt) : "Not set"}
+                    </td>
+                    <td className="py-3 pl-8 pr-4">
+                      <div className="flex justify-end gap-1">
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveRestore}
+                          label="Restore archived division help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void restoreDivision(division)}
+                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                          >
+                            Restore
+                          </button>
+                        </HelpedControl>
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveDelete}
+                          label="Delete archived division help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void permanentlyDeleteDivision(division)}
+                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </HelpedControl>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
 
-      <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[900px] table-fixed text-sm">
-          <colgroup>
-            <col className="w-[16%]" />
-            <col className="w-[16%]" />
-            <col className="w-[16%]" />
-            <col className="w-[26%]" />
-            <col className="w-[10%]" />
-            <col className="w-[16%]" />
-          </colgroup>
-          <thead className="bg-secondary text-xs text-muted-foreground">
-            <tr>
-              <th className="px-4 py-2.5 text-left font-medium">Unique code</th>
-              <th className="px-4 py-2.5 text-left font-medium">Division</th>
-              <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
-              <th className="px-4 py-2.5 text-left font-medium">Description</th>
-              <th className="px-4 py-2.5 text-left font-medium">Year</th>
-              <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr className="border-t border-border">
-                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                  Loading archive...
-                </td>
+      <details open className="mb-5 overflow-hidden rounded-md border border-border">
+        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+          Files bin ({archivedFiles.length})
+        </summary>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[16%]" />
+              <col className="w-[16%]" />
+              <col className="w-[16%]" />
+              <col className="w-[26%]" />
+              <col className="w-[10%]" />
+              <col className="w-[16%]" />
+            </colgroup>
+            <thead className="bg-secondary text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 text-left font-medium">Unique code</th>
+                <th className="px-4 py-2.5 text-left font-medium">Division</th>
+                <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
+                <th className="px-4 py-2.5 text-left font-medium">Description</th>
+                <th className="px-4 py-2.5 text-left font-medium">Year</th>
+                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
               </tr>
-            ) : archivedFiles.length === 0 ? (
-              <tr className="border-t border-border">
-                <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                  No archived files.
-                </td>
-              </tr>
-            ) : (
-              archivedFiles.map((file) => (
-                <tr key={file.id} className="border-t border-border align-top">
-                  <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{file.division || "Not set"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{file.indentor || "Not set"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {file.demandDescription || "Not set"}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
-                  <td className="py-3 pl-8 pr-4">
-                    <div className="flex justify-end gap-1">
-                      <button
-                        type="button"
-                        onClick={() => void restore(file)}
-                        className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                      >
-                        Restore
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void permanentlyDelete(file)}
-                        className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Delete
-                      </button>
-                    </div>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    Loading archive...
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : archivedFiles.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    No archived files.
+                  </td>
+                </tr>
+              ) : (
+                archivedFiles.map((file) => (
+                  <tr key={file.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {file.division || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {file.indentor || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {file.demandDescription || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
+                    <td className="py-3 pl-8 pr-4">
+                      <div className="flex justify-end gap-1">
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveRestore}
+                          label="Restore archived file help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void restore(file)}
+                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                          >
+                            Restore
+                          </button>
+                        </HelpedControl>
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveDelete}
+                          label="Delete archived file help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void permanentlyDelete(file)}
+                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </HelpedControl>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details className="mb-5 overflow-hidden rounded-md border border-border">
+        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+          Users bin ({archivedUsers.length})
+        </summary>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[24%]" />
+              <col className="w-[22%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+            </colgroup>
+            <thead className="bg-secondary text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 text-left font-medium">User</th>
+                <th className="px-4 py-2.5 text-left font-medium">Username</th>
+                <th className="px-4 py-2.5 text-left font-medium">Role</th>
+                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr className="border-t border-border">
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                    Loading archived users...
+                  </td>
+                </tr>
+              ) : archivedUsers.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                    No archived users.
+                  </td>
+                </tr>
+              ) : (
+                archivedUsers.map((user) => (
+                  <tr key={user.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3 font-medium">{user.name}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{user.username}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{roleLabel(user.role)}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {user.archivedAt ? formatArchiveDate(user.archivedAt) : "Not set"}
+                    </td>
+                    <td className="py-3 pl-8 pr-4">
+                      <div className="flex justify-end gap-1">
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveRestore}
+                          label="Restore archived user help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void restoreUser(user)}
+                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                          >
+                            Restore
+                          </button>
+                        </HelpedControl>
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveDelete}
+                          label="Delete archived user help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void permanentlyDeleteUser(user)}
+                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </HelpedControl>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details className="mb-5 overflow-hidden rounded-md border border-border">
+        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+          Master firms bin ({archivedFirms.length})
+        </summary>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[22%]" />
+              <col className="w-[18%]" />
+              <col className="w-[18%]" />
+              <col className="w-[16%]" />
+              <col className="w-[12%]" />
+              <col className="w-[14%]" />
+            </colgroup>
+            <thead className="bg-secondary text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 text-left font-medium">Firm</th>
+                <th className="px-4 py-2.5 text-left font-medium">Unique No.</th>
+                <th className="px-4 py-2.5 text-left font-medium">Email</th>
+                <th className="px-4 py-2.5 text-left font-medium">Contact</th>
+                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    Loading archived firms...
+                  </td>
+                </tr>
+              ) : archivedFirms.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    No archived firms.
+                  </td>
+                </tr>
+              ) : (
+                archivedFirms.map((firm) => (
+                  <tr key={firm.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3 font-medium">{firm.firmName || "Not set"}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {firm.firmUniqueNo || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{firm.emailId || "Not set"}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {firm.contactNo || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {firm.archivedAt ? formatArchiveDate(firm.archivedAt) : "Not set"}
+                    </td>
+                    <td className="py-3 pl-8 pr-4">
+                      <div className="flex justify-end gap-1">
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveRestore}
+                          label="Restore archived firm help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void restoreFirm(firm)}
+                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                          >
+                            Restore
+                          </button>
+                        </HelpedControl>
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveDelete}
+                          label="Delete archived firm help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void permanentlyDeleteFirm(firm)}
+                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </HelpedControl>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details className="overflow-hidden rounded-md border border-border">
+        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+          Indentors bin ({archivedIndentors.length})
+        </summary>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[20%]" />
+              <col className="w-[20%]" />
+              <col className="w-[16%]" />
+              <col className="w-[18%]" />
+              <col className="w-[12%]" />
+              <col className="w-[14%]" />
+            </colgroup>
+            <thead className="bg-secondary text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
+                <th className="px-4 py-2.5 text-left font-medium">Division</th>
+                <th className="px-4 py-2.5 text-left font-medium">SF ID</th>
+                <th className="px-4 py-2.5 text-left font-medium">Email</th>
+                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    Loading archived indentors...
+                  </td>
+                </tr>
+              ) : archivedIndentors.length === 0 ? (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                    No archived indentors.
+                  </td>
+                </tr>
+              ) : (
+                archivedIndentors.map((indentor) => (
+                  <tr key={indentor.id} className="border-t border-border align-top">
+                    <td className="px-4 py-3 font-medium">{indentor.name}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{indentor.divisionName}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{indentor.sfId}</td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {indentor.email || "Not set"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {indentor.archivedAt ? formatArchiveDate(indentor.archivedAt) : "Not set"}
+                    </td>
+                    <td className="py-3 pl-8 pr-4">
+                      <div className="flex justify-end gap-1">
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveRestore}
+                          label="Restore archived indentor help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void restoreIndentor(indentor)}
+                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                          >
+                            Restore
+                          </button>
+                        </HelpedControl>
+                        <HelpedControl
+                          helper={settingsControlHelpers.archiveDelete}
+                          label="Delete archived indentor help"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void permanentlyDeleteIndentor(indentor)}
+                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </HelpedControl>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   );
 }
@@ -5032,6 +6125,16 @@ function formatArchiveDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString();
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Request failed.";
 }
 
 function DivisionAccessPicker({
@@ -5080,9 +6183,11 @@ function DivisionAccessPicker({
 }
 
 function FileCategoryAccessPicker({
+  options,
   selectedCategories,
   onChange,
 }: {
+  options: FileCategoryOption[];
   selectedCategories: FileCategoryKey[];
   onChange: (categories: FileCategoryKey[]) => void;
 }) {
@@ -5090,7 +6195,7 @@ function FileCategoryAccessPicker({
     onChange(
       selectedCategories.includes(category)
         ? selectedCategories.filter((item) => item !== category)
-        : fileCategoryOptions
+        : options
             .map((option) => option.key)
             .filter((key) => selectedCategories.includes(key) || key === category),
     );
@@ -5099,7 +6204,7 @@ function FileCategoryAccessPicker({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        {fileCategoryOptions.map((option) => (
+        {options.map((option) => (
           <label
             key={option.key}
             className="inline-flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm"
@@ -5119,6 +6224,38 @@ function FileCategoryAccessPicker({
   );
 }
 
+function EmergencyIpBypassToggle({
+  role,
+  checked,
+  onChange,
+}: {
+  role: AppUserRole;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const disabled = role !== "admin";
+  return (
+    <label className="inline-flex min-h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
+      <input
+        type="checkbox"
+        checked={!disabled && checked}
+        onChange={(event) => onChange(event.target.checked)}
+        disabled={disabled}
+        className="size-4 rounded border-input"
+      />
+      <span>Emergency IP bypass</span>
+      <SettingsHelper
+        items={[
+          "Only Admin accounts can use this bypass.",
+          "When Restrict mode is enabled, this Admin can still log in from an untrusted IP.",
+          "The login is still recorded in New IP history and shown to Admin.",
+        ]}
+        label="Emergency IP bypass help"
+      />
+    </label>
+  );
+}
+
 function roleLabel(role: AppUserRole) {
   if (role === "admin") return "Admin";
   if (role === "sub_admin") return "Sub admin";
@@ -5128,9 +6265,13 @@ function roleLabel(role: AppUserRole) {
   return "Viewer";
 }
 
-function normalizeUserFileCategories(values: string[] | null | undefined): FileCategoryKey[] {
-  if (!values) return allFileCategoryKeys;
-  const allowedKeys = new Set(fileCategoryOptions.map((option) => option.key));
+function normalizeUserFileCategories(
+  values: string[] | null | undefined,
+  options: FileCategoryOption[] = fileCategoryOptions,
+): FileCategoryKey[] {
+  const optionKeys = options.map((option) => option.key);
+  if (!values) return optionKeys;
+  const allowedKeys = new Set(optionKeys);
   const expandedValues = new Set(values);
   if (
     expandedValues.has("goodsServices") &&
@@ -5141,17 +6282,20 @@ function normalizeUserFileCategories(values: string[] | null | undefined): FileC
   ) {
     expandedValues.add("om");
   }
-  return fileCategoryOptions
+  return options
     .map((option) => option.key)
     .filter((key) => expandedValues.has(key) && allowedKeys.has(key));
 }
 
-function fileCategoryAccessLabel(values: string[] | null | undefined) {
-  const categories = normalizeUserFileCategories(values);
-  if (categories.length === allFileCategoryKeys.length) return "All file types";
+function fileCategoryAccessLabel(
+  values: string[] | null | undefined,
+  options: FileCategoryOption[] = fileCategoryOptions,
+) {
+  const categories = normalizeUserFileCategories(values, options);
+  if (categories.length === options.length) return "All file types";
   if (categories.length === 0) return "No file types";
   return categories
-    .map((key) => fileCategoryOptions.find((option) => option.key === key)?.label)
+    .map((key) => options.find((option) => option.key === key)?.label)
     .filter(Boolean)
     .join(", ");
 }
@@ -5190,14 +6334,19 @@ function PasswordField({
   label,
   value,
   onChange,
+  helper,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  helper?: string[];
 }) {
   return (
     <label className="block">
-      <div className="text-xs font-medium mb-1.5">{label}</div>
+      <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium">
+        {label}
+        {helper?.length ? <SettingsHelper items={helper} label={`${label} help`} /> : null}
+      </div>
       <input
         type="password"
         value={value}

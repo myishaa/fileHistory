@@ -10,6 +10,7 @@ on conflict (name) do nothing;
 insert into app_settings (
   financial_year,
   selected_year,
+  setup_year,
   theme,
   theme_tint,
   deletion_password,
@@ -23,6 +24,7 @@ insert into app_settings (
 values (
   extract(year from current_date)::text,
   '__active_plus_current_fy_closed__',
+  extract(year from current_date)::text,
   'light',
   'plain',
   '',

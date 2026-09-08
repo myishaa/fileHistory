@@ -11,11 +11,13 @@ import type {
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 import { effectiveSupplyOrderEntries } from "../utils/effective-deliveries.js";
+import { hasOpenBillReturn } from "../utils/refloat-returned-bill.js";
 import {
   isBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
 } from "../utils/file-type-groups.js";
 import {
+  getFileCategorySqlCondition,
   matchesFileCategorySelection,
   normalizeFileCategories,
   type FileCategoryKey,
@@ -55,6 +57,7 @@ type DivisionRow = {
 type SettingsRow = {
   financial_year: string;
   selected_year: string;
+  setup_year: string | null;
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
@@ -265,10 +268,17 @@ function mapDivision(row: DivisionRow): Division {
 }
 
 function mapSettings(row: SettingsRow): AppSettings {
+  const setupYear =
+    row.setup_year &&
+    row.setup_year !== "__all_active_files__" &&
+    row.setup_year !== "__active_plus_current_fy_closed__"
+      ? row.setup_year
+      : row.financial_year;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
-    financialYears: [row.financial_year, row.selected_year].filter(
+    setupYear,
+    financialYears: [row.financial_year, row.selected_year, setupYear].filter(
       (year) =>
         Boolean(year) &&
         year !== "__all_active_files__" &&
@@ -678,20 +688,63 @@ function getSuspectedAnomalyRows(
           "Done",
         );
       }
-      if (
-        effectiveSupplyOrderEntries([file]).some(
-          ({ order }) =>
-            !hasFilledString(order.paymentDate) &&
-            !isYes(order.soCancelled) &&
-            !isYes(order.shortclosure),
-        )
-      ) {
+      if (hasFileClosurePaymentLiability(file)) {
         addIssue(
           "Closure",
           "File closed but payment pending exists",
           "Payment",
           "Completed before file closure",
           "Payment",
+          "Pending",
+        );
+      }
+      if (hasFileClosureDeliveryLiability(file)) {
+        addIssue(
+          "Closure",
+          "File closed but delivery/job completion pending exists",
+          "Delivery / Job Completion",
+          "Completed before file closure",
+          "Delivery / Job Completion",
+          "Pending",
+        );
+      }
+      if (hasFileClosureAdvancePaymentLiability(file)) {
+        addIssue(
+          "Closure",
+          "File closed but advance payment pending exists",
+          "Advance Payment",
+          "Completed before file closure",
+          "Advance Payment",
+          "Pending",
+        );
+      }
+      if (hasFileClosureStagePaymentLiability(file)) {
+        addIssue(
+          "Closure",
+          "File closed but stage payment pending exists",
+          "Stage Payment",
+          "Completed before file closure",
+          "Stage Payment",
+          "Pending",
+        );
+      }
+      if (hasFileClosureReturnedBillLiability(file)) {
+        addIssue(
+          "Closure",
+          "File closed but returned bill pending exists",
+          "Returned bill",
+          "Resubmitted and paid before file closure",
+          "Returned bill",
+          "Pending",
+        );
+      }
+      if (hasFileClosureSupplementaryBillLiability(file)) {
+        addIssue(
+          "Closure",
+          "File closed but supplementary bill pending exists",
+          "Supplementary bill",
+          "Paid before file closure",
+          "Supplementary bill",
           "Pending",
         );
       }
@@ -2566,6 +2619,111 @@ function hasBgReturnPendingForAnyCategory(order: SupplyOrderDetail) {
   );
 }
 
+function hasFileClosurePaymentLiability(file: FileRecord) {
+  return effectiveSupplyOrderEntries([file]).some(({ order }) => {
+    if (isYes(order.soCancelled) || hasFilledString(order.paymentDate)) return false;
+    if (!isYes(order.shortclosure)) return true;
+    return (
+      hasPaymentDetailApartFromMode(order) ||
+      hasPaymentAmount(order) ||
+      isDeliveryOrJobCompletionDone(file, order)
+    );
+  });
+}
+
+function hasFileClosureDeliveryLiability(file: FileRecord) {
+  return effectiveSupplyOrderEntries([file]).some(({ order }) => {
+    if (!hasFilledString(order.soDate) || isYes(order.soCancelled) || isYes(order.shortclosure)) {
+      return false;
+    }
+    if (isPhysicalDeliveryWorkflow(file)) return !hasFilledString(order.materialReceiptDate);
+    return !isJobCompletionDone(order);
+  });
+}
+
+function hasFileClosureAdvancePaymentLiability(file: FileRecord) {
+  return fileSupplyOrders(file).some((order) => {
+    if (isYes(order.soCancelled)) return false;
+    if (!isYes(order.advancePayment)) return false;
+    return !isAdvancePaymentWorkflowComplete(order);
+  });
+}
+
+function hasFileClosureStagePaymentLiability(file: FileRecord) {
+  return fileSupplyOrders(file).some((order) => {
+    if (isYes(order.soCancelled) || !isYes(order.stagePayment)) return false;
+    return (order.stageDeliveries ?? []).some(
+      (stage) =>
+        (hasStagePaymentOrAmountFields(stage) || getOrderValue(stage) > 0) &&
+        !hasFilledString(stage.paymentDate),
+    );
+  });
+}
+
+function hasFileClosureReturnedBillLiability(file: FileRecord) {
+  return effectiveSupplyOrderEntries([file]).some(({ order }) => {
+    if (isYes(order.soCancelled)) return false;
+    return (
+      hasOpenBillReturn(order) ||
+      (hasCompletedBillReturnLocal(order) && !hasFilledString(order.paymentDate))
+    );
+  });
+}
+
+function hasFileClosureSupplementaryBillLiability(file: FileRecord) {
+  return fileSupplyOrders(file).some((order) => {
+    if (isYes(order.soCancelled)) return false;
+    return getSupplementaryBills(order).some(
+      (bill) => hasSupplementaryBillDataLocal(bill) && !hasFilledString(bill.paymentDate),
+    );
+  });
+}
+
+function getSupplementaryBills(order: SupplyOrderDetail) {
+  return Array.isArray(order.supplementaryBills)
+    ? order.supplementaryBills.filter(
+        (bill): bill is NonNullable<SupplyOrderDetail["supplementaryBills"]>[number] =>
+          Boolean(bill) && typeof bill === "object" && !Array.isArray(bill),
+      )
+    : [];
+}
+
+function hasSupplementaryBillDataLocal(
+  bill: NonNullable<SupplyOrderDetail["supplementaryBills"]>[number],
+) {
+  return (
+    [
+      bill.billNo,
+      bill.billAmountCapital,
+      bill.billAmountRevenue,
+      bill.billSentForPaymentDate,
+      bill.paymentDate,
+      bill.paymentMode,
+      bill.actualPaymentCapital,
+      bill.actualPaymentRevenue,
+      bill.remarks,
+    ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleDataLocal))
+  );
+}
+
+function hasCompletedBillReturnLocal(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
+  return (
+    Boolean(
+      order.billReturnCycles?.some(
+        (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+      ),
+    ) && !hasOpenBillReturn(order)
+  );
+}
+
+function hasBillReturnCycleDataLocal(
+  cycle: NonNullable<SupplyOrderDetail["billReturnCycles"]>[number],
+) {
+  return [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(
+    hasFilledString,
+  );
+}
+
 function hasWarrantyBgApplicable(file: FileRecord, order: SupplyOrderDetail) {
   return (
     isBgCategoryApplicable(file, order, "pwb") || isBgCategoryApplicable(file, order, "psbpwb")
@@ -2938,7 +3096,7 @@ async function loadDivisions(user: ReturnType<typeof requireAuth>, financialYear
 async function loadSettings() {
   return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, active_user_id
        from app_settings
        where id = true`,
@@ -3103,6 +3261,11 @@ function readString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+function readDateString(value: unknown) {
+  const text = readString(value);
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined;
+}
+
 function normalizeCustomRuleType(value: string): CustomAnomalyRule["ruleType"] {
   return value === "required_field" || value === "delay_days" || value === "date_boundary"
     ? value
@@ -3198,9 +3361,11 @@ function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, yea
   return file.year === year || file.activeYears?.includes(year);
 }
 
-function isPaymentCompletedFile(file: { completedMilestones?: string[] }) {
+function isFileClosed(file: { completedMilestones?: string[] }) {
   return Boolean(
-    file.completedMilestones?.some((milestone) => milestone.trim().toLowerCase() === "payment"),
+    file.completedMilestones?.some(
+      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+    ),
   );
 }
 
@@ -3244,7 +3409,7 @@ function isInactiveFile(
   >,
 ) {
   return (
-    isPaymentCompletedFile(file) ||
+    isFileClosed(file) ||
     isYes(file.demandCancelled) ||
     ((file.supplyOrders?.length ?? 0) === 0 && isYes(file.soCancelled)) ||
     Boolean(
@@ -3286,7 +3451,12 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
 
 function activeFilesExpression() {
   return `(not ${fileClosedExpression()}
-      and lower(coalesce(f.demand_cancelled, '')) <> 'yes')`;
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+      and not (${supplyOrderRowExists()} and not exists (
+        select 1 from supply_orders so_active
+        where so_active.file_id = f.id
+          and not ${isYesExpression("so_active.so_cancelled")}
+      )))`;
 }
 
 function getSelectedYearCondition(
@@ -3321,6 +3491,8 @@ function getDashboardFileWhereSql({
   scopeValues,
   selectedYear,
   fileYear,
+  fileInitiationFrom,
+  fileInitiationTo,
   currentFinancialYear,
   activeDivision,
   activeAnalyticsDivision,
@@ -3330,6 +3502,8 @@ function getDashboardFileWhereSql({
   scopeValues: unknown[];
   selectedYear: string | undefined;
   fileYear?: string | undefined;
+  fileInitiationFrom?: string | undefined;
+  fileInitiationTo?: string | undefined;
   currentFinancialYear?: string;
   activeDivision: string;
   activeAnalyticsDivision: string;
@@ -3349,6 +3523,14 @@ function getDashboardFileWhereSql({
   if (fileYear?.trim() && fileYear.trim() !== "all") {
     const placeholder = addValue(values, fileYear.trim());
     conditions.push(`f.year = ${placeholder}::text`);
+  }
+  if (fileInitiationFrom) {
+    const placeholder = addValue(values, fileInitiationFrom);
+    conditions.push(`f.received_date >= ${placeholder}::date`);
+  }
+  if (fileInitiationTo) {
+    const placeholder = addValue(values, fileInitiationTo);
+    conditions.push(`f.received_date <= ${placeholder}::date`);
   }
 
   if (activeDivision !== "all") {
@@ -3374,27 +3556,7 @@ function getDashboardFileWhereSql({
 }
 
 function getFileCategoryCondition(categories: FileCategoryKey[]) {
-  if (categories.length === 0) return "false";
-  const categorySet = new Set(categories);
-  const predicates: string[] = [];
-  if (categorySet.has("goodsServices")) {
-    predicates.push(
-      `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-    );
-  }
-  if (categorySet.has("amc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'amc'`);
-  }
-  if (categorySet.has("mpc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'mpc'`);
-  }
-  if (categorySet.has("cars")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'cars'`);
-  }
-  if (categorySet.has("om")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'o&m'`);
-  }
-  return predicates.length ? `(${predicates.join(" or ")})` : "false";
+  return getFileCategorySqlCondition(categories);
 }
 
 function appendDashboardWhereClause(whereSql: string, extraConditions: string[] = []) {
@@ -3697,10 +3859,13 @@ function getConfiguredModeNames(modes: string[] | undefined) {
 }
 
 function inrAmountExpression(column: string) {
+  const amount = `nullif(regexp_replace(coalesce(${column}::text, ''), '[^0-9.-]', '', 'g'), '')::numeric`;
+  const exchangeRate =
+    "nullif(regexp_replace(coalesce(f.exchange_rate::text, ''), '[^0-9.-]', '', 'g'), '')::numeric";
   return `case
-    when ${column} is null then 0
-    when upper(trim(coalesce(f.currency, 'INR'))) in ('', 'INR') then ${column}
-    when f.exchange_rate > 0 then ${column} * f.exchange_rate
+    when ${amount} is null then 0
+    when upper(trim(coalesce(f.currency, 'INR'))) in ('', 'INR') then ${amount}
+    when ${exchangeRate} > 0 then ${amount} * ${exchangeRate}
     else 0
   end`;
 }
@@ -3937,6 +4102,7 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
   return `(select
       f.file_type,
       f.ir as file_ir,
+      f.demand_cancelled as file_demand_cancelled,
       ${paymentApplicable} as payment_applicable,
       so.so_cancelled,
       coalesce(nullif(stage_row.stage ->> 'dpDate', '')::date, so.dp_date) as dp_date,
@@ -4020,14 +4186,14 @@ function paymentRowReadyExpression(alias = "payment_row") {
 function paymentRowCompletedExpression(alias = "payment_row") {
   return `${alias}.payment_applicable
     and ${hasFilledExpression(`${alias}.payment_date`)}
-    and not ${isYesExpression(`${alias}.so_cancelled`)}`;
+    and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
 function paymentRowPendingExpression(alias = "payment_row") {
   return `${alias}.payment_applicable
     and not ${hasFilledExpression(`${alias}.payment_date`)}
     and ${paymentRowReadyExpression(alias)}
-    and not ${isYesExpression(`${alias}.so_cancelled`)}`;
+    and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
 function effectiveOrderIrPreparationPendingExpression(alias = "eso") {
@@ -4532,10 +4698,10 @@ function paymentValueExpression(
 ) {
   const directValue = inrAmountExpression(`so_payment.${supplyOrderColumn}`);
   const stageValue = inrAmountExpression(
-    `nullif(stage_payment.stage ->> '${jsonColumn}', '')::numeric`,
+    `nullif(stage_payment.stage ->> '${jsonColumn}', '')`,
   );
   const advanceValue = inrAmountExpression(
-    `nullif(so_payment.advance_payment_detail ->> '${jsonColumn}', '')::numeric`,
+    `nullif(so_payment.advance_payment_detail ->> '${jsonColumn}', '')`,
   );
   return `coalesce((
     select sum(
@@ -5006,7 +5172,15 @@ async function loadAnalyticsSqlSlice({
     monthlyValues,
   );
 
-  const monthWiseSupplyOrderValues = [...fileRankingValues];
+  const monthWiseSupplyOrderValues = [...values];
+  const monthWiseSupplyOrderConditions: string[] = [];
+  const monthWiseSupplyOrderDivision = analyticsDivisionExtraCondition(
+    monthWiseSupplyOrderValues,
+    divisionName,
+  );
+  if (monthWiseSupplyOrderDivision) {
+    monthWiseSupplyOrderConditions.push(monthWiseSupplyOrderDivision);
+  }
   const monthWiseSupplyOrderResult = await pool.query<MonthWiseSupplyOrderAnalyticsRow>(
     `select to_char(so.so_date, 'YYYY-MM') as name,
             to_char(so.so_date, 'YYYY-MM') as "monthKey",
@@ -5015,9 +5189,8 @@ async function loadAnalyticsSqlSlice({
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
      ${appendDashboardWhereClause(whereSql, [
-       ...fileRankingConditions,
+       ...monthWiseSupplyOrderConditions,
        "so.so_date is not null",
-       `not ${isYesExpression("so.so_cancelled")}`,
      ])}
      group by 1, 2
      order by name`,
@@ -5100,8 +5273,8 @@ async function loadAnalyticsSqlSlice({
            when ${isYesExpression("so.stage_delivery")}
              and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0
            then
-             ${inrAmountExpression("nullif(stage_order.stage ->> 'stageAmountCapital', '')::numeric")}
-             + ${inrAmountExpression("nullif(stage_order.stage ->> 'stageAmountRevenue', '')::numeric")}
+             ${inrAmountExpression("nullif(stage_order.stage ->> 'stageAmountCapital', '')")}
+             + ${inrAmountExpression("nullif(stage_order.stage ->> 'stageAmountRevenue', '')")}
            else ${inrAmountExpression("so.so_value_capital")} + ${inrAmountExpression("so.so_value_revenue")}
          end as value
        from files f
@@ -5449,7 +5622,6 @@ async function loadAnalyticsSqlSlice({
     const thresholdConditions = [
       ...fileRankingConditions,
       `not ${isYesExpression("so.so_cancelled")}`,
-      `not ${isYesExpression("so.shortclosure")}`,
       levelMatch,
     ];
     if (previousSoThresholdMatches.length) {
@@ -5538,7 +5710,6 @@ async function loadAnalyticsSqlSlice({
        ${appendDashboardWhereClause(whereSql, [
          ...fileRankingConditions,
          `not ${isYesExpression("so.so_cancelled")}`,
-         `not ${isYesExpression("so.shortclosure")}`,
          `${amount} > 0`,
          `not (${levelMatchConditions.join(" or ")})`,
        ])}`,
@@ -5812,9 +5983,11 @@ async function loadMiscellaneousCounts({
     `with effective_supply_orders as (
        select
          f.id as file_id,
+         f.demand_cancelled as file_demand_cancelled,
          so.ld,
          so.demand_cancelled,
-         so.so_cancelled
+         so.so_cancelled,
+         so.shortclosure
        from files f
        left join divisions d on d.id = f.division_id
 	       join supply_orders so on so.file_id = f.id
@@ -6803,7 +6976,8 @@ async function loadStatusCounts({
 	         f.ir as file_ir,
          f.psb,
 	         f.demand_cancelled as file_demand_cancelled,
-	         f.so_cancelled as file_so_cancelled,
+         f.so_cancelled as file_so_cancelled,
+         ${financialSanctionReachedExpression()} as file_financial_sanction_reached,
 	         so.current_milestone,
 	         so.completed_milestones,
 	         so.financial_sanction_date,
@@ -6831,7 +7005,8 @@ async function loadStatusCounts({
          so.stage_delivery,
          so.stage_deliveries,
          so.demand_cancelled,
-         so.so_cancelled
+         so.so_cancelled,
+         so.shortclosure
        from files f
        left join divisions d on d.id = f.division_id
 	       join supply_orders so on so.file_id = f.id
@@ -6845,6 +7020,7 @@ async function loadStatusCounts({
          f.psb,
 	         f.demand_cancelled as file_demand_cancelled,
 	         f.so_cancelled as file_so_cancelled,
+         ${financialSanctionReachedExpression()} as file_financial_sanction_reached,
 	         'Supply Order'::text as current_milestone,
 	         '[]'::jsonb as completed_milestones,
 	         null::date as financial_sanction_date,
@@ -6872,7 +7048,8 @@ async function loadStatusCounts({
          null::text as stage_delivery,
          '[]'::jsonb as stage_deliveries,
          f.demand_cancelled,
-         'No'::text as so_cancelled
+         'No'::text as so_cancelled,
+         'No'::text as shortclosure
        from files f
        left join divisions d on d.id = f.division_id
        cross join lateral generate_series(
@@ -6899,7 +7076,11 @@ async function loadStatusCounts({
       )} as in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
 	       ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
-	       ${effectiveOrderCountFilter(financialSanctionPendingExpression())} as order_financial_sanction_pending,
+	       ${effectiveOrderCountFilter(
+           `eso.file_financial_sanction_reached
+            and not ${effectiveOrderCancelledExpression()}
+            and not ${hasFilledExpression("eso.financial_sanction_date")}`,
+         )} as order_financial_sanction_pending,
 	       ${effectiveOrderCountFilter(
            `not ${effectiveOrderCancelledExpression()} and ${hasFilledExpression(
              "eso.financial_sanction_date",
@@ -7690,6 +7871,8 @@ dashboardRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
       selectedYear === allFilesYear ||
       selectedYear === allActiveFilesYear ||
@@ -7709,14 +7892,18 @@ dashboardRouter.get(
       divisions.some((item) => item.name === requestedAnalyticsDivision)
         ? requestedAnalyticsDivision
         : "all";
+    const effectiveAnalyticsDivision =
+      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       currentFinancialYear: settings.financialYear,
-      activeDivision,
-      activeAnalyticsDivision,
+      activeDivision: effectiveAnalyticsDivision,
+      activeAnalyticsDivision: "all",
       fileCategories,
     });
     await ensureAnomalyGovernanceSchema();
@@ -7810,6 +7997,8 @@ dashboardRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
       selectedYear === allFilesYear ||
       selectedYear === allActiveFilesYear ||
@@ -7829,14 +8018,18 @@ dashboardRouter.get(
       divisions.some((item) => item.name === requestedAnalyticsDivision)
         ? requestedAnalyticsDivision
         : "all";
+    const effectiveAnalyticsDivision =
+      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       currentFinancialYear: settings.financialYear,
-      activeDivision,
-      activeAnalyticsDivision,
+      activeDivision: effectiveAnalyticsDivision,
+      activeAnalyticsDivision: "all",
       fileCategories,
     });
 
@@ -7858,6 +8051,8 @@ dashboardRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
       selectedYear === allFilesYear ||
       selectedYear === allActiveFilesYear ||
@@ -7885,6 +8080,8 @@ dashboardRouter.get(
       scopeValues: scope.values,
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7895,6 +8092,8 @@ dashboardRouter.get(
       scopeValues: scope.values,
       selectedYear: undefined,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       currentFinancialYear: settings.financialYear,
       activeDivision,
       activeAnalyticsDivision,
@@ -7913,10 +8112,12 @@ dashboardRouter.get(
         : divisions.filter((division) => division.name === activeAnalyticsDivision);
     const liveMilestones = readList(request.query.liveMilestones);
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 5,
+      version: 6,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       divisionYear,
       activeDivision,
       activeAnalyticsDivision,

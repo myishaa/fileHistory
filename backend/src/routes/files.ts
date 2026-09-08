@@ -25,8 +25,12 @@ import {
   renderExcelDocument,
   renderPdfDocument,
 } from "../utils/export-files.js";
-import type { FileSearchParams } from "../utils/file-search.js";
-import { normalizeFileCategories, type FileCategoryKey } from "../utils/file-categories.js";
+import type { FileSearchParams, IncludeExcludeFilter } from "../utils/file-search.js";
+import {
+  getFileCategorySqlCondition,
+  normalizeFileCategories,
+  type FileCategoryKey,
+} from "../utils/file-categories.js";
 import { rawSupplyOrders as normalizedRawSupplyOrders } from "../utils/effective-deliveries.js";
 import {
   fromDbDate,
@@ -1522,17 +1526,50 @@ function readQueryString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+function readQueryDate(value: unknown) {
+  const text = readQueryString(value);
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined;
+}
+
 function readQueryBoolean(value: unknown) {
   return value === "true" || value === true;
+}
+
+function readIncludeExcludeFilter(
+  value: unknown,
+  fallback: IncludeExcludeFilter = "none",
+): IncludeExcludeFilter {
+  return value === "include" || value === "exclude" || value === "none" ? value : fallback;
 }
 
 function readQueryList(value: unknown) {
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   if (typeof value !== "string" || !value.trim()) return [];
-  return value
+  let text = value;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === "string" && Boolean(item));
+      }
+      if (typeof parsed === "string" && parsed !== text) {
+        text = parsed;
+        continue;
+      }
+    } catch {
+      // Fall back to the legacy comma-separated query format below.
+    }
+    break;
+  }
+  return text
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function firstOnlyQueryList(onlyValues: string[] | undefined, fallbackValues: string[] | undefined) {
+  if (onlyValues?.length) return onlyValues.slice(0, 1);
+  return fallbackValues ?? [];
 }
 
 function readAnalyticsType(value: unknown) {
@@ -1557,12 +1594,16 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
   return {
     yearFilter: readQueryString(query.yearFilter),
     fileYear: readQueryString(query.fileYear),
+    fileInitiationFrom: readQueryDate(query.fileInitiationFrom),
+    fileInitiationTo: readQueryDate(query.fileInitiationTo),
     indentor: readQueryString(query.indentor),
     divisionFilter: readQueryString(query.divisionFilter),
     valueFrom: readQueryString(query.valueFrom),
     valueTo: readQueryString(query.valueTo),
+    valueThresholdFilter: readQueryString(query.valueThresholdFilter),
     soValueFrom: readQueryString(query.soValueFrom),
     soValueTo: readQueryString(query.soValueTo),
+    soValueThresholdFilter: readQueryString(query.soValueThresholdFilter),
     soCapitalOnly: readQueryBoolean(query.soCapitalOnly),
     soRevenueOnly: readQueryBoolean(query.soRevenueOnly),
     capitalOnly: readQueryBoolean(query.capitalOnly),
@@ -1573,12 +1614,20 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     firmContactNo: readQueryString(query.firmContactNo),
     firmCity: readQueryString(query.firmCity),
     firmSearchScopes: readQueryList(query.firmSearchScopes),
+    soPresenceFilter: readIncludeExcludeFilter(query.soPresenceFilter),
+    includeModes: readQueryList(query.includeModes),
+    excludeModes: readQueryList(query.excludeModes),
     selectedModes: readQueryList(query.selectedModes),
+    modePresenceFilter: readIncludeExcludeFilter(query.modePresenceFilter, "include"),
+    includeGemBiddingModes: readQueryList(query.includeGemBiddingModes),
+    excludeGemBiddingModes: readQueryList(query.excludeGemBiddingModes),
     selectedGemBiddingModes: readQueryList(query.selectedGemBiddingModes),
+    gemModePresenceFilter: readIncludeExcludeFilter(query.gemModePresenceFilter, "include"),
     selectedFirmTypes: readQueryList(query.selectedFirmTypes),
     selectedFileTypes: readQueryList(query.selectedFileTypes),
     selectedBgCoverageTypes: readQueryList(query.selectedBgCoverageTypes),
     specialFileMarker: readQueryString(query.specialFileMarker),
+    specialFileMarkers: readQueryList(query.specialFileMarkers),
     fileCategories:
       readQueryString(query.fileCategories) === undefined
         ? undefined
@@ -1594,6 +1643,7 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     ad: readQueryBoolean(query.ad),
     rqa: readQueryBoolean(query.rqa),
     ifaFilter: readQueryBoolean(query.ifaFilter),
+    ifaPresenceFilter: readIncludeExcludeFilter(query.ifaPresenceFilter),
     psbFilter: readQueryBoolean(query.psbFilter),
     pwbFilter: readQueryBoolean(query.pwbFilter),
     psbPwbFilter: readQueryBoolean(query.psbPwbFilter),
@@ -1601,7 +1651,11 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     rfpVettingFilter: readQueryBoolean(query.rfpVettingFilter),
     refloat: readQueryBoolean(query.refloat),
     cnc: readQueryBoolean(query.cnc),
+    cncPresenceFilter: readIncludeExcludeFilter(query.cncPresenceFilter),
     tcec: readQueryBoolean(query.tcec),
+    preBidMeetingFilter: readQueryBoolean(query.preBidMeetingFilter),
+    preTcecCommittee: readQueryString(query.preTcecCommittee),
+    postTcecCommittee: readQueryString(query.postTcecCommittee),
     dpFrom: readQueryString(query.dpFrom),
     dpTo: readQueryString(query.dpTo),
     demandReceiptFrom: readQueryString(query.demandReceiptFrom),
@@ -1610,6 +1664,8 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     demandControlTo: readQueryString(query.demandControlTo),
     highValueMinutesFrom: readQueryString(query.highValueMinutesFrom),
     highValueMinutesTo: readQueryString(query.highValueMinutesTo),
+    preTcecDateFrom: readQueryString(query.preTcecDateFrom),
+    preTcecDateTo: readQueryString(query.preTcecDateTo),
     preTcecMinutesFrom: readQueryString(query.preTcecMinutesFrom),
     preTcecMinutesTo: readQueryString(query.preTcecMinutesTo),
     rqaApprovalFrom: readQueryString(query.rqaApprovalFrom),
@@ -1618,10 +1674,20 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     ifaFinalTo: readQueryString(query.ifaFinalTo),
     cfaApprovalFrom: readQueryString(query.cfaApprovalFrom),
     cfaApprovalTo: readQueryString(query.cfaApprovalTo),
+    postTcecDateFrom: readQueryString(query.postTcecDateFrom),
+    postTcecDateTo: readQueryString(query.postTcecDateTo),
     postTcecMinutesFrom: readQueryString(query.postTcecMinutesFrom),
     postTcecMinutesTo: readQueryString(query.postTcecMinutesTo),
     cncDateFrom: readQueryString(query.cncDateFrom),
     cncDateTo: readQueryString(query.cncDateTo),
+    preBidDateFrom: readQueryString(query.preBidDateFrom),
+    preBidDateTo: readQueryString(query.preBidDateTo),
+    biddingDateFrom: readQueryString(query.biddingDateFrom),
+    biddingDateTo: readQueryString(query.biddingDateTo),
+    bidOpeningDateFrom: readQueryString(query.bidOpeningDateFrom),
+    bidOpeningDateTo: readQueryString(query.bidOpeningDateTo),
+    billSubmittedFrom: readQueryString(query.billSubmittedFrom),
+    billSubmittedTo: readQueryString(query.billSubmittedTo),
     financialSanctionFrom: readQueryString(query.financialSanctionFrom),
     financialSanctionTo: readQueryString(query.financialSanctionTo),
     soDateFrom: readQueryString(query.soDateFrom),
@@ -1638,13 +1704,17 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     bgReturnTo: readQueryString(query.bgReturnTo),
     fileClosureFrom: readQueryString(query.fileClosureFrom),
     fileClosureTo: readQueryString(query.fileClosureTo),
+    fileClosedPresenceFilter: readIncludeExcludeFilter(query.fileClosedPresenceFilter),
     rstFilter: readQueryBoolean(query.rstFilter),
     demandCancelledFilter: readQueryBoolean(query.demandCancelledFilter),
+    demandCancelledPresenceFilter: readIncludeExcludeFilter(query.demandCancelledPresenceFilter),
     soCancelledFilter: readQueryBoolean(query.soCancelledFilter),
     shortclosedSoFilter: readQueryBoolean(query.shortclosedSoFilter),
+    shortclosedSoPresenceFilter: readIncludeExcludeFilter(query.shortclosedSoPresenceFilter),
     freeText: readQueryString(query.freeText),
     freeDate: readQueryString(query.freeDate),
     dashboardFilter: readQueryString(query.dashboardFilter),
+    extraDashboardFilters: readQueryList(query.extraDashboardFilters),
     analyticsType: readAnalyticsType(query.analyticsType),
     analyticsNames: readAnalyticsNameList(query.analyticsNames),
     sortColumnKey: readQueryString(query.sortColumnKey),
@@ -1673,27 +1743,7 @@ function hasTextSql(expression: string) {
 }
 
 function fileCategorySql(categories: FileCategoryKey[]) {
-  if (categories.length === 0) return "false";
-  const categorySet = new Set(categories);
-  const predicates: string[] = [];
-  if (categorySet.has("goodsServices")) {
-    predicates.push(
-      `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-    );
-  }
-  if (categorySet.has("amc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'amc'`);
-  }
-  if (categorySet.has("mpc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'mpc'`);
-  }
-  if (categorySet.has("cars")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'cars'`);
-  }
-  if (categorySet.has("om")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'o&m'`);
-  }
-  return predicates.length ? `(${predicates.join(" or ")})` : "false";
+  return getFileCategorySqlCondition(categories);
 }
 
 function selectedFileTypesSql(selectedFileTypes: string[], values: unknown[]) {
@@ -1704,9 +1754,7 @@ function selectedFileTypesSql(selectedFileTypes: string[], values: unknown[]) {
 
   const predicates: string[] = [];
   if (normalizedFileTypes.includes("goods & services")) {
-    predicates.push(
-      `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-    );
+    predicates.push(`lower(trim(coalesce(f.file_type, ''))) in ('', 'goods & services')`);
   }
 
   const exactFileTypes = normalizedFileTypes.filter((fileType) => fileType !== "goods & services");
@@ -1745,7 +1793,8 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
 
 function activeFilesSql() {
   return `(not ${fileClosedSql()}
-    and lower(coalesce(f.demand_cancelled, '')) <> 'yes')`;
+    and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+    and not ${allSupplyOrdersCancelledSql()})`;
 }
 
 function activePlusCurrentFyClosedSql(values: unknown[], financialYear: string | undefined) {
@@ -1780,6 +1829,15 @@ function addSqlValue(values: unknown[], value: unknown) {
 
 function supplyOrderExists(condition: string) {
   return `exists (select 1 from supply_orders so where so.file_id = f.id and ${condition})`;
+}
+
+function applyIncludeExcludeSql(
+  conditions: string[],
+  filter: IncludeExcludeFilter | undefined,
+  condition: string,
+) {
+  if (filter === "include") conditions.push(condition);
+  if (filter === "exclude") conditions.push(`not (${condition})`);
 }
 
 const demandProcessingFileDateColumns: Record<string, string> = {
@@ -1995,6 +2053,186 @@ function fileDateRangeSql(
   return dateConditions.join(" and ");
 }
 
+function fileAnyDateRangeSql(
+  expressions: string[],
+  from: string | undefined,
+  to: string | undefined,
+  values: unknown[],
+) {
+  if (!isValidDate(from) && !isValidDate(to)) return undefined;
+  return `(${expressions
+    .map((expression) => `(${fileDateRangeSql(expression, from, to, values)})`)
+    .join(" or ")})`;
+}
+
+function dateExpressionRangeSql(
+  expression: string,
+  from: string | undefined,
+  to: string | undefined,
+  values: unknown[],
+) {
+  if (!isValidDate(from) && !isValidDate(to)) return undefined;
+  const dateConditions: string[] = [];
+  if (isValidDate(from)) {
+    const placeholder = addSqlValue(values, from);
+    dateConditions.push(`${expression} >= ${placeholder}::date`);
+  }
+  if (isValidDate(to)) {
+    const placeholder = addSqlValue(values, to);
+    dateConditions.push(`${expression} <= ${placeholder}::date`);
+  }
+  return dateConditions.join(" and ");
+}
+
+function billReturnResubmissionDateRangeSql(
+  source: string,
+  from: string | undefined,
+  to: string | undefined,
+  values: unknown[],
+) {
+  const rangeSql = dateExpressionRangeSql(
+    "nullif(bill_return.cycle ->> 'resubmittedDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  if (!rangeSql) return undefined;
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${source}, '[]'::jsonb)) as bill_return(cycle)
+    where ${hasTextSql("bill_return.cycle ->> 'resubmittedDate'")}
+      and ${rangeSql}
+  )`;
+}
+
+function billSubmissionEventDateRangeSql(
+  from: string | undefined,
+  to: string | undefined,
+  values: unknown[],
+) {
+  if (!isValidDate(from) && !isValidDate(to)) return undefined;
+  const mainSent = dateExpressionRangeSql("so.bill_sent_for_payment_date", from, to, values);
+  const mainResubmitted = billReturnResubmissionDateRangeSql(
+    "so.bill_return_cycles",
+    from,
+    to,
+    values,
+  );
+  const stageSent = dateExpressionRangeSql(
+    "nullif(stage_row.stage ->> 'billSentForPaymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const stageResubmitted = billReturnResubmissionDateRangeSql(
+    "stage_row.stage -> 'billReturnCycles'",
+    from,
+    to,
+    values,
+  );
+  const advanceSent = dateExpressionRangeSql(
+    "nullif(so.advance_payment_detail ->> 'billSentForPaymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const advanceResubmitted = billReturnResubmissionDateRangeSql(
+    "so.advance_payment_detail -> 'billReturnCycles'",
+    from,
+    to,
+    values,
+  );
+  const supplementarySent = dateExpressionRangeSql(
+    "nullif(supplementary_bill.bill ->> 'billSentForPaymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const supplementaryResubmitted = billReturnResubmissionDateRangeSql(
+    "supplementary_bill.bill -> 'billReturnCycles'",
+    from,
+    to,
+    values,
+  );
+  const conditions = [
+    mainSent,
+    mainResubmitted,
+    advanceSent,
+    advanceResubmitted,
+    stageSent
+      ? `exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+        where ${hasTextSql("stage_row.stage ->> 'billSentForPaymentDate'")}
+          and ${stageSent}
+      )`
+      : undefined,
+    stageResubmitted
+      ? `exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+        where ${stageResubmitted}
+      )`
+      : undefined,
+    supplementarySent || supplementaryResubmitted
+      ? `exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+        where ${[supplementarySent, supplementaryResubmitted].filter(Boolean).join(" or ")}
+      )`
+      : undefined,
+  ].filter((condition): condition is string => Boolean(condition));
+  return conditions.length ? supplyOrderExists(`(${conditions.join(" or ")})`) : undefined;
+}
+
+function paymentEventDateRangeSql(
+  from: string | undefined,
+  to: string | undefined,
+  values: unknown[],
+) {
+  if (!isValidDate(from) && !isValidDate(to)) return undefined;
+  const mainPayment = dateExpressionRangeSql("so.payment_date", from, to, values);
+  const stagePayment = dateExpressionRangeSql(
+    "nullif(stage_row.stage ->> 'paymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const advancePayment = dateExpressionRangeSql(
+    "nullif(so.advance_payment_detail ->> 'paymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const supplementaryPayment = dateExpressionRangeSql(
+    "nullif(supplementary_bill.bill ->> 'paymentDate', '')::date",
+    from,
+    to,
+    values,
+  );
+  const conditions = [
+    mainPayment,
+    advancePayment,
+    stagePayment
+      ? `exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
+        where ${hasTextSql("stage_row.stage ->> 'paymentDate'")}
+          and ${stagePayment}
+      )`
+      : undefined,
+    supplementaryPayment
+      ? `exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+        where ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+          and ${supplementaryPayment}
+      )`
+      : undefined,
+  ].filter((condition): condition is string => Boolean(condition));
+  return conditions.length ? supplyOrderExists(`(${conditions.join(" or ")})`) : undefined;
+}
+
 function supplyOrderRowExists() {
   return "exists (select 1 from supply_orders so_existing where so_existing.file_id = f.id)";
 }
@@ -2050,6 +2288,14 @@ function effectiveDpDateSql(alias: string) {
 }
 
 function supplyOrderValueTotalSql(capitalOnly: boolean, revenueOnly: boolean) {
+  return supplyOrderValueTotalWhereSql(capitalOnly, revenueOnly, "true");
+}
+
+function supplyOrderValueTotalWhereSql(
+  capitalOnly: boolean,
+  revenueOnly: boolean,
+  orderCondition: string,
+) {
   const includeCapital = !revenueOnly || capitalOnly;
   const includeRevenue = !capitalOnly || revenueOnly;
   const valueParts = [
@@ -2061,6 +2307,7 @@ function supplyOrderValueTotalSql(capitalOnly: boolean, revenueOnly: boolean) {
     select sum(${orderValueSql})
     from supply_orders so
     where so.file_id = f.id
+      and ${orderCondition}
   ), 0)`;
 }
 
@@ -3065,10 +3312,17 @@ function tcecStatusFilterSql(filter: string, values: unknown[]) {
   if (!committee) return "false";
   const meetingDate = decodeStatusFilterPart(rawMeetingDate).trim();
   const committeeColumn =
-    stage === "pre" ? "f.pre_tcec_committee_no" : "f.post_tcec_committee_number";
-  const meetingDateColumn = stage === "pre" ? "f.pre_tcec_date" : "f.post_tcec_date";
+    stage === "pre"
+      ? "f.pre_tcec_committee_no"
+      : "coalesce(nullif(trim(f.refloat_post_tcec_committee_no), ''), f.post_tcec_committee_number)";
+  const meetingDateColumn =
+    stage === "pre"
+      ? "f.pre_tcec_date"
+      : "coalesce(f.refloat_post_tcec_date, f.post_tcec_date)";
   const minutesDateColumn =
-    stage === "pre" ? "f.pre_tcec_minutes_date" : "f.post_tcec_minutes_date";
+    stage === "pre"
+      ? "f.pre_tcec_minutes_date"
+      : "coalesce(f.refloat_post_tcec_minutes_date, f.post_tcec_minutes_date)";
   const committeePlaceholder = addSqlValue(values, committee.toLowerCase());
   const conditions = [`lower(trim(coalesce(${committeeColumn}, ''))) = ${committeePlaceholder}`];
   if (metric === "signed") conditions.push(hasTextSql(minutesDateColumn));
@@ -3098,10 +3352,17 @@ function tcecStatusFyFilterSql(filter: string, values: unknown[]) {
   const fiscalYear = decodeStatusFilterPart(rawFy).trim();
   const committee = decodeStatusFilterPart(rawCommittee).trim();
   const committeeColumn =
-    stage === "pre" ? "f.pre_tcec_committee_no" : "f.post_tcec_committee_number";
-  const meetingDateColumn = stage === "pre" ? "f.pre_tcec_date" : "f.post_tcec_date";
+    stage === "pre"
+      ? "f.pre_tcec_committee_no"
+      : "coalesce(nullif(trim(f.refloat_post_tcec_committee_no), ''), f.post_tcec_committee_number)";
+  const meetingDateColumn =
+    stage === "pre"
+      ? "f.pre_tcec_date"
+      : "coalesce(f.refloat_post_tcec_date, f.post_tcec_date)";
   const minutesDateColumn =
-    stage === "pre" ? "f.pre_tcec_minutes_date" : "f.post_tcec_minutes_date";
+    stage === "pre"
+      ? "f.pre_tcec_minutes_date"
+      : "coalesce(f.refloat_post_tcec_minutes_date, f.post_tcec_minutes_date)";
   const fyCondition =
     fiscalYear === "all"
       ? undefined
@@ -3702,6 +3963,8 @@ function dashboardMilestoneFilterSql(filter: string) {
   if (filter.startsWith("milestoneTotal:")) {
     const milestone = resolve("milestoneTotal:");
     if (milestone?.key === "payment") return `(${paymentPendingSql()} or ${paymentCompletedSql()})`;
+    if (milestone?.key === "financialSanction")
+      return `(${financialSanctionPendingSql()} or ${financialSanctionCompletedSql()})`;
     return milestone ? milestoneAppliesSql(milestone) : "true";
   }
   if (filter.startsWith("milestoneUnderProcess:")) {
@@ -5524,6 +5787,82 @@ function valueThresholdFilterSql(
   )`;
 }
 
+function valueThresholdIdFilterSql(
+  filter: string,
+  values: unknown[],
+  thresholdFinancialYear: string | undefined,
+) {
+  const rawId = filter.slice("valueThresholdId:".length);
+  const id = decodeURIComponent(rawId).trim();
+  if (!id) return "true";
+  const financialYearSql = valueThresholdFinancialYearSql(values, thresholdFinancialYear);
+  const capital = inrAmountExpression("f.value_capital");
+  const revenue = inrAmountExpression("f.value_revenue");
+  const valueType = `case when ${capital} > 0 then 'capital' when ${revenue} > 0 then 'revenue' end`;
+  const amount = `case when ${capital} > 0 then ${capital} when ${revenue} > 0 then ${revenue} else 0 end`;
+  const idPlaceholder = addSqlValue(values, id);
+  const levelMatch = valueThresholdMatchSql("v", amount, valueType);
+  const priorMatch = valueThresholdMatchSql("previous_v", amount, valueType);
+  return `exists (
+    select 1 from value_threshold_levels v
+    where v.financial_year = ${financialYearSql}
+      and v.id::text = ${idPlaceholder}
+      and ${levelMatch}
+      and not exists (
+        select 1 from value_threshold_levels previous_v
+        where previous_v.financial_year = v.financial_year
+          and previous_v.level_number < v.level_number
+          and ${priorMatch}
+      )
+  )`;
+}
+
+function valueThresholdRangeFilterSql(filter: string, values: unknown[]) {
+  const [, rawMin = "", rawMax = "", rawAppliesTo = "both"] = filter.split(":");
+  const minValue = parseSearchAmount(decodeURIComponent(rawMin));
+  const maxValue = parseSearchAmount(decodeURIComponent(rawMax));
+  const appliesTo = decodeURIComponent(rawAppliesTo);
+  const capital = inrAmountExpression("f.value_capital");
+  const revenue = inrAmountExpression("f.value_revenue");
+  const valueType = `case when ${capital} > 0 then 'capital' when ${revenue} > 0 then 'revenue' end`;
+  const amount = `case when ${capital} > 0 then ${capital} when ${revenue} > 0 then ${revenue} else 0 end`;
+  const conditions = [`${amount} > 0`];
+  if (appliesTo === "capital" || appliesTo === "revenue") {
+    conditions.push(`${valueType} = ${addSqlValue(values, appliesTo)}`);
+  }
+  if (minValue !== undefined) conditions.push(`${amount} >= ${addSqlValue(values, minValue)}`);
+  if (maxValue !== undefined) conditions.push(`${amount} <= ${addSqlValue(values, maxValue)}`);
+  return conditions.join(" and ");
+}
+
+function soValueThresholdRangeFilterSql(
+  filter: string,
+  values: unknown[],
+  capitalOnly: boolean,
+  revenueOnly: boolean,
+) {
+  const [, rawMin = "", rawMax = "", rawAppliesTo = "both"] = filter.split(":");
+  const minValue = parseSearchAmount(decodeURIComponent(rawMin));
+  const maxValue = parseSearchAmount(decodeURIComponent(rawMax));
+  const appliesTo = decodeURIComponent(rawAppliesTo);
+  const useCapitalOnly = appliesTo === "capital" || (appliesTo !== "revenue" && capitalOnly);
+  const useRevenueOnly = appliesTo === "revenue" || (appliesTo !== "capital" && revenueOnly);
+  const includeCapital = !useRevenueOnly || useCapitalOnly;
+  const includeRevenue = !useCapitalOnly || useRevenueOnly;
+  const capital = inrAmountExpression("so.so_value_capital");
+  const revenue = inrAmountExpression("so.so_value_revenue");
+  const amountParts = [
+    includeCapital ? capital : undefined,
+    includeRevenue ? revenue : undefined,
+  ].filter((part): part is string => Boolean(part));
+  const amount = amountParts.length ? `(${amountParts.join(" + ")})` : "0";
+  const activeOrder = `not ${isYesSql("so.so_cancelled")}`;
+  const conditions = [activeOrder, `${amount} > 0`];
+  if (minValue !== undefined) conditions.push(`${amount} >= ${addSqlValue(values, minValue)}`);
+  if (maxValue !== undefined) conditions.push(`${amount} <= ${addSqlValue(values, maxValue)}`);
+  return supplyOrderExists(conditions.join(" and "));
+}
+
 function valueThresholdTotalFilterSql(filter: string) {
   const [, rawMetric = "total"] = filter.split(":");
   const metric = decodeFilterPart(rawMetric);
@@ -5547,7 +5886,7 @@ function soValueThresholdFilterSql(
   const revenue = inrAmountExpression("so.so_value_revenue");
   const valueType = `case when ${capital} > 0 then 'capital' when ${revenue} > 0 then 'revenue' end`;
   const amount = `case when ${capital} > 0 then ${capital} when ${revenue} > 0 then ${revenue} else 0 end`;
-  const activeOrder = `not ${isYesSql("so.so_cancelled")} and not ${isYesSql("so.shortclosure")}`;
+  const activeOrder = `not ${isYesSql("so.so_cancelled")}`;
   const levelMatch = valueThresholdMatchSql("v", amount, valueType);
 
   if (label.toLowerCase() === "unmatched") {
@@ -5590,7 +5929,7 @@ function soValueThresholdTotalFilterSql(filter: string) {
   const metric = decodeFilterPart(rawMetric);
   const capital = inrAmountExpression("so.so_value_capital");
   const revenue = inrAmountExpression("so.so_value_revenue");
-  const activeOrder = `not ${isYesSql("so.so_cancelled")} and not ${isYesSql("so.shortclosure")}`;
+  const activeOrder = `not ${isYesSql("so.so_cancelled")}`;
   const valueCondition =
     metric === "capital"
       ? `${capital} > 0`
@@ -5604,7 +5943,9 @@ function isCancellationDashboardFilter(filter: string) {
   return (
     filter === "miscDemandCancelled" ||
     filter === "miscSoCancelled" ||
-    filter === "miscShortclosedSo"
+    filter === "miscShortclosedSo" ||
+    filter.startsWith("supplyOrderMonth:") ||
+    filter.startsWith("supplyOrderYear:")
   );
 }
 
@@ -5665,13 +6006,20 @@ function workflowNotStartedSql() {
 }
 
 function shouldShowDemandCancelledFiles(params: FileSearchParams) {
-  return params.demandCancelledFilter || params.dashboardFilter?.trim() === "miscDemandCancelled";
+  const dashboardFilter = params.dashboardFilter?.trim();
+  return (
+    params.demandCancelledPresenceFilter !== "exclude" ||
+    params.demandCancelledFilter ||
+    params.dashboardFilter?.trim() === "miscDemandCancelled" ||
+    (dashboardFilter ? isCancellationDashboardFilter(dashboardFilter) : false)
+  );
 }
 
 function shouldShowCancelledSupplyOrderFiles(params: FileSearchParams) {
   const dashboardFilter = params.dashboardFilter?.trim();
   return (
     params.soCancelledFilter ||
+    params.shortclosedSoPresenceFilter === "include" ||
     params.demandCancelledFilter ||
     (dashboardFilter ? isCancellationDashboardFilter(dashboardFilter) : false)
   );
@@ -5775,12 +6123,11 @@ function dashboardFilterSql(
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return "true";
     const fromPlaceholder = addSqlValue(values, `${monthKey}-01`);
     const toPlaceholder = addSqlValue(values, getMonthEndDateFromMonthKey(monthKey));
-    return `not ${isCancelledFileSql()} and ${supplyOrderExists(
+    return supplyOrderExists(
       `${hasTextSql("so.so_date")}
        and so.so_date >= ${fromPlaceholder}::date
-       and so.so_date <= ${toPlaceholder}::date
-       and not ${isYesSql("so.so_cancelled")}`,
-    )}`;
+       and so.so_date <= ${toPlaceholder}::date`,
+    );
   }
   if (filter.startsWith("supplyOrderYear:")) {
     const yearKey = filter.slice("supplyOrderYear:".length);
@@ -5795,10 +6142,7 @@ function dashboardFilterSql(
        and so.so_date >= ${fromPlaceholder}::date
        and so.so_date <= ${toPlaceholder}::date`;
           })();
-    return `not ${isCancelledFileSql()} and ${supplyOrderExists(
-      `${dateCondition}
-       and not ${isYesSql("so.so_cancelled")}`,
-    )}`;
+    return supplyOrderExists(dateCondition);
   }
   if (filter.startsWith("fileInflowMonth:")) {
     const monthKey = filter.slice("fileInflowMonth:".length);
@@ -6143,6 +6487,12 @@ function dashboardFilterSql(
   }
   if (filter.startsWith("valueThreshold:")) {
     return valueThresholdFilterSql(filter, values, thresholdFinancialYear);
+  }
+  if (filter.startsWith("valueThresholdId:")) {
+    return valueThresholdIdFilterSql(filter, values, thresholdFinancialYear);
+  }
+  if (filter.startsWith("valueThresholdRange:")) {
+    return valueThresholdRangeFilterSql(filter, values);
   }
   if (filter.startsWith("valueThresholdTotal:")) return valueThresholdTotalFilterSql(filter);
   if (filter.startsWith("soValueThreshold:")) {
@@ -6658,8 +7008,15 @@ function buildSearchSql(
 ): SearchSql {
   const conditions = [...baseConditions];
   const values = [...baseValues];
-  const selectedModes = params.selectedModes ?? [];
-  const selectedGemBiddingModes = params.selectedGemBiddingModes ?? [];
+  const includeModes = firstOnlyQueryList(params.includeModes, params.selectedModes);
+  const excludeModes = params.excludeModes ?? [];
+  const selectedModes = [...includeModes, ...excludeModes];
+  const includeGemBiddingModes = firstOnlyQueryList(
+    params.includeGemBiddingModes,
+    params.selectedGemBiddingModes,
+  );
+  const excludeGemBiddingModes = params.excludeGemBiddingModes ?? [];
+  const selectedGemBiddingModes = [...includeGemBiddingModes, ...excludeGemBiddingModes];
   const selectedFirmTypes = params.selectedFirmTypes ?? [];
   const firmSearchScopes = normalizeFirmSearchScopes(params.firmSearchScopes);
   const selectedFileTypes = params.selectedFileTypes ?? [];
@@ -6678,19 +7035,34 @@ function buildSearchSql(
     const placeholder = addSqlValue(values, params.fileYear.trim());
     conditions.push(`f.year = ${placeholder}::text`);
   }
+  if (params.fileInitiationFrom) {
+    const placeholder = addSqlValue(values, params.fileInitiationFrom);
+    conditions.push(`f.received_date >= ${placeholder}::date`);
+  }
+  if (params.fileInitiationTo) {
+    const placeholder = addSqlValue(values, params.fileInitiationTo);
+    conditions.push(`f.received_date <= ${placeholder}::date`);
+  }
   if (fileCategories) conditions.push(fileCategorySql(fileCategories));
-  const dashboardFilter = params.dashboardFilter?.trim();
+  const dashboardFilters = [
+    params.dashboardFilter,
+    ...(params.extraDashboardFilters ?? []),
+  ]
+    .map((filter) => filter?.trim())
+    .filter((filter): filter is string => Boolean(filter));
   if (!shouldShowDemandCancelledFiles(params)) {
     conditions.push(`not ${isYesSql("f.demand_cancelled")}`);
   }
   if (!shouldShowCancelledSupplyOrderFiles(params)) {
     conditions.push(`not ${allSupplyOrdersCancelledSql()}`);
   }
-  if (dashboardFilter) {
-    if (!isCancellationDashboardFilter(dashboardFilter)) {
+  if (dashboardFilters.length) {
+    if (dashboardFilters.every((filter) => !isCancellationDashboardFilter(filter))) {
       conditions.push(`not ${isCancelledFileSql()}`);
     }
-    conditions.push(`(${dashboardFilterSql(dashboardFilter, values, thresholdFinancialYear)})`);
+    dashboardFilters.forEach((filter) => {
+      conditions.push(`(${dashboardFilterSql(filter, values, thresholdFinancialYear)})`);
+    });
   }
   const analyticsNames = (params.analyticsNames ?? [])
     .map((item) => item.trim().toLowerCase())
@@ -6737,21 +7109,52 @@ function buildSearchSql(
     const placeholder = addSqlValue(values, sqlLike(params.firmCity));
     conditions.push(firmSearchSql(firmSearchScopes, "city", placeholder));
   }
-  if (selectedModes.length) {
+  applyIncludeExcludeSql(conditions, params.soPresenceFilter, supplyOrderExists("true"));
+  if (includeModes.length) {
+    const placeholder = addSqlValue(
+      values,
+      includeModes.map((mode) => mode.trim().toUpperCase()),
+    );
+    conditions.push(`upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
+  }
+  if (excludeModes.length) {
+    const placeholder = addSqlValue(
+      values,
+      excludeModes.map((mode) => mode.trim().toUpperCase()),
+    );
+    conditions.push(`not (upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[]))`);
+  }
+  if (!includeModes.length && !excludeModes.length && selectedModes.length) {
     const placeholder = addSqlValue(
       values,
       selectedModes.map((mode) => mode.trim().toUpperCase()),
     );
-    conditions.push(`upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
+    applyIncludeExcludeSql(conditions, params.modePresenceFilter ?? "include", `upper(trim(coalesce(f.mode, ''))) = any(${placeholder}::text[])`);
   }
-  if (selectedGemBiddingModes.length) {
+  if (includeGemBiddingModes.length) {
     const placeholder = addSqlValue(
       values,
-      selectedGemBiddingModes.map((mode) => mode.trim().toLowerCase()),
+      includeGemBiddingModes.map((mode) => mode.trim().toLowerCase()),
     );
     conditions.push(
       `${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = any(${placeholder}::text[])`,
     );
+  }
+  if (excludeGemBiddingModes.length) {
+    const placeholder = addSqlValue(
+      values,
+      excludeGemBiddingModes.map((mode) => mode.trim().toLowerCase()),
+    );
+    conditions.push(
+      `not (${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = any(${placeholder}::text[]))`,
+    );
+  }
+  if (!includeGemBiddingModes.length && !excludeGemBiddingModes.length && selectedGemBiddingModes.length) {
+    const placeholder = addSqlValue(
+      values,
+      selectedGemBiddingModes.map((mode) => mode.trim().toLowerCase()),
+    );
+    applyIncludeExcludeSql(conditions, params.gemModePresenceFilter ?? "include", `${isYesSql("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = any(${placeholder}::text[])`);
   }
   if (selectedFirmTypes.length) {
     const normalizedFirmTypes = selectedFirmTypes.map((firmType) => firmType.trim().toUpperCase());
@@ -6771,11 +7174,15 @@ function buildSearchSql(
       supplyOrderExists(`trim(coalesce(so.bg_coverage_type, '')) = any(${placeholder}::text[])`),
     );
   }
-  if (params.specialFileMarker?.trim()) {
-    const placeholder = addSqlValue(values, params.specialFileMarker.trim().toUpperCase());
+  const selectedSpecialFileMarkers = [
+    ...(params.specialFileMarkers ?? []),
+    ...(params.specialFileMarker?.trim() ? [params.specialFileMarker] : []),
+  ].map((marker) => marker.trim().toUpperCase()).filter(Boolean);
+  if (selectedSpecialFileMarkers.length > 0) {
+    const placeholder = addSqlValue(values, selectedSpecialFileMarkers);
     conditions.push(`exists (
       select 1 from file_markers fm
-      where fm.file_id = f.id and upper(trim(coalesce(fm.text, ''))) = ${placeholder}
+      where fm.file_id = f.id and upper(trim(coalesce(fm.text, ''))) = any(${placeholder}::text[])
     )`);
   }
   if (params.advancePaymentFilter) {
@@ -6805,6 +7212,7 @@ function buildSearchSql(
   if (params.ad) conditions.push(isYesSql("f.ad"));
   if (params.rqa) conditions.push(isYesSql("f.rqa"));
   if (params.ifaFilter) conditions.push(isYesSql("f.ifa"));
+  applyIncludeExcludeSql(conditions, params.ifaPresenceFilter, isYesSql("f.ifa"));
   if (params.psbFilter) {
     conditions.push(
       supplyOrderExists(
@@ -6839,6 +7247,11 @@ function buildSearchSql(
     );
   }
   if (params.cnc) conditions.push(fileHasAny(["cncDate", "cncApprovalDate"]));
+  applyIncludeExcludeSql(
+    conditions,
+    params.cncPresenceFilter,
+    fileHasAny(["cncDate", "cncApprovalDate"]),
+  );
   if (params.tcec) {
     conditions.push(
       `(${isYesSql("f.tcec")} or ${fileHasAny([
@@ -6851,10 +7264,35 @@ function buildSearchSql(
       ])})`,
     );
   }
+  if (params.preBidMeetingFilter) {
+    conditions.push(`(${isYesSql("f.pre_bid_meeting")} or f.pre_bid_meeting_date is not null)`);
+  }
+  if (params.preTcecCommittee?.trim()) {
+    const placeholder = addSqlValue(values, params.preTcecCommittee.trim().toLowerCase());
+    conditions.push(`lower(trim(coalesce(f.pre_tcec_committee_no, ''))) = ${placeholder}`);
+  }
+  if (params.postTcecCommittee?.trim()) {
+    const placeholder = addSqlValue(values, params.postTcecCommittee.trim().toLowerCase());
+    conditions.push(`(
+      lower(trim(coalesce(f.post_tcec_committee_number, ''))) = ${placeholder}
+      or lower(trim(coalesce(f.refloat_post_tcec_committee_no, ''))) = ${placeholder}
+    )`);
+  }
   if (params.rstFilter) conditions.push(isYesSql("f.rst"));
   if (params.demandCancelledFilter) conditions.push(isYesSql("f.demand_cancelled"));
+  applyIncludeExcludeSql(
+    conditions,
+    params.demandCancelledPresenceFilter,
+    isYesSql("f.demand_cancelled"),
+  );
+  applyIncludeExcludeSql(conditions, params.fileClosedPresenceFilter, fileClosedSql());
   if (params.soCancelledFilter) conditions.push(supplyOrderExists(isYesSql("so.so_cancelled")));
   if (params.shortclosedSoFilter) conditions.push(supplyOrderExists(isYesSql("so.shortclosure")));
+  applyIncludeExcludeSql(
+    conditions,
+    params.shortclosedSoPresenceFilter,
+    supplyOrderExists(isYesSql("so.shortclosure")),
+  );
 
   if (params.capitalOnly && params.revenueOnly) {
     conditions.push("(coalesce(f.value_capital, 0) <> 0 or coalesce(f.value_revenue, 0) <> 0)");
@@ -6872,6 +7310,10 @@ function buildSearchSql(
   const totalValue = `(coalesce(f.value_capital * ${valueFactor}, 0) + coalesce(f.value_revenue * ${valueFactor}, 0))`;
   const minValue = parseSearchAmount(params.valueFrom);
   const maxValue = parseSearchAmount(params.valueTo);
+  const valueThresholdFilter = params.valueThresholdFilter?.trim();
+  if (valueThresholdFilter && valueThresholdFilter !== "all") {
+    conditions.push(`(${dashboardFilterSql(valueThresholdFilter, values, thresholdFinancialYear)})`);
+  }
   if (minValue !== undefined) {
     const placeholder = addSqlValue(values, minValue);
     conditions.push(`${totalValue} >= ${placeholder}`);
@@ -6883,6 +7325,17 @@ function buildSearchSql(
 
   const minSoValue = parseSearchAmount(params.soValueFrom);
   const maxSoValue = parseSearchAmount(params.soValueTo);
+  const soValueThresholdFilter = params.soValueThresholdFilter?.trim();
+  if (soValueThresholdFilter && soValueThresholdFilter !== "all") {
+    conditions.push(
+      `(${soValueThresholdRangeFilterSql(
+        soValueThresholdFilter,
+        values,
+        Boolean(params.soCapitalOnly),
+        Boolean(params.soRevenueOnly),
+      )})`,
+    );
+  }
   if (
     minSoValue !== undefined ||
     maxSoValue !== undefined ||
@@ -6929,6 +7382,7 @@ function buildSearchSql(
       params.highValueMinutesTo,
       values,
     ),
+    fileDateRangeSql("f.pre_tcec_date", params.preTcecDateFrom, params.preTcecDateTo, values),
     fileDateRangeSql(
       "f.pre_tcec_minutes_date",
       params.preTcecMinutesFrom,
@@ -6938,13 +7392,38 @@ function buildSearchSql(
     fileDateRangeSql("f.rqa_approval_date", params.rqaApprovalFrom, params.rqaApprovalTo, values),
     fileDateRangeSql("f.ifa_final_date", params.ifaFinalFrom, params.ifaFinalTo, values),
     fileDateRangeSql("f.cfa_date", params.cfaApprovalFrom, params.cfaApprovalTo, values),
-    fileDateRangeSql(
-      "f.post_tcec_minutes_date",
+    fileAnyDateRangeSql(
+      ["f.post_tcec_date", "f.refloat_post_tcec_date"],
+      params.postTcecDateFrom,
+      params.postTcecDateTo,
+      values,
+    ),
+    fileAnyDateRangeSql(
+      ["f.post_tcec_minutes_date", "f.refloat_post_tcec_minutes_date"],
       params.postTcecMinutesFrom,
       params.postTcecMinutesTo,
       values,
     ),
     fileDateRangeSql("f.cnc_date", params.cncDateFrom, params.cncDateTo, values),
+    fileAnyDateRangeSql(
+      ["f.pre_bid_meeting_date", "f.refloat_pre_bid_meeting_date"],
+      params.preBidDateFrom,
+      params.preBidDateTo,
+      values,
+    ),
+    fileAnyDateRangeSql(
+      ["f.bid_date", "f.refloat_bidding_date"],
+      params.biddingDateFrom,
+      params.biddingDateTo,
+      values,
+    ),
+    fileAnyDateRangeSql(
+      ["f.bid_opening_date", "f.refloat_bid_opening_date"],
+      params.bidOpeningDateFrom,
+      params.bidOpeningDateTo,
+      values,
+    ),
+    billSubmissionEventDateRangeSql(params.billSubmittedFrom, params.billSubmittedTo, values),
     supplyOrderDateRangeSql(
       "financial_sanction_date",
       params.financialSanctionFrom,
@@ -6958,7 +7437,7 @@ function buildSearchSql(
       params.materialReceiptTo,
       values,
     ),
-    supplyOrderDateRangeSql("payment_date", params.paymentDateFrom, params.paymentDateTo, values),
+    paymentEventDateRangeSql(params.paymentDateFrom, params.paymentDateTo, values),
     supplyOrderAnyDateRangeSql(
       ["psb_bg_received_date", "pwb_bg_received_date", "combined_bg_received_date"],
       params.bgReceivedFrom,
@@ -8070,9 +8549,10 @@ filesRouter.patch(
         id: string;
         division_id: string | null;
         file_type: string | null;
+        file_type_group: string | null;
         mode: string | null;
       }>(
-        "select id, division_id, file_type, mode from files where id = $1 and archived_at is null",
+        "select id, division_id, file_type, file_type_group, mode from files where id = $1 and archived_at is null",
         [id],
       );
       if (existing.rowCount === 0) throw new HttpError(404, "File not found.");
@@ -8082,7 +8562,7 @@ filesRouter.patch(
       if (
         !canAccessFileCategory(user, {
           fileType: existing.rows[0].file_type ?? undefined,
-          mode: existing.rows[0].mode ?? undefined,
+          fileTypeGroup: existing.rows[0].file_type_group ?? undefined,
         })
       ) {
         throw new HttpError(403, "You cannot edit this file type.");
@@ -8096,11 +8576,13 @@ filesRouter.patch(
         "fileType" in body && typeof body.fileType === "string"
           ? body.fileType
           : (existing.rows[0].file_type ?? undefined);
-      const nextMode =
-        "mode" in body && typeof body.mode === "string"
-          ? body.mode
-          : (existing.rows[0].mode ?? undefined);
-      if (!canAccessFileCategory(user, { fileType: nextFileType, mode: nextMode })) {
+      const nextFileTypeGroup =
+        "fileTypeGroup" in body && typeof body.fileTypeGroup === "string"
+          ? body.fileTypeGroup
+          : (existing.rows[0].file_type_group ?? undefined);
+      if (
+        !canAccessFileCategory(user, { fileType: nextFileType, fileTypeGroup: nextFileTypeGroup })
+      ) {
         throw new HttpError(403, "You cannot change files to this file type.");
       }
       const oldFiles = await loadFiles("where f.id = $1", [id]);
@@ -8171,21 +8653,16 @@ filesRouter.delete(
       throw new HttpError(403, "You cannot delete this file type.");
     }
 
-    if (user.role !== "admin") {
-      await pool.query(
-        `update files
-         set archived_at = now(), archived_by = $2, archive_reason = 'Archived by editor'
-         where id = $1`,
-        [id, user.id],
-      );
-      clearDashboardReportCaches();
-      response.json({ archived: true, file: files[0] });
-      return;
-    }
-
-    await pool.query("delete from files where id = $1", [id]);
+    await pool.query(
+      `update files
+       set archived_at = now(),
+           archived_by = $2,
+           archive_reason = $3
+       where id = $1 and archived_at is null`,
+      [id, user.id, user.role === "admin" ? "Archived by admin" : "Archived by editor"],
+    );
     clearDashboardReportCaches();
-    response.json({ deleted: true, file: files[0] });
+    response.json({ archived: true, file: files[0] });
   }),
 );
 

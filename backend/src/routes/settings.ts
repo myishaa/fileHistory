@@ -15,6 +15,15 @@ import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
 import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
 import {
+  addTrustedIp,
+  archiveIpAttempt,
+  getIpAccessConfig,
+  getRequestIp,
+  type IpAccessMode,
+  updateIpAccessMode,
+  updateTrustedIp,
+} from "../utils/ip-access-control.js";
+import {
   asyncHandler,
   HttpError,
   requireObjectBody,
@@ -30,10 +39,12 @@ const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>(["capital", "re
 const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
+const ipAccessModes = new Set<IpAccessMode>(["off", "notify", "restrict"]);
 
 type SettingsRow = {
   financial_year: string;
   selected_year: string;
+  setup_year: string | null;
   year_selection_locked: boolean;
   theme: AppTheme;
   theme_tint: AppThemeTint;
@@ -237,6 +248,24 @@ async function copyYearSettings(sourceYear: string, targetYear: string, client: 
   );
 
   await client.query(
+    `insert into division_year_allocations (
+       division_id, financial_year, allocated_capital, allocated_revenue, active
+     )
+     select
+       d.id,
+       $2,
+       coalesce(a.allocated_capital, d.allocated_capital),
+       coalesce(a.allocated_revenue, d.allocated_revenue),
+       coalesce(a.active, true)
+     from divisions d
+     left join division_year_allocations a
+       on a.division_id = d.id and a.financial_year = $1
+     where d.archived_at is null
+     on conflict (division_id, financial_year) do nothing`,
+    [sourceYear, targetYear],
+  );
+
+  await client.query(
     `insert into tcec_committees (financial_year, name, sort_order)
      select $2, name, sort_order
      from tcec_committees
@@ -338,9 +367,16 @@ async function loadUserReportPreferences(userId: string, reportKey: string) {
 
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
   const financialYears = await loadFinancialYears();
+  const setupYear =
+    row.setup_year &&
+    row.setup_year !== allFilesYear &&
+    row.setup_year !== allActiveFilesYear &&
+    row.setup_year !== activePlusCurrentFyClosedYear
+      ? row.setup_year
+      : row.financial_year;
   const mergedFinancialYears = Array.from(
     new Set(
-      [row.financial_year, row.selected_year, ...financialYears]
+      [row.financial_year, row.selected_year, setupYear, ...financialYears]
         .filter(Boolean)
         .filter(
           (year) =>
@@ -361,12 +397,13 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
+    setupYear,
     financialYears: mergedFinancialYears,
     yearSelectionLocked: row.year_selection_locked,
     theme: uiPreferences?.theme ?? row.theme,
     themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
     deletionPassword: row.deletion_password,
-    tcecCommittees: await loadTcecCommittees(row.selected_year, row.tcec_committees),
+    tcecCommittees: await loadTcecCommittees(setupYear, row.tcec_committees),
     firmTypes: fromDbJsonArray(row.firm_types).filter(
       (firmType): firmType is string => typeof firmType === "string",
     ),
@@ -375,10 +412,12 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     ),
     fileTypeGroups: normalizeFileTypeGroups(
       row.file_type_groups,
-      fromDbJsonArray(row.file_types).filter((fileType): fileType is string => typeof fileType === "string"),
+      fromDbJsonArray(row.file_types).filter(
+        (fileType): fileType is string => typeof fileType === "string",
+      ),
     ),
     modes: fromDbJsonArray(row.modes).filter((mode): mode is string => typeof mode === "string"),
-    valueThresholdLevels: await loadValueThresholdLevels(row.selected_year),
+    valueThresholdLevels: await loadValueThresholdLevels(setupYear),
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: [...globalPresets, ...personalPresets],
     mmgLiveEnabled: row.mmg_live_enabled,
@@ -479,7 +518,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
   const key = `settings:app:${user?.id ?? "anonymous"}:${user?.role ?? "none"}`;
   return getCached(key, cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id
@@ -595,7 +634,10 @@ async function replaceUserTableFieldPresets(ownerKey: string, presets: unknown[]
 }
 
 function readStringArray(value: unknown, field: string) {
-  return readArrayValue(value, field).filter((item): item is string => typeof item === "string");
+  return readArrayValue(value, field)
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function readFileTypeGroups(value: unknown): FileTypeGroupSetting[] {
@@ -611,6 +653,117 @@ function readFileTypeGroups(value: unknown): FileTypeGroupSetting[] {
       } satisfies FileTypeGroupSetting;
     })
     .filter((item): item is FileTypeGroupSetting => Boolean(item));
+}
+
+async function reconcileFileTypeChanges(
+  nextFileTypes: string[],
+  nextFileTypeGroups: FileTypeGroupSetting[],
+) {
+  const current = await pool.query<{ file_types: unknown; file_type_groups: unknown }>(
+    "select file_types, file_type_groups from app_settings where id = true",
+  );
+  const currentFileTypes = fromDbJsonArray(current.rows[0]?.file_types).filter(
+    (item): item is string => typeof item === "string",
+  );
+  const currentFileTypeGroups = normalizeFileTypeGroups(
+    current.rows[0]?.file_type_groups,
+    currentFileTypes,
+  );
+  const normalizedNextFileTypeGroups = normalizeFileTypeGroups(nextFileTypeGroups, nextFileTypes);
+  const currentGroupByType = new Map(
+    currentFileTypeGroups.map((entry) => [entry.fileType.trim().toLowerCase(), entry.group]),
+  );
+  const nextGroupByType = new Map(
+    normalizedNextFileTypeGroups.map((entry) => [entry.fileType.trim().toLowerCase(), entry.group]),
+  );
+  const nextSet = new Set(nextFileTypes.map((fileType) => fileType.trim().toLowerCase()));
+  const currentSet = new Set(currentFileTypes.map((fileType) => fileType.trim().toLowerCase()));
+  const removedFileTypes = currentFileTypes
+    .map((fileType) => fileType.trim())
+    .filter((fileType) => fileType && !nextSet.has(fileType.toLowerCase()));
+  const addedFileTypes = nextFileTypes
+    .map((fileType) => fileType.trim())
+    .filter((fileType) => fileType && !currentSet.has(fileType.toLowerCase()));
+
+  await assertUsedFileTypeGroupsUnchanged(currentFileTypes, currentGroupByType, nextGroupByType);
+  if (!removedFileTypes.length) return;
+
+  const result = await pool.query<{ file_type: string; count: string }>(
+    `select coalesce(nullif(trim(file_type), ''), '(blank)') as file_type, count(*)::text
+     from files
+     where lower(trim(coalesce(file_type, ''))) = any($1::text[])
+     group by 1
+     order by 1`,
+    [removedFileTypes.map((fileType) => fileType.toLowerCase())],
+  );
+  if (!result.rows.length) return;
+
+  const rename = inferSingleFileTypeRename(
+    removedFileTypes,
+    addedFileTypes,
+    currentGroupByType,
+    nextGroupByType,
+  );
+  if (rename) {
+    await pool.query(
+      `update files
+       set file_type = $2
+       where lower(trim(coalesce(file_type, ''))) = $1`,
+      [rename.from.toLowerCase(), rename.to],
+    );
+    return;
+  }
+
+  const usedTypes = result.rows.map((row) => `${row.file_type} (${row.count})`).join(", ");
+  throw new HttpError(
+    400,
+    `This file type is used by existing files and cannot be deleted: ${usedTypes}. Rename it instead, or update those files first.`,
+  );
+}
+
+async function assertUsedFileTypeGroupsUnchanged(
+  currentFileTypes: string[],
+  currentGroupByType: Map<string, FileTypeGroupSetting["group"]>,
+  nextGroupByType: Map<string, FileTypeGroupSetting["group"]>,
+) {
+  const changedTypes = currentFileTypes
+    .map((fileType) => fileType.trim())
+    .filter((fileType) => {
+      const key = fileType.toLowerCase();
+      return nextGroupByType.has(key) && currentGroupByType.get(key) !== nextGroupByType.get(key);
+    });
+  if (!changedTypes.length) return;
+
+  const result = await pool.query<{ file_type: string; count: string }>(
+    `select coalesce(nullif(trim(file_type), ''), '(blank)') as file_type, count(*)::text
+     from files
+     where lower(trim(coalesce(file_type, ''))) = any($1::text[])
+     group by 1
+     order by 1`,
+    [changedTypes.map((fileType) => fileType.toLowerCase())],
+  );
+  if (!result.rows.length) return;
+
+  const usedTypes = result.rows.map((row) => `${row.file_type} (${row.count})`).join(", ");
+  throw new HttpError(
+    400,
+    `This file type is used by existing files, so its workflow group cannot be changed: ${usedTypes}.`,
+  );
+}
+
+function inferSingleFileTypeRename(
+  removedFileTypes: string[],
+  addedFileTypes: string[],
+  currentGroupByType: Map<string, FileTypeGroupSetting["group"]>,
+  nextGroupByType: Map<string, FileTypeGroupSetting["group"]>,
+) {
+  if (removedFileTypes.length !== 1 || addedFileTypes.length !== 1) return undefined;
+  const from = removedFileTypes[0];
+  const to = addedFileTypes[0];
+  if (currentGroupByType.get(from.toLowerCase()) !== nextGroupByType.get(to.toLowerCase())) {
+    return undefined;
+  }
+  return { from, to };
 }
 
 function readMmgSummaryFields(value: unknown) {
@@ -728,6 +881,75 @@ settingsRouter.get(
   }),
 );
 
+settingsRouter.get(
+  "/ip-access",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
+settingsRouter.patch(
+  "/ip-access",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    const mode = requireString(body.mode, "mode") as IpAccessMode;
+    if (!ipAccessModes.has(mode)) {
+      throw new HttpError(400, "mode must be off, notify, or restrict.");
+    }
+    await updateIpAccessMode(mode, user);
+    response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
+settingsRouter.post(
+  "/ip-access/trusted",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await addTrustedIp(
+      requireString(body.ipAddress, "ipAddress"),
+      typeof body.remarks === "string" ? body.remarks : "",
+      user,
+    );
+    response.status(201).json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
+settingsRouter.patch(
+  "/ip-access/trusted/:id",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const id = requireParam(request.params.id, "id");
+    const body = requireObjectBody(request.body);
+    await updateTrustedIp(
+      id,
+      {
+        ...(typeof body.remarks === "string" ? { remarks: body.remarks } : {}),
+        ...(typeof body.active === "boolean" ? { active: body.active } : {}),
+      },
+      user,
+    );
+    response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
+settingsRouter.post(
+  "/ip-access/attempts/:id/archive",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const id = requireParam(request.params.id, "id");
+    await archiveIpAttempt(id, user);
+    response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
 settingsRouter.put(
   "/report-preferences/:reportKey",
   asyncHandler(async (request, response) => {
@@ -793,6 +1015,18 @@ settingsRouter.patch(
       }
       addField("selected_year", selectedYear);
     }
+    if ("setupYear" in body) {
+      const setupYear = normalizeYearLabel(body.setupYear, "setupYear");
+      if (
+        setupYear === allFilesYear ||
+        setupYear === allActiveFilesYear ||
+        setupYear === activePlusCurrentFyClosedYear
+      ) {
+        throw new HttpError(400, "setupYear must be a financial year like 2026-27.");
+      }
+      await ensureFinancialYear(setupYear);
+      addField("setup_year", setupYear);
+    }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
     if ("theme" in body || "themeTint" in body) {
@@ -804,18 +1038,20 @@ settingsRouter.patch(
     if ("deletionPassword" in body)
       addField("deletion_password", toDbText(body.deletionPassword) ?? "");
     if ("tcecCommittees" in body) {
+      const settings = await getSettings();
       await replaceTcecCommittees(
-        typeof body.selectedYear === "string" && body.selectedYear.trim()
-          ? body.selectedYear.trim()
-          : (await getSettings()).selectedYear,
+        typeof body.setupYear === "string" && body.setupYear.trim()
+          ? body.setupYear.trim()
+          : settings.setupYear,
         readArrayValue(body.tcecCommittees, "tcecCommittees"),
       );
     }
     if ("valueThresholdLevels" in body) {
+      const settings = await getSettings();
       await replaceValueThresholdLevels(
-        typeof body.selectedYear === "string" && body.selectedYear.trim()
-          ? body.selectedYear.trim()
-          : (await getSettings()).selectedYear,
+        typeof body.setupYear === "string" && body.setupYear.trim()
+          ? body.setupYear.trim()
+          : settings.setupYear,
         readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"),
       );
     }
@@ -827,18 +1063,19 @@ settingsRouter.patch(
         JSON.stringify(readStringArray(body.firmTypes, "firmTypes")),
         "::jsonb",
       );
-    if ("fileTypes" in body)
-      addField(
-        "file_types",
-        JSON.stringify(readStringArray(body.fileTypes, "fileTypes")),
-        "::jsonb",
-      );
-    if ("fileTypeGroups" in body)
-      addField(
-        "file_type_groups",
-        JSON.stringify(readFileTypeGroups(body.fileTypeGroups)),
-        "::jsonb",
-      );
+    if ("fileTypes" in body || "fileTypeGroups" in body) {
+      const settings = await getSettings(user);
+      const fileTypes =
+        "fileTypes" in body ? readStringArray(body.fileTypes, "fileTypes") : settings.fileTypes;
+      const fileTypeGroups =
+        "fileTypeGroups" in body
+          ? readFileTypeGroups(body.fileTypeGroups)
+          : settings.fileTypeGroups;
+      await reconcileFileTypeChanges(fileTypes, fileTypeGroups);
+      if ("fileTypes" in body) addField("file_types", JSON.stringify(fileTypes), "::jsonb");
+      if ("fileTypeGroups" in body)
+        addField("file_type_groups", JSON.stringify(fileTypeGroups), "::jsonb");
+    }
     if ("modes" in body)
       addField("modes", JSON.stringify(readStringArray(body.modes, "modes")), "::jsonb");
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
@@ -957,11 +1194,7 @@ settingsRouter.post(
     }
     validateContinuousFinancialYear(await loadFinancialYears(), label);
     const settings = await getSettings(user);
-    const sourceYear =
-      settings.selectedYear === allActiveFilesYear ||
-      settings.selectedYear === activePlusCurrentFyClosedYear
-        ? settings.financialYear
-        : settings.selectedYear;
+    const sourceYear = settings.setupYear || settings.financialYear;
     const client = await pool.connect();
 
     try {
@@ -970,7 +1203,7 @@ settingsRouter.post(
       if (created) await copyYearSettings(sourceYear, label, client);
 
       if (body.select === true) {
-        await client.query("update app_settings set selected_year = $1 where id = true", [label]);
+        await client.query("update app_settings set setup_year = $1 where id = true", [label]);
       }
 
       await client.query("commit");
@@ -1019,6 +1252,9 @@ settingsRouter.delete(
     await pool.query("delete from financial_years where label = $1", [label]);
     if (label === settings.selectedYear) {
       await pool.query("update app_settings set selected_year = financial_year where id = true");
+    }
+    if (label === settings.setupYear) {
+      await pool.query("update app_settings set setup_year = financial_year where id = true");
     }
 
     clearSettingsCache();

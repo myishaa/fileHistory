@@ -13,6 +13,9 @@ create table if not exists master_firms (
   address text,
   firm_unique_no text,
   created_by uuid references app_users(id) on delete set null,
+  archived_at timestamptz,
+  archived_by uuid references app_users(id) on delete set null,
+  archive_reason text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (
@@ -31,7 +34,8 @@ create index if not exists file_firms_email_trgm_idx on file_firms using gin (em
 create index if not exists file_firms_unique_no_trgm_idx on file_firms using gin (firm_unique_no gin_trgm_ops);
 create unique index if not exists master_firms_unique_no_idx
 on master_firms (lower(btrim(firm_unique_no)))
-where nullif(btrim(firm_unique_no), '') is not null;
+where nullif(btrim(firm_unique_no), '') is not null and archived_at is null;
 create index if not exists master_firms_name_trgm_idx on master_firms using gin (firm_name gin_trgm_ops);
 create index if not exists master_firms_email_trgm_idx on master_firms using gin (email_id gin_trgm_ops);
 create index if not exists master_firms_unique_no_trgm_idx on master_firms using gin (firm_unique_no gin_trgm_ops);
+create index if not exists master_firms_archived_at_idx on master_firms(archived_at);

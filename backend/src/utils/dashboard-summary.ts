@@ -331,10 +331,24 @@ export function buildDashboardSummary({
       : files
           .filter((file) => file.division === activeAnalyticsDivision)
           .filter((file) => !isCancelledFile(file));
+  const filteredAnalyticsHistoryFiles =
+    activeAnalyticsDivision === "all"
+      ? dashboardFiles
+      : files.filter((file) => file.division === activeAnalyticsDivision);
   const filteredAnalyticsDivisions =
     activeAnalyticsDivision === "all"
       ? dashboardDivisions
       : divisions.filter((item) => item.name === activeAnalyticsDivision);
+  const analyticsSummary = getAnalyticsSummary(
+    activeDashboardFiles,
+    dashboardDivisions,
+    settings.valueThresholdLevels,
+  );
+  const divisionFilteredAnalyticsSummary = getAnalyticsSummary(
+    filteredAnalyticsFiles,
+    filteredAnalyticsDivisions,
+    settings.valueThresholdLevels,
+  );
   const manualMilestoneFlow = getManualMilestoneFlow(
     activeDashboardFiles,
     getConfiguredMilestones(settings.milestones),
@@ -372,16 +386,14 @@ export function buildDashboardSummary({
     statusSummaryGroups: getStatusSummaryTableGroups(activeDashboardFiles),
     statusFlow: getMilestoneFlow(activeDashboardFiles),
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
-    analytics: getAnalyticsSummary(
-      activeDashboardFiles,
-      dashboardDivisions,
-      settings.valueThresholdLevels,
-    ),
-    divisionFilteredAnalytics: getAnalyticsSummary(
-      filteredAnalyticsFiles,
-      filteredAnalyticsDivisions,
-      settings.valueThresholdLevels,
-    ),
+    analytics: {
+      ...analyticsSummary,
+      monthWiseSupplyOrder: getMonthWiseSupplyOrder(dashboardFiles),
+    },
+    divisionFilteredAnalytics: {
+      ...divisionFilteredAnalyticsSummary,
+      monthWiseSupplyOrder: getMonthWiseSupplyOrder(filteredAnalyticsHistoryFiles),
+    },
     financeTotals,
     financeFirmTypeDistributions: {
       supplyOrderValue: getSupplyOrderValueDistributionByFirmType(
@@ -1223,6 +1235,7 @@ function normalizeCompletedMilestones(value: string[] | undefined) {
 
 function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string) {
   const normalized = normalizeMilestoneName(milestoneName);
+  if (normalized === "bankguarantee") return countBgPendingOrders(files, "psb");
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
   if (normalized === "supplementarybillreturnedforcorrection") {
     return countSupplementaryBillReturnedOrders(files);
@@ -2065,7 +2078,6 @@ function getFileFirmAnalysisRoles(file: FileRecord) {
   const participated = biddingApplicable ? getFirmNameSet(file.bidderFirms) : new Set<string>();
   const order = new Set<string>();
   fileSupplyOrders(file).forEach((orderRow) => {
-    if (isSupplyOrderCancelled(file, orderRow)) return;
     const name = normalizeFirmAnalysisName(orderRow.firm);
     if (name) order.add(name);
   });
@@ -2409,9 +2421,7 @@ function getMonthlyFileInflow(files: FileRecord[]) {
 function getMonthWiseSupplyOrder(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
     rawSupplyOrders(file).forEach((order) => {
-      if (isSupplyOrderCancelled(file, order)) return;
       const month = getMonthKey(order.soDate);
       if (!month) return;
       counts.set(month, (counts.get(month) ?? 0) + 1);
@@ -3341,7 +3351,7 @@ function countAdvancePaymentPendingOrders(files: FileRecord[]) {
 
 function countLdOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
-    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
+    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled),
   ).length;
 }
 
@@ -3383,18 +3393,14 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter(
-    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
-  );
+  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
   if (orders.length)
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0);
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter(
-    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
-  );
+  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
   if (orders.length)
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0);
@@ -3699,26 +3705,19 @@ function isYes(value: string | undefined) {
 function getTcecCommittee(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecCommitteeNo?.trim()
-    : (isYes(file.refloat)
-        ? file.refloatPostTcecCommitteeNo
-        : file.postTcecCommitteeNumber
-      )?.trim();
+    : (file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim());
 }
 
 function getTcecMeetingDate(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecDate
-    : isYes(file.refloat)
-      ? file.refloatPostTcecDate
-      : file.postTcecDate;
+    : file.refloatPostTcecDate || file.postTcecDate;
 }
 
 function getTcecMinutesDate(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecMinutesDate
-    : isYes(file.refloat)
-      ? file.refloatPostTcecMinutesDate
-      : file.postTcecMinutesDate;
+    : file.refloatPostTcecMinutesDate || file.postTcecMinutesDate;
 }
 
 function isNo(value: string | undefined) {
@@ -3903,8 +3902,7 @@ function isBankGuaranteeEligible(file: FileRecord) {
   return (
     isYes(file.bg) &&
     rawSupplyOrders(file).some(
-      (order) =>
-        hasSupplyOrderDate(order) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
+      (order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled),
     )
   );
 }

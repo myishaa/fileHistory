@@ -40,6 +40,7 @@ export function getExportFileName(title: string, extension: "xls" | "pdf") {
 }
 
 export function renderExcelDocument(document: ExportDocument) {
+  const descriptionLines = splitExportDescription(document.description);
   const tables = document.tables
     .map(
       (table) => `
@@ -76,12 +77,14 @@ export function renderExcelDocument(document: ExportDocument) {
           h1 { font-size: 18px; margin: 0 0 6px; }
           h2 { font-size: 14px; margin: 14px 0 6px; }
           p { margin: 0 0 10px; color: #4b5563; }
+          table.description { border-collapse: collapse; margin: 0 0 10px; }
+          table.description td { border: 0; padding: 2px 0; color: #4b5563; }
         </style>
       </head>
       <body>
         <h1>${escapeHtml(document.title)}</h1>
         ${document.subtitle ? `<p>${escapeHtml(document.subtitle)}</p>` : ""}
-        ${document.description ? `<p>${escapeHtml(document.description)}</p>` : ""}
+        ${renderDescriptionHtml(descriptionLines)}
         ${tables}
       </body>
     </html>`;
@@ -106,11 +109,12 @@ export function renderPdfDocument(document: ExportDocument) {
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfPageWidth} ${pdfPageHeight}] /Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
     );
     const content = page.commands.join("\n");
-    objects.push(`<< /Length ${Buffer.byteLength(content, "utf8")} >>\nstream\n${content}\nendstream`);
+    objects.push(
+      `<< /Length ${Buffer.byteLength(content, "utf8")} >>\nstream\n${content}\nendstream`,
+    );
   });
 
-  objects[1] =
-    `<< /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageObjectIds.length} >>`;
+  objects[1] = `<< /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageObjectIds.length} >>`;
 
   let body = "%PDF-1.4\n";
   const offsets = [0];
@@ -145,16 +149,18 @@ function renderPdfPages(document: ExportDocument) {
     page.y -= 15;
   }
   if (document.description) {
-    wrapText(document.description, 145).forEach((line) => {
-      drawText(page, line, pdfMargin, page.y, pdfSubheadingFontSize);
-      page.y -= 13;
+    splitExportDescription(document.description).forEach((descriptionLine) => {
+      wrapText(`- ${descriptionLine}`, 145).forEach((line) => {
+        drawText(page, line, pdfMargin, page.y, pdfSubheadingFontSize);
+        page.y -= 13;
+      });
     });
   }
   page.y -= 8;
 
-  document.tables.forEach((table) => {
+  document.tables.flatMap(getPdfTableSegments).forEach((table) => {
     const columns = normalizeColumns(table.headers.length);
-    const columnWidths = getColumnWidths(columns, table.columnWidths);
+    const columnWidths = getColumnWidths(table.headers, table.columnWidths);
     const rows = table.rows.length ? table.rows : [["No rows found."]];
 
     const ensureSpace = (height: number) => {
@@ -228,11 +234,15 @@ function drawTableRow(
   columnWidths.forEach((width, index) => {
     if (isHeader) {
       page.commands.push("0.95 0.96 0.98 rg");
-      page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re f`);
+      page.commands.push(
+        `${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re f`,
+      );
     }
     page.commands.push("0.78 0.80 0.84 RG");
     page.commands.push("0.6 w");
-    page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re S`);
+    page.commands.push(
+      `${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re S`,
+    );
 
     wrappedCells[index].forEach((line, lineIndex) => {
       const textY = yTop - pdfCellPaddingY - pdfFontSize - lineIndex * pdfLineHeight;
@@ -257,7 +267,40 @@ function normalizeColumns(count: number) {
   return Array.from({ length: Math.max(1, count) }, (_, index) => index);
 }
 
-function getColumnWidths(columns: number[], requestedWidths?: number[]) {
+function getPdfTableSegments(table: ExportTable): ExportTable[] {
+  const maxPdfColumns = 8;
+  if (table.headers.length <= maxPdfColumns || table.columnWidths) return [table];
+
+  const repeatedColumnCount = getRepeatedPdfColumnCount(table.headers);
+  const repeatedIndexes = normalizeColumns(repeatedColumnCount);
+  const detailIndexes = table.headers
+    .map((_, index) => index)
+    .filter((index) => index >= repeatedColumnCount);
+  const chunkSize = Math.max(1, maxPdfColumns - repeatedColumnCount);
+  const chunks: number[][] = [];
+  for (let index = 0; index < detailIndexes.length; index += chunkSize) {
+    chunks.push(detailIndexes.slice(index, index + chunkSize));
+  }
+  if (chunks.length <= 1) return [table];
+
+  return chunks.map((chunk, index) => {
+    const indexes = [...repeatedIndexes, ...chunk];
+    return {
+      title: `${table.title ?? "Table"} (${index + 1}/${chunks.length})`,
+      headers: indexes.map((columnIndex) => table.headers[columnIndex] ?? ""),
+      rows: table.rows.map((row) => indexes.map((columnIndex) => row[columnIndex] ?? "")),
+    };
+  });
+}
+
+function getRepeatedPdfColumnCount(headers: string[]) {
+  const normalizedFirstHeader = String(headers[0] ?? "").toLowerCase();
+  if (/^s\.?\s*no\.?$|^serial/.test(normalizedFirstHeader)) return Math.min(2, headers.length);
+  return 1;
+}
+
+function getColumnWidths(headers: string[], requestedWidths?: number[]) {
+  const columns = normalizeColumns(headers.length);
   if (
     requestedWidths?.length === columns.length &&
     requestedWidths.every((width) => Number.isFinite(width) && width > 0)
@@ -266,10 +309,23 @@ function getColumnWidths(columns: number[], requestedWidths?: number[]) {
     return requestedWidths.map((width) => (width / total) * pdfContentWidth);
   }
   if (columns.length === 1) return [pdfContentWidth];
-  const serialWidth = columns.length > 2 ? 42 : 70;
-  const remainingWidth = pdfContentWidth - serialWidth;
+  const firstHeader = String(headers[0] ?? "").toLowerCase();
+  if (columns.length > 2 && /^s\.?\s*no\.?$|^serial/.test(firstHeader)) {
+    const serialWidth = 42;
+    const labelWidth = Math.min(260, Math.max(170, pdfContentWidth * 0.34));
+    const remainingWidth = pdfContentWidth - serialWidth - labelWidth;
+    return columns.map((_, index) =>
+      index === 0
+        ? serialWidth
+        : index === 1
+          ? labelWidth
+          : remainingWidth / Math.max(1, columns.length - 2),
+    );
+  }
+  const firstColumnWidth = Math.min(280, Math.max(170, pdfContentWidth * 0.36));
+  const remainingWidth = pdfContentWidth - firstColumnWidth;
   return columns.map((_, index) =>
-    index === 0 ? serialWidth : remainingWidth / Math.max(1, columns.length - 1),
+    index === 0 ? firstColumnWidth : remainingWidth / Math.max(1, columns.length - 1),
   );
 }
 
@@ -278,7 +334,11 @@ function getMaxCharsForColumn(width: number) {
 }
 
 function normalizeCell(value: string) {
-  return String(value ?? "").replace(/\s+/g, " ").trim() || "-";
+  return (
+    String(value ?? "")
+      .replace(/\s+/g, " ")
+      .trim() || "-"
+  );
 }
 
 function wrapText(value: string, maxLength: number) {
@@ -294,6 +354,44 @@ function wrapText(value: string, maxLength: number) {
   }
   if (remaining) lines.push(remaining);
   return lines;
+}
+
+function renderDescriptionHtml(lines: string[]) {
+  if (!lines.length) return "";
+  return `<table class="description">${lines
+    .map((line) => `<tr><td>${escapeHtml(`- ${line}`)}</td></tr>`)
+    .join("")}</table>`;
+}
+
+function splitExportDescription(description: string | undefined) {
+  if (!description) return [];
+  return protectDescriptionAbbreviations(description)
+    .split("\n")
+    .flatMap((line) => line.split(/(?<=[.!?;])\s+(?=[A-Z0-9])/))
+    .map((line) =>
+      restoreDescriptionAbbreviations(line)
+        .trim()
+        .replace(/^[-*]\s+/, ""),
+    )
+    .filter(Boolean);
+}
+
+function protectDescriptionAbbreviations(text: string) {
+  return text
+    .replaceAll("S.O.", "S__O__")
+    .replaceAll("D.P.", "D__P__")
+    .replaceAll("F.Y.", "F__Y__")
+    .replaceAll("FY.", "FY__")
+    .replaceAll("No.", "No__");
+}
+
+function restoreDescriptionAbbreviations(text: string) {
+  return text
+    .replaceAll("S__O__", "S.O.")
+    .replaceAll("D__P__", "D.P.")
+    .replaceAll("F__Y__", "F.Y.")
+    .replaceAll("FY__", "FY.")
+    .replaceAll("No__", "No.");
 }
 
 function formatPdfNumber(value: number) {

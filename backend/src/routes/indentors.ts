@@ -29,6 +29,7 @@ type IndentorRow = {
   email: string;
   created_by: string | null;
   created_by_name: string | null;
+  archived_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -46,6 +47,7 @@ function mapIndentor(row: IndentorRow): Indentor {
     email: row.email,
     createdBy: row.created_by ?? undefined,
     createdByName: row.created_by_name ?? undefined,
+    archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -53,6 +55,31 @@ function mapIndentor(row: IndentorRow): Indentor {
 
 function canManageIndentors(user: AuthUser) {
   return user.role === "admin" || user.role === "sub_admin";
+}
+
+async function verifyDeletionPassword(value: unknown) {
+  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
+  const result = await pool.query<{ ok: boolean; configured: boolean }>(
+    `select
+       deletion_password <> '' as configured,
+       deletion_password <> '' and deletion_password = $1 as ok
+     from app_settings
+     where id = true`,
+    [value],
+  );
+  if (!result.rows[0]?.configured) {
+    throw new HttpError(
+      400,
+      "Set a deletion password in admin settings before deleting indentors.",
+    );
+  }
+  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
+}
+
+function isUniqueViolation(error: unknown) {
+  return Boolean(
+    error && typeof error === "object" && (error as { code?: string }).code === "23505",
+  );
 }
 
 function readTrimmed(value: unknown, field: string) {
@@ -79,7 +106,7 @@ async function assertDivisionAccess(user: AuthUser, divisionId: string) {
   }
 }
 
-async function getIndentor(id: string) {
+async function getIndentor(id: string, includeArchived = false) {
   const result = await pool.query<IndentorRow>(
     `select
        i.*,
@@ -88,8 +115,9 @@ async function getIndentor(id: string) {
      from indentors i
      join divisions d on d.id = i.division_id
      left join app_users u on u.id = i.created_by
-     where i.id = $1`,
-    [id],
+     where i.id = $1
+       and ($2::boolean or i.archived_at is null)`,
+    [id, includeArchived],
   );
   return result.rows[0] ? mapIndentor(result.rows[0]) : undefined;
 }
@@ -99,16 +127,16 @@ indentorsRouter.get(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     const values: unknown[] = [];
-    const where: string[] = ["d.archived_at is null"];
+    const where: string[] = ["d.archived_at is null", "i.archived_at is null"];
     const divisionId =
       typeof request.query.divisionId === "string" && request.query.divisionId.trim()
         ? request.query.divisionId.trim()
         : "";
-	    const q =
-	      typeof request.query.q === "string" && request.query.q.trim() ? request.query.q.trim() : "";
-	    const page = readPositiveInteger(request.query.page, 1, 1_000_000);
-	    const pageSize = readPositiveInteger(request.query.pageSize, 50, 200);
-	    const offset = (page - 1) * pageSize;
+    const q =
+      typeof request.query.q === "string" && request.query.q.trim() ? request.query.q.trim() : "";
+    const page = readPositiveInteger(request.query.page, 1, 1_000_000);
+    const pageSize = readPositiveInteger(request.query.pageSize, 50, 200);
+    const offset = (page - 1) * pageSize;
 
     if (divisionId) {
       if (!canAccessDivision(user, divisionId)) {
@@ -117,35 +145,35 @@ indentorsRouter.get(
       values.push(divisionId);
       where.push(`i.division_id = $${values.length}`);
     } else if (!canUseAllDivisions(user)) {
-	      if (user.divisionIds.length === 0) {
-	        response.json({ indentors: [], total: 0, page, pageSize });
-	        return;
-	      }
+      if (user.divisionIds.length === 0) {
+        response.json({ indentors: [], total: 0, page, pageSize });
+        return;
+      }
       values.push(user.divisionIds);
       where.push(`i.division_id = any($${values.length}::uuid[])`);
     }
 
-	    if (q) {
-	      values.push(`%${q.toLowerCase()}%`);
-	      where.push(`(
+    if (q) {
+      values.push(`%${q.toLowerCase()}%`);
+      where.push(`(
 	        lower(i.name) like $${values.length}
 	        or lower(i.sf_id) like $${values.length}
 	        or lower(i.designation) like $${values.length}
 	        or lower(i.email) like $${values.length}
 	      )`);
-	    }
+    }
 
-	    const totalResult = await pool.query<{ total: string }>(
-	      `select count(*)::text as total
+    const totalResult = await pool.query<{ total: string }>(
+      `select count(*)::text as total
 	       from indentors i
 	       join divisions d on d.id = i.division_id
 	       where ${where.join(" and ")}`,
-	      values,
-	    );
-	    const total = Number(totalResult.rows[0]?.total ?? 0);
-	    const resultValues = [...values, pageSize, offset];
-	    const result = await pool.query<IndentorRow>(
-	      `select
+      values,
+    );
+    const total = Number(totalResult.rows[0]?.total ?? 0);
+    const resultValues = [...values, pageSize, offset];
+    const result = await pool.query<IndentorRow>(
+      `select
 	         i.*,
          d.name as division_name,
          u.name as created_by_name
@@ -156,11 +184,11 @@ indentorsRouter.get(
 	       order by d.name asc, i.name asc, i.id asc
 	       limit $${values.length + 1}
 	       offset $${values.length + 2}`,
-	      resultValues,
-	    );
-	    response.json({ indentors: result.rows.map(mapIndentor), total, page, pageSize });
-	  }),
-	);
+      resultValues,
+    );
+    response.json({ indentors: result.rows.map(mapIndentor), total, page, pageSize });
+  }),
+);
 
 indentorsRouter.post(
   "/",
@@ -221,7 +249,7 @@ indentorsRouter.patch(
            mobile_no = $6,
            landline_no = $7,
            email = $8
-       where id = $1`,
+       where id = $1 and archived_at is null`,
       [
         id,
         divisionId,
@@ -246,7 +274,83 @@ indentorsRouter.delete(
     const existing = await getIndentor(id);
     if (!existing) throw new HttpError(404, "Indentor was not found.");
     await assertDivisionAccess(user, existing.divisionId);
-    await pool.query("delete from indentors where id = $1", [id]);
+    await pool.query(
+      `update indentors
+       set archived_at = now(),
+           archived_by = $2,
+           archive_reason = 'Archived by admin'
+       where id = $1 and archived_at is null`,
+      [id, user.id],
+    );
+    response.json({ archived: true, indentor: existing });
+  }),
+);
+
+indentorsRouter.get(
+  "/archive/list",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canManageIndentors(user)) throw new HttpError(403, "Admin access required.");
+    const result = await pool.query<IndentorRow>(
+      `select
+         i.*,
+         d.name as division_name,
+         u.name as created_by_name
+       from indentors i
+       join divisions d on d.id = i.division_id
+       left join app_users u on u.id = i.created_by
+       where i.archived_at is not null
+       order by i.archived_at desc, d.name asc, i.name asc`,
+    );
+    response.json({ indentors: result.rows.map(mapIndentor) });
+  }),
+);
+
+indentorsRouter.post(
+  "/archive/:id/restore",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canManageIndentors(user)) throw new HttpError(403, "Admin access required.");
+    const id = requireParam(request.params.id, "id");
+    const existing = await getIndentor(id, true);
+    if (!existing?.archivedAt) throw new HttpError(404, "Archived indentor was not found.");
+    await assertDivisionAccess(user, existing.divisionId);
+    try {
+      await pool.query(
+        `update indentors
+         set archived_at = null,
+             archived_by = null,
+             archive_reason = null
+         where id = $1`,
+        [id],
+      );
+      response.json({ indentor: await getIndentor(id) });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new HttpError(
+          409,
+          "An active indentor with this SF ID already exists in the division.",
+        );
+      }
+      throw error;
+    }
+  }),
+);
+
+indentorsRouter.delete(
+  "/archive/:id",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canManageIndentors(user)) throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await verifyDeletionPassword(body.deletionPassword);
+    const id = requireParam(request.params.id, "id");
+    const existing = await getIndentor(id, true);
+    if (!existing?.archivedAt) throw new HttpError(404, "Archived indentor was not found.");
+    if (!canAccessDivision(user, existing.divisionId)) {
+      throw new HttpError(403, "You cannot manage indentors for this division.");
+    }
+    await pool.query("delete from indentors where id = $1 and archived_at is not null", [id]);
     response.json({ deleted: true, indentor: existing });
   }),
 );

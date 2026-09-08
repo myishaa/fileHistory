@@ -80,14 +80,21 @@ import {
   normalizeBillReturnCycles,
 } from "@/lib/refloat-returned-bill";
 import { isCancelledFile } from "@/lib/year-filter";
+import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 
 export const Route = createFileRoute("/search")({
   validateSearch: (search: Record<string, unknown>) => {
     const validated: {
       dashboardFilter?: string;
+      extraDashboardFilters?: string;
+      valueThresholdFilter?: string;
+      soValueThresholdFilter?: string;
       division?: string;
+      includeModes?: string;
       selectedYear?: string;
       fileYear?: string;
+      fileInitiationFrom?: string;
+      fileInitiationTo?: string;
       fileCategories?: string;
       analyticsType?: "firm" | "indentor";
       analyticsNames?: string;
@@ -99,9 +106,20 @@ export const Route = createFileRoute("/search")({
     } = {};
     if (typeof search.dashboardFilter === "string")
       validated.dashboardFilter = search.dashboardFilter;
+    if (typeof search.extraDashboardFilters === "string")
+      validated.extraDashboardFilters = search.extraDashboardFilters;
+    if (typeof search.valueThresholdFilter === "string")
+      validated.valueThresholdFilter = search.valueThresholdFilter;
+    if (typeof search.soValueThresholdFilter === "string")
+      validated.soValueThresholdFilter = search.soValueThresholdFilter;
     if (typeof search.division === "string") validated.division = search.division;
+    if (typeof search.includeModes === "string") validated.includeModes = search.includeModes;
     if (typeof search.selectedYear === "string") validated.selectedYear = search.selectedYear;
     if (typeof search.fileYear === "string") validated.fileYear = search.fileYear;
+    if (typeof search.fileInitiationFrom === "string")
+      validated.fileInitiationFrom = search.fileInitiationFrom;
+    if (typeof search.fileInitiationTo === "string")
+      validated.fileInitiationTo = search.fileInitiationTo;
     if (typeof search.fileCategories === "string") validated.fileCategories = search.fileCategories;
     if (search.analyticsType === "firm" || search.analyticsType === "indentor") {
       validated.analyticsType = search.analyticsType;
@@ -219,13 +237,29 @@ const searchFilterHelpers = {
     "This is different from the main/global Activity Year.",
     "Use this only when you want files started in a particular FY.",
   ],
+  fileType: [
+    "Filters by the file type saved in File Details.",
+    "Multiple checked file types work as OR, so a file matching any checked type is shown.",
+  ],
+  indentor: [
+    "Filters by indentor name recorded in the file.",
+    "Use this when you want files raised by a specific indentor.",
+  ],
+  division: [
+    "Filters by the division recorded in the file.",
+    "Your user access can still limit which divisions are visible.",
+  ],
   value: [
     "Filters by demand value entered in the file.",
+    "Default is All value bands.",
+    "Configured value bands use the same thresholds as Dashboard analytics.",
     "Capital/Revenue checkboxes restrict which demand value side is considered.",
     "This is not S.O. value.",
   ],
   soValue: [
     "Filters by supply order value recorded inside the file.",
+    "Default is All S.O. value bands.",
+    "Configured S.O. value bands use the same thresholds as Dashboard analytics.",
     "One file may have multiple S.O. rows.",
     "Capital/Revenue checkboxes restrict which S.O. value side is considered.",
   ],
@@ -234,25 +268,62 @@ const searchFilterHelpers = {
     "One file may match because of one S.O., stage payment, advance payment, or LD row.",
     "A file can match more than one payment condition.",
   ],
+  description: [
+    "Searches the demand description text recorded in File Details.",
+    "Use broad free search if you want to search across many text fields together.",
+  ],
+  firmType: [
+    "Filters by firm type recorded against S.O. firm details.",
+    "Multiple checked firm types work as OR, so a file matching any checked type is shown.",
+  ],
+  supplyOrderPresence: [
+    "Only shows files where at least one Supply Order exists.",
+    "Exclude shows files where no Supply Order exists.",
+    "None means this condition is not applied.",
+  ],
+  biddingMode: [
+    "Only restricts results to one selected bidding mode.",
+    "Only one Only option can be active in this group.",
+    "Multiple Exclude options can be active together.",
+  ],
+  gemBiddingMode: [
+    "Only restricts results to one selected GeM bidding mode.",
+    "Multiple Exclude options can be active together.",
+    "GeM mode filters apply to files marked as GeM where relevant.",
+  ],
+  workflowFlags: [
+    "Filters by specific workflow flags or milestones recorded in a file.",
+    "Checked filters work as additional conditions and can narrow results strongly.",
+    "IFA and CNC use Only/Exclude/None because absence can also be meaningful.",
+  ],
   demandControlDates: [
     "These filters use the specific demand/control date field selected.",
     "Demand receipt and demand control may give different results for the same file.",
   ],
   approvalDates: [
     "These filters use the selected approval or committee date field.",
-    "Each date is checked separately, such as TCEC minutes, IFA final, CFA approval, or CNC date.",
+    "Pre-TCEC remains separate from Post-TCEC.",
+    "Post-TCEC date, minutes, and committee include normal Post-TCEC and Refloat Post-TCEC.",
+    "Pre-Bid and bidding filters include normal and refloat cycle dates.",
+    "Other dates are checked separately, such as TCEC minutes, IFA final, CFA approval, or CNC date.",
   ],
   supplyDeliveryDates: [
     "These filters use the specific supply order or delivery date field selected.",
     "S.O. date, D.P. period, and material receipt date may give different results for the same file.",
   ],
   bgPaymentClosureDates: [
-    "BG dates, payment date, and file closure date are separate activity dates.",
+    "Bill sent/submitted includes main bills, returned-bill resubmissions, stage/advance rows, and supplementary bills.",
+    "Payment date includes main, stage, advance, and supplementary payment dates.",
+    "BG dates and file closure date remain separate activity dates.",
     "Selecting one does not automatically filter by the others.",
   ],
   dpPeriod: [
     "Filters by delivery period date or revised delivery period where applicable.",
     "This is different from actual material receipt or job completion.",
+  ],
+  tcecCommittee: [
+    "Filters by the selected TCEC committee number.",
+    "Use with the corresponding TCEC date filter when both committee and date matter.",
   ],
   firm: [
     "Firm search can look in BQ, invited, bidder, and S.O. firm records depending on selected checkboxes.",
@@ -269,6 +340,16 @@ const searchFilterHelpers = {
   requiredFields: [
     "Checking a column header means show only files where this field is filled.",
     "It filters results; it is different from merely showing or hiding columns.",
+  ],
+  closureAndCancellation: [
+    "File Closed, Cancelled demand, and Shortclosed S.O. can be filtered as Only, Exclude, or None.",
+    "Only returns files having that condition.",
+    "Exclude removes files having that condition.",
+  ],
+  specialFileMarker: [
+    "Filters by special marker codes linked to files.",
+    "Selecting multiple markers shows files having any selected marker.",
+    "If no file has the selected marker, the result list should be empty.",
   ],
 } satisfies Record<string, string[]>;
 const defaultMilestones = [
@@ -298,6 +379,95 @@ const defaultMilestones = [
   "File Closed",
 ];
 const fileClosedMilestone = "File Closed";
+type IncludeExcludeFilter = "none" | "include" | "exclude";
+function parseSearchListParam(value: string | undefined) {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function includeOnlyFilterState(values: string[]) {
+  return values.reduce<Record<string, IncludeExcludeFilter>>((current, value) => {
+    current[value] = "include";
+    return current;
+  }, {});
+}
+
+function getValueThresholdFilterLabel(
+  value: string,
+  levels: ValueThresholdLevel[],
+) {
+  if (!value || value === "all") return "All value bands";
+  if (value === "valueThreshold:Unmatched") return "Unmatched";
+  if (value.startsWith("valueThresholdRange:")) {
+    const [, rawMin = "", rawMax = "", rawAppliesTo = "both"] = value.split(":");
+    const level: ValueThresholdLevel = {
+      label: "",
+      levelNumber: 0,
+      minValue: decodeURIComponent(rawMin),
+      maxValue: decodeURIComponent(rawMax),
+      appliesTo:
+        rawAppliesTo === "capital" || rawAppliesTo === "revenue" ? rawAppliesTo : "both",
+    };
+    return formatValueThresholdOption(level);
+  }
+  if (value.startsWith("valueThresholdId:")) {
+    const id = value.slice("valueThresholdId:".length);
+    const level = levels.find((item) => item.id === id);
+    return level ? formatValueThresholdOption(level) : "Selected value band";
+  }
+  if (value.startsWith("valueThreshold:")) {
+    return decodeURIComponent(value.slice("valueThreshold:".length));
+  }
+  return value;
+}
+
+function formatValueThresholdOption(level: ValueThresholdLevel) {
+  const range = formatValueThresholdRange(level);
+  if (level.appliesTo === "capital") return `${range} (Capital)`;
+  if (level.appliesTo === "revenue") return `${range} (Revenue)`;
+  return range;
+}
+
+function getValueThresholdFilterValue(level: ValueThresholdLevel) {
+  return [
+    "valueThresholdRange",
+    encodeURIComponent(level.minValue ?? ""),
+    encodeURIComponent(level.maxValue ?? ""),
+    encodeURIComponent(level.appliesTo ?? "both"),
+  ].join(":");
+}
+
+function getSoValueThresholdFilterValue(level: ValueThresholdLevel) {
+  const min = parseAmount(level.minValue);
+  return [
+    "valueThresholdRange",
+    encodeURIComponent(min === 0 ? "1" : (level.minValue ?? "")),
+    encodeURIComponent(level.maxValue ?? ""),
+    encodeURIComponent(level.appliesTo ?? "both"),
+  ].join(":");
+}
+
+function formatValueThresholdRange(level: ValueThresholdLevel) {
+  const min = parseAmount(level.minValue);
+  const max = parseAmount(level.maxValue);
+  if (min !== undefined && max !== undefined) {
+    return `${formatLakhRangeAmount(min)}-${formatLakhRangeAmount(max)} L`;
+  }
+  if (min !== undefined) return `${formatLakhRangeAmount(min)} L+`;
+  if (max !== undefined) return `0-${formatLakhRangeAmount(max)} L`;
+  return "Any value";
+}
+
+function formatLakhRangeAmount(value: number) {
+  const lakhs = value / 100000;
+  return Number.isInteger(lakhs)
+    ? String(lakhs)
+    : lakhs.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+}
+
 const supplyOrderMilestoneNames = [
   "Financial Sanction",
   "Advance Payment",
@@ -939,6 +1109,14 @@ function appendSearchBool(params: URLSearchParams, key: string, value: boolean) 
   if (value) params.set(key, "true");
 }
 
+function appendIncludeExcludeParam(
+  params: URLSearchParams,
+  key: string,
+  value: IncludeExcludeFilter,
+) {
+  if (value !== "none") params.set(key, value);
+}
+
 function appendSearchList(params: URLSearchParams, key: string, values: string[]) {
   if (values.length) params.set(key, values.join(","));
 }
@@ -1029,6 +1207,12 @@ function SearchPage() {
   const [yearFilter, setYearFilter] = useState("");
   const [indentor, setIndentor] = useState("");
   const [divisionFilter, setDivisionFilter] = useState(search.division ?? "");
+  const [valueThresholdFilter, setValueThresholdFilter] = useState(
+    search.valueThresholdFilter ?? "all",
+  );
+  const [soValueThresholdFilter, setSoValueThresholdFilter] = useState(
+    search.soValueThresholdFilter ?? "all",
+  );
   const [valueFrom, setValueFrom] = useState("");
   const [valueTo, setValueTo] = useState("");
   const [soValueFrom, setSoValueFrom] = useState("");
@@ -1044,14 +1228,51 @@ function SearchPage() {
   const [firmCity, setFirmCity] = useState("");
   const [firmSearchScopes, setFirmSearchScopes] = useState<string[]>(defaultFirmSearchScopes);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
-  const [selectedModes, setSelectedModes] = useState<string[]>([]);
-  const [selectedGemBiddingModes, setSelectedGemBiddingModes] = useState<string[]>([]);
+  const [modeFilters, setModeFilters] = useState<Record<string, IncludeExcludeFilter>>(() =>
+    includeOnlyFilterState(parseSearchListParam(search.includeModes)),
+  );
+  const [gemModeFilters, setGemModeFilters] = useState<Record<string, IncludeExcludeFilter>>({});
+  useEffect(() => {
+    setModeFilters(includeOnlyFilterState(parseSearchListParam(search.includeModes)));
+  }, [search.includeModes]);
+  useEffect(() => {
+    setValueThresholdFilter(search.valueThresholdFilter ?? "all");
+  }, [search.valueThresholdFilter]);
+  useEffect(() => {
+    setSoValueThresholdFilter(search.soValueThresholdFilter ?? "all");
+  }, [search.soValueThresholdFilter]);
+  useEffect(() => {
+    setModeFilters((current) => normalizeSingleOnlyMultiExcludeFilters(current));
+  }, [modeFilters]);
+  useEffect(() => {
+    setGemModeFilters((current) => normalizeSingleOnlyMultiExcludeFilters(current));
+  }, [gemModeFilters]);
+  const selectedModes = useMemo(
+    () => Object.entries(modeFilters).filter(([, value]) => value !== "none").map(([mode]) => mode),
+    [modeFilters],
+  );
+  const selectedGemBiddingModes = useMemo(
+    () =>
+      Object.entries(gemModeFilters)
+        .filter(([, value]) => value !== "none")
+        .map(([mode]) => mode),
+    [gemModeFilters],
+  );
+  const [soPresenceFilter, setSoPresenceFilter] = useState<IncludeExcludeFilter>("none");
   const [selectedFirmTypes, setSelectedFirmTypes] = useState<string[]>([]);
   const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([]);
-  const [specialFileMarker, setSpecialFileMarker] = useState("");
+  const [specialFileMarkers, setSpecialFileMarkers] = useState<string[]>([]);
   const modeFilterOptions = useMemo(
     () => getConfiguredModes(settings.modes, selectedModes),
     [selectedModes, settings.modes],
+  );
+  const includeModeFilters = selectedModes.filter((mode) => modeFilters[mode] === "include");
+  const excludeModeFilters = selectedModes.filter((mode) => modeFilters[mode] === "exclude");
+  const includeGemModeFilters = selectedGemBiddingModes.filter(
+    (mode) => gemModeFilters[mode] === "include",
+  );
+  const excludeGemModeFilters = selectedGemBiddingModes.filter(
+    (mode) => gemModeFilters[mode] === "exclude",
   );
   const [advancePaymentFilter, setAdvancePaymentFilter] = useState(false);
   const [actualPaymentFilter, setActualPaymentFilter] = useState(false);
@@ -1063,15 +1284,18 @@ function SearchPage() {
   const [gte, setGte] = useState(false);
   const [ad, setAd] = useState(false);
   const [rqa, setRqa] = useState(false);
-  const [ifaFilter, setIfaFilter] = useState(false);
+  const [ifaPresenceFilter, setIfaPresenceFilter] = useState<IncludeExcludeFilter>("none");
   const [psbFilter, setPsbFilter] = useState(false);
   const [pwbFilter, setPwbFilter] = useState(false);
   const [psbPwbFilter, setPsbPwbFilter] = useState(false);
   const [bgFilter, setBgFilter] = useState(false);
   const [rfpVettingFilter, setRfpVettingFilter] = useState(false);
   const [refloat, setRefloat] = useState(false);
-  const [cnc, setCnc] = useState(false);
+  const [cncPresenceFilter, setCncPresenceFilter] = useState<IncludeExcludeFilter>("none");
   const [tcec, setTcec] = useState(false);
+  const [preBidMeetingFilter, setPreBidMeetingFilter] = useState(false);
+  const [preTcecCommittee, setPreTcecCommittee] = useState("");
+  const [postTcecCommittee, setPostTcecCommittee] = useState("");
   const [dpFrom, setDpFrom] = useState("");
   const [dpTo, setDpTo] = useState("");
   const [demandReceiptFrom, setDemandReceiptFrom] = useState("");
@@ -1080,6 +1304,8 @@ function SearchPage() {
   const [demandControlTo, setDemandControlTo] = useState("");
   const [highValueMinutesFrom, setHighValueMinutesFrom] = useState("");
   const [highValueMinutesTo, setHighValueMinutesTo] = useState("");
+  const [preTcecDateFrom, setPreTcecDateFrom] = useState("");
+  const [preTcecDateTo, setPreTcecDateTo] = useState("");
   const [preTcecMinutesFrom, setPreTcecMinutesFrom] = useState("");
   const [preTcecMinutesTo, setPreTcecMinutesTo] = useState("");
   const [rqaApprovalFrom, setRqaApprovalFrom] = useState("");
@@ -1088,10 +1314,20 @@ function SearchPage() {
   const [ifaFinalTo, setIfaFinalTo] = useState("");
   const [cfaApprovalFrom, setCfaApprovalFrom] = useState("");
   const [cfaApprovalTo, setCfaApprovalTo] = useState("");
+  const [postTcecDateFrom, setPostTcecDateFrom] = useState("");
+  const [postTcecDateTo, setPostTcecDateTo] = useState("");
   const [postTcecMinutesFrom, setPostTcecMinutesFrom] = useState("");
   const [postTcecMinutesTo, setPostTcecMinutesTo] = useState("");
   const [cncDateFrom, setCncDateFrom] = useState("");
   const [cncDateTo, setCncDateTo] = useState("");
+  const [preBidDateFrom, setPreBidDateFrom] = useState("");
+  const [preBidDateTo, setPreBidDateTo] = useState("");
+  const [biddingDateFrom, setBiddingDateFrom] = useState("");
+  const [biddingDateTo, setBiddingDateTo] = useState("");
+  const [bidOpeningDateFrom, setBidOpeningDateFrom] = useState("");
+  const [bidOpeningDateTo, setBidOpeningDateTo] = useState("");
+  const [billSubmittedFrom, setBillSubmittedFrom] = useState("");
+  const [billSubmittedTo, setBillSubmittedTo] = useState("");
   const [financialSanctionFrom, setFinancialSanctionFrom] = useState("");
   const [financialSanctionTo, setFinancialSanctionTo] = useState("");
   const [soDateFrom, setSoDateFrom] = useState("");
@@ -1108,10 +1344,13 @@ function SearchPage() {
   const [bgReturnTo, setBgReturnTo] = useState("");
   const [fileClosureFrom, setFileClosureFrom] = useState("");
   const [fileClosureTo, setFileClosureTo] = useState("");
+  const [fileClosedPresenceFilter, setFileClosedPresenceFilter] =
+    useState<IncludeExcludeFilter>("none");
   const [rstFilter, setRstFilter] = useState(false);
-  const [demandCancelledFilter, setDemandCancelledFilter] = useState(false);
-  const [soCancelledFilter, setSoCancelledFilter] = useState(false);
-  const [shortclosedSoFilter, setShortclosedSoFilter] = useState(false);
+  const [demandCancelledPresenceFilter, setDemandCancelledPresenceFilter] =
+    useState<IncludeExcludeFilter>("none");
+  const [shortclosedSoPresenceFilter, setShortclosedSoPresenceFilter] =
+    useState<IncludeExcludeFilter>("none");
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
   const [sortColumnKey, setSortColumnKey] = useState("none");
@@ -1326,6 +1565,14 @@ function SearchPage() {
     () => uniqueSortedOptions(masterFirms.map((item) => item.city)),
     [masterFirms],
   );
+  const preTcecCommitteeOptions = useMemo(
+    () => getTcecCommitteeOptions(settings.tcecCommittees, preTcecCommittee),
+    [preTcecCommittee, settings.tcecCommittees],
+  );
+  const postTcecCommitteeOptions = useMemo(
+    () => getTcecCommitteeOptions(settings.tcecCommittees, postTcecCommittee),
+    [postTcecCommittee, settings.tcecCommittees],
+  );
 
   const activeFilterChips: string[] = [];
   const addFilterChip = (label: string, value?: string) => {
@@ -1336,12 +1583,22 @@ function SearchPage() {
     if (!from && !to) return;
     addFilterChip(label, `${from || "Any"} to ${to || "Any"}`);
   };
+  const addIncludeExcludeChip = (label: string, value: IncludeExcludeFilter) => {
+    if (value === "none") return;
+    addFilterChip(label, value === "include" ? "Only" : "Exclude");
+  };
   addFilterChipIf(activeFilterChips, Boolean(yearFilter), "Year", yearFilter);
   addFilterChipIf(activeFilterChips, Boolean(indentor), "Indentor", indentor);
   addFilterChipIf(activeFilterChips, Boolean(divisionFilter), "Division", divisionFilter);
   addFilterChipIf(activeFilterChips, Boolean(description), "Description", description);
   addFilterChipIf(activeFilterChips, Boolean(freeText), "Free search", freeText);
   addFilterChipIf(activeFilterChips, Boolean(freeDate), "Free date", freeDate);
+  addFilterChipIf(
+    activeFilterChips,
+    valueThresholdFilter !== "all",
+    "Value band",
+    getValueThresholdFilterLabel(valueThresholdFilter, settings.valueThresholdLevels),
+  );
   addFilterChipIf(
     activeFilterChips,
     Boolean(valueFrom || valueTo),
@@ -1354,19 +1611,41 @@ function SearchPage() {
     "S.O. value",
     `${soValueFrom || "Any"} to ${soValueTo || "Any"}`,
   );
+  addFilterChipIf(
+    activeFilterChips,
+    soValueThresholdFilter !== "all",
+    "S.O. value band",
+    getValueThresholdFilterLabel(soValueThresholdFilter, settings.valueThresholdLevels),
+  );
   if (capitalOnly) addFilterChip("Capital demand");
   if (revenueOnly) addFilterChip("Revenue demand");
   if (soCapitalOnly) addFilterChip("Capital S.O.");
   if (soRevenueOnly) addFilterChip("Revenue S.O.");
   if (selectedFileTypes.length) addFilterChip("File type", selectedFileTypes.join(", "));
-  if (selectedModes.length) addFilterChip("Mode", selectedModes.join(", "));
-  if (selectedGemBiddingModes.length) addFilterChip("GeM mode", selectedGemBiddingModes.join(", "));
+  addIncludeExcludeChip("S.O.", soPresenceFilter);
+  if (includeModeFilters.length) addFilterChip("Only Mode", includeModeFilters.join(", "));
+  if (excludeModeFilters.length) addFilterChip("Exclude Mode", excludeModeFilters.join(", "));
+  if (includeGemModeFilters.length) addFilterChip("Only GeM mode", includeGemModeFilters.join(", "));
+  if (excludeGemModeFilters.length) {
+    addFilterChip("Exclude GeM mode", excludeGemModeFilters.join(", "));
+  }
   if (selectedFirmTypes.length) addFilterChip("Firm type", selectedFirmTypes.join(", "));
   addFilterChipIf(activeFilterChips, Boolean(firm), "Firm", firm);
   addFilterChipIf(activeFilterChips, Boolean(firmUniqueNo), "Firm Unique No.", firmUniqueNo);
   addFilterChipIf(activeFilterChips, Boolean(firmContactNo), "Contact", firmContactNo);
   addFilterChipIf(activeFilterChips, Boolean(firmCity), "City", firmCity);
-  addFilterChipIf(activeFilterChips, Boolean(specialFileMarker), "Marker", specialFileMarker);
+  if (!sameStringList(firmSearchScopes, defaultFirmSearchScopes)) {
+    const labels = firmSearchScopeOptions
+      .filter((scope) => firmSearchScopes.includes(scope.key))
+      .map((scope) => scope.label);
+    addFilterChip("Firm scope", labels.length ? labels.join(", ") : "None");
+  }
+  addFilterChipIf(
+    activeFilterChips,
+    specialFileMarkers.length > 0,
+    "Marker",
+    specialFileMarkers.join(", "),
+  );
   [
     [advancePaymentFilter, "Advance payment"],
     [actualPaymentFilter, "Actual payment"],
@@ -1378,36 +1657,55 @@ function SearchPage() {
     [gte, "GTE"],
     [ad, "AD"],
     [rqa, "R&QA"],
-    [ifaFilter, "IFA"],
     [psbFilter, "PSB"],
     [pwbFilter, "PWB"],
     [psbPwbFilter, "PSB+PWB"],
     [bgFilter, "Warranty"],
     [rfpVettingFilter, "RFP vetting"],
     [refloat, "Refloat"],
-    [cnc, "CNC"],
     [tcec, "TCEC"],
+    [preBidMeetingFilter, "Pre-Bid"],
     [rstFilter, "RST"],
-    [demandCancelledFilter, "Cancelled demand"],
-    [soCancelledFilter, "Cancelled S.O."],
-    [shortclosedSoFilter, "Shortclosed S.O."],
     [divisionWiseSort, "Division wise sort"],
   ].forEach(([active, label]) => {
     if (active) addFilterChip(label as string);
   });
+  addIncludeExcludeChip("IFA", ifaPresenceFilter);
+  addIncludeExcludeChip("CNC", cncPresenceFilter);
+  addIncludeExcludeChip("File Closed", fileClosedPresenceFilter);
+  addIncludeExcludeChip("Cancelled demand", demandCancelledPresenceFilter);
+  addIncludeExcludeChip("Shortclosed S.O.", shortclosedSoPresenceFilter);
   addDateRangeChip("Demand receipt", demandReceiptFrom, demandReceiptTo);
   addDateRangeChip("Demand control", demandControlFrom, demandControlTo);
   addDateRangeChip("High Value minutes", highValueMinutesFrom, highValueMinutesTo);
+  addDateRangeChip("Pre-TCEC date", preTcecDateFrom, preTcecDateTo);
   addDateRangeChip("Pre-TCEC minutes", preTcecMinutesFrom, preTcecMinutesTo);
+  addFilterChipIf(
+    activeFilterChips,
+    Boolean(preTcecCommittee),
+    "Pre-TCEC committee",
+    preTcecCommittee,
+  );
   addDateRangeChip("R&QA approval", rqaApprovalFrom, rqaApprovalTo);
   addDateRangeChip("IFA final", ifaFinalFrom, ifaFinalTo);
   addDateRangeChip("CFA approval", cfaApprovalFrom, cfaApprovalTo);
+  addDateRangeChip("Post-TCEC date", postTcecDateFrom, postTcecDateTo);
   addDateRangeChip("Post-TCEC minutes", postTcecMinutesFrom, postTcecMinutesTo);
+  addFilterChipIf(
+    activeFilterChips,
+    Boolean(postTcecCommittee),
+    "Post-TCEC committee",
+    postTcecCommittee,
+  );
   addDateRangeChip("CNC date", cncDateFrom, cncDateTo);
+  addDateRangeChip("Pre-Bid date", preBidDateFrom, preBidDateTo);
+  addDateRangeChip("Bidding date", biddingDateFrom, biddingDateTo);
+  addDateRangeChip("Bid opening date", bidOpeningDateFrom, bidOpeningDateTo);
   addDateRangeChip("Financial sanction", financialSanctionFrom, financialSanctionTo);
   addDateRangeChip("S.O. date", soDateFrom, soDateTo);
   addDateRangeChip("D.P. period", dpFrom, dpTo);
   addDateRangeChip("Material receipt", materialReceiptFrom, materialReceiptTo);
+  addDateRangeChip("Bill sent/submitted", billSubmittedFrom, billSubmittedTo);
   addDateRangeChip("Payment date", paymentDateFrom, paymentDateTo);
   addDateRangeChip("BG received", bgReceivedFrom, bgReceivedTo);
   addDateRangeChip("BG validity", bgValidityFrom, bgValidityTo);
@@ -1418,7 +1716,9 @@ function SearchPage() {
     addFilterChip("Filled", label);
   });
   if (search.dashboardFilter) addFilterChip("Dashboard filter");
+  if (search.extraDashboardFilters) addFilterChip("Linked analytics filter");
   if (search.fileYear && search.fileYear !== "all") addFilterChip("File year", search.fileYear);
+  addDateRangeChip("Initiation date", search.fileInitiationFrom, search.fileInitiationTo);
   if (search.fileCategories) addFilterChip("Category filter");
   if (search.analyticsNames) addFilterChip("Analytics selection");
   const activeFilterCount = activeFilterChips.length;
@@ -1429,6 +1729,8 @@ function SearchPage() {
     yearFilter ||
     indentor ||
     divisionFilter ||
+    valueThresholdFilter !== "all" ||
+    soValueThresholdFilter !== "all" ||
     valueFrom ||
     valueTo ||
     soValueFrom ||
@@ -1442,11 +1744,13 @@ function SearchPage() {
     firmUniqueNo ||
     firmContactNo ||
     firmCity ||
+    !sameStringList(firmSearchScopes, defaultFirmSearchScopes) ||
+    soPresenceFilter !== "none" ||
     selectedModes.length > 0 ||
     selectedGemBiddingModes.length > 0 ||
     selectedFirmTypes.length > 0 ||
     selectedFileTypes.length > 0 ||
-    specialFileMarker ||
+    specialFileMarkers.length > 0 ||
     advancePaymentFilter ||
     actualPaymentFilter ||
     stageDeliveryFilter ||
@@ -1457,15 +1761,18 @@ function SearchPage() {
     gte ||
     ad ||
     rqa ||
-    ifaFilter ||
+    ifaPresenceFilter !== "none" ||
     psbFilter ||
     pwbFilter ||
     psbPwbFilter ||
     bgFilter ||
     rfpVettingFilter ||
     refloat ||
-    cnc ||
+    cncPresenceFilter !== "none" ||
     tcec ||
+    preBidMeetingFilter ||
+    preTcecCommittee ||
+    postTcecCommittee ||
     dpFrom ||
     dpTo ||
     demandReceiptFrom ||
@@ -1474,6 +1781,8 @@ function SearchPage() {
     demandControlTo ||
     highValueMinutesFrom ||
     highValueMinutesTo ||
+    preTcecDateFrom ||
+    preTcecDateTo ||
     preTcecMinutesFrom ||
     preTcecMinutesTo ||
     rqaApprovalFrom ||
@@ -1482,10 +1791,20 @@ function SearchPage() {
     ifaFinalTo ||
     cfaApprovalFrom ||
     cfaApprovalTo ||
+    postTcecDateFrom ||
+    postTcecDateTo ||
     postTcecMinutesFrom ||
     postTcecMinutesTo ||
     cncDateFrom ||
     cncDateTo ||
+    preBidDateFrom ||
+    preBidDateTo ||
+    biddingDateFrom ||
+    biddingDateTo ||
+    bidOpeningDateFrom ||
+    bidOpeningDateTo ||
+    billSubmittedFrom ||
+    billSubmittedTo ||
     financialSanctionFrom ||
     financialSanctionTo ||
     soDateFrom ||
@@ -1502,15 +1821,18 @@ function SearchPage() {
     bgReturnTo ||
     fileClosureFrom ||
     fileClosureTo ||
+    fileClosedPresenceFilter !== "none" ||
     rstFilter ||
-    demandCancelledFilter ||
-    soCancelledFilter ||
-    shortclosedSoFilter ||
+    demandCancelledPresenceFilter !== "none" ||
+    shortclosedSoPresenceFilter !== "none" ||
     freeText ||
     freeDate ||
     requiredFilledColumnKeys.length > 0 ||
     search.dashboardFilter ||
-    search.fileYear ||
+    search.extraDashboardFilters ||
+    (search.fileYear && search.fileYear !== "all") ||
+    search.fileInitiationFrom ||
+    search.fileInitiationTo ||
     search.fileCategories ||
     search.analyticsNames;
 
@@ -1520,10 +1842,20 @@ function SearchPage() {
     appendSearchParam(params, "yearFilter", yearFilter);
     appendSearchParam(params, "indentor", indentor);
     appendSearchParam(params, "divisionFilter", divisionFilter);
+    appendSearchParam(
+      params,
+      "valueThresholdFilter",
+      valueThresholdFilter === "all" ? "" : valueThresholdFilter,
+    );
     appendSearchParam(params, "valueFrom", valueFrom);
     appendSearchParam(params, "valueTo", valueTo);
     appendSearchParam(params, "soValueFrom", soValueFrom);
     appendSearchParam(params, "soValueTo", soValueTo);
+    appendSearchParam(
+      params,
+      "soValueThresholdFilter",
+      soValueThresholdFilter === "all" ? "" : soValueThresholdFilter,
+    );
     appendSearchBool(params, "soCapitalOnly", soCapitalOnly);
     appendSearchBool(params, "soRevenueOnly", soRevenueOnly);
     appendSearchParam(params, "description", description);
@@ -1532,11 +1864,14 @@ function SearchPage() {
     appendSearchParam(params, "firmContactNo", firmContactNo);
     appendSearchParam(params, "firmCity", firmCity);
     appendSearchList(params, "firmSearchScopes", firmSearchScopes);
-    appendSearchList(params, "selectedModes", selectedModes);
-    appendSearchList(params, "selectedGemBiddingModes", selectedGemBiddingModes);
+    appendIncludeExcludeParam(params, "soPresenceFilter", soPresenceFilter);
+    appendSearchList(params, "includeModes", includeModeFilters);
+    appendSearchList(params, "excludeModes", excludeModeFilters);
+    appendSearchList(params, "includeGemBiddingModes", includeGemModeFilters);
+    appendSearchList(params, "excludeGemBiddingModes", excludeGemModeFilters);
     appendSearchList(params, "selectedFirmTypes", selectedFirmTypes);
     appendSearchList(params, "selectedFileTypes", selectedFileTypes);
-    appendSearchParam(params, "specialFileMarker", specialFileMarker);
+    appendSearchList(params, "specialFileMarkers", specialFileMarkers);
     appendSearchBool(params, "advancePaymentFilter", advancePaymentFilter);
     appendSearchBool(params, "actualPaymentFilter", actualPaymentFilter);
     appendSearchBool(params, "stageDeliveryFilter", stageDeliveryFilter);
@@ -1549,15 +1884,18 @@ function SearchPage() {
     appendSearchBool(params, "gte", gte);
     appendSearchBool(params, "ad", ad);
     appendSearchBool(params, "rqa", rqa);
-    appendSearchBool(params, "ifaFilter", ifaFilter);
+    appendIncludeExcludeParam(params, "ifaPresenceFilter", ifaPresenceFilter);
     appendSearchBool(params, "psbFilter", psbFilter);
     appendSearchBool(params, "pwbFilter", pwbFilter);
     appendSearchBool(params, "psbPwbFilter", psbPwbFilter);
     appendSearchBool(params, "bgFilter", bgFilter);
     appendSearchBool(params, "rfpVettingFilter", rfpVettingFilter);
     appendSearchBool(params, "refloat", refloat);
-    appendSearchBool(params, "cnc", cnc);
+    appendIncludeExcludeParam(params, "cncPresenceFilter", cncPresenceFilter);
     appendSearchBool(params, "tcec", tcec);
+    appendSearchBool(params, "preBidMeetingFilter", preBidMeetingFilter);
+    appendSearchParam(params, "preTcecCommittee", preTcecCommittee);
+    appendSearchParam(params, "postTcecCommittee", postTcecCommittee);
     appendSearchParam(params, "dpFrom", dpFrom);
     appendSearchParam(params, "dpTo", dpTo);
     appendSearchParam(params, "demandReceiptFrom", demandReceiptFrom);
@@ -1566,6 +1904,8 @@ function SearchPage() {
     appendSearchParam(params, "demandControlTo", demandControlTo);
     appendSearchParam(params, "highValueMinutesFrom", highValueMinutesFrom);
     appendSearchParam(params, "highValueMinutesTo", highValueMinutesTo);
+    appendSearchParam(params, "preTcecDateFrom", preTcecDateFrom);
+    appendSearchParam(params, "preTcecDateTo", preTcecDateTo);
     appendSearchParam(params, "preTcecMinutesFrom", preTcecMinutesFrom);
     appendSearchParam(params, "preTcecMinutesTo", preTcecMinutesTo);
     appendSearchParam(params, "rqaApprovalFrom", rqaApprovalFrom);
@@ -1574,10 +1914,20 @@ function SearchPage() {
     appendSearchParam(params, "ifaFinalTo", ifaFinalTo);
     appendSearchParam(params, "cfaApprovalFrom", cfaApprovalFrom);
     appendSearchParam(params, "cfaApprovalTo", cfaApprovalTo);
+    appendSearchParam(params, "postTcecDateFrom", postTcecDateFrom);
+    appendSearchParam(params, "postTcecDateTo", postTcecDateTo);
     appendSearchParam(params, "postTcecMinutesFrom", postTcecMinutesFrom);
     appendSearchParam(params, "postTcecMinutesTo", postTcecMinutesTo);
     appendSearchParam(params, "cncDateFrom", cncDateFrom);
     appendSearchParam(params, "cncDateTo", cncDateTo);
+    appendSearchParam(params, "preBidDateFrom", preBidDateFrom);
+    appendSearchParam(params, "preBidDateTo", preBidDateTo);
+    appendSearchParam(params, "biddingDateFrom", biddingDateFrom);
+    appendSearchParam(params, "biddingDateTo", biddingDateTo);
+    appendSearchParam(params, "bidOpeningDateFrom", bidOpeningDateFrom);
+    appendSearchParam(params, "bidOpeningDateTo", bidOpeningDateTo);
+    appendSearchParam(params, "billSubmittedFrom", billSubmittedFrom);
+    appendSearchParam(params, "billSubmittedTo", billSubmittedTo);
     appendSearchParam(params, "financialSanctionFrom", financialSanctionFrom);
     appendSearchParam(params, "financialSanctionTo", financialSanctionTo);
     appendSearchParam(params, "soDateFrom", soDateFrom);
@@ -1594,15 +1944,26 @@ function SearchPage() {
     appendSearchParam(params, "bgReturnTo", bgReturnTo);
     appendSearchParam(params, "fileClosureFrom", fileClosureFrom);
     appendSearchParam(params, "fileClosureTo", fileClosureTo);
+    appendIncludeExcludeParam(params, "fileClosedPresenceFilter", fileClosedPresenceFilter);
     appendSearchBool(params, "rstFilter", rstFilter);
-    appendSearchBool(params, "demandCancelledFilter", demandCancelledFilter);
-    appendSearchBool(params, "soCancelledFilter", soCancelledFilter);
-    appendSearchBool(params, "shortclosedSoFilter", shortclosedSoFilter);
+    appendIncludeExcludeParam(
+      params,
+      "demandCancelledPresenceFilter",
+      demandCancelledPresenceFilter,
+    );
+    appendIncludeExcludeParam(
+      params,
+      "shortclosedSoPresenceFilter",
+      shortclosedSoPresenceFilter,
+    );
     appendSearchParam(params, "freeText", freeText);
     appendSearchParam(params, "freeDate", freeDate);
     appendSearchParam(params, "selectedYear", search.selectedYear ?? settings.selectedYear);
     appendSearchParam(params, "fileYear", search.fileYear);
+    appendSearchParam(params, "fileInitiationFrom", search.fileInitiationFrom);
+    appendSearchParam(params, "fileInitiationTo", search.fileInitiationTo);
     appendSearchParam(params, "dashboardFilter", search.dashboardFilter);
+    appendSearchParam(params, "extraDashboardFilters", search.extraDashboardFilters);
     appendSearchParam(params, "fileCategories", search.fileCategories);
     appendSearchParam(params, "analyticsType", search.analyticsType);
     appendSearchParam(params, "analyticsNames", search.analyticsNames);
@@ -1620,10 +1981,15 @@ function SearchPage() {
     visibleRequiredFilledColumnSignature,
     yearFilter,
     search.dashboardFilter,
+    search.extraDashboardFilters,
     search.fileYear,
+    search.fileInitiationFrom,
+    search.fileInitiationTo,
     search.fileCategories,
     indentor,
     divisionFilter,
+    valueThresholdFilter,
+    soValueThresholdFilter,
     valueFrom,
     valueTo,
     soValueFrom,
@@ -1636,13 +2002,18 @@ function SearchPage() {
     firm,
     selectedModes,
     selectedGemBiddingModes,
+    includeModeFilters,
+    excludeModeFilters,
+    includeGemModeFilters,
+    excludeGemModeFilters,
     selectedFirmTypes,
     firmUniqueNo,
     firmContactNo,
     firmCity,
     firmSearchScopes,
+    soPresenceFilter,
     selectedFileTypes,
-    specialFileMarker,
+    specialFileMarkers,
     advancePaymentFilter,
     actualPaymentFilter,
     stageDeliveryFilter,
@@ -1653,15 +2024,18 @@ function SearchPage() {
     gte,
     ad,
     rqa,
-    ifaFilter,
+    ifaPresenceFilter,
     psbFilter,
     pwbFilter,
     psbPwbFilter,
     bgFilter,
     rfpVettingFilter,
     refloat,
-    cnc,
+    cncPresenceFilter,
     tcec,
+    preBidMeetingFilter,
+    preTcecCommittee,
+    postTcecCommittee,
     dpFrom,
     dpTo,
     demandReceiptFrom,
@@ -1670,6 +2044,8 @@ function SearchPage() {
     demandControlTo,
     highValueMinutesFrom,
     highValueMinutesTo,
+    preTcecDateFrom,
+    preTcecDateTo,
     preTcecMinutesFrom,
     preTcecMinutesTo,
     rqaApprovalFrom,
@@ -1678,10 +2054,20 @@ function SearchPage() {
     ifaFinalTo,
     cfaApprovalFrom,
     cfaApprovalTo,
+    postTcecDateFrom,
+    postTcecDateTo,
     postTcecMinutesFrom,
     postTcecMinutesTo,
     cncDateFrom,
     cncDateTo,
+    preBidDateFrom,
+    preBidDateTo,
+    biddingDateFrom,
+    biddingDateTo,
+    bidOpeningDateFrom,
+    bidOpeningDateTo,
+    billSubmittedFrom,
+    billSubmittedTo,
     financialSanctionFrom,
     financialSanctionTo,
     soDateFrom,
@@ -1698,10 +2084,10 @@ function SearchPage() {
     bgReturnTo,
     fileClosureFrom,
     fileClosureTo,
+    fileClosedPresenceFilter,
     rstFilter,
-    demandCancelledFilter,
-    soCancelledFilter,
-    shortclosedSoFilter,
+    demandCancelledPresenceFilter,
+    shortclosedSoPresenceFilter,
     freeText,
     freeDate,
     search.selectedYear,
@@ -1815,15 +2201,11 @@ function SearchPage() {
     const preset = tableFieldPresets.find((item) => item.id === presetId);
     setSelectedTableColumnKeys(preset ? getValidTableColumnKeys(preset.fieldKeys) : []);
   };
-  const toggleModeFilter = (mode: string, checked: boolean) => {
-    setSelectedModes((current) =>
-      checked ? Array.from(new Set([...current, mode])) : current.filter((item) => item !== mode),
-    );
+  const setModeFilter = (mode: string, value: IncludeExcludeFilter) => {
+    setModeFilters((current) => updateSingleOnlyMultiExcludeFilter(current, mode, value));
   };
-  const toggleGemBiddingModeFilter = (mode: string, checked: boolean) => {
-    setSelectedGemBiddingModes((current) =>
-      checked ? Array.from(new Set([...current, mode])) : current.filter((item) => item !== mode),
-    );
+  const setGemModeFilter = (mode: string, value: IncludeExcludeFilter) => {
+    setGemModeFilters((current) => updateSingleOnlyMultiExcludeFilter(current, mode, value));
   };
   const toggleFirmTypeFilter = (firmType: string, checked: boolean) => {
     setSelectedFirmTypes((current) =>
@@ -1881,6 +2263,8 @@ function SearchPage() {
     setYearFilter("");
     setIndentor("");
     setDivisionFilter("");
+    setValueThresholdFilter("all");
+    setSoValueThresholdFilter("all");
     setValueFrom("");
     setValueTo("");
     setSoValueFrom("");
@@ -1895,11 +2279,12 @@ function SearchPage() {
     setFirmContactNo("");
     setFirmCity("");
     setFirmSearchScopes(defaultFirmSearchScopes);
-    setSelectedModes([]);
-    setSelectedGemBiddingModes([]);
+    setSoPresenceFilter("none");
+    setModeFilters({});
+    setGemModeFilters({});
     setSelectedFirmTypes([]);
     setSelectedFileTypes([]);
-    setSpecialFileMarker("");
+    setSpecialFileMarkers([]);
     setAdvancePaymentFilter(false);
     setActualPaymentFilter(false);
     setStageDeliveryFilter(false);
@@ -1910,15 +2295,18 @@ function SearchPage() {
     setGte(false);
     setAd(false);
     setRqa(false);
-    setIfaFilter(false);
+    setIfaPresenceFilter("none");
     setPsbFilter(false);
     setPwbFilter(false);
     setPsbPwbFilter(false);
     setBgFilter(false);
     setRfpVettingFilter(false);
     setRefloat(false);
-    setCnc(false);
+    setCncPresenceFilter("none");
     setTcec(false);
+    setPreBidMeetingFilter(false);
+    setPreTcecCommittee("");
+    setPostTcecCommittee("");
     setDpFrom("");
     setDpTo("");
     setDemandReceiptFrom("");
@@ -1927,6 +2315,8 @@ function SearchPage() {
     setDemandControlTo("");
     setHighValueMinutesFrom("");
     setHighValueMinutesTo("");
+    setPreTcecDateFrom("");
+    setPreTcecDateTo("");
     setPreTcecMinutesFrom("");
     setPreTcecMinutesTo("");
     setRqaApprovalFrom("");
@@ -1935,10 +2325,20 @@ function SearchPage() {
     setIfaFinalTo("");
     setCfaApprovalFrom("");
     setCfaApprovalTo("");
+    setPostTcecDateFrom("");
+    setPostTcecDateTo("");
     setPostTcecMinutesFrom("");
     setPostTcecMinutesTo("");
     setCncDateFrom("");
     setCncDateTo("");
+    setPreBidDateFrom("");
+    setPreBidDateTo("");
+    setBiddingDateFrom("");
+    setBiddingDateTo("");
+    setBidOpeningDateFrom("");
+    setBidOpeningDateTo("");
+    setBillSubmittedFrom("");
+    setBillSubmittedTo("");
     setFinancialSanctionFrom("");
     setFinancialSanctionTo("");
     setSoDateFrom("");
@@ -1955,10 +2355,10 @@ function SearchPage() {
     setBgReturnTo("");
     setFileClosureFrom("");
     setFileClosureTo("");
+    setFileClosedPresenceFilter("none");
     setRstFilter(false);
-    setDemandCancelledFilter(false);
-    setSoCancelledFilter(false);
-    setShortclosedSoFilter(false);
+    setDemandCancelledPresenceFilter("none");
+    setShortclosedSoPresenceFilter("none");
     setFreeText("");
     setFreeDate("");
     setSortColumnKey("none");
@@ -1970,6 +2370,10 @@ function SearchPage() {
       search.division ||
       search.analyticsType ||
       search.analyticsNames ||
+      (search.fileYear && search.fileYear !== "all") ||
+      search.fileInitiationFrom ||
+      search.fileInitiationTo ||
+      search.fileCategories ||
       search.drillPath
     ) {
       navigate({
@@ -1979,6 +2383,10 @@ function SearchPage() {
           division: undefined,
           analyticsType: undefined,
           analyticsNames: undefined,
+          fileYear: undefined,
+          fileInitiationFrom: undefined,
+          fileInitiationTo: undefined,
+          fileCategories: undefined,
           drillPath: undefined,
         },
       });
@@ -2214,7 +2622,7 @@ function SearchPage() {
               </div>
             </div>
 
-            <FilterGroup label="File type">
+            <FilterGroup label="File type" helper={searchFilterHelpers.fileType}>
               <div className="grid grid-cols-2 gap-2">
                 {getConfiguredFileTypeOptions(settings.fileTypes, selectedFileTypes).map(
                   (fileType) => (
@@ -2238,11 +2646,11 @@ function SearchPage() {
               />
             </FilterGroup>
 
-            <FilterGroup label="Indentor">
+            <FilterGroup label="Indentor" helper={searchFilterHelpers.indentor}>
               <FilterInput value={indentor} onChange={setIndentor} placeholder="Indentor" />
             </FilterGroup>
 
-            <FilterGroup label="Division">
+            <FilterGroup label="Division" helper={searchFilterHelpers.division}>
               <FilterInput
                 value={divisionFilter}
                 onChange={setDivisionFilter}
@@ -2251,7 +2659,29 @@ function SearchPage() {
               />
             </FilterGroup>
 
-            <FilterGroup label="Value" helper={searchFilterHelpers.value}>
+            <FilterGroup
+              label="Value"
+              helper={searchFilterHelpers.value}
+              active={valueThresholdFilter !== "all" || Boolean(valueFrom || valueTo)}
+            >
+              <select
+                value={valueThresholdFilter}
+                onChange={(event) => setValueThresholdFilter(event.target.value)}
+                className={filterControlClass(
+                  valueThresholdFilter !== "all",
+                  "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
+                )}
+              >
+                <option value="all">All value bands</option>
+                {settings.valueThresholdLevels.map((level) => (
+                  <option
+                    key={level.id ?? level.levelNumber}
+                    value={getValueThresholdFilterValue(level)}
+                  >
+                    {formatValueThresholdOption(level)}
+                  </option>
+                ))}
+              </select>
               <div className="grid grid-cols-2 gap-2 mb-2">
                 <FilterInput
                   value={valueFrom}
@@ -2267,7 +2697,29 @@ function SearchPage() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label="S.O. value" helper={searchFilterHelpers.soValue}>
+            <FilterGroup
+              label="S.O. value"
+              helper={searchFilterHelpers.soValue}
+              active={soValueThresholdFilter !== "all" || Boolean(soValueFrom || soValueTo)}
+            >
+              <select
+                value={soValueThresholdFilter}
+                onChange={(event) => setSoValueThresholdFilter(event.target.value)}
+                className={filterControlClass(
+                  soValueThresholdFilter !== "all",
+                  "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
+                )}
+              >
+                <option value="all">All S.O. value bands</option>
+                {settings.valueThresholdLevels.map((level) => (
+                  <option
+                    key={level.id ?? level.levelNumber}
+                    value={getSoValueThresholdFilterValue(level)}
+                  >
+                    {formatValueThresholdOption(level)}
+                  </option>
+                ))}
+              </select>
               <div className="mb-2 grid grid-cols-2 gap-2">
                 <FilterInput
                   value={soValueFrom}
@@ -2288,7 +2740,7 @@ function SearchPage() {
               </div>
             </FilterGroup>
 
-            <FilterGroup label="Description">
+            <FilterGroup label="Description" helper={searchFilterHelpers.description}>
               <FilterInput
                 value={description}
                 onChange={setDescription}
@@ -2296,7 +2748,7 @@ function SearchPage() {
               />
             </FilterGroup>
 
-            <FilterGroup label="Firm type">
+            <FilterGroup label="Firm type" helper={searchFilterHelpers.firmType}>
               <div className="grid grid-cols-2 gap-2">
                 {firmTypeOptions.map((firmType) => (
                   <CheckFilter
@@ -2307,6 +2759,14 @@ function SearchPage() {
                   />
                 ))}
               </div>
+            </FilterGroup>
+
+            <FilterGroup label="S.O." helper={searchFilterHelpers.supplyOrderPresence}>
+              <ThreeWayFilter
+                label="S.O. exists"
+                value={soPresenceFilter}
+                onChange={setSoPresenceFilter}
+              />
             </FilterGroup>
 
             <FilterGroup label="Payment criteria" helper={searchFilterHelpers.paymentCriteria}>
@@ -2338,52 +2798,67 @@ function SearchPage() {
               <CheckFilter label="LD" checked={ldFilter} onChange={setLdFilter} />
             </FilterGroup>
 
-            <FilterGroup label="Bidding mode">
+            <FilterGroup label="Bidding mode" helper={searchFilterHelpers.biddingMode}>
               <div className="grid grid-cols-2 gap-2">
                 {modeFilterOptions.map((mode) => (
-                  <CheckFilter
+                  <ThreeWayFilter
                     key={mode}
                     label={mode}
-                    checked={selectedModes.includes(mode)}
-                    onChange={(checked) => toggleModeFilter(mode, checked)}
+                    value={modeFilters[mode] ?? "none"}
+                    onChange={(value) => setModeFilter(mode, value)}
                   />
                 ))}
               </div>
             </FilterGroup>
 
-            <FilterGroup label="GeM Bidding Mode">
+            <FilterGroup label="GeM Bidding Mode" helper={searchFilterHelpers.gemBiddingMode}>
               <div className="grid grid-cols-2 gap-2">
                 {gemBiddingModeOptions.map((mode) => (
-                  <CheckFilter
+                  <ThreeWayFilter
                     key={mode}
                     label={mode}
-                    checked={selectedGemBiddingModes.includes(mode)}
-                    onChange={(checked) => toggleGemBiddingModeFilter(mode, checked)}
+                    value={gemModeFilters[mode] ?? "none"}
+                    onChange={(value) => setGemModeFilter(mode, value)}
                   />
                 ))}
               </div>
             </FilterGroup>
 
-            <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
-              <CheckFilter label="High Value" checked={highValue} onChange={setHighValue} />
-              <CheckFilter label="GTE" checked={gte} onChange={setGte} />
-              <CheckFilter label="AD" checked={ad} onChange={setAd} />
-              <CheckFilter label="R&QA" checked={rqa} onChange={setRqa} />
-              <CheckFilter label="IFA" checked={ifaFilter} onChange={setIfaFilter} />
-              <CheckFilter label="PSB" checked={psbFilter} onChange={setPsbFilter} />
-              <CheckFilter label="PWB" checked={pwbFilter} onChange={setPwbFilter} />
-              <CheckFilter label="PSB+PWB" checked={psbPwbFilter} onChange={setPsbPwbFilter} />
-              <CheckFilter label="Warranty" checked={bgFilter} onChange={setBgFilter} />
-              <CheckFilter
-                label="RFP vetting"
-                checked={rfpVettingFilter}
-                onChange={setRfpVettingFilter}
-              />
-              <CheckFilter label="Refloat" checked={refloat} onChange={setRefloat} />
-              <CheckFilter label="CNC" checked={cnc} onChange={setCnc} />
-              <CheckFilter label="TCEC" checked={tcec} onChange={setTcec} />
-              <CheckFilter label="RST" checked={rstFilter} onChange={setRstFilter} />
-            </div>
+            <FilterGroup label="Workflow flags" helper={searchFilterHelpers.workflowFlags}>
+              <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
+                <CheckFilter label="High Value" checked={highValue} onChange={setHighValue} />
+                <CheckFilter label="GTE" checked={gte} onChange={setGte} />
+                <CheckFilter label="AD" checked={ad} onChange={setAd} />
+                <CheckFilter label="R&QA" checked={rqa} onChange={setRqa} />
+                <ThreeWayFilter
+                  label="IFA"
+                  value={ifaPresenceFilter}
+                  onChange={setIfaPresenceFilter}
+                />
+                <CheckFilter label="PSB" checked={psbFilter} onChange={setPsbFilter} />
+                <CheckFilter label="PWB" checked={pwbFilter} onChange={setPwbFilter} />
+                <CheckFilter label="PSB+PWB" checked={psbPwbFilter} onChange={setPsbPwbFilter} />
+                <CheckFilter label="Warranty" checked={bgFilter} onChange={setBgFilter} />
+                <CheckFilter
+                  label="RFP vetting"
+                  checked={rfpVettingFilter}
+                  onChange={setRfpVettingFilter}
+                />
+                <CheckFilter label="Refloat" checked={refloat} onChange={setRefloat} />
+                <ThreeWayFilter
+                  label="CNC"
+                  value={cncPresenceFilter}
+                  onChange={setCncPresenceFilter}
+                />
+                <CheckFilter label="TCEC" checked={tcec} onChange={setTcec} />
+                <CheckFilter
+                  label="Pre-Bid"
+                  checked={preBidMeetingFilter}
+                  onChange={setPreBidMeetingFilter}
+                />
+                <CheckFilter label="RST" checked={rstFilter} onChange={setRstFilter} />
+              </div>
+            </FilterGroup>
 
             <CollapsibleFilterGroup
               label="Demand & Control Dates"
@@ -2418,12 +2893,31 @@ function SearchPage() {
                 onToChange={setHighValueMinutesTo}
               />
               <DateRangeFilter
+                label="Pre-TCEC date"
+                from={preTcecDateFrom}
+                to={preTcecDateTo}
+                onFromChange={setPreTcecDateFrom}
+                onToChange={setPreTcecDateTo}
+              />
+              <DateRangeFilter
                 label="Pre-TCEC Minutes date"
                 from={preTcecMinutesFrom}
                 to={preTcecMinutesTo}
                 onFromChange={setPreTcecMinutesFrom}
                 onToChange={setPreTcecMinutesTo}
               />
+              <FilterGroup
+                label="Pre-TCEC committee"
+                helper={searchFilterHelpers.tcecCommittee}
+                active={Boolean(preTcecCommittee)}
+              >
+                <FilterSelect
+                  value={preTcecCommittee}
+                  onChange={setPreTcecCommittee}
+                  options={preTcecCommitteeOptions}
+                  placeholder="All Pre-TCEC committees"
+                />
+              </FilterGroup>
               <DateRangeFilter
                 label="R&QA approval date"
                 from={rqaApprovalFrom}
@@ -2446,18 +2940,58 @@ function SearchPage() {
                 onToChange={setCfaApprovalTo}
               />
               <DateRangeFilter
+                label="Post-TCEC date"
+                from={postTcecDateFrom}
+                to={postTcecDateTo}
+                onFromChange={setPostTcecDateFrom}
+                onToChange={setPostTcecDateTo}
+              />
+              <DateRangeFilter
                 label="Post-TCEC Minutes date"
                 from={postTcecMinutesFrom}
                 to={postTcecMinutesTo}
                 onFromChange={setPostTcecMinutesFrom}
                 onToChange={setPostTcecMinutesTo}
               />
+              <FilterGroup
+                label="Post-TCEC committee"
+                helper={searchFilterHelpers.tcecCommittee}
+                active={Boolean(postTcecCommittee)}
+              >
+                <FilterSelect
+                  value={postTcecCommittee}
+                  onChange={setPostTcecCommittee}
+                  options={postTcecCommitteeOptions}
+                  placeholder="All Post-TCEC committees"
+                />
+              </FilterGroup>
               <DateRangeFilter
                 label="CNC Date"
                 from={cncDateFrom}
                 to={cncDateTo}
                 onFromChange={setCncDateFrom}
                 onToChange={setCncDateTo}
+              />
+              <DateRangeFilter
+                label="Pre-Bid date"
+                from={preBidDateFrom}
+                to={preBidDateTo}
+                onFromChange={setPreBidDateFrom}
+                onToChange={setPreBidDateTo}
+              />
+              <DateRangeFilter
+                label="Bidding date"
+                from={biddingDateFrom}
+                to={biddingDateTo}
+                onFromChange={setBiddingDateFrom}
+                onToChange={setBiddingDateTo}
+              />
+              <DateRangeFilter
+                label="Bid opening date"
+                from={bidOpeningDateFrom}
+                to={bidOpeningDateTo}
+                onFromChange={setBidOpeningDateFrom}
+                onToChange={setBidOpeningDateTo}
               />
             </CollapsibleFilterGroup>
 
@@ -2522,6 +3056,13 @@ function SearchPage() {
                 onToChange={setBgReturnTo}
               />
               <DateRangeFilter
+                label="Bill sent/submitted date"
+                from={billSubmittedFrom}
+                to={billSubmittedTo}
+                onFromChange={setBillSubmittedFrom}
+                onToChange={setBillSubmittedTo}
+              />
+              <DateRangeFilter
                 label="Payment date"
                 from={paymentDateFrom}
                 to={paymentDateTo}
@@ -2545,6 +3086,7 @@ function SearchPage() {
                     label={scope.label}
                     checked={firmSearchScopes.includes(scope.key)}
                     onChange={(checked) => toggleFirmSearchScope(scope.key, checked)}
+                    activeOverride={!sameStringList(firmSearchScopes, defaultFirmSearchScopes)}
                   />
                 ))}
               </div>
@@ -2578,37 +3120,41 @@ function SearchPage() {
               <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
             </FilterGroup>
 
-            <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
-              <CheckFilter
-                label="Cancelled demand"
-                checked={demandCancelledFilter}
-                onChange={setDemandCancelledFilter}
-              />
-              <CheckFilter
-                label="Cancelled S.O."
-                checked={soCancelledFilter}
-                onChange={setSoCancelledFilter}
-              />
-              <CheckFilter
-                label="Shortclosed S.O."
-                checked={shortclosedSoFilter}
-                onChange={setShortclosedSoFilter}
-              />
-            </div>
+            <FilterGroup
+              label="Closure & cancellation"
+              helper={searchFilterHelpers.closureAndCancellation}
+            >
+              <div className="grid grid-cols-2 gap-2 border-t border-border pt-4">
+                <ThreeWayFilter
+                  label="File Closed"
+                  value={fileClosedPresenceFilter}
+                  onChange={setFileClosedPresenceFilter}
+                />
+                <ThreeWayFilter
+                  label="Cancelled demand"
+                  value={demandCancelledPresenceFilter}
+                  onChange={setDemandCancelledPresenceFilter}
+                />
+                <ThreeWayFilter
+                  label="Shortclosed S.O."
+                  value={shortclosedSoPresenceFilter}
+                  onChange={setShortclosedSoPresenceFilter}
+                />
+              </div>
+            </FilterGroup>
 
-            <FilterGroup label="Special File Marker">
-              <select
-                value={specialFileMarker}
-                onChange={(event) => setSpecialFileMarker(event.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="">All markers</option>
-                {(settings.specialFileMarkers ?? []).map((marker) => (
-                  <option key={marker.code} value={marker.code}>
-                    {marker.code}
-                  </option>
-                ))}
-              </select>
+            <FilterGroup
+              label="Special File Marker"
+              helper={searchFilterHelpers.specialFileMarker}
+              active={specialFileMarkers.length > 0}
+            >
+              <MultiSelectDropdown
+                label="marker"
+                options={(settings.specialFileMarkers ?? []).map((marker) => marker.code)}
+                selectedValues={specialFileMarkers}
+                onChange={setSpecialFileMarkers}
+                allLabel="All markers"
+              />
             </FilterGroup>
           </aside>
         ) : null}
@@ -2726,7 +3272,15 @@ function SearchPage() {
                       <th key={displayColumn.key} className="text-left font-bold px-4 py-2.5">
                         <div className="flex max-w-full flex-col gap-1.5">
                           <label
-                            className="inline-flex min-w-0 flex-1 items-center gap-2"
+                            className={filterLabelClass(
+                              Boolean(
+                                displayColumn.sourceColumn &&
+                                visibleRequiredFilledColumnKeys.includes(
+                                  displayColumn.sourceColumn.key,
+                                ),
+                              ),
+                              "inline-flex min-w-0 flex-1 items-center gap-2",
+                            )}
                             title={
                               displayColumn.sourceColumn
                                 ? `Show only rows where ${displayColumn.sourceColumn.label} is filled`
@@ -3203,15 +3757,17 @@ function SearchPaginationControls({
 function FilterGroup({
   label,
   helper,
+  active = false,
   children,
 }: {
   label: string;
   helper?: string[];
+  active?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <HelperLabel label={label} helper={helper} />
+      <HelperLabel label={label} helper={helper} active={active} />
       {children}
     </div>
   );
@@ -3259,8 +3815,9 @@ function DateRangeFilter({
   onFromChange: (value: string) => void;
   onToChange: (value: string) => void;
 }) {
+  const active = Boolean(from || to);
   return (
-    <FilterGroup label={label} helper={helper}>
+    <FilterGroup label={label} helper={helper} active={active}>
       <div className="grid grid-cols-2 gap-2">
         <FilterInput type="date" value={from} onChange={onFromChange} />
         <FilterInput type="date" value={to} onChange={onToChange} />
@@ -3269,9 +3826,22 @@ function DateRangeFilter({
   );
 }
 
-function HelperLabel({ label, helper }: { label: string; helper?: string[] }) {
+function HelperLabel({
+  label,
+  helper,
+  active = false,
+}: {
+  label: string;
+  helper?: string[];
+  active?: boolean;
+}) {
   return (
-    <div className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+    <div
+      className={filterLabelClass(
+        active,
+        "mb-2 inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground",
+      )}
+    >
       {label}
       {helper ? <SearchHelper items={helper} label={`${label} help`} /> : null}
     </div>
@@ -3350,13 +3920,17 @@ function FilterInput({
   decimalOnly?: boolean;
   options?: string[];
 }) {
+  const active = Boolean(value);
   if (type === "date") {
     return (
       <DateInput
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm"
+        className={filterControlClass(
+          active,
+          "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+        )}
       />
     );
   }
@@ -3367,7 +3941,10 @@ function FilterInput({
         onChange={(next) => onChange(decimalOnly ? formatDecimalInput(next) : next)}
         options={options}
         placeholder={placeholder}
-        className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm"
+        className={filterControlClass(
+          active,
+          "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+        )}
       />
     );
   }
@@ -3380,7 +3957,10 @@ function FilterInput({
         onChange(decimalOnly ? formatDecimalInput(event.target.value) : event.target.value)
       }
       placeholder={placeholder}
-      className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm"
+      className={filterControlClass(
+        active,
+        "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+      )}
     />
   );
 }
@@ -3421,11 +4001,15 @@ function FilterSelect({
   options: string[];
   placeholder: string;
 }) {
+  const active = Boolean(value);
   return (
     <select
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm"
+      className={filterControlClass(
+        active,
+        "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+      )}
     >
       <option value="">{placeholder}</option>
       {options.map((option) => (
@@ -3437,26 +4021,200 @@ function FilterSelect({
   );
 }
 
+function MultiSelectDropdown({
+  label,
+  options,
+  selectedValues,
+  onChange,
+  allLabel,
+}: {
+  label: string;
+  options: string[];
+  selectedValues: string[];
+  onChange: (values: string[]) => void;
+  allLabel: string;
+}) {
+  const selectedSet = new Set(selectedValues);
+  const toggle = (value: string) => {
+    onChange(
+      selectedSet.has(value)
+        ? selectedValues.filter((item) => item !== value)
+        : [...selectedValues, value],
+    );
+  };
+  const clear = () => onChange([]);
+  const selectedLabel =
+    selectedValues.length === 0
+      ? allLabel
+      : selectedValues.length === 1
+        ? selectedValues[0]
+        : `${selectedValues.length} ${label}s selected`;
+  return (
+    <details
+      className={filterControlClass(
+        selectedValues.length > 0,
+        "group relative rounded-md border border-input bg-background text-sm",
+      )}
+    >
+      <summary className="flex h-9 cursor-pointer list-none items-center justify-between gap-2 px-3 [&::-webkit-details-marker]:hidden">
+        <span className="truncate">{selectedLabel}</span>
+        <span className="text-xs text-muted-foreground group-open:hidden">Select</span>
+        <span className="hidden text-xs text-muted-foreground group-open:inline">Close</span>
+      </summary>
+      <div className="absolute z-30 mt-1 w-full min-w-56 rounded-md border border-border bg-popover p-2 shadow-lg">
+        <button
+          type="button"
+          onClick={clear}
+          className="mb-2 h-8 w-full rounded-md border border-border px-2 text-left text-xs font-medium hover:bg-accent"
+        >
+          {allLabel}
+        </button>
+        <div className="max-h-56 space-y-1 overflow-y-auto">
+          {options.length ? (
+            options.map((option) => (
+              <label
+                key={option}
+                className="flex min-h-8 cursor-pointer items-center gap-2 rounded px-2 text-xs hover:bg-accent"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSet.has(option)}
+                  onChange={() => toggle(option)}
+                  className="size-4 rounded border-input"
+                />
+                <span className="truncate">{option}</span>
+              </label>
+            ))
+          ) : (
+            <div className="px-2 py-3 text-center text-xs text-muted-foreground">
+              No {label}s configured.
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function CheckFilter({
   label,
   checked,
   onChange,
+  activeOverride,
 }: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  activeOverride?: boolean;
 }) {
+  const active = activeOverride ?? checked;
   return (
-    <label className="flex items-center gap-2 text-sm cursor-pointer rounded-md border border-border bg-background px-2.5 py-2">
+    <label
+      className={filterControlClass(
+        active,
+        "flex items-center gap-2 text-sm cursor-pointer rounded-md border border-border bg-background px-2.5 py-2",
+      )}
+    >
       <input
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
         className="size-4 rounded border-input"
       />
-      {label}
+      <span className={filterLabelClass(active, "")}>{label}</span>
     </label>
   );
+}
+
+function ThreeWayFilter({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: IncludeExcludeFilter;
+  onChange: (value: IncludeExcludeFilter) => void;
+}) {
+  const active = value !== "none";
+  const options: Array<{ value: IncludeExcludeFilter; label: string }> = [
+    { value: "none", label: "None" },
+    { value: "include", label: "Only" },
+    { value: "exclude", label: "Exclude" },
+  ];
+  return (
+    <div
+      className={filterControlClass(
+        active,
+        "rounded-md border border-border bg-background p-2 text-sm",
+      )}
+    >
+      <div className={filterLabelClass(active, "mb-1.5 text-xs font-medium")}>{label}</div>
+      <div className="grid grid-cols-3 overflow-hidden rounded-md border border-border">
+        {options.map((option) => {
+          const selected = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              className={
+                "h-8 border-r border-border px-2 text-xs last:border-r-0 " +
+                (selected
+                  ? option.value === "none"
+                    ? "bg-secondary font-semibold text-foreground"
+                    : option.value === "include"
+                      ? "bg-primary text-primary-foreground font-semibold"
+                      : "bg-destructive text-destructive-foreground font-semibold"
+                  : "bg-background text-muted-foreground hover:bg-accent")
+              }
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function updateSingleOnlyMultiExcludeFilter(
+  current: Record<string, IncludeExcludeFilter>,
+  key: string,
+  value: IncludeExcludeFilter,
+) {
+  const next = { ...current };
+  if (value === "none") {
+    delete next[key];
+    return next;
+  }
+  if (value === "include") {
+    Object.entries(next).forEach(([itemKey, itemValue]) => {
+      if (itemKey !== key && itemValue === "include") delete next[itemKey];
+    });
+  }
+  next[key] = value;
+  return next;
+}
+
+function normalizeSingleOnlyMultiExcludeFilters(current: Record<string, IncludeExcludeFilter>) {
+  let foundOnly = false;
+  let changed = false;
+  const next: Record<string, IncludeExcludeFilter> = {};
+  Object.entries(current).forEach(([key, value]) => {
+    if (value === "none") {
+      changed = true;
+      return;
+    }
+    if (value === "include") {
+      if (foundOnly) {
+        changed = true;
+        return;
+      }
+      foundOnly = true;
+    }
+    next[key] = value;
+  });
+  return changed ? next : current;
 }
 
 function EditModal({
@@ -6624,16 +7382,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("supplyOrderMonth:")) {
     const monthKey = filter.slice("supplyOrderMonth:".length);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
-    return rawSupplyOrders(file).some(
-      (order) => !isSupplyOrderCancelled(file, order) && order.soDate?.slice(0, 7) === monthKey,
-    );
+    return rawSupplyOrders(file).some((order) => order.soDate?.slice(0, 7) === monthKey);
   }
   if (filter.startsWith("supplyOrderYear:")) {
     const yearKey = filter.slice("supplyOrderYear:".length);
     if (yearKey !== "all" && !/^\d{4}$/.test(yearKey)) return true;
     return rawSupplyOrders(file).some(
       (order) =>
-        !isSupplyOrderCancelled(file, order) &&
         hasFilledString(order.soDate) &&
         (yearKey === "all" || order.soDate!.slice(0, 4) === yearKey),
     );
@@ -7014,7 +7769,9 @@ function isCancellationDashboardFilter(filter: string) {
   return (
     filter === "miscDemandCancelled" ||
     filter === "miscSoCancelled" ||
-    filter === "miscShortclosedSo"
+    filter === "miscShortclosedSo" ||
+    filter.startsWith("supplyOrderMonth:") ||
+    filter.startsWith("supplyOrderYear:")
   );
 }
 
@@ -7060,13 +7817,15 @@ function getDestinationFocus(
   }
   if (
     dashboardFilter.startsWith("fileCategory:") ||
-    dashboardFilter.startsWith("fileType:") ||
-    dashboardFilter.startsWith("valueThreshold:")
+    dashboardFilter.startsWith("fileType:")
   ) {
     return { section: "File details", milestone: undefined, focusTarget: undefined };
   }
+  if (dashboardFilter.startsWith("valueThreshold:")) {
+    return { section: "File details", milestone: undefined, focusTarget: "valueCapital" };
+  }
   if (dashboardFilter.startsWith("soValueThreshold:")) {
-    return { section: "Supply order and payment", milestone: undefined, focusTarget: undefined };
+    return { section: "Supply order and payment", milestone: undefined, focusTarget: "supplyorder:any" };
   }
   if (dashboardFilter.startsWith("mode:")) {
     return { section: "Bidding details", milestone: undefined, focusTarget: undefined };

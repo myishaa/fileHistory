@@ -391,6 +391,7 @@ export type Indentor = {
   email: string;
   createdBy?: string;
   createdByName?: string;
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -411,6 +412,7 @@ export type MasterFirm = {
   firmRating?: string;
   createdBy?: string;
   createdByName?: string;
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -458,6 +460,41 @@ export type AppUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  emergencyIpBypass?: boolean;
+  archivedAt?: string;
+};
+export type IpAccessMode = "off" | "notify" | "restrict";
+export type TrustedIpAddress = {
+  id: string;
+  ipAddress: string;
+  remarks: string;
+  active: boolean;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type IpLoginAttempt = {
+  id: string;
+  ipAddress: string;
+  username: string;
+  userId?: string;
+  userName?: string;
+  userRole?: AppUserRole;
+  mode: IpAccessMode;
+  result: "allowed" | "blocked" | "bypassed";
+  reason: string;
+  attemptedAt: string;
+  archivedAt?: string;
+  archivedByName?: string;
+};
+export type IpAccessConfig = {
+  mode: IpAccessMode;
+  currentIp: string;
+  trustedIps: TrustedIpAddress[];
+  attempts: IpLoginAttempt[];
+  archivedAttempts: IpLoginAttempt[];
+  pendingCount: number;
+  emergencyBypassEnv: boolean;
 };
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
@@ -491,6 +528,7 @@ export type SpecialFileMarker = {
 export type AppSettings = {
   financialYear: string;
   selectedYear: string;
+  setupYear: string;
   financialYears: string[];
   yearSelectionLocked: boolean;
   theme: AppTheme;
@@ -525,6 +563,7 @@ function currentYear() {
 const defaultSettings: AppSettings = {
   financialYear: currentYear(),
   selectedYear: "__active_plus_current_fy_closed__",
+  setupYear: currentYear(),
   financialYears: [currentYear()],
   yearSelectionLocked: false,
   theme: "light",
@@ -720,9 +759,10 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
       ? settings.selectedYear
       : normalizeFinancialYearLabel(settings.selectedYear) || financialYear;
+  const setupYear = normalizeFinancialYearLabel(settings.setupYear) || financialYear;
   const financialYears = Array.from(
     new Set(
-      [financialYear, selectedYear, ...(settings.financialYears ?? [])]
+      [financialYear, selectedYear, setupYear, ...(settings.financialYears ?? [])]
         .map((year) =>
           isAllFilesYear(year) ||
           isAllActiveFilesYear(year) ||
@@ -737,6 +777,7 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
     ...settings,
     financialYear,
     selectedYear,
+    setupYear,
     financialYears,
   };
 }
@@ -842,6 +883,7 @@ function runMutation(mutation: () => Promise<unknown>) {
       const message = error instanceof Error ? error.message : "Backend save failed.";
       console.error(error);
       setState({ error: message });
+      await loadAll(true);
     }
   })();
 }
@@ -923,6 +965,34 @@ export const store = {
       method: "POST",
       body: JSON.stringify({ password }),
     });
+  },
+  getIpAccessConfig() {
+    return request<{ ipAccess: IpAccessConfig }>("/api/settings/ip-access").then(
+      (result) => result.ipAccess,
+    );
+  },
+  updateIpAccessMode(mode: IpAccessMode) {
+    return request<{ ipAccess: IpAccessConfig }>("/api/settings/ip-access", {
+      method: "PATCH",
+      body: JSON.stringify({ mode }),
+    }).then((result) => result.ipAccess);
+  },
+  addTrustedIpAddress(ipAddress: string, remarks: string) {
+    return request<{ ipAccess: IpAccessConfig }>("/api/settings/ip-access/trusted", {
+      method: "POST",
+      body: JSON.stringify({ ipAddress, remarks }),
+    }).then((result) => result.ipAccess);
+  },
+  updateTrustedIpAddress(id: string, patch: { remarks?: string; active?: boolean }) {
+    return request<{ ipAccess: IpAccessConfig }>(`/api/settings/ip-access/trusted/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }).then((result) => result.ipAccess);
+  },
+  archiveIpLoginAttempt(id: string) {
+    return request<{ ipAccess: IpAccessConfig }>(`/api/settings/ip-access/attempts/${id}/archive`, {
+      method: "POST",
+    }).then((result) => result.ipAccess);
   },
   listSuspectedAnomalyAcceptances() {
     return request<{
@@ -1186,13 +1256,8 @@ export const store = {
     ad?: string,
     financialYearOverride?: string,
   ) {
-    const selectedYear = store.getSettings().selectedYear;
-    const financialYear =
-      financialYearOverride ||
-      (isAllActiveFilesYear(selectedYear) || isActivePlusCurrentFyClosedYear(selectedYear)
-        ? store.getSettings().financialYear
-        : selectedYear) ||
-      store.getSettings().financialYear;
+    const settings = store.getSettings();
+    const financialYear = financialYearOverride || settings.setupYear || settings.financialYear;
     runMutation(() =>
       request("/api/divisions", {
         method: "POST",
@@ -1201,7 +1266,8 @@ export const store = {
     );
   },
   updateDivision(id: string, patch: Partial<Division> & { viewerPassword?: string }) {
-    const financialYear = store.getSettings().selectedYear || store.getSettings().financialYear;
+    const settings = store.getSettings();
+    const financialYear = settings.setupYear || settings.financialYear;
     setState({ divisions: state.divisions.map((d) => (d.id === id ? { ...d, ...patch } : d)) });
     runMutation(() =>
       request(`/api/divisions/${id}`, {
@@ -1215,7 +1281,7 @@ export const store = {
     financialYear: string,
     patch: Pick<Partial<Division>, "allocatedCapital" | "allocatedRevenue" | "active">,
   ) {
-    if (financialYear === store.getSettings().selectedYear) {
+    if (financialYear === store.getSettings().setupYear) {
       setState({ divisions: state.divisions.map((d) => (d.id === id ? { ...d, ...patch } : d)) });
     }
     return (async () => {
@@ -1265,16 +1331,18 @@ export const store = {
     runMutation(() => request(`/api/divisions/${id}`, { method: "DELETE" }));
   },
   listArchivedDivisions() {
-    const financialYear = store.getSettings().selectedYear || store.getSettings().financialYear;
+    const settings = store.getSettings();
+    const financialYear = settings.setupYear || settings.financialYear;
     return request<{ divisions: Division[] }>(
       `/api/divisions/archive/list?year=${encodeURIComponent(financialYear)}`,
     );
   },
   restoreArchivedDivision(id: string) {
-    const financialYear = store.getSettings().selectedYear || store.getSettings().financialYear;
+    const settings = store.getSettings();
+    const financialYear = settings.setupYear || settings.financialYear;
     return (async () => {
       await request<{ division: Division }>(
-        `/api/divisions/${id}/restore?year=${encodeURIComponent(financialYear)}`,
+        `/api/divisions/archive/${id}/restore?year=${encodeURIComponent(financialYear)}`,
         { method: "POST" },
       );
       await loadAll(true);
@@ -1313,8 +1381,22 @@ export const store = {
     });
   },
   deleteIndentor(id: string) {
-    return request<{ deleted: true; indentor: Indentor }>(`/api/indentors/${id}`, {
+    return request<{ archived: true; indentor: Indentor }>(`/api/indentors/${id}`, {
       method: "DELETE",
+    });
+  },
+  listArchivedIndentors() {
+    return request<{ indentors: Indentor[] }>("/api/indentors/archive/list");
+  },
+  restoreArchivedIndentor(id: string) {
+    return request<{ indentor: Indentor }>(`/api/indentors/archive/${id}/restore`, {
+      method: "POST",
+    });
+  },
+  permanentlyDeleteArchivedIndentor(id: string, deletionPassword: string) {
+    return request<{ deleted: true; indentor: Indentor }>(`/api/indentors/archive/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ deletionPassword }),
     });
   },
   addUser(user: Omit<AppUser, "id"> & { password: string }) {
@@ -1337,6 +1419,20 @@ export const store = {
   deleteUser(id: string) {
     setState({ users: state.users.filter((user) => user.id !== id) });
     runMutation(() => request(`/api/users/${id}`, { method: "DELETE" }));
+  },
+  listArchivedUsers() {
+    return request<{ users: AppUser[] }>("/api/users/archive/list");
+  },
+  restoreArchivedUser(id: string) {
+    return request<{ user: AppUser }>(`/api/users/archive/${id}/restore`, {
+      method: "POST",
+    });
+  },
+  permanentlyDeleteArchivedUser(id: string, deletionPassword: string) {
+    return request<{ deleted: true; user: AppUser }>(`/api/users/archive/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ deletionPassword }),
+    });
   },
   subscribe(fn: () => void) {
     ensureLoaded();
@@ -1398,8 +1494,25 @@ export function updateMasterFirm(id: string, payload: Partial<MasterFirm>) {
 }
 
 export function deleteMasterFirm(id: string) {
-  return request<{ deleted: true; firm: MasterFirm }>(`/api/firms/${id}`, {
+  return request<{ archived: true; firm: MasterFirm }>(`/api/firms/${id}`, {
     method: "DELETE",
+  });
+}
+
+export function listArchivedMasterFirms() {
+  return request<{ firms: MasterFirm[] }>("/api/firms/archive/list");
+}
+
+export function restoreArchivedMasterFirm(id: string) {
+  return request<{ firm: MasterFirm }>(`/api/firms/archive/${id}/restore`, {
+    method: "POST",
+  });
+}
+
+export function permanentlyDeleteArchivedMasterFirm(id: string, deletionPassword: string) {
+  return request<{ deleted: true; firm: MasterFirm }>(`/api/firms/archive/${id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ deletionPassword }),
   });
 }
 
@@ -1654,22 +1767,25 @@ export function useAccessibleFiles() {
   );
 }
 
-function userCanAccessFileCategory(user: AppUser, file: Pick<FileRecord, "fileType" | "mode">) {
+function userCanAccessFileCategory(user: AppUser, file: Pick<FileRecord, "fileType">) {
   if (user.role !== "editor" || !Array.isArray(user.allowedFileCategories)) return true;
   const categories = expandLegacyAllowedFileCategories(user.allowedFileCategories);
   const fileType = (file.fileType ?? "").trim().toLowerCase();
   return categories.some((category) => {
+    if (category.startsWith("fileType:")) {
+      try {
+        return (
+          decodeURIComponent(category.slice("fileType:".length)).trim().toLowerCase() === fileType
+        );
+      } catch {
+        return category.slice("fileType:".length).trim().toLowerCase() === fileType;
+      }
+    }
     if (category === "cars") return fileType === "cars";
     if (category === "amc") return fileType === "amc";
     if (category === "mpc") return fileType === "mpc";
     if (category === "om") return fileType === "o&m";
-    return (
-      fileType !== "amc" &&
-      fileType !== "mpc" &&
-      fileType !== "cars" &&
-      fileType !== "capsi" &&
-      fileType !== "o&m"
-    );
+    return fileType === "goods & services" || fileType === "";
   });
 }
 

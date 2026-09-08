@@ -31,12 +31,19 @@ import {
 } from "@/lib/files-store";
 import { DateInput } from "@/components/date-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
+import {
+  fileMatchesInitiationDateRange,
+  getActiveFileInitiationDateRange,
+  getFileInitiationDateSearchParams,
+  type FileInitiationDateRange,
+} from "@/lib/file-initiation-date-filter";
 import {
   isContractFileType,
   isBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
-import { downloadBackendExport } from "@/lib/export-download";
+import { downloadBackendExport, type ExportTable } from "@/lib/export-download";
 import {
   advancePaymentEntries,
   countExpectedSupplyOrderRows,
@@ -59,11 +66,11 @@ import {
 } from "@/lib/effective-deliveries";
 import {
   allFileCategoryKeys,
-  fileCategoryOptions,
   filterFilesByCategory,
   getVisibleFileCategoryKeys,
   getVisibleFileCategoryOptions,
   serializeFileCategories,
+  type FileCategoryOption,
   type FileCategoryKey,
 } from "@/lib/file-categories";
 import {
@@ -283,7 +290,7 @@ async function saveCashOutGoPlan(plan: CashOutGoPlanPayload) {
     rowKey: row.rowKey,
     expectedSentDate: row.expectedSentDateOverride,
     expectedPaymentDate: row.manualExpectedPaymentDate,
-    billOffsetOverride: row.billOffsetOverride,
+    billOffsetOverride: row.billOffsetOverride || "",
   }));
   const response = await fetch(`${API_BASE_URL}/api/reports/cash-out-go-plan`, {
     method: "PUT",
@@ -388,6 +395,8 @@ function ReportsPage() {
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
   const [fileYearLocked, setFileYearLocked] = useState(false);
+  const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
+  const [fileInitiationToDate, setFileInitiationToDate] = useState("");
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
   const [mmgPreviousFiles, setMmgPreviousFiles] = useState<FileRecord[]>([]);
@@ -416,17 +425,29 @@ function ReportsPage() {
     activeUser?.id ?? "anonymous"
   }`;
   const visibleFileCategoryKeys = useMemo(
-    () => getVisibleFileCategoryKeys(activeUser?.allowedFileCategories),
-    [activeUser?.allowedFileCategories],
+    () =>
+      getVisibleFileCategoryKeys(
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
+        settings.fileTypes,
+      ),
+    [activeUser?.allowedFileCategories, activeUser?.role, settings.fileTypes],
   );
   const visibleFileCategoryOptions = useMemo(
-    () => getVisibleFileCategoryOptions(activeUser?.allowedFileCategories),
-    [activeUser?.allowedFileCategories],
+    () =>
+      getVisibleFileCategoryOptions(
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
+        settings.fileTypes,
+      ),
+    [activeUser?.allowedFileCategories, activeUser?.role, settings.fileTypes],
   );
   useEffect(() => {
     setSelectedFileCategories((current) => {
+      const allFixedSelected = allFileCategoryKeys.every((key) => current.includes(key));
       const visible = new Set(visibleFileCategoryKeys);
       const next = current.filter((key) => visible.has(key));
+      if (allFixedSelected && next.length < visibleFileCategoryKeys.length) {
+        return visibleFileCategoryKeys;
+      }
       return next.length ? next : visibleFileCategoryKeys;
     });
   }, [visibleFileCategoryKeys]);
@@ -508,6 +529,13 @@ function ReportsPage() {
     }
     setWarrantyBgBufferUnlocked(nextUnlocked);
   };
+  const resetWarrantyBgBufferDays = () => {
+    setWarrantyBgBufferDays("60");
+    setWarrantyBgBufferUnlocked(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(warrantyBgBufferStorageKey, "60");
+    }
+  };
   const saveExpectedCashOutgoDays = () => {
     const normalized = normalizeExpectedCashOutgoDays(expectedCashOutgoDaysDraft);
     setExpectedCashOutgoDays(normalized);
@@ -515,6 +543,15 @@ function ReportsPage() {
     setExpectedCashOutgoDaysUnlocked(false);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(expectedCashOutgoDaysStorageKey, normalized);
+    }
+  };
+  const resetExpectedCashOutgoDays = () => {
+    const defaultDays = String(DEFAULT_DP_OFFSET_DAYS);
+    setExpectedCashOutgoDays(defaultDays);
+    setExpectedCashOutgoDaysDraft(defaultDays);
+    setExpectedCashOutgoDaysUnlocked(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(expectedCashOutgoDaysStorageKey, defaultDays);
     }
   };
   const toggleExpectedCashOutgoDaysLock = (nextUnlocked: boolean) => {
@@ -537,6 +574,9 @@ function ReportsPage() {
     [settings.financialYears],
   );
   const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const fileInitiationDateRangeStorageKey = `recordkeeper:file-initiation-date-range:${
+    activeUser?.id ?? "anonymous"
+  }`;
   const defaultFileYear = fileYearOptions.includes(settings.financialYear)
     ? settings.financialYear
     : (fileYearOptions[0] ?? "all");
@@ -588,10 +628,57 @@ function ReportsPage() {
       );
     }
   };
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.sessionStorage.getItem(fileInitiationDateRangeStorageKey);
+    if (!saved) {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      setFileInitiationFromDate(typeof parsed?.fromDate === "string" ? parsed.fromDate : "");
+      setFileInitiationToDate(typeof parsed?.toDate === "string" ? parsed.toDate : "");
+    } catch {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+    }
+  }, [fileInitiationDateRangeStorageKey]);
+  const updateFileInitiationDateRange = (patch: Partial<FileInitiationDateRange>) => {
+    const nextFromDate = patch.fromDate ?? fileInitiationFromDate;
+    const nextToDate = patch.toDate ?? fileInitiationToDate;
+    setFileInitiationFromDate(nextFromDate);
+    setFileInitiationToDate(nextToDate);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(
+        fileInitiationDateRangeStorageKey,
+        JSON.stringify({ fromDate: nextFromDate, toDate: nextToDate }),
+      );
+    }
+  };
+  const clearFileInitiationDateRange = () =>
+    updateFileInitiationDateRange({ fromDate: "", toDate: "" });
+  const activeFileInitiationDateRange = useMemo(
+    () => getActiveFileInitiationDateRange(fileInitiationFromDate, fileInitiationToDate),
+    [fileInitiationFromDate, fileInitiationToDate],
+  );
+  const fileInitiationDateQueryParams = useMemo(
+    () => getFileInitiationDateSearchParams(activeFileInitiationDateRange),
+    [activeFileInitiationDateRange],
+  );
   const fileMatchesActiveFileYear = (file: FileRecord) =>
-    activeFileYear === "all" || file.year === activeFileYear;
+    (activeFileYear === "all" || file.year === activeFileYear) &&
+    fileMatchesInitiationDateRange(file, activeFileInitiationDateRange);
   const fileYearFilterDisabled = isFileYearFilterDisabledReport(reportMode);
   const fileCategoryFilterDisabled = isFileCategoryFilterDisabledReport(reportMode);
+  const fileYearFilterActive = !fileYearFilterDisabled && activeFileYear !== defaultFileYear;
+  const fileInitiationDateFilterActive =
+    !fileYearFilterDisabled && Boolean(activeFileInitiationDateRange);
+  const fileCategoryFilterActive =
+    !fileCategoryFilterDisabled &&
+    selectedFileCategories.filter((category) => visibleFileCategoryKeys.includes(category))
+      .length !== visibleFileCategoryKeys.length;
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays);
   const delayStatusThresholdDays = getDelayThresholdDays(delayStatusDays);
   const normalizedBgReceiptDelayDays = useMemo(
@@ -672,6 +759,7 @@ function ReportsPage() {
     params.set("delayMilestone", delayStatusMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     if (reportMode === "bgReceiptDelay") {
       params.set("bgReceiptDelayDays", normalizedBgReceiptDelayDays.join(","));
     }
@@ -693,6 +781,7 @@ function ReportsPage() {
     delayStatusThresholdDays,
     expectedCashOutgoOffsetDays,
     fileCategoryFilterDisabled,
+    fileInitiationDateQueryParams,
     activeHistoricalDateRange,
     reportMode,
     normalizedBgReceiptDelayDays,
@@ -1086,10 +1175,13 @@ function ReportsPage() {
     const nextValue = Math.max(0, Number.parseInt(value || "0", 10) || 0);
     setCashOutGoPlan((plan) =>
       plan
-        ? recalculateCashOutGoPlan({
-            ...plan,
-            settings: { ...plan.settings, [field]: nextValue },
-          })
+        ? recalculateCashOutGoPlan(
+            {
+              ...plan,
+              settings: { ...plan.settings, [field]: nextValue },
+            },
+            { preserveExpectedSentDate: field === "billOffsetDays" },
+          )
         : plan,
     );
   };
@@ -1102,10 +1194,13 @@ function ReportsPage() {
   ) => {
     setCashOutGoPlan((plan) =>
       plan
-        ? recalculateCashOutGoPlan({
-            ...plan,
-            settings: { ...plan.settings, [field]: value },
-          })
+        ? recalculateCashOutGoPlan(
+            {
+              ...plan,
+              settings: { ...plan.settings, [field]: value },
+            },
+            { preserveExpectedSentDate: field === "useCustomBillOffsetDays" },
+          )
         : plan,
     );
   };
@@ -1129,14 +1224,17 @@ function ReportsPage() {
     const reset = resetMap[field];
     setCashOutGoPlan((plan) =>
       plan
-        ? recalculateCashOutGoPlan({
-            ...plan,
-            settings: {
-              ...plan.settings,
-              [field]: reset.value,
-              [reset.enabledField]: false,
+        ? recalculateCashOutGoPlan(
+            {
+              ...plan,
+              settings: {
+                ...plan.settings,
+                [field]: reset.value,
+                [reset.enabledField]: false,
+              },
             },
-          })
+            { preserveExpectedSentDate: field === "billOffsetDays" },
+          )
         : plan,
     );
   };
@@ -1147,26 +1245,60 @@ function ReportsPage() {
   ) => {
     setCashOutGoPlan((plan) => {
       if (!plan) return plan;
+      const effectiveBillPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
       const updateRows = (rows: CashOutGoPlanDetailRow[]) =>
         rows.map((row) =>
           row.rowKey === rowKey
-            ? {
-                ...row,
-                [field]: value,
-                expectedSentDateOverride:
-                  field === "expectedSentDate" ? value : row.expectedSentDateOverride,
-              }
+            ? (() => {
+                const normalizedValue =
+                  field === "billOffsetOverride" &&
+                  hasFilledString(value) &&
+                  readMerAmount(value) === effectiveBillPaymentOffsetDays
+                    ? ""
+                    : value;
+                return {
+                  ...row,
+                  [field]: normalizedValue,
+                  expectedSentDateOverride:
+                    field === "expectedSentDate" ? normalizedValue : row.expectedSentDateOverride,
+                };
+              })()
+            : row,
+        );
+      return recalculateCashOutGoPlan(
+        {
+          ...plan,
+          billsSubmitted: updateRows(plan.billsSubmitted),
+          billsAtHand: updateRows(plan.billsAtHand),
+          deliveredBillsPending: updateRows(plan.deliveredBillsPending),
+          dpBasedForecast: updateRows(plan.dpBasedForecast ?? []),
+          dpExpired: updateRows(plan.dpExpired ?? []),
+        },
+        { preserveExpectedSentDate: field !== "expectedSentDate" },
+      );
+    });
+  };
+  const resetCashOutGoPlanExpectedSentDate = (rowKey: string) => {
+    setCashOutGoPlan((plan) => {
+      if (!plan) return plan;
+      const resetRows = (rows: CashOutGoPlanDetailRow[]) =>
+        rows.map((row) =>
+          row.rowKey === rowKey
+            ? { ...row, expectedSentDate: "", expectedSentDateOverride: "" }
             : row,
         );
       return recalculateCashOutGoPlan({
         ...plan,
-        billsSubmitted: updateRows(plan.billsSubmitted),
-        billsAtHand: updateRows(plan.billsAtHand),
-        deliveredBillsPending: updateRows(plan.deliveredBillsPending),
-        dpBasedForecast: updateRows(plan.dpBasedForecast ?? []),
-        dpExpired: updateRows(plan.dpExpired ?? []),
+        billsSubmitted: resetRows(plan.billsSubmitted),
+        billsAtHand: resetRows(plan.billsAtHand),
+        deliveredBillsPending: resetRows(plan.deliveredBillsPending),
+        dpBasedForecast: resetRows(plan.dpBasedForecast ?? []),
+        dpExpired: resetRows(plan.dpExpired ?? []),
       });
     });
+  };
+  const resetCashOutGoPlanBillOffsetOverride = (rowKey: string) => {
+    updateCashOutGoPlanRow(rowKey, "billOffsetOverride", "");
   };
   const persistCashOutGoPlan = () => {
     if (!cashOutGoPlan || !cashOutGoPlanDirty) return;
@@ -1198,7 +1330,7 @@ function ReportsPage() {
     () => getPendingLiabilityAgeingRows(monitoringSourceFiles, historicalReportToDate),
     [historicalReportToDate, monitoringSourceFiles],
   );
-  const selectedCashOutgoRows = getRowsForReportMode(reportMode, {
+  const cashOutgoRowSources = {
     expectedCashOutgoReceiptPendingBillRows,
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
@@ -1216,7 +1348,8 @@ function ReportsPage() {
     supplementaryPendingReturnedBillRows,
     supplementaryReturnedBillResubmittedRows,
     supplementaryReturnedBillPaidRows,
-  });
+  };
+  const selectedCashOutgoRows = getRowsForReportMode(reportMode, cashOutgoRowSources);
   const selectedMonthlyReport = getMonthlyReportConfig(reportMode, reportsSummary);
   const selectedMonthlyReportColumns =
     selectedMonthlyReport && monthlyReportBreakupYear && selectedMonthlyReport.monthRowsByYear
@@ -1226,6 +1359,11 @@ function ReportsPage() {
     selectedMonthlyReport && monthlyReportBreakupYear && selectedMonthlyReport.monthRowsByYear
       ? (selectedMonthlyReport.monthRowsByYear[monthlyReportBreakupYear] ?? [])
       : (selectedMonthlyReport?.yearRows ?? selectedMonthlyReport?.rows);
+  const selectedMonthlyReportExportColumns =
+    selectedMonthlyReport?.columns ?? selectedMonthlyReportColumns ?? [];
+  const selectedMonthlyReportExportRows = selectedMonthlyReport
+    ? getMonthlyReportExportRows(selectedMonthlyReport, monthlyReportBreakupYear)
+    : [];
   useEffect(() => {
     setMonthlyReportBreakupYear(undefined);
   }, [reportMode, settings.selectedYear]);
@@ -1272,26 +1410,89 @@ function ReportsPage() {
     currentFinancialYear: settings.financialYear,
     globalYear: settings.selectedYear,
   });
+  const reportExportContextDescription = getReportsExportContextDescription({
+    globalYear: settings.selectedYear,
+    fileYear: activeFileYear,
+    fileYearFilterDisabled,
+    division: activeDivision,
+    selectedFileCategories,
+    visibleFileCategoryOptions,
+    fileCategoryFilterDisabled,
+    fileInitiationDateRange: activeFileInitiationDateRange,
+    reportMode,
+    activeHistoricalDateRange,
+    activeReportScopeDateRange,
+    selectedCashOutgoMonth,
+    asOnDate: historicalReportToDate,
+  });
+  const cashOutgoExportDescription = getReportExportDescription(
+    reportExportContextDescription,
+    billingPaymentReportDescription || reportLogic,
+    getCashOutgoTitleHelper(reportMode),
+  );
   const cashOutgoEmptyMessage =
     reportMode === "merData"
       ? "No MER data found."
       : reportMode === "billsPaidInMonth"
         ? "No bills paid found for the selected month."
         : "No expected cash outgo rows found.";
+  const cashOutgoCombinedExportDescription = getReportExportDescription(
+    getReportsCombinedCashOutgoExportContextDescription({
+      globalYear: settings.selectedYear,
+      fileYear: activeFileYear,
+      fileYearFilterDisabled,
+      division: activeDivision,
+      selectedFileCategories,
+      visibleFileCategoryOptions,
+      fileCategoryFilterDisabled,
+      fileInitiationDateRange: activeFileInitiationDateRange,
+      activeHistoricalDateRange,
+      selectedCashOutgoMonth,
+      asOnDate: historicalReportToDate,
+    }),
+    `Includes all ${combinedCashOutgoExportModes.length} Cash Outgo reports.`,
+  );
+  const exportAllCashOutgoReports = (format: "excel" | "pdf") => {
+    const tables: ExportTable[] = combinedCashOutgoExportModes.map((mode) =>
+      buildCashOutgoExportTable(mode, cashOutgoRowSources, {
+        today:
+          isHistoricalDateRangeReport(mode) || isAsOnDateReport(mode)
+            ? historicalReportToDate
+            : today,
+        monthKey: isMonthSelectionReport(mode) ? selectedCashOutgoMonth : currentMonthKey,
+        financialYear: effectiveFinancialYear,
+      }),
+    );
+    void downloadBackendExport({
+      format,
+      title:
+        activeDivision === "all"
+          ? "Cash Outgo Reports - All divisions"
+          : `Cash Outgo Reports - ${activeDivision}`,
+      description: cashOutgoCombinedExportDescription,
+      tables,
+    });
+  };
+  const exportAllCashOutgoPdf = () => exportAllCashOutgoReports("pdf");
+  const exportAllCashOutgoExcel = () => exportAllCashOutgoReports("excel");
   const exportCashOutgoPdf = () =>
     reportMode === "merData"
       ? printExpectedCashOutgoToPdf(
           merExportRows,
           selectedReportTitle,
-          reportLogic,
+          cashOutgoExportDescription,
           cashOutgoEmptyMessage,
         )
       : reportMode === "currentMonthLiability"
-        ? printCurrentLiabilityToPdf(selectedCashOutgoRows, selectedReportTitle, reportLogic)
+        ? printCurrentLiabilityToPdf(
+            selectedCashOutgoRows,
+            selectedReportTitle,
+            cashOutgoExportDescription,
+          )
         : printExpectedCashOutgoToPdf(
             selectedCashOutgoRows,
             selectedReportTitle,
-            reportLogic,
+            cashOutgoExportDescription,
             cashOutgoEmptyMessage,
           );
   const exportCashOutgoExcel = () =>
@@ -1299,29 +1500,44 @@ function ReportsPage() {
       ? exportExpectedCashOutgoToExcel(
           merExportRows,
           selectedReportTitle,
-          reportLogic,
+          cashOutgoExportDescription,
           cashOutgoEmptyMessage,
         )
       : reportMode === "currentMonthLiability"
-        ? exportCurrentLiabilityToExcel(selectedCashOutgoRows, selectedReportTitle, reportLogic)
+        ? exportCurrentLiabilityToExcel(
+            selectedCashOutgoRows,
+            selectedReportTitle,
+            cashOutgoExportDescription,
+          )
         : exportExpectedCashOutgoToExcel(
             selectedCashOutgoRows,
             selectedReportTitle,
-            reportLogic,
+            cashOutgoExportDescription,
             cashOutgoEmptyMessage,
           );
-  const exportMmgSummaryPdf = () => exportMmgSummary(mmgSummaryRows, selectedReportTitle, "pdf");
+  const exportMmgSummaryPdf = () =>
+    exportMmgSummary(mmgSummaryRows, selectedReportTitle, "pdf", reportExportContextDescription);
   const exportMmgSummaryExcel = () =>
-    exportMmgSummary(mmgSummaryRows, selectedReportTitle, "excel");
-  const exportDelayStatusPdf = () => printDelayStatusToPdf(delayStatusRows, selectedReportTitle);
+    exportMmgSummary(mmgSummaryRows, selectedReportTitle, "excel", reportExportContextDescription);
+  const delayStatusExportDescription = getReportExportDescription(
+    reportExportContextDescription,
+    "Stages whose current milestone has remained open beyond the selected threshold.",
+  );
+  const exportDelayStatusPdf = () =>
+    printDelayStatusToPdf(delayStatusRows, selectedReportTitle, delayStatusExportDescription);
   const exportDelayStatusExcel = () =>
-    exportDelayStatusToExcel(delayStatusRows, selectedReportTitle);
+    exportDelayStatusToExcel(delayStatusRows, selectedReportTitle, delayStatusExportDescription);
+  const firmDatabaseExportDescription = getReportExportDescription(
+    reportExportContextDescription,
+    "Firm-wise supply order, value, delivery, BG, rating, and coverage analysis. Payment performance fields are excluded.",
+  );
   const exportFirmDatabasePdf = () =>
     exportFirmDatabaseReport(
       firmDatabaseRows,
       visibleFirmReportColumns,
       selectedReportTitle,
       "pdf",
+      firmDatabaseExportDescription,
     );
   const exportFirmDatabaseExcel = () =>
     exportFirmDatabaseReport(
@@ -1329,8 +1545,12 @@ function ReportsPage() {
       visibleFirmReportColumns,
       selectedReportTitle,
       "excel",
+      firmDatabaseExportDescription,
     );
   const selectedReportMode = reportModes.find((mode) => mode.key === reportMode) ?? reportModes[0];
+  const historicalDateRangeChanged =
+    historicalReportFromDate !== getFinancialYearStartDate(effectiveFinancialYear) ||
+    historicalReportToDate !== today;
   const getReportSearchDrillPath = (details: Array<string | undefined> = []) =>
     serializeDrillPath([
       { label: "Reports", href: "/reports" },
@@ -1349,6 +1569,10 @@ function ReportsPage() {
           onToDateChange: setHistoricalReportToDate,
           helperText: getDateRangeHelperText(reportMode),
           dateRangeEnabled: cashOutgoDateRangeFilter,
+          active: Boolean(
+            (cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) ||
+            cashOutgoDateRangeFilter,
+          ),
           ...(cashOutgoCurrentFyShortcutActive
             ? {
                 currentFyEnabled: cashOutgoCurrentFyFilter,
@@ -1370,6 +1594,7 @@ function ReportsPage() {
           onFromDateChange: setHistoricalReportFromDate,
           onToDateChange: setHistoricalReportToDate,
           helperText: getDateRangeHelperText(reportMode),
+          active: historicalDateRangeChanged,
         }
     : undefined;
   const reportScopeDateRangeControls = optionalReportScopeDateFilterActive
@@ -1380,6 +1605,7 @@ function ReportsPage() {
         onToDateChange: setReportScopeToDate,
         helperText: getDateRangeHelperText(reportMode),
         dateRangeEnabled: reportScopeDateRangeFilter,
+        active: reportScopeDateRangeFilter,
         onDateRangeEnabledChange: (checked: boolean) => {
           setReportScopeDateRangeFilter(checked);
           if (checked) setReportScopeCurrentFyFilter(false);
@@ -1390,6 +1616,7 @@ function ReportsPage() {
     ? {
         month: selectedCashOutgoMonth,
         options: cashOutgoMonthOptions,
+        active: selectedCashOutgoMonth !== currentMonthKey,
         onMonthChange: setSelectedCashOutgoMonth,
       }
     : undefined;
@@ -1430,6 +1657,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         selectedYear: getCashOutgoSearchYear(mode),
         drillPath: getReportSearchDrillPath([
           monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
@@ -1458,6 +1686,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath([
           monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
         ]),
@@ -1472,6 +1701,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath(),
       },
     });
@@ -1484,6 +1714,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath([milestoneKey === "all" ? undefined : milestoneKey]),
       },
     });
@@ -1496,6 +1727,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath([breakupKey]),
       },
     });
@@ -1534,6 +1766,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         focusSection: "Supply order and payment",
         focusTarget: rows[0]?.sourceFocusTarget || getFallbackCashOutGoPlanFocusTarget(rows[0]),
         focusTargets: serializeCashOutGoPlanFocusTargets(rows),
@@ -1603,6 +1836,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath([
           mode === "reverse" ? "Reverse / negative gap" : "Used rows",
         ]),
@@ -1618,6 +1852,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: getReportSearchDrillPath([row.label]),
       },
     });
@@ -1632,6 +1867,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         drillPath: getReportSearchDrillPath(),
@@ -1651,6 +1887,7 @@ function ReportsPage() {
         selectedYear: settings.selectedYear,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         ...sourceFocus,
         focusTargets: serializeMmgSummaryFocusTargets(row.focusTargets),
         drillPath: getReportSearchDrillPath([row.label]),
@@ -1682,6 +1919,7 @@ function ReportsPage() {
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         focusTargets: String(row.focusTargets ?? "") || undefined,
@@ -1722,6 +1960,31 @@ function ReportsPage() {
               title="Cash Outgo"
               modes={cashOutgoReportModes}
               sections={cashOutgoReportGroups}
+              footer={
+                <div className="space-y-1.5 border-t border-border p-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                    Export all 17 reports
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={exportAllCashOutgoPdf}
+                      className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground transition hover:bg-accent"
+                    >
+                      <FileText className="size-3.5 shrink-0" aria-hidden="true" />
+                      <span>PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exportAllCashOutgoExcel}
+                      className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground transition hover:bg-accent"
+                    >
+                      <FileSpreadsheet className="size-3.5 shrink-0" aria-hidden="true" />
+                      <span>Excel</span>
+                    </button>
+                  </div>
+                </div>
+              }
               hideSectionTitles
               activeMode={reportMode}
               expanded={expandedReportGroups.cashOutgo}
@@ -1763,14 +2026,25 @@ function ReportsPage() {
                 options={fileYearOptions}
                 locked={fileYearLocked}
                 disabled={fileYearFilterDisabled}
+                active={fileYearFilterActive}
                 showAllOption={showAllFileYearsOption}
                 onChange={updateFileYearSelection}
                 onLockToggle={toggleFileYearLock}
+              />
+              <FileInitiationDateRangeFilter
+                fromDate={fileInitiationFromDate}
+                toDate={fileInitiationToDate}
+                disabled={fileYearFilterDisabled}
+                active={fileInitiationDateFilterActive}
+                onFromDateChange={(fromDate) => updateFileInitiationDateRange({ fromDate })}
+                onToDateChange={(toDate) => updateFileInitiationDateRange({ toDate })}
+                onClear={clearFileInitiationDateRange}
               />
               <FileCategoryFilter
                 selectedCategories={selectedFileCategories}
                 options={visibleFileCategoryOptions}
                 disabled={fileCategoryFilterDisabled}
+                active={fileCategoryFilterActive}
                 onChange={toggleFileCategory}
               />
             </div>
@@ -1924,24 +2198,31 @@ function ReportsPage() {
                     unlocked={warrantyBgBufferUnlocked}
                     onUnlockedChange={toggleWarrantyBgBufferLock}
                     onDaysChange={setWarrantyBgBufferDays}
+                    onReset={resetWarrantyBgBufferDays}
                   />
                 ) : undefined
               }
               onPdf={() =>
                 exportMonthlyOperationalReport(
                   selectedReportTitle,
-                  selectedMonthlyReport.description,
-                  selectedMonthlyReportColumns ?? selectedMonthlyReport.columns,
-                  selectedMonthlyReportRows ?? selectedMonthlyReport.rows,
+                  getReportExportDescription(
+                    reportExportContextDescription,
+                    selectedMonthlyReport.description,
+                  ),
+                  selectedMonthlyReportExportColumns,
+                  selectedMonthlyReportExportRows,
                   "pdf",
                 )
               }
               onExcel={() =>
                 exportMonthlyOperationalReport(
                   selectedReportTitle,
-                  selectedMonthlyReport.description,
-                  selectedMonthlyReportColumns ?? selectedMonthlyReport.columns,
-                  selectedMonthlyReportRows ?? selectedMonthlyReport.rows,
+                  getReportExportDescription(
+                    reportExportContextDescription,
+                    selectedMonthlyReport.description,
+                  ),
+                  selectedMonthlyReportExportColumns,
+                  selectedMonthlyReportExportRows,
                   "excel",
                 )
               }
@@ -1956,6 +2237,7 @@ function ReportsPage() {
               selectedMilestoneKey={delayStatusMilestoneKey}
               onDaysChange={setDelayStatusDays}
               onMilestoneChange={setDelayStatusMilestoneKey}
+              onDaysReset={() => setDelayStatusDays("5")}
               onPdf={exportDelayStatusPdf}
               onExcel={exportDelayStatusExcel}
               onOpenFile={openDelayStatusFile}
@@ -1975,6 +2257,7 @@ function ReportsPage() {
               controls={
                 <AsOnDateControl
                   date={historicalReportToDate}
+                  active={historicalReportToDate !== today}
                   onDateChange={setHistoricalReportToDate}
                 />
               }
@@ -1987,7 +2270,10 @@ function ReportsPage() {
               onPdf={() =>
                 exportMonthlyOperationalReport(
                   selectedReportTitle,
-                  "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                  getReportExportDescription(
+                    reportExportContextDescription,
+                    "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                  ),
                   ageingReportColumns,
                   pendingLiabilityAgeingRows,
                   "pdf",
@@ -1996,7 +2282,10 @@ function ReportsPage() {
               onExcel={() =>
                 exportMonthlyOperationalReport(
                   selectedReportTitle,
-                  "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                  getReportExportDescription(
+                    reportExportContextDescription,
+                    "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                  ),
                   ageingReportColumns,
                   pendingLiabilityAgeingRows,
                   "excel",
@@ -2041,6 +2330,8 @@ function ReportsPage() {
               onSettingEnabledChange={updateCashOutGoPlanSettingEnabled}
               onOffsetReset={resetCashOutGoPlanOffset}
               onRowChange={updateCashOutGoPlanRow}
+              onExpectedSentDateReset={resetCashOutGoPlanExpectedSentDate}
+              onBillOffsetOverrideReset={resetCashOutGoPlanBillOffsetOverride}
               onOpenSourceFile={openCashOutGoPlanSource}
               onOpenRowsSearch={openCashOutGoPlanRowsSearch}
               divisions={divisions}
@@ -2048,8 +2339,14 @@ function ReportsPage() {
               onDivisionChange={setSelectedDivision}
               onSave={persistCashOutGoPlan}
               saveDisabled={!cashOutGoPlanDirty}
-              onPdf={() => cashOutGoPlan && exportCashOutGoPlan(cashOutGoPlan, "pdf")}
-              onExcel={() => cashOutGoPlan && exportCashOutGoPlan(cashOutGoPlan, "excel")}
+              onPdf={() =>
+                cashOutGoPlan &&
+                exportCashOutGoPlan(cashOutGoPlan, "pdf", reportExportContextDescription)
+              }
+              onExcel={() =>
+                cashOutGoPlan &&
+                exportCashOutGoPlan(cashOutGoPlan, "excel", reportExportContextDescription)
+              }
             />
           ) : reportMode === "itemsDeliveredBillsPending" ? (
             <ExpectedCashOutgoReport
@@ -2070,6 +2367,7 @@ function ReportsPage() {
               onDaysChange={setExpectedCashOutgoDaysDraft}
               onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
               onSelectedDaysSave={saveExpectedCashOutgoDays}
+              onSelectedDaysReset={resetExpectedCashOutgoDays}
               dateRange={historicalDateRangeControls}
               onOpenMonth={(monthKey) =>
                 openCashOutgoSearch("expectedReceiptPendingBill", monthKey)
@@ -2102,6 +2400,7 @@ function ReportsPage() {
               onDaysChange={setExpectedCashOutgoDaysDraft}
               onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
               onSelectedDaysSave={saveExpectedCashOutgoDays}
+              onSelectedDaysReset={resetExpectedCashOutgoDays}
               monthSelection={monthSelectionControls}
               onOpenMonth={(monthKey) => openCashOutgoSearch("expectedReceiptThrough", monthKey)}
               onOpenAll={() =>
@@ -2181,6 +2480,7 @@ function ReportsPage() {
               onDaysChange={setExpectedCashOutgoDaysDraft}
               onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
               onSelectedDaysSave={saveExpectedCashOutgoDays}
+              onSelectedDaysReset={resetExpectedCashOutgoDays}
               onOpenMonth={(monthKey) => openCashOutgoSearch("expectedDp", monthKey)}
               onOpenAll={() =>
                 openCashOutgoSearchWithContext(
@@ -2364,6 +2664,7 @@ function ReportsPage() {
               onDaysChange={setExpectedCashOutgoDaysDraft}
               onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
               onSelectedDaysSave={saveExpectedCashOutgoDays}
+              onSelectedDaysReset={resetExpectedCashOutgoDays}
               monthSelection={monthSelectionControls}
               onOpenMonth={(monthKey) =>
                 openCashOutgoAnySearch(
@@ -2542,6 +2843,10 @@ const fileYearSubfilterHelper = [
   "It does not change the activity-year meaning of the main/global filter.",
   "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
 ];
+const fileInitiationDateRangeHelper = [
+  "Further narrows the File Year Subfilter using exact file initiation date.",
+  "Leave both dates blank when no initiation date restriction is required.",
+];
 type ReportModeSection = {
   title: string;
   modes: ReadonlyArray<ReportModeOption>;
@@ -2625,6 +2930,9 @@ const cashOutgoReportGroups: ReadonlyArray<ReportModeSection> = [
   },
 ];
 const cashOutgoReportModes = cashOutgoReportGroups.flatMap((group) => group.modes);
+const combinedCashOutgoExportModes = cashOutgoReportGroups
+  .filter((group) => group.title !== "MER")
+  .flatMap((group) => group.modes.map((mode) => mode.key));
 const supplyOrderDeliveryReportModes = getReportModeOptions([
   "monthlyFileInflow",
   "monthWiseSupplyOrder",
@@ -2864,6 +3172,7 @@ function CollapsibleReportGroup({
   title,
   modes,
   sections,
+  footer,
   activeMode,
   expanded,
   onToggle,
@@ -2873,6 +3182,7 @@ function CollapsibleReportGroup({
   title: string;
   modes: ReadonlyArray<ReportModeOption>;
   sections?: ReadonlyArray<ReportModeSection>;
+  footer?: ReactNode;
   activeMode: ReportMode;
   expanded: boolean;
   onToggle: () => void;
@@ -2940,10 +3250,38 @@ function CollapsibleReportGroup({
               />
             ))
           )}
+          {footer}
         </div>
       ) : null}
     </div>
   );
+}
+
+type CashOutgoRowSources = Parameters<typeof getRowsForReportMode>[1];
+
+function buildCashOutgoExportTable(
+  mode: ReportMode,
+  rowSources: CashOutgoRowSources,
+  titleContext: { today: string; monthKey: string; financialYear: string },
+): ExportTable {
+  const rows = getRowsForReportMode(mode, rowSources);
+  return {
+    title: getEightReportTitle(mode, titleContext),
+    headers: cashOutgoColumns.map((column) => column.label),
+    rows: rows.length
+      ? [
+          ...rows.map((row, index) =>
+            cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+          ),
+          getCashOutgoTotalsExportRow(rows),
+        ]
+      : [[getCashOutgoEmptyMessageForMode(mode)]],
+  };
+}
+
+function getCashOutgoEmptyMessageForMode(mode: ReportMode) {
+  if (mode === "billsPaidInMonth") return "No bills paid found for the selected month.";
+  return "No expected cash outgo rows found.";
 }
 
 function getRowsForReportMode(
@@ -3271,6 +3609,176 @@ function getCashOutgoReportLogic(
     ].join("\n");
   }
   return "";
+}
+
+function getCashOutgoTitleHelper(mode: ReportMode): HelperText | undefined {
+  if (mode === "supplementaryBillsPaid") return reportModeHelperText.supplementaryBillsPaid;
+  return supplementaryBillInclusionNotes[mode];
+}
+
+function getReportExportDescription(...items: Array<HelperText | undefined>) {
+  return items.flatMap(flattenHelperText).filter(Boolean).join("\n");
+}
+
+function getReportsExportContextDescription({
+  globalYear,
+  fileYear,
+  fileYearFilterDisabled,
+  division,
+  selectedFileCategories,
+  visibleFileCategoryOptions,
+  fileCategoryFilterDisabled,
+  fileInitiationDateRange,
+  reportMode,
+  activeHistoricalDateRange,
+  activeReportScopeDateRange,
+  selectedCashOutgoMonth,
+  asOnDate,
+}: {
+  globalYear: string;
+  fileYear: string;
+  fileYearFilterDisabled: boolean;
+  division: string;
+  selectedFileCategories: FileCategoryKey[];
+  visibleFileCategoryOptions: FileCategoryOption[];
+  fileCategoryFilterDisabled: boolean;
+  fileInitiationDateRange?: FileInitiationDateRange;
+  reportMode: ReportMode;
+  activeHistoricalDateRange?: ReportDateRange;
+  activeReportScopeDateRange?: ReportDateRange;
+  selectedCashOutgoMonth: string;
+  asOnDate: string;
+}) {
+  return [
+    `Global filter: ${displayFinancialYearLabel(globalYear)}`,
+    `File Year Subfilter: ${
+      fileYearFilterDisabled ? "Not applied" : fileYear === "all" ? "All file years" : fileYear
+    }`,
+    `Initiation date range: ${
+      fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
+    }`,
+    `Division: ${division === "all" ? "All accessible divisions" : division}`,
+    `File Category: ${
+      fileCategoryFilterDisabled
+        ? "Not applied"
+        : formatFileCategoryExportSelection(selectedFileCategories, visibleFileCategoryOptions)
+    }`,
+    getReportDateExportContext({
+      reportMode,
+      activeHistoricalDateRange,
+      activeReportScopeDateRange,
+      selectedCashOutgoMonth,
+      asOnDate,
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function getReportsCombinedCashOutgoExportContextDescription({
+  globalYear,
+  fileYear,
+  fileYearFilterDisabled,
+  division,
+  selectedFileCategories,
+  visibleFileCategoryOptions,
+  fileCategoryFilterDisabled,
+  fileInitiationDateRange,
+  activeHistoricalDateRange,
+  selectedCashOutgoMonth,
+  asOnDate,
+}: {
+  globalYear: string;
+  fileYear: string;
+  fileYearFilterDisabled: boolean;
+  division: string;
+  selectedFileCategories: FileCategoryKey[];
+  visibleFileCategoryOptions: FileCategoryOption[];
+  fileCategoryFilterDisabled: boolean;
+  fileInitiationDateRange?: FileInitiationDateRange;
+  activeHistoricalDateRange?: ReportDateRange;
+  selectedCashOutgoMonth: string;
+  asOnDate: string;
+}) {
+  return [
+    `Global filter: ${displayFinancialYearLabel(globalYear)}`,
+    `File Year Subfilter: ${
+      fileYearFilterDisabled ? "Not applied" : fileYear === "all" ? "All file years" : fileYear
+    }`,
+    `Initiation date range: ${
+      fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
+    }`,
+    `Division: ${division === "all" ? "All accessible divisions" : division}`,
+    `File Category: ${
+      fileCategoryFilterDisabled
+        ? "Not applied"
+        : formatFileCategoryExportSelection(selectedFileCategories, visibleFileCategoryOptions)
+    }`,
+    `As-on/date-range reports: ${formatExportDateRange(activeHistoricalDateRange)}`,
+    `Month reports: ${
+      selectedCashOutgoMonth === "all" ? "All months" : formatMonthTitle(selectedCashOutgoMonth)
+    }`,
+    `As on date: ${formatDateDisplay(asOnDate)}`,
+  ].join("\n");
+}
+
+function formatExportDateRange(range?: ReportDateRange | FileInitiationDateRange) {
+  if (!range) return "All dates";
+  return `${formatDateDisplay(range.fromDate)} to ${formatDateDisplay(range.toDate)}`;
+}
+
+function formatFileCategoryExportSelection(
+  selectedFileCategories: FileCategoryKey[],
+  visibleFileCategoryOptions: FileCategoryOption[],
+) {
+  const visibleKeys = new Set(visibleFileCategoryOptions.map((option) => option.key));
+  const selectedVisible = selectedFileCategories.filter((category) => visibleKeys.has(category));
+  if (selectedVisible.length === visibleFileCategoryOptions.length) return "All visible categories";
+  const labels = visibleFileCategoryOptions
+    .filter((option) => selectedVisible.includes(option.key))
+    .map((option) => option.label);
+  return labels.length ? labels.join(", ") : "None selected";
+}
+
+function getReportDateExportContext({
+  reportMode,
+  activeHistoricalDateRange,
+  activeReportScopeDateRange,
+  selectedCashOutgoMonth,
+  asOnDate,
+}: {
+  reportMode: ReportMode;
+  activeHistoricalDateRange?: ReportDateRange;
+  activeReportScopeDateRange?: ReportDateRange;
+  selectedCashOutgoMonth: string;
+  asOnDate: string;
+}) {
+  if (isReportScopeDateFilterReport(reportMode)) {
+    return `Report date range: ${formatExportDateRange(activeReportScopeDateRange)}`;
+  }
+  if (isHistoricalDateRangeReport(reportMode)) {
+    return `Report date range: ${formatExportDateRange(activeHistoricalDateRange)}`;
+  }
+  if (isMonthSelectionReport(reportMode)) {
+    return `Report month: ${
+      selectedCashOutgoMonth === "all" ? "All months" : formatMonthTitle(selectedCashOutgoMonth)
+    }`;
+  }
+  if (isAsOnDateReport(reportMode)) {
+    return `As on date: ${formatDateDisplay(asOnDate)}`;
+  }
+  return "";
+}
+
+function getMonthlyReportExportRows(
+  report: MonthlyReportConfig,
+  breakupYear?: string,
+): Array<Record<string, number | string>> {
+  if (!report.monthRowsByYear) return report.rows;
+  if (breakupYear) return report.monthRowsByYear[breakupYear] ?? [];
+  return Object.keys(report.monthRowsByYear)
+    .sort()
+    .flatMap((year) => report.monthRowsByYear?.[year] ?? []);
 }
 
 function getBillingPaymentReportDescription(
@@ -4954,6 +5462,7 @@ function ExpectedCashOutgoReport({
   onDaysChange,
   onSelectedDaysUnlockedChange,
   onSelectedDaysSave,
+  onSelectedDaysReset,
   dateRange,
   monthSelection,
   emptyMessage = "No expected cash outgo rows found.",
@@ -4970,6 +5479,7 @@ function ExpectedCashOutgoReport({
   onDaysChange?: (value: string) => void;
   onSelectedDaysUnlockedChange?: (unlocked: boolean) => void;
   onSelectedDaysSave?: () => void;
+  onSelectedDaysReset?: () => void;
   dateRange?: HistoricalDateRangeControlsProps;
   monthSelection?: MonthSelectionControlsProps;
   emptyMessage?: string;
@@ -4997,6 +5507,7 @@ function ExpectedCashOutgoReport({
               onValueChange={onDaysChange}
               onUnlockedChange={onSelectedDaysUnlockedChange}
               onSave={onSelectedDaysSave}
+              onReset={onSelectedDaysReset}
             />
           ) : null}
         </>
@@ -5012,6 +5523,7 @@ type HistoricalDateRangeControlsProps = {
   onToDateChange: (value: string) => void;
   currentFyEnabled?: boolean;
   dateRangeEnabled?: boolean;
+  active?: boolean;
   currentFyLabel?: string;
   helperText?: HelperText;
   onCurrentFyEnabledChange?: (checked: boolean) => void;
@@ -5021,17 +5533,28 @@ type HistoricalDateRangeControlsProps = {
 type MonthSelectionControlsProps = {
   month: string;
   options: Array<{ value: string; label: string }>;
+  active?: boolean;
   onMonthChange: (value: string) => void;
 };
 
-function MonthSelectionControls({ month, options, onMonthChange }: MonthSelectionControlsProps) {
+function MonthSelectionControls({
+  month,
+  options,
+  active = false,
+  onMonthChange,
+}: MonthSelectionControlsProps) {
   return (
-    <label className="flex w-40 flex-col gap-1 text-xs text-muted-foreground">
+    <label
+      className={filterLabelClass(active, "flex w-40 flex-col gap-1 text-xs text-muted-foreground")}
+    >
       <span>Month</span>
       <select
         value={month}
         onChange={(event) => onMonthChange(event.target.value)}
-        className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        className={filterControlClass(
+          active,
+          "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+        )}
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -5045,20 +5568,27 @@ function MonthSelectionControls({ month, options, onMonthChange }: MonthSelectio
 
 function AsOnDateControl({
   date,
+  active = false,
   onDateChange,
 }: {
   date: string;
+  active?: boolean;
   onDateChange: (value: string) => void;
 }) {
   return (
-    <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+    <label
+      className={filterLabelClass(active, "flex w-36 flex-col gap-1 text-xs text-muted-foreground")}
+    >
       <span>As on date</span>
       <DateInput
         value={date}
         onChange={(value) => {
           if (value) onDateChange(value);
         }}
-        className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        className={filterControlClass(
+          active,
+          "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+        )}
       />
     </label>
   );
@@ -5071,6 +5601,7 @@ function HistoricalDateRangeControls({
   onToDateChange,
   currentFyEnabled,
   dateRangeEnabled,
+  active = false,
   currentFyLabel = "Current FY",
   helperText,
   onCurrentFyEnabledChange,
@@ -5081,9 +5612,14 @@ function HistoricalDateRangeControls({
   return (
     <>
       {optionalMode ? (
-        <div className="flex min-h-9 items-center gap-3 rounded-md border border-border bg-secondary/20 px-3 text-xs font-medium text-foreground">
+        <div
+          className={filterControlClass(
+            active,
+            "flex min-h-9 items-center gap-3 rounded-md border border-border bg-secondary/20 px-3 text-xs font-medium text-foreground",
+          )}
+        >
           {onCurrentFyEnabledChange ? (
-            <label className="flex items-center gap-1.5">
+            <label className={filterLabelClass(active, "flex items-center gap-1.5")}>
               <input
                 type="checkbox"
                 checked={Boolean(currentFyEnabled)}
@@ -5094,7 +5630,7 @@ function HistoricalDateRangeControls({
             </label>
           ) : null}
           {onDateRangeEnabledChange ? (
-            <label className="flex items-center gap-1.5">
+            <label className={filterLabelClass(active, "flex items-center gap-1.5")}>
               <input
                 type="checkbox"
                 checked={Boolean(dateRangeEnabled)}
@@ -5115,7 +5651,12 @@ function HistoricalDateRangeControls({
           ) : null}
         </div>
       ) : null}
-      <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+      <label
+        className={filterLabelClass(
+          active,
+          "flex w-36 flex-col gap-1 text-xs text-muted-foreground",
+        )}
+      >
         <span className="inline-flex items-center gap-1">
           From
           {!optionalMode && helperText ? (
@@ -5135,10 +5676,18 @@ function HistoricalDateRangeControls({
           onChange={(value) => {
             if (value) onFromDateChange(value);
           }}
-          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          className={filterControlClass(
+            active,
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+          )}
         />
       </label>
-      <label className="flex w-36 flex-col gap-1 text-xs text-muted-foreground">
+      <label
+        className={filterLabelClass(
+          active,
+          "flex w-36 flex-col gap-1 text-xs text-muted-foreground",
+        )}
+      >
         <span>To</span>
         <DateInput
           value={toDate}
@@ -5147,7 +5696,10 @@ function HistoricalDateRangeControls({
           onChange={(value) => {
             if (value) onToDateChange(value);
           }}
-          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+          className={filterControlClass(
+            active,
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+          )}
         />
       </label>
     </>
@@ -5186,6 +5738,7 @@ function CurrentMonthLiabilityReport({
   onDaysChange,
   onSelectedDaysUnlockedChange,
   onSelectedDaysSave,
+  onSelectedDaysReset,
   monthSelection,
   onOpenMonth,
   onOpenAll,
@@ -5200,6 +5753,7 @@ function CurrentMonthLiabilityReport({
   onDaysChange: (value: string) => void;
   onSelectedDaysUnlockedChange: (unlocked: boolean) => void;
   onSelectedDaysSave: () => void;
+  onSelectedDaysReset: () => void;
   monthSelection?: MonthSelectionControlsProps;
   onOpenMonth?: (monthKey: string) => void;
   onOpenAll?: () => void;
@@ -5223,6 +5777,7 @@ function CurrentMonthLiabilityReport({
             onValueChange={onDaysChange}
             onUnlockedChange={onSelectedDaysUnlockedChange}
             onSave={onSelectedDaysSave}
+            onReset={onSelectedDaysReset}
           />
         </>
       }
@@ -5236,17 +5791,27 @@ function CashOutgoOffsetDaysControl({
   onValueChange,
   onUnlockedChange,
   onSave,
+  onReset,
 }: {
   value: string;
   unlocked: boolean;
   onValueChange: (value: string) => void;
   onUnlockedChange?: (unlocked: boolean) => void;
   onSave?: () => void;
+  onReset?: () => void;
 }) {
   const normalizedDays = normalizeExpectedCashOutgoDays(value);
+  const active = unlocked || normalizedDays !== String(DEFAULT_DP_OFFSET_DAYS);
   return (
-    <div className="text-xs font-medium">
-      <span className="mb-1 block text-muted-foreground">Days after base date</span>
+    <div className={filterLabelClass(active, "w-[190px] text-xs font-medium")}>
+      <span className="mb-1 flex items-center gap-1.5 whitespace-nowrap text-muted-foreground">
+        Days after base date
+        <FloatingHelper
+          text="Default is 10 days. Use reset to restore the default days."
+          className="size-5 border-0 bg-transparent shadow-none"
+          iconClassName="size-3.5"
+        />
+      </span>
       <span className="flex items-center gap-1.5">
         <input
           type="number"
@@ -5254,7 +5819,10 @@ function CashOutgoOffsetDaysControl({
           value={unlocked ? value : normalizedDays}
           disabled={!unlocked}
           onChange={(event) => onValueChange(event.target.value)}
-          className="h-9 w-28 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-70"
+          className={filterControlClass(
+            active,
+            "h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-70",
+          )}
         />
         <button
           type="button"
@@ -5275,6 +5843,16 @@ function CashOutgoOffsetDaysControl({
         >
           <Save className="size-4" />
         </button>
+        <button
+          type="button"
+          onClick={onReset}
+          disabled={!onReset}
+          className="btn-ghost h-9 w-9 p-0"
+          title="Reset offset days"
+          aria-label="Reset offset days"
+        >
+          <RotateCcw className="size-4" />
+        </button>
       </span>
     </div>
   );
@@ -5293,6 +5871,8 @@ function BgReceiptDelayControls({
 }) {
   const displayDays = days.length ? days : defaultBgReceiptDelayDays;
   const normalizedDays = normalizeBgReceiptDelayDays(displayDays);
+  const active =
+    unlocked || normalizedDays.map(String).join(",") !== defaultBgReceiptDelayDays.join(",");
   const updateDay = (index: number, value: string) => {
     onDaysChange((current) => {
       const next = [...(current.length ? current : defaultBgReceiptDelayDays)];
@@ -5302,9 +5882,11 @@ function BgReceiptDelayControls({
   };
 
   return (
-    <div className="rounded-md border border-border bg-secondary/20 p-3">
+    <div
+      className={filterControlClass(active, "rounded-md border border-border bg-secondary/20 p-3")}
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs text-muted-foreground">
+        <div className={filterLabelClass(active, "text-xs text-muted-foreground")}>
           Delay thresholds from S.O. date:{" "}
           <span className="font-medium text-foreground">
             {normalizedDays.map((day) => `>${day}`).join(", ")} days
@@ -5326,7 +5908,13 @@ function BgReceiptDelayControls({
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {displayDays.map((day, index) => (
-          <label key={index} className="flex flex-col gap-1 text-xs text-muted-foreground">
+          <label
+            key={index}
+            className={filterLabelClass(
+              active,
+              "flex flex-col gap-1 text-xs text-muted-foreground",
+            )}
+          >
             <span>Threshold {index + 1}</span>
             <input
               type="number"
@@ -5334,7 +5922,10 @@ function BgReceiptDelayControls({
               value={day}
               disabled={!unlocked}
               onChange={(event) => updateDay(index, event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-70"
+              className={filterControlClass(
+                active,
+                "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-70",
+              )}
             />
           </label>
         ))}
@@ -5376,17 +5967,22 @@ function WarrantyBgBufferControls({
   unlocked,
   onUnlockedChange,
   onDaysChange,
+  onReset,
 }: {
   days: string;
   unlocked: boolean;
   onUnlockedChange: (unlocked: boolean) => void;
   onDaysChange: (value: string) => void;
+  onReset: () => void;
 }) {
   const normalizedDays = normalizeWarrantyBgBufferDays(days);
+  const active = unlocked || normalizedDays !== "60";
   return (
-    <div className="rounded-md border border-border bg-secondary/20 p-3">
+    <div
+      className={filterControlClass(active, "rounded-md border border-border bg-secondary/20 p-3")}
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs text-muted-foreground">
+        <div className={filterLabelClass(active, "text-xs text-muted-foreground")}>
           Warranty BG cover required up to:{" "}
           <span className="font-medium text-foreground">
             Warranty period + {normalizedDays} days
@@ -5406,17 +6002,42 @@ function WarrantyBgBufferControls({
           {unlocked ? "Unlocked" : "Locked"}
         </button>
       </div>
-      <label className="flex max-w-48 flex-col gap-1 text-xs text-muted-foreground">
-        <span>Buffer days</span>
+      <label
+        className={filterLabelClass(
+          active,
+          "flex max-w-48 flex-col gap-1 text-xs text-muted-foreground",
+        )}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          Buffer days
+          <FloatingHelper
+            text="Default is 60 days. Use reset to restore the default buffer."
+            className="size-5 border-0 bg-transparent shadow-none"
+            iconClassName="size-3.5"
+          />
+        </span>
         <input
           type="number"
           min={0}
           value={days}
           disabled={!unlocked}
           onChange={(event) => onDaysChange(event.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-70"
+          className={filterControlClass(
+            active,
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-70",
+          )}
         />
       </label>
+      <button
+        type="button"
+        onClick={onReset}
+        className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+        title="Reset buffer days"
+        aria-label="Reset buffer days"
+      >
+        <RotateCcw className="size-3.5" />
+        Reset
+      </button>
     </div>
   );
 }
@@ -5695,17 +6316,26 @@ function ReportHeaderActions({
   onPdf?: () => void;
   onExcel?: () => void;
 }) {
+  const divisionFilterActive = activeDivision !== "all";
   return (
     <>
       {showDivision ? (
-        <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
+        <label
+          className={filterLabelClass(
+            divisionFilterActive,
+            "flex min-w-[150px] flex-col gap-1 text-xs text-muted-foreground",
+          )}
+        >
           <span>Division</span>
           <select
             value={activeDivision}
             onChange={(event) => onDivisionChange(event.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+            className={filterControlClass(
+              divisionFilterActive,
+              "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+            )}
           >
-            <option value="all">All accessible divisions</option>
+            <option value="all">Divisions</option>
             {divisions.map((division) => (
               <option key={division.id} value={division.name}>
                 {division.name}
@@ -5714,25 +6344,30 @@ function ReportHeaderActions({
           </select>
         </label>
       ) : null}
-      {onPdf ? (
-        <button
-          type="button"
-          onClick={onPdf}
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
-        >
-          <FileText className="size-4" />
-          PDF
-        </button>
-      ) : null}
-      {onExcel ? (
-        <button
-          type="button"
-          onClick={onExcel}
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
-        >
-          <FileSpreadsheet className="size-4" />
-          Excel
-        </button>
+      {onPdf || onExcel ? (
+        <div className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-card">
+          {onPdf ? (
+            <button
+              type="button"
+              onClick={onPdf}
+              className="inline-flex h-full items-center gap-1.5 px-3 text-sm font-medium hover:bg-accent"
+            >
+              <FileText className="size-4" />
+              PDF
+            </button>
+          ) : null}
+          {onPdf && onExcel ? <div className="h-full w-px bg-border" aria-hidden="true" /> : null}
+          {onExcel ? (
+            <button
+              type="button"
+              onClick={onExcel}
+              className="inline-flex h-full items-center gap-1.5 px-3 text-sm font-medium hover:bg-accent"
+            >
+              <FileSpreadsheet className="size-4" />
+              Excel
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </>
   );
@@ -5742,40 +6377,131 @@ function FileCategoryFilter({
   selectedCategories,
   options,
   disabled = false,
+  active = false,
   onChange,
 }: {
   selectedCategories: FileCategoryKey[];
-  options: typeof fileCategoryOptions;
+  options: FileCategoryOption[];
   disabled?: boolean;
+  active?: boolean;
   onChange: (category: FileCategoryKey, checked: boolean) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const selectedVisibleCount = options.filter((option) =>
+    selectedCategories.includes(option.key),
+  ).length;
+  const summary = `${selectedVisibleCount}/${options.length} selected`;
+
   return (
-    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+    <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
       <span>File category</span>
       <div
         className={
-          "flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-input bg-background px-2 py-1.5 " +
-          (disabled ? "opacity-60" : "")
+          filterControlClass(active, "rounded-md border border-input bg-background") +
+          (disabled ? " opacity-60" : "")
         }
       >
-        {options.map((option) => (
-          <label
-            key={option.key}
-            className={
-              "inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground " +
-              (disabled ? "cursor-not-allowed" : "")
-            }
+        <button
+          type="button"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => setOpen((current) => !current)}
+          className={
+            "flex min-h-9 w-full items-center justify-between gap-3 px-2 py-1.5 text-left text-sm hover:bg-accent/60 disabled:cursor-not-allowed " +
+            (active ? "text-destructive" : "text-foreground")
+          }
+        >
+          <span className="truncate">{summary}</span>
+          <ChevronDown
+            className={`size-4 shrink-0 text-muted-foreground transition-transform ${
+              open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+        {open && !disabled ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border px-2 py-2">
+            {options.map((option) => (
+              <label
+                key={option.key}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedCategories.includes(option.key)}
+                  disabled={disabled}
+                  onChange={(event) => onChange(option.key, event.target.checked)}
+                  className="size-4 rounded border-input disabled:cursor-not-allowed"
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function FileInitiationDateRangeFilter({
+  fromDate,
+  toDate,
+  disabled = false,
+  active = false,
+  onFromDateChange,
+  onToDateChange,
+  onClear,
+}: {
+  fromDate: string;
+  toDate: string;
+  disabled?: boolean;
+  active?: boolean;
+  onFromDateChange: (value: string) => void;
+  onToDateChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  const hasRange = Boolean(fromDate || toDate);
+  return (
+    <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
+      <span className="inline-flex items-center gap-1">
+        Initiation date
+        <FloatingHelper
+          text={fileInitiationDateRangeHelper}
+          label="Initiation date range help"
+          side="top"
+          className="size-5 border-0 bg-transparent shadow-none"
+          iconClassName="size-3.5"
+        />
+      </span>
+      <div className="flex items-center gap-1.5">
+        <DateInput
+          value={fromDate}
+          onChange={onFromDateChange}
+          disabled={disabled}
+          className={filterControlClass(
+            active,
+            "h-9 w-[132px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+          )}
+        />
+        <span className="text-xs text-muted-foreground">to</span>
+        <DateInput
+          value={toDate}
+          onChange={onToDateChange}
+          disabled={disabled}
+          className={filterControlClass(
+            active,
+            "h-9 w-[132px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+          )}
+        />
+        {hasRange ? (
+          <button
+            type="button"
+            onClick={onClear}
+            disabled={disabled}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <input
-              type="checkbox"
-              checked={selectedCategories.includes(option.key)}
-              disabled={disabled}
-              onChange={(event) => onChange(option.key, event.target.checked)}
-              className="size-4 rounded border-input disabled:cursor-not-allowed"
-            />
-            <span>{option.label}</span>
-          </label>
-        ))}
+            Clear
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -5786,6 +6512,7 @@ function FileYearFilter({
   options,
   locked,
   disabled = false,
+  active = false,
   showAllOption = true,
   onChange,
   onLockToggle,
@@ -5794,6 +6521,7 @@ function FileYearFilter({
   options: string[];
   locked: boolean;
   disabled?: boolean;
+  active?: boolean;
   showAllOption?: boolean;
   onChange: (year: string) => void;
   onLockToggle: () => void;
@@ -5806,7 +6534,12 @@ function FileYearFilter({
     : fileYearSubfilterHelper;
   return (
     <div className="flex items-end gap-1.5">
-      <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
+      <label
+        className={filterLabelClass(
+          active,
+          "flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground",
+        )}
+      >
         <span className="inline-flex items-center gap-1">
           File year
           <FloatingHelper
@@ -5821,7 +6554,10 @@ function FileYearFilter({
           value={value}
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+          className={filterControlClass(
+            active,
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground",
+          )}
         >
           {showAllOption ? <option value="all">All file years</option> : null}
           {options.map((year) => (
@@ -6721,6 +7457,80 @@ function MerAmountInput({ value, onChange }: { value: string; onChange: (value: 
   );
 }
 
+function CashOutGoPlanOffsetControl({
+  label,
+  defaultDays,
+  customDays,
+  customEnabled,
+  disabled,
+  active,
+  helperText,
+  onReset,
+  onCustomEnabledChange,
+  onCustomDaysChange,
+}: {
+  label: string;
+  defaultDays: number;
+  customDays?: number;
+  customEnabled: boolean;
+  disabled: boolean;
+  active: boolean;
+  helperText: HelperText;
+  onReset: () => void;
+  onCustomEnabledChange: (checked: boolean) => void;
+  onCustomDaysChange: (value: string) => void;
+}) {
+  return (
+    <div className={filterLabelClass(active, "text-xs font-medium")}>
+      <span className="mb-1 flex items-center gap-1.5 text-muted-foreground">
+        {label}
+        <FloatingHelper text={helperText} />
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="flex h-9 items-center rounded-md border border-border bg-secondary/20 px-2 text-xs text-muted-foreground">
+          Default {defaultDays}d
+        </span>
+        <label
+          className={filterControlClass(
+            active,
+            "flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={customEnabled}
+            onChange={(event) => onCustomEnabledChange(event.target.checked)}
+            disabled={disabled}
+          />
+          Use custom
+        </label>
+        <input
+          type="number"
+          min="0"
+          value={customEnabled ? (customDays ?? defaultDays) : defaultDays}
+          onChange={(event) => onCustomDaysChange(event.target.value)}
+          className={filterControlClass(
+            active,
+            "h-9 w-20 rounded-md border border-input bg-background px-2 text-sm",
+          )}
+          disabled={disabled || !customEnabled}
+          aria-label={`${label} custom days`}
+        />
+        <button
+          type="button"
+          className="btn-ghost h-9 w-9 p-0"
+          onClick={onReset}
+          disabled={disabled}
+          title={`Reset ${label} to default`}
+          aria-label={`Reset ${label} to default`}
+        >
+          <RotateCcw className="size-4" />
+        </button>
+      </span>
+    </div>
+  );
+}
+
 function CashOutGoPlanReport({
   plan,
   loading,
@@ -6733,6 +7543,8 @@ function CashOutGoPlanReport({
   onSettingEnabledChange,
   onOffsetReset,
   onRowChange,
+  onExpectedSentDateReset,
+  onBillOffsetOverrideReset,
   onOpenSourceFile,
   onOpenRowsSearch,
   divisions,
@@ -6767,6 +7579,8 @@ function CashOutGoPlanReport({
     field: "expectedSentDate" | "billOffsetOverride" | "manualExpectedPaymentDate",
     value: string,
   ) => void;
+  onExpectedSentDateReset: (rowKey: string) => void;
+  onBillOffsetOverrideReset: (rowKey: string) => void;
   onOpenSourceFile: (row: CashOutGoPlanDetailRow) => void;
   onOpenRowsSearch: (rows: CashOutGoPlanDetailRow[]) => void;
   divisions: Division[];
@@ -6784,6 +7598,9 @@ function CashOutGoPlanReport({
   const revenuePercent = plan
     ? getCashOutGoAllocationPercent(totals.revenue, plan.allocation.revenue)
     : "";
+  const handSubmissionOffsetActive = Boolean(plan?.settings.useCustomHandSubmissionOffsetDays);
+  const billPaymentOffsetActive = Boolean(plan?.settings.useCustomBillOffsetDays);
+  const dpOffsetActive = Boolean(plan?.settings.useCustomDpOffsetDays);
   return (
     <div className="space-y-4">
       <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
@@ -6820,166 +7637,84 @@ function CashOutGoPlanReport({
               ))}
             </select>
           </div>
-          <div className="text-xs font-medium">
-            <span className="mb-1 flex items-center gap-1.5 text-muted-foreground">
-              Bill submission Offset Days
-              <FloatingHelper text="Added to the Bills at Hand base date to calculate the expected sent/resubmission date. Default is 5 days unless Custom is enabled." />
-            </span>
-            <span className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="0"
-                value={
-                  plan?.settings.useCustomHandSubmissionOffsetDays
-                    ? plan.settings.handSubmissionOffsetDays
-                    : DEFAULT_BILL_SUBMISSION_OFFSET_DAYS
-                }
-                onChange={(event) =>
-                  onSettingChange("handSubmissionOffsetDays", event.target.value)
-                }
-                className="h-9 w-28 rounded-md border border-input bg-background px-2 text-sm"
-                disabled={!plan || !plan.settings.useCustomHandSubmissionOffsetDays}
-              />
-              <label className="flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={Boolean(plan?.settings.useCustomHandSubmissionOffsetDays)}
-                  onChange={(event) =>
-                    onSettingEnabledChange(
-                      "useCustomHandSubmissionOffsetDays",
-                      event.target.checked,
-                    )
-                  }
-                  disabled={!plan}
-                />
-                Custom
-              </label>
-              <span className="text-[11px] text-muted-foreground">Default 5</span>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={() => onOffsetReset("handSubmissionOffsetDays")}
-                disabled={!plan}
-                title="Reset Bill submission Offset Days"
-                aria-label="Reset Bill submission Offset Days"
-              >
-                <RotateCcw className="size-4" />
-              </button>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={onSave}
-                disabled={!plan || saving || !dirty}
-                title="Save Bill submission Offset Days"
-                aria-label="Save Bill submission Offset Days"
-              >
-                <Save className="size-4" />
-              </button>
-            </span>
-          </div>
-          <div className="text-xs font-medium">
-            <span className="mb-1 flex items-center gap-1.5 text-muted-foreground">
-              Bill Payment Offset Days
-              <FloatingHelper text="Added after the bill is sent/submitted to calculate the expected payment date. Default is 5 days unless Custom is enabled. Row overrides are saved separately below." />
-            </span>
-            <span className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="0"
-                value={
-                  plan?.settings.useCustomBillOffsetDays
-                    ? plan.settings.billOffsetDays
-                    : DEFAULT_BILL_PAYMENT_OFFSET_DAYS
-                }
-                onChange={(event) => onSettingChange("billOffsetDays", event.target.value)}
-                className="h-9 w-28 rounded-md border border-input bg-background px-2 text-sm"
-                disabled={!plan || !plan.settings.useCustomBillOffsetDays}
-              />
-              <label className="flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={Boolean(plan?.settings.useCustomBillOffsetDays)}
-                  onChange={(event) =>
-                    onSettingEnabledChange("useCustomBillOffsetDays", event.target.checked)
-                  }
-                  disabled={!plan}
-                />
-                Custom
-              </label>
-              <span className="text-[11px] text-muted-foreground">Default 5</span>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={() => onOffsetReset("billOffsetDays")}
-                disabled={!plan}
-                title="Reset Bill Payment Offset Days"
-                aria-label="Reset Bill Payment Offset Days"
-              >
-                <RotateCcw className="size-4" />
-              </button>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={onSave}
-                disabled={!plan || saving || !dirty}
-                title="Save Bill Payment Offset Days"
-                aria-label="Save Bill Payment Offset Days"
-              >
-                <Save className="size-4" />
-              </button>
-            </span>
-          </div>
-          <div className="text-xs font-medium">
-            <span className="mb-1 flex items-center gap-1.5 text-muted-foreground">
-              D.P. offset days
-              <FloatingHelper text="Added to the delivery/job-completion due date to calculate the expected bill sent date. For Items Based on D.P., one extra day is also added after D.P. before this offset. Default is 10 days unless Custom is enabled." />
-            </span>
-            <span className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="0"
-                value={
-                  plan?.settings.useCustomDpOffsetDays
-                    ? plan.settings.dpOffsetDays
-                    : DEFAULT_DP_OFFSET_DAYS
-                }
-                onChange={(event) => onSettingChange("dpOffsetDays", event.target.value)}
-                className="h-9 w-28 rounded-md border border-input bg-background px-2 text-sm"
-                disabled={!plan || !plan.settings.useCustomDpOffsetDays}
-              />
-              <label className="flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={Boolean(plan?.settings.useCustomDpOffsetDays)}
-                  onChange={(event) =>
-                    onSettingEnabledChange("useCustomDpOffsetDays", event.target.checked)
-                  }
-                  disabled={!plan}
-                />
-                Custom
-              </label>
-              <span className="text-[11px] text-muted-foreground">Default 10</span>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={() => onOffsetReset("dpOffsetDays")}
-                disabled={!plan}
-                title="Reset D.P. offset days"
-                aria-label="Reset D.P. offset days"
-              >
-                <RotateCcw className="size-4" />
-              </button>
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 p-0"
-                onClick={onSave}
-                disabled={!plan || saving || !dirty}
-                title="Save D.P. offset days"
-                aria-label="Save D.P. offset days"
-              >
-                <Save className="size-4" />
-              </button>
-            </span>
+          <CashOutGoPlanOffsetControl
+            label="Bill submission offset"
+            defaultDays={DEFAULT_BILL_SUBMISSION_OFFSET_DAYS}
+            customDays={plan?.settings.handSubmissionOffsetDays}
+            customEnabled={Boolean(plan?.settings.useCustomHandSubmissionOffsetDays)}
+            disabled={!plan}
+            active={handSubmissionOffsetActive}
+            helperText={[
+              "Used for Bills at Hand rows.",
+              "Default is 5 days.",
+              "When Use custom is off, the default is applied and the input is locked.",
+              "When Use custom is on, this page uses the entered days after saving.",
+            ]}
+            onCustomEnabledChange={(checked) =>
+              onSettingEnabledChange("useCustomHandSubmissionOffsetDays", checked)
+            }
+            onCustomDaysChange={(value) => onSettingChange("handSubmissionOffsetDays", value)}
+            onReset={() => onOffsetReset("handSubmissionOffsetDays")}
+          />
+          <CashOutGoPlanOffsetControl
+            label="Bill payment offset"
+            defaultDays={DEFAULT_BILL_PAYMENT_OFFSET_DAYS}
+            customDays={plan?.settings.billOffsetDays}
+            customEnabled={Boolean(plan?.settings.useCustomBillOffsetDays)}
+            disabled={!plan}
+            active={billPaymentOffsetActive}
+            helperText={[
+              "Used to calculate Expected payment after a bill is sent/resubmitted.",
+              "Default is 5 days.",
+              "Row Payment Offset Override applies only to that row and supersedes this value.",
+              "When Use custom is off, the default is applied and the input is locked.",
+            ]}
+            onCustomEnabledChange={(checked) =>
+              onSettingEnabledChange("useCustomBillOffsetDays", checked)
+            }
+            onCustomDaysChange={(value) => onSettingChange("billOffsetDays", value)}
+            onReset={() => onOffsetReset("billOffsetDays")}
+          />
+          <CashOutGoPlanOffsetControl
+            label="D.P. offset"
+            defaultDays={DEFAULT_DP_OFFSET_DAYS}
+            customDays={plan?.settings.dpOffsetDays}
+            customEnabled={Boolean(plan?.settings.useCustomDpOffsetDays)}
+            disabled={!plan}
+            active={dpOffsetActive}
+            helperText={[
+              "Used for D.P.-based expected sent/resubmission dates.",
+              "Default is 10 days.",
+              "For Items Based on D.P., one extra day is added after D.P. before this offset.",
+              "When Use custom is off, the default is applied and the input is locked.",
+            ]}
+            onCustomEnabledChange={(checked) =>
+              onSettingEnabledChange("useCustomDpOffsetDays", checked)
+            }
+            onCustomDaysChange={(value) => onSettingChange("dpOffsetDays", value)}
+            onReset={() => onOffsetReset("dpOffsetDays")}
+          />
+          <div className="flex items-end gap-1">
+            <button
+              type="button"
+              className="btn-ghost h-9 px-2 text-xs"
+              onClick={onSave}
+              disabled={!plan || saving || !dirty}
+              title="Save Cash Out Go Plan settings and row overrides to backend global settings"
+            >
+              <Save className="size-3.5" />
+              Save settings
+            </button>
+            <FloatingHelper
+              text={[
+                "This save is not browser-session only.",
+                "It saves Cash Out Go Plan settings and row overrides to the backend.",
+                "Offset settings are saved for the current logged-in user.",
+              ]}
+              label="Save settings help"
+              className="size-8"
+              iconClassName="size-3.5"
+            />
           </div>
           <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium">
             <input
@@ -7016,11 +7751,25 @@ function CashOutGoPlanReport({
       {plan ? (
         <>
           <CashOutGoSummaryTable plan={plan} onOpenRowsSearch={onOpenRowsSearch} />
-          <CashOutGoMonthTable rows={plan.expenditureTillDate} title="Expenditure Till Date" />
+          <CashOutGoMonthTable
+            rows={plan.expenditureTillDate}
+            title="Expenditure Till Date"
+            titleHelper={[
+              "For past months, MER values supersede software payment entries when MER has capital or revenue value.",
+              "If MER is blank for a past month, software payment entries are used.",
+              "The current month is always shown, even if zero, using software payment entries.",
+            ]}
+          />
           <CashOutGoDetailTable
             title="Bills Submitted to PCDA"
+            helperText={[
+              "Shows bills already sent/submitted to PCDA where payment is still expected.",
+              "Expected payment date is calculated from sent/submission date plus payment offset days unless manually overridden.",
+            ]}
             rows={plan.billsSubmitted}
             onRowChange={onRowChange}
+            onExpectedSentDateReset={onExpectedSentDateReset}
+            onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
@@ -7032,6 +7781,8 @@ function CashOutGoPlanReport({
             helperText="Expected sent/resubmission is calculated from the base date plus Bill submission Offset Days. Edit the date for a row if a specific submission/resubmission date is expected."
             rows={plan.billsAtHand}
             onRowChange={onRowChange}
+            onExpectedSentDateReset={onExpectedSentDateReset}
+            onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
@@ -7043,6 +7794,8 @@ function CashOutGoPlanReport({
             helperText="Expected sent/resubmission is calculated as base date plus D.P. offset days. Base date is Material Receipt Date when delivery/inspection applies; otherwise it is Job Completion Date for non-contract IR No files, or Revised D.P./D.P. date plus one day for files like MPC, AMC etc. Rows turn red after the expected date passes and the bill is still not sent/submitted."
             rows={plan.deliveredBillsPending}
             onRowChange={onRowChange}
+            onExpectedSentDateReset={onExpectedSentDateReset}
+            onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
@@ -7051,8 +7804,16 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="Items Based on D.P."
+            helperText={[
+              "Forecasts bills from D.P. dates where delivery/job completion is not yet recorded.",
+              "Expected sent/resubmission is calculated from D.P. plus one day and D.P. offset days.",
+              "D.P. dates after 31 March of the selected FY are excluded.",
+              "If expected payment goes beyond 31 March of the selected FY, the row remains visible but counts as zero in the plan.",
+            ]}
             rows={plan.dpBasedForecast ?? []}
             onRowChange={onRowChange}
+            onExpectedSentDateReset={onExpectedSentDateReset}
+            onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
@@ -7064,6 +7825,8 @@ function CashOutGoPlanReport({
             title="D.P. Expired"
             rows={plan.dpExpired ?? []}
             onRowChange={onRowChange}
+            onExpectedSentDateReset={onExpectedSentDateReset}
+            onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
@@ -7075,11 +7838,13 @@ function CashOutGoPlanReport({
           <CashOutGoMonthTable
             rows={plan.monthwisePlan}
             title="Monthwise Revised Cash Out Go Plan"
+            titleHelper={[
+              "For past months, MER values supersede software payment entries when MER has capital or revenue value.",
+              "For current and future months, the plan uses software entries and forecasts from bills submitted, bills at hand, delivered items, D.P.-based forecast, and D.P. expired cases.",
+              "Use this as the consolidated month-wise projection for expected expenditure.",
+            ]}
           />
-          <CashOutGoMonthTable
-            rows={[getCashOutGoTotalExpectedRow(plan)]}
-            title="Total Expected Expenditure"
-          />
+          <CashOutGoTotalExpectedTable plan={plan} />
         </>
       ) : null}
     </div>
@@ -7206,31 +7971,47 @@ function getCashOutGoSummarySections(plan: CashOutGoPlanPayload) {
   ];
 }
 
-function recalculateCashOutGoPlan(plan: CashOutGoPlanPayload): CashOutGoPlanPayload {
+function recalculateCashOutGoPlan(
+  plan: CashOutGoPlanPayload,
+  options: { preserveExpectedSentDate?: boolean } = {},
+): CashOutGoPlanPayload {
   const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(plan.settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(plan.settings);
   const recalcRows = (rows: CashOutGoPlanDetailRow[]) =>
     rows.map((row) => {
+      const calculatedExpectedSentDate =
+        row.section === "hand"
+          ? (addDays(row.baseDate, billSubmissionOffsetDays) ?? "")
+          : row.section === "delivered"
+            ? (addDays(row.baseDate, dpOffsetDays) ?? "")
+            : row.section === "dp"
+              ? (addDays(row.baseDate, dpOffsetDays + 1) ?? "")
+              : row.expectedSentDate || "";
       const expectedSentDate =
-        row.actualSentDate || row.expectedSentDateOverride
+        options.preserveExpectedSentDate && hasFilledString(row.expectedSentDate)
           ? row.expectedSentDate
-          : row.section === "hand"
-            ? (addDays(row.baseDate, billSubmissionOffsetDays) ?? "")
-            : row.section === "delivered"
-              ? (addDays(row.baseDate, dpOffsetDays) ?? "")
-              : row.section === "dp"
-                ? (addDays(row.baseDate, dpOffsetDays + 1) ?? "")
-                : row.expectedSentDate;
-      const offset = row.billOffsetOverride
+          : row.actualSentDate || row.expectedSentDateOverride
+            ? row.expectedSentDate || calculatedExpectedSentDate
+            : calculatedExpectedSentDate;
+      const rawOffsetOverride = hasFilledString(row.billOffsetOverride)
         ? readMerAmount(row.billOffsetOverride)
-        : billPaymentOffsetDays;
+        : undefined;
+      const billOffsetOverride =
+        rawOffsetOverride === undefined || rawOffsetOverride === billPaymentOffsetDays
+          ? ""
+          : row.billOffsetOverride;
+      const offset =
+        rawOffsetOverride === undefined || rawOffsetOverride === billPaymentOffsetDays
+          ? billPaymentOffsetDays
+          : rawOffsetOverride;
       const sentDate = row.actualSentDate || expectedSentDate;
       const expectedPaymentDate = row.manualExpectedPaymentDate || addDays(sentDate, offset) || "";
       return {
         ...row,
         expectedSentDate,
-        billOffsetDays: row.billOffsetOverride ? offset : billPaymentOffsetDays,
+        billOffsetOverride,
+        billOffsetDays: hasFilledString(billOffsetOverride) ? offset : billPaymentOffsetDays,
         expectedPaymentDate,
         overdue: Boolean(expectedSentDate && expectedSentDate < plan.today && !row.actualSentDate),
       };
@@ -7315,45 +8096,24 @@ function getEffectiveDpOffsetDays(settings: CashOutGoPlanPayload["settings"]) {
   return settings.useCustomDpOffsetDays ? settings.dpOffsetDays : DEFAULT_DP_OFFSET_DAYS;
 }
 
-function exportCashOutGoPlan(plan: CashOutGoPlanPayload, format: "excel" | "pdf") {
+function exportCashOutGoPlan(
+  plan: CashOutGoPlanPayload,
+  format: "excel" | "pdf",
+  description?: string,
+) {
   const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(plan.settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(plan.settings);
-  const detailHeaders = [
-    "File",
-    "Description",
-    "Firm",
-    "Amount source",
-    "Base date",
-    "Expected sent/resubmission",
-    "Payment Offset Days",
-    "Expected payment",
-    "Capital",
-    "Revenue",
-    "Total",
-    "Overdue",
-  ];
-  const detailRows = (rows: CashOutGoPlanDetailRow[]) =>
-    rows.map((row) => [
-      row.fileRef,
-      row.description,
-      row.firm,
-      row.amountSource,
-      row.baseDate,
-      row.expectedSentDate,
-      row.billOffsetOverride
-        ? `${row.billOffsetOverride} (row override)`
-        : `${row.billOffsetDays} (global/default)`,
-      row.expectedPaymentDate,
-      formatCurrency(row.capital),
-      formatCurrency(row.revenue),
-      formatCurrency(row.total),
-      row.overdue ? "Yes" : "No",
-    ]);
   void downloadBackendExport({
     format,
     title: "Cash Out Go Plan",
-    description: `FY ${plan.financialYear}; Bill Payment Offset ${billPaymentOffsetDays} days; Bill submission Offset ${billSubmissionOffsetDays} days; D.P. offset ${dpOffsetDays} days`,
+    description: getReportExportDescription(
+      description,
+      `Plan FY: ${plan.financialYear}`,
+      `Bill Payment Offset: ${billPaymentOffsetDays} days`,
+      `Bill submission Offset: ${billSubmissionOffsetDays} days`,
+      `D.P. offset: ${dpOffsetDays} days`,
+    ),
     fileName: `cash-out-go-plan-${plan.financialYear}.${format === "excel" ? "xls" : "pdf"}`,
     tables: [
       {
@@ -7381,27 +8141,6 @@ function exportCashOutGoPlan(plan: CashOutGoPlanPayload, format: "excel" | "pdf"
         ),
       },
       {
-        title: "Bills Submitted to PCDA",
-        headers: detailHeaders,
-        rows: detailRows(plan.billsSubmitted),
-      },
-      { title: "Bills at Hand", headers: detailHeaders, rows: detailRows(plan.billsAtHand) },
-      {
-        title: "Items Delivered and Bills Yet to Be Prepared",
-        headers: detailHeaders,
-        rows: detailRows(plan.deliveredBillsPending),
-      },
-      {
-        title: "Items Based on D.P.",
-        headers: detailHeaders,
-        rows: detailRows(plan.dpBasedForecast ?? []),
-      },
-      {
-        title: "D.P. Expired",
-        headers: detailHeaders,
-        rows: detailRows(plan.dpExpired ?? []),
-      },
-      {
         title: "Monthwise Revised Cash Out Go Plan",
         headers: cashOutgoColumns.map((column) => column.label),
         rows: [
@@ -7413,17 +8152,65 @@ function exportCashOutGoPlan(plan: CashOutGoPlanPayload, format: "excel" | "pdf"
       },
       {
         title: "Total Expected Expenditure",
-        headers: cashOutgoColumns.map((column) => column.label),
-        rows: [getCashOutGoTotalExpectedRow(plan)].map((row, index) =>
-          cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
-        ),
+        headers: ["Capital", "Revenue", "Total"],
+        rows: [
+          [
+            formatCurrency(getCashOutGoTotalExpectedRow(plan).capital),
+            formatCurrency(getCashOutGoTotalExpectedRow(plan).revenue),
+            formatCurrency(getCashOutGoTotalExpectedRow(plan).total),
+          ],
+        ],
       },
     ],
   });
 }
 
-function CashOutGoMonthTable({ rows, title }: { rows: ExpectedCashOutgoRow[]; title: string }) {
-  return <CashOutgoReport rows={rows} title={title} emptyMessage="No rows found." />;
+function CashOutGoMonthTable({
+  rows,
+  title,
+  titleHelper,
+}: {
+  rows: ExpectedCashOutgoRow[];
+  title: string;
+  titleHelper?: HelperText;
+}) {
+  return (
+    <CashOutgoReport
+      rows={rows}
+      title={title}
+      titleHelper={titleHelper}
+      emptyMessage="No rows found."
+    />
+  );
+}
+
+function CashOutGoTotalExpectedTable({ plan }: { plan: CashOutGoPlanPayload }) {
+  const row = getCashOutGoTotalExpectedRow(plan);
+  return (
+    <div className="rounded-xl border border-border bg-card p-6 shadow-[var(--shadow-card)]">
+      <h2 className="text-base font-bold">Total Expected Expenditure</h2>
+      <div className="mt-5 overflow-hidden rounded-lg border border-border">
+        <table className="w-full min-w-[520px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
+              <th className="px-3 py-2.5 text-right font-semibold">Capital</th>
+              <th className="px-3 py-2.5 text-right font-semibold">Revenue</th>
+              <th className="px-3 py-2.5 text-right font-semibold">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="bg-card">
+              <td className="px-3 py-3 text-right tabular-nums">{formatCurrency(row.capital)}</td>
+              <td className="px-3 py-3 text-right tabular-nums">{formatCurrency(row.revenue)}</td>
+              <td className="px-3 py-3 text-right font-semibold tabular-nums">
+                {formatCurrency(row.total)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function CashOutGoDetailTable({
@@ -7431,6 +8218,8 @@ function CashOutGoDetailTable({
   helperText,
   rows,
   onRowChange,
+  onExpectedSentDateReset,
+  onBillOffsetOverrideReset,
   onOpenFile,
   onOpenRowsSearch,
   onSave,
@@ -7447,6 +8236,8 @@ function CashOutGoDetailTable({
     field: "expectedSentDate" | "billOffsetOverride" | "manualExpectedPaymentDate",
     value: string,
   ) => void;
+  onExpectedSentDateReset?: (rowKey: string) => void;
+  onBillOffsetOverrideReset?: (rowKey: string) => void;
   onOpenFile?: (row: CashOutGoPlanDetailRow) => void;
   onOpenRowsSearch?: (rows: CashOutGoPlanDetailRow[]) => void;
   onSave?: () => void;
@@ -7493,9 +8284,52 @@ function CashOutGoDetailTable({
               <th className="px-3 py-2">Firm</th>
               <th className="px-3 py-2">Source</th>
               <th className="px-3 py-2">Base date</th>
-              <th className="px-3 py-2">Expected sent/resubmission</th>
-              <th className="px-3 py-2">Payment Offset Override</th>
-              <th className="px-3 py-2">Expected payment</th>
+              <th className="px-3 py-2">
+                <span className="inline-flex items-center gap-1.5">
+                  Expected sent/resubmission
+                  <FloatingHelper
+                    text={[
+                      "This is the expected date for sending or resubmitting the bill.",
+                      "If you edit this field, it becomes a manual row override and is highlighted red.",
+                      "Use the reset icon beside Save to clear the manual override and return to the software-calculated date.",
+                      "Changing this date also changes Expected payment because payment is calculated after bill sent/resubmission.",
+                    ]}
+                    className="size-5 border-0 bg-transparent shadow-none"
+                    iconClassName="size-3.5"
+                  />
+                </span>
+              </th>
+              <th className="px-3 py-2">
+                <span className="inline-flex items-center gap-1.5">
+                  Payment Offset Override
+                  <FloatingHelper
+                    text={[
+                      "Optional row-specific payment offset.",
+                      "When blank, the global/default Bill payment offset is used.",
+                      "If the entered value equals the global/default offset, it is treated as no override and saved blank.",
+                      "When filled, this row becomes a manual override and is highlighted red.",
+                      "Use the reset icon beside Save to clear this row override.",
+                      "It changes Expected payment only; it should not change Expected sent/resubmission.",
+                    ]}
+                    className="size-5 border-0 bg-transparent shadow-none"
+                    iconClassName="size-3.5"
+                  />
+                </span>
+              </th>
+              <th className="px-3 py-2">
+                <span className="inline-flex items-center gap-1.5">
+                  Expected payment
+                  <FloatingHelper
+                    text={[
+                      "Calculated from actual/expected sent/resubmission date plus payment offset days.",
+                      "Row Payment Offset Override supersedes the global/default payment offset for that row.",
+                      "If a manual Expected payment date is entered, that row field is highlighted red.",
+                    ]}
+                    className="size-5 border-0 bg-transparent shadow-none"
+                    iconClassName="size-3.5"
+                  />
+                </span>
+              </th>
               <th className="px-3 py-2 text-right">Capital</th>
               <th className="px-3 py-2 text-right">Revenue</th>
               <th className="px-3 py-2 text-right">Total</th>
@@ -7538,22 +8372,37 @@ function CashOutGoDetailTable({
                       <div className="flex flex-col items-start gap-1">
                         <input
                           type="date"
-                          value={row.expectedSentDate}
+                          value={row.expectedSentDate || ""}
                           onChange={(event) =>
                             onRowChange(row.rowKey, "expectedSentDate", event.target.value)
                           }
-                          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                          className={filterControlClass(
+                            Boolean(row.expectedSentDateOverride),
+                            "h-8 rounded-md border border-input bg-background px-2 text-sm",
+                          )}
                           disabled={dpOnly}
                         />
                         {!dpOnly && onSave ? (
-                          <button
-                            type="button"
-                            onClick={onSave}
-                            disabled={saving || saveDisabled}
-                            className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {saving ? "Saving..." : "Save"}
-                          </button>
+                          <span className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={onSave}
+                              disabled={saving || saveDisabled}
+                              className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {saving ? "Saving..." : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onExpectedSentDateReset?.(row.rowKey)}
+                              disabled={saving || !row.expectedSentDateOverride}
+                              className="rounded border border-border p-1 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                              title="Reset Expected sent/resubmission to software-calculated date"
+                              aria-label="Reset Expected sent/resubmission to software-calculated date"
+                            >
+                              <RotateCcw className="size-3.5" />
+                            </button>
+                          </span>
                         ) : null}
                       </div>
                     )}
@@ -7566,22 +8415,37 @@ function CashOutGoDetailTable({
                         <input
                           type="number"
                           min="0"
-                          value={row.billOffsetOverride}
+                          value={row.billOffsetOverride || ""}
                           placeholder={`Global ${row.billOffsetDays}`}
                           onChange={(event) =>
                             onRowChange(row.rowKey, "billOffsetOverride", event.target.value)
                           }
-                          className="h-8 w-24 rounded-md border border-input bg-background px-2 text-sm"
+                          className={filterControlClass(
+                            Boolean(row.billOffsetOverride),
+                            "h-8 w-24 rounded-md border border-input bg-background px-2 text-sm",
+                          )}
                         />
                         {onSave ? (
-                          <button
-                            type="button"
-                            onClick={onSave}
-                            disabled={saving || saveDisabled}
-                            className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {saving ? "Saving..." : "Save"}
-                          </button>
+                          <span className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={onSave}
+                              disabled={saving || saveDisabled}
+                              className="rounded border border-border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {saving ? "Saving..." : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onBillOffsetOverrideReset?.(row.rowKey)}
+                              disabled={saving || !row.billOffsetOverride}
+                              className="rounded border border-border p-1 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                              title="Reset Payment Offset Override to global/default offset"
+                              aria-label="Reset Payment Offset Override to global/default offset"
+                            >
+                              <RotateCcw className="size-3.5" />
+                            </button>
+                          </span>
                         ) : null}
                       </div>
                     )}
@@ -7591,11 +8455,14 @@ function CashOutGoDetailTable({
                       <div className="flex flex-col items-start gap-1">
                         <input
                           type="date"
-                          value={row.manualExpectedPaymentDate}
+                          value={row.manualExpectedPaymentDate || ""}
                           onChange={(event) =>
                             onRowChange(row.rowKey, "manualExpectedPaymentDate", event.target.value)
                           }
-                          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                          className={filterControlClass(
+                            Boolean(row.manualExpectedPaymentDate),
+                            "h-8 rounded-md border border-input bg-background px-2 text-sm",
+                          )}
                         />
                         {onSave ? (
                           <button
@@ -7745,24 +8612,24 @@ function CashOutgoReport({
 
   return (
     <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className="mb-5 space-y-4">
+        <div className="min-w-0">
           <h2 className="text-base font-bold">{title}</h2>
           {descriptionWithHelper ? <ReportDescription description={descriptionWithHelper} /> : null}
         </div>
-        <div className="flex flex-wrap items-end justify-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 rounded-md border border-border bg-secondary/10 p-2">
+          <div className="grid w-full grid-cols-2 gap-2 text-right text-xs sm:w-[280px]">
+            <div className="rounded-md border border-border bg-card px-3 py-2">
+              <div className="whitespace-nowrap text-muted-foreground">Total Capital</div>
+              <div className="font-semibold tabular-nums">{formatCurrency(totals.capital)}</div>
+            </div>
+            <div className="rounded-md border border-border bg-card px-3 py-2">
+              <div className="whitespace-nowrap text-muted-foreground">Total Revenue</div>
+              <div className="font-semibold tabular-nums">{formatCurrency(totals.revenue)}</div>
+            </div>
+          </div>
           {controls}
           {actions}
-        </div>
-        <div className="grid grid-cols-2 gap-2 text-right text-xs">
-          <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
-            <div className="text-muted-foreground">Total Capital</div>
-            <div className="font-semibold tabular-nums">{formatCurrency(totals.capital)}</div>
-          </div>
-          <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
-            <div className="text-muted-foreground">Total Revenue</div>
-            <div className="font-semibold tabular-nums">{formatCurrency(totals.revenue)}</div>
-          </div>
         </div>
       </div>
 
@@ -8028,6 +8895,7 @@ function DelayStatusReport({
   selectedMilestoneKey,
   onDaysChange,
   onMilestoneChange,
+  onDaysReset,
   onPdf,
   onExcel,
   onOpenFile,
@@ -8043,6 +8911,7 @@ function DelayStatusReport({
   selectedMilestoneKey: string;
   onDaysChange: (value: string) => void;
   onMilestoneChange: (value: string) => void;
+  onDaysReset: () => void;
   onPdf: () => void;
   onExcel: () => void;
   onOpenFile: (row: DelayStatusRow) => void;
@@ -8053,6 +8922,8 @@ function DelayStatusReport({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<(typeof delayStatusPageSizeOptions)[number]>(25);
   const [showBiddingBreakup, setShowBiddingBreakup] = useState(false);
+  const daysFilterActive = selectedDays !== "5";
+  const milestoneFilterActive = selectedMilestoneKey !== "all";
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageStart = rows.length ? (safePage - 1) * pageSize : 0;
@@ -8079,22 +8950,56 @@ function DelayStatusReport({
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex w-28 flex-col gap-1 text-xs text-muted-foreground">
-            <span>Days</span>
-            <input
-              type="number"
-              min="0"
-              value={selectedDays}
-              onChange={(event) => onDaysChange(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-            />
+          <label
+            className={filterLabelClass(
+              daysFilterActive,
+              "flex w-40 flex-col gap-1 text-xs text-muted-foreground",
+            )}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              Days
+              <FloatingHelper
+                text="Default is 5 days. Use reset to restore the default threshold."
+                className="size-5 border-0 bg-transparent shadow-none"
+                iconClassName="size-3.5"
+              />
+            </span>
+            <span className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min="0"
+                value={selectedDays}
+                onChange={(event) => onDaysChange(event.target.value)}
+                className={filterControlClass(
+                  daysFilterActive,
+                  "h-9 min-w-0 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+                )}
+              />
+              <button
+                type="button"
+                onClick={onDaysReset}
+                className="btn-ghost h-9 w-9 p-0"
+                title="Reset days"
+                aria-label="Reset days"
+              >
+                <RotateCcw className="size-4" />
+              </button>
+            </span>
           </label>
-          <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
+          <label
+            className={filterLabelClass(
+              milestoneFilterActive,
+              "flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground",
+            )}
+          >
             <span>Milestone</span>
             <select
               value={selectedMilestoneKey}
               onChange={(event) => onMilestoneChange(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              className={filterControlClass(
+                milestoneFilterActive,
+                "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+              )}
             >
               <option value="all">All milestones</option>
               {delayMilestoneOptions.map((milestone) => (
@@ -8348,8 +9253,8 @@ function getPaginationPages(currentPage: number, totalPages: number) {
   return Array.from({ length: lastPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
-function exportDelayStatusToExcel(rows: DelayStatusRow[], title: string) {
-  void downloadDelayStatus(rows, title, "excel");
+function exportDelayStatusToExcel(rows: DelayStatusRow[], title: string, description?: string) {
+  void downloadDelayStatus(rows, title, "excel", description);
 }
 
 async function fetchAllMasterFirms() {
@@ -8748,13 +9653,13 @@ function exportFirmDatabaseReport(
   visibleColumns: FirmDatabaseColumnKey[],
   title: string,
   format: "excel" | "pdf",
+  description?: string,
 ) {
   const columns = firmDatabaseColumns.filter((column) => visibleColumns.includes(column.key));
   void downloadBackendExport({
     format,
     title,
-    description:
-      "Firm-wise supply order, value, delivery, BG, rating, and coverage analysis. Payment performance fields are excluded.",
+    description,
     tables: [
       {
         headers: columns.map((column) => column.label),
@@ -8768,14 +9673,20 @@ function exportFirmDatabaseReport(
   });
 }
 
-function printDelayStatusToPdf(rows: DelayStatusRow[], title: string) {
-  void downloadDelayStatus(rows, title, "pdf");
+function printDelayStatusToPdf(rows: DelayStatusRow[], title: string, description?: string) {
+  void downloadDelayStatus(rows, title, "pdf", description);
 }
 
-function exportMmgSummary(rows: MmgSummaryRow[], title: string, format: "excel" | "pdf") {
+function exportMmgSummary(
+  rows: MmgSummaryRow[],
+  title: string,
+  format: "excel" | "pdf",
+  description?: string,
+) {
   void downloadBackendExport({
     format,
     title,
+    description,
     tables: [
       {
         headers: ["Field", "Value"],
@@ -8808,12 +9719,17 @@ async function exportMonthlyOperationalReport(
   });
 }
 
-async function downloadDelayStatus(rows: DelayStatusRow[], title: string, format: "excel" | "pdf") {
+async function downloadDelayStatus(
+  rows: DelayStatusRow[],
+  title: string,
+  format: "excel" | "pdf",
+  description?: string,
+) {
   const exportColumns = delayStatusColumns.filter((column) => column.key !== "action");
   await downloadBackendExport({
     format,
     title,
-    description: "Stages whose current milestone has remained open beyond the selected threshold.",
+    description,
     tables: [
       {
         headers: exportColumns.map((column) => column.label),
@@ -9529,16 +10445,16 @@ function addSupplementaryBillCashOutgoTotal(
     revenue: 0,
     total: 0,
   };
-  const capital =
-    getInrAmount(
-      amountType === "actual" ? bill.actualPaymentCapital : bill.billAmountCapital,
-      file,
-    ) ?? 0;
-  const revenue =
-    getInrAmount(
-      amountType === "actual" ? bill.actualPaymentRevenue : bill.billAmountRevenue,
-      file,
-    ) ?? 0;
+  const capitalSource =
+    amountType === "actual" && hasFilledString(bill.actualPaymentCapital)
+      ? bill.actualPaymentCapital
+      : bill.billAmountCapital;
+  const revenueSource =
+    amountType === "actual" && hasFilledString(bill.actualPaymentRevenue)
+      ? bill.actualPaymentRevenue
+      : bill.billAmountRevenue;
+  const capital = getInrAmount(capitalSource, file) ?? 0;
+  const revenue = getInrAmount(revenueSource, file) ?? 0;
   current.capital += capital;
   current.revenue += revenue;
   current.total += capital + revenue;

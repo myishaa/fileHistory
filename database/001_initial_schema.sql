@@ -18,6 +18,9 @@ create table app_users (
   username text not null unique,
   role text not null check (role in ('admin', 'sub_admin', 'division_user', 'editor', 'viewer', 'universal_viewer')),
   allowed_file_categories jsonb,
+  archived_at timestamptz,
+  archived_by uuid references app_users(id) on delete set null,
+  archive_reason text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -32,6 +35,7 @@ create table app_settings (
   id boolean primary key default true check (id),
   financial_year text not null,
   selected_year text not null,
+  setup_year text not null,
   theme text not null default 'light' check (theme in ('light', 'dark')),
   theme_tint text not null default 'plain' check (
     theme_tint in ('plain', 'yellow', 'green', 'blue', 'pink', 'lavender')
@@ -61,6 +65,9 @@ create table master_firms (
   address text,
   firm_unique_no text,
   contact_no text,
+  archived_at timestamptz,
+  archived_by uuid references app_users(id) on delete set null,
+  archive_reason text,
   created_by uuid references app_users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -309,6 +316,7 @@ create trigger master_firms_set_updated_at
 before update on master_firms
 for each row execute function set_updated_at();
 
+create index app_users_archived_at_idx on app_users(archived_at);
 create index files_year_idx on files(year);
 create index files_division_id_idx on files(division_id);
 create unique index files_unique_code_key on files(unique_code)
@@ -330,11 +338,12 @@ create index file_firms_unique_no_trgm_idx on file_firms using gin (firm_unique_
 create index file_firms_contact_no_trgm_idx on file_firms using gin (contact_no gin_trgm_ops);
 create unique index master_firms_unique_no_idx
 on master_firms (lower(btrim(firm_unique_no)))
-where nullif(btrim(firm_unique_no), '') is not null;
+where nullif(btrim(firm_unique_no), '') is not null and archived_at is null;
 create index master_firms_name_trgm_idx on master_firms using gin (firm_name gin_trgm_ops);
 create index master_firms_email_trgm_idx on master_firms using gin (email_id gin_trgm_ops);
 create index master_firms_unique_no_trgm_idx on master_firms using gin (firm_unique_no gin_trgm_ops);
 create index master_firms_contact_no_trgm_idx on master_firms using gin (contact_no gin_trgm_ops);
+create index master_firms_archived_at_idx on master_firms(archived_at);
 create index supply_orders_file_id_idx on supply_orders(file_id);
 create index supply_orders_firm_trgm_idx on supply_orders using gin (firm gin_trgm_ops);
 create index supply_orders_firm_type_other_trgm_idx on supply_orders using gin (firm_type_other gin_trgm_ops);

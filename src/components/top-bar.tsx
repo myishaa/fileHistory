@@ -30,6 +30,7 @@ import {
   displayFinancialYearLabel,
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
+import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 
 const nav = [
   { to: "/add", label: "Add File", icon: FilePlus2 },
@@ -48,6 +49,7 @@ export function TopBar() {
   const fileProcessingNotifications = useFileProcessingNotifications();
   const activeUser = useActiveUser();
   const [anomalyWarningCount, setAnomalyWarningCount] = useState(0);
+  const [ipAccessWarningCount, setIpAccessWarningCount] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
   const isDark = settings.theme === "dark";
   const canManageAdminSettings = activeUser?.role === "admin";
@@ -55,6 +57,7 @@ export function TopBar() {
   const canSelectYear = Boolean(activeUser);
   const canViewUserSettings = Boolean(activeUser);
   const globalFilterHelp = getGlobalFilterHelp(settings.selectedYear, settings.financialYear);
+  const globalFilterActive = settings.selectedYear !== ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
   const canAddFiles =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
@@ -86,6 +89,7 @@ export function TopBar() {
     ? fileProcessingNotifications.filter((notification) => notification.status === "pending").length
     : 0;
   const bellCount = messageWarningCount + anomalyWarningCount + fileProcessingWarningCount;
+  const adminBellCount = bellCount + ipAccessWarningCount;
   useEffect(() => {
     if (!activeUser) {
       setAnomalyWarningCount(0);
@@ -113,6 +117,32 @@ export function TopBar() {
       window.removeEventListener("focus", loadAnomalyCount);
     };
   }, [activeUser, settings.financialYear, settings.selectedYear]);
+  useEffect(() => {
+    if (activeUser?.role !== "admin") {
+      setIpAccessWarningCount(0);
+      return;
+    }
+    let cancelled = false;
+    const loadIpCount = () => {
+      void store
+        .getIpAccessConfig()
+        .then((config) => {
+          if (!cancelled) setIpAccessWarningCount(config.pendingCount);
+        })
+        .catch((error) => {
+          console.error(error);
+          if (!cancelled) setIpAccessWarningCount(0);
+        });
+    };
+    loadIpCount();
+    const intervalId = window.setInterval(loadIpCount, 60_000);
+    window.addEventListener("focus", loadIpCount);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", loadIpCount);
+    };
+  }, [activeUser?.role]);
   const openMessages = () => {
     setWarningsOpen(false);
     navigate({
@@ -144,6 +174,15 @@ export function TopBar() {
       search: {
         tab: "analytics",
         analyticsPanel: "suspectedAnomaly",
+      },
+    });
+  };
+  const openIpAccessSettings = () => {
+    setWarningsOpen(false);
+    navigate({
+      to: "/settings",
+      search: {
+        section: "ipAccess",
       },
     });
   };
@@ -207,9 +246,9 @@ export function TopBar() {
               className="relative size-8 rounded-md border border-border bg-card hover:bg-accent grid place-items-center"
             >
               <Bell className="size-4" />
-              {bellCount ? (
+              {adminBellCount ? (
                 <span className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-destructive-foreground">
-                  {bellCount}
+                  {adminBellCount}
                 </span>
               ) : null}
             </button>
@@ -233,6 +272,23 @@ export function TopBar() {
                       </span>
                       <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-semibold text-secondary-foreground">
                         {fileProcessingWarningCount}
+                      </span>
+                    </button>
+                  ) : null}
+                  {activeUser?.role === "admin" ? (
+                    <button
+                      type="button"
+                      onClick={openIpAccessSettings}
+                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    >
+                      <span>
+                        <span className="block text-sm font-medium">New IP login attempts</span>
+                        <span className="block text-xs text-muted-foreground">
+                          Open IP access settings
+                        </span>
+                      </span>
+                      <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
+                        {ipAccessWarningCount}
                       </span>
                     </button>
                   ) : null}
@@ -264,7 +320,7 @@ export function TopBar() {
                       {messageWarningCount}
                     </span>
                   </button>
-                  {!bellCount ? (
+                  {!adminBellCount ? (
                     <div className="rounded-md px-2 py-2 text-sm text-muted-foreground">
                       No active warnings.
                     </div>
@@ -274,14 +330,33 @@ export function TopBar() {
             ) : null}
           </div>
           <div className="flex items-center gap-1.5">
-            <label className="flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1">
-              <CalendarDays className="size-4 text-muted-foreground" />
-              <span className="text-[11px] font-medium text-muted-foreground">Year</span>
+            <label
+              className={filterControlClass(
+                globalFilterActive,
+                "flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1",
+              )}
+            >
+              <CalendarDays
+                className={
+                  "size-4 " + (globalFilterActive ? "text-destructive" : "text-muted-foreground")
+                }
+              />
+              <span
+                className={filterLabelClass(
+                  globalFilterActive,
+                  "text-[11px] font-medium text-muted-foreground",
+                )}
+              >
+                Year
+              </span>
               <select
                 value={settings.selectedYear}
                 onChange={(event) => store.updateSessionSelectedYear(event.target.value)}
                 disabled={!canSelectYear}
-                className="h-6 min-w-20 bg-transparent text-sm font-semibold text-foreground outline-none"
+                className={
+                  "h-6 min-w-20 bg-transparent text-sm font-semibold outline-none " +
+                  (globalFilterActive ? "text-destructive" : "text-foreground")
+                }
               >
                 <option value={ALL_FILES_YEAR}>All files</option>
                 <option value={ALL_ACTIVE_FILES_YEAR}>All active files</option>

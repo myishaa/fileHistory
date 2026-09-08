@@ -52,7 +52,10 @@ export function normalizeFileTypeGroups(
     }));
 }
 
-export function isContractFileType(file: Pick<FileRecord, "fileType" | "fileTypeGroup">): boolean {
+export function isContractFileType(file: {
+  fileType?: string;
+  fileTypeGroup?: FileTypeGroup | string;
+}): boolean {
   return (
     normalizeFileTypeGroup(file.fileTypeGroup ?? getDefaultFileTypeGroup(file.fileType)) ===
     "contract"

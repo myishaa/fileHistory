@@ -56,11 +56,7 @@ import {
   validateMilestoneCompletionConsistency,
 } from "@/lib/milestone-validation";
 import { fileSupplyOrders as expandedFileSupplyOrders } from "@/lib/effective-deliveries";
-import {
-  displayFinancialYearLabel,
-  isActivePlusCurrentFyClosedYear,
-  isAllActiveFilesYear,
-} from "@/lib/year-filter";
+import { displayFinancialYearLabel } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
 import {
   getConfiguredFileTypeGroup,
@@ -418,6 +414,12 @@ function getLatestTwoYears(financialYear: string, financialYears: string[]) {
   return Array.from(new Set([financialYear, ...financialYears].filter(Boolean)))
     .sort((a, b) => b.localeCompare(a))
     .slice(0, 2);
+}
+
+function getAddFileYearOptions(financialYear: string, financialYears: string[], locked: boolean) {
+  return locked
+    ? [financialYear].filter(Boolean)
+    : getLatestTwoYears(financialYear, financialYears);
 }
 
 function normalizeSelectableActiveYears(
@@ -1273,11 +1275,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const messages = useMessages();
   const activeUser = useActiveUser();
   const settings = useSettings();
-  const effectiveFinancialYear =
-    isAllActiveFilesYear(settings.selectedYear) ||
-    isActivePlusCurrentFyClosedYear(settings.selectedYear)
-      ? settings.financialYear
-      : settings.selectedYear || settings.financialYear;
+  const effectiveFinancialYear = settings.financialYear;
   const {
     fileId,
     section,
@@ -1331,7 +1329,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [activeYears, setActiveYears] = useState<string[]>(() =>
     normalizeSelectableActiveYears(
       normalizeActiveYears(editingFile, effectiveFinancialYear),
-      getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
+      getAddFileYearOptions(
+        effectiveFinancialYear,
+        settings.financialYears,
+        settings.yearSelectionLocked,
+      ),
       effectiveFinancialYear,
       settings.yearSelectionLocked,
     ),
@@ -1430,7 +1432,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     () =>
       normalizeSelectableActiveYears(
         normalizeActiveYears(editingFile, effectiveFinancialYear),
-        getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
+        getAddFileYearOptions(
+          effectiveFinancialYear,
+          settings.financialYears,
+          settings.yearSelectionLocked,
+        ),
         effectiveFinancialYear,
         settings.yearSelectionLocked,
       ),
@@ -1455,7 +1461,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     setActiveYears(
       normalizeSelectableActiveYears(
         normalizeActiveYears(editingFile, effectiveFinancialYear),
-        getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
+        getAddFileYearOptions(
+          effectiveFinancialYear,
+          settings.financialYears,
+          settings.yearSelectionLocked,
+        ),
         effectiveFinancialYear,
         settings.yearSelectionLocked,
       ),
@@ -1521,8 +1531,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const uniqueCodeGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.uniqueCode);
   const cfaApprovalGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.cfaDate);
   const activeYearOptions = useMemo(
-    () => getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
-    [effectiveFinancialYear, settings.financialYears],
+    () =>
+      getAddFileYearOptions(
+        effectiveFinancialYear,
+        settings.financialYears,
+        settings.yearSelectionLocked,
+      ),
+    [effectiveFinancialYear, settings.financialYears, settings.yearSelectionLocked],
   );
   const [indentorOptions, setIndentorOptions] = useState<string[]>([]);
   useEffect(() => {
@@ -1646,17 +1661,22 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     () =>
       filterModeOptionsForUser(
         getConfiguredModes(settings.modes, formWithLockedYear.mode),
-        activeUser?.allowedFileCategories,
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
       ),
-    [activeUser?.allowedFileCategories, formWithLockedYear.mode, settings.modes],
+    [activeUser?.allowedFileCategories, activeUser?.role, formWithLockedYear.mode, settings.modes],
   );
   const configuredFileTypeOptions = useMemo(
     () =>
       filterFileTypeOptionsForUser(
         getConfiguredFileTypes(settings.fileTypes, formWithLockedYear.fileType),
-        activeUser?.allowedFileCategories,
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
       ),
-    [activeUser?.allowedFileCategories, formWithLockedYear.fileType, settings.fileTypes],
+    [
+      activeUser?.allowedFileCategories,
+      activeUser?.role,
+      formWithLockedYear.fileType,
+      settings.fileTypes,
+    ],
   );
 
   useEffect(() => {
@@ -2559,6 +2579,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 hasFileValueForLock(savedFormForLocks, "valueCapital") ||
                 hasFileValueForLock(savedFormForLocks, "valueRevenue")
               }
+              inputRef={(element) => {
+                quickFieldRefs.current.valueCapital = element;
+              }}
               onChange={(patch) => {
                 if (readOnlyMode || uniqueCodeGateLocked || sectionCfaApprovalLocked) return;
                 const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
@@ -2858,7 +2881,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       setActiveYears(
         normalizeSelectableActiveYears(
           normalizeActiveYears(updatedFile, effectiveFinancialYear),
-          getLatestTwoYears(effectiveFinancialYear, settings.financialYears),
+          getAddFileYearOptions(
+            effectiveFinancialYear,
+            settings.financialYears,
+            settings.yearSelectionLocked,
+          ),
           effectiveFinancialYear,
           settings.yearSelectionLocked,
         ),
@@ -5278,7 +5305,9 @@ function SupplyOrdersBlock({
                               focusBlockRefs.current[stageFocusKey] = element;
                             }}
                             open={stageOpen}
-                            onToggle={(event) => setCardOpen(stageFocusKey, event.currentTarget.open)}
+                            onToggle={(event) =>
+                              setCardOpen(stageFocusKey, event.currentTarget.open)
+                            }
                             className={
                               "group overflow-hidden rounded-md border bg-background/70 " +
                               getCompletionBorderClass(stageCompletion.status) +
@@ -5880,168 +5909,168 @@ function SupplementaryBillsDraftBlock({
             const focusKey = `supplementary:${orderIndex}:${index}`;
             const isFocused = focusBlockKeySet.has(focusKey);
             return (
-            <div
-              key={bill.id}
-              ref={(element) => {
-                focusBlockRefs.current[focusKey] = element;
-              }}
-              className={
-                "rounded-md border bg-background/70 p-4 " +
-                getCompletionBorderClass(status) +
-                (isFocused ? " ring-2 ring-primary/40" : "")
-              }
-            >
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={"size-2.5 shrink-0 rounded-full " + getCompletionDotClass(status)}
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0 text-sm font-medium">
-                    Supplementary bill {index + 1}
-                  </div>
-                  <span
-                    className={
-                      "rounded-full border px-2 py-0.5 text-[11px] font-medium " +
-                      getCompletionBadgeClass(status)
-                    }
-                  >
-                    {status === "complete" ? "Full" : status === "partial" ? "Partial" : "Nil"}
-                  </span>
-                  <label
-                    className={
-                      "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium " +
-                      (isCurrentReturned
-                        ? "border-primary/40 bg-primary/10 text-primary"
-                        : "border-border bg-secondary/30 text-muted-foreground")
-                    }
-                    title="Auto-derived from open supplementary bill return"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isCurrentReturned}
-                      readOnly
-                      tabIndex={-1}
-                      className="size-3 accent-primary"
-                      aria-label={`Supplementary bill ${index + 1} returned for correction current`}
+              <div
+                key={bill.id}
+                ref={(element) => {
+                  focusBlockRefs.current[focusKey] = element;
+                }}
+                className={
+                  "rounded-md border bg-background/70 p-4 " +
+                  getCompletionBorderClass(status) +
+                  (isFocused ? " ring-2 ring-primary/40" : "")
+                }
+              >
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={"size-2.5 shrink-0 rounded-full " + getCompletionDotClass(status)}
+                      aria-hidden="true"
                     />
-                    Current
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onRemove(bill.id)}
-                  disabled={disabled}
-                  className="inline-flex size-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label={`Remove supplementary bill ${index + 1}`}
-                  title="Remove"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <DynamicField
-                  field={{ key: "billNo", label: "Bill No." } as ExtraField<FieldKey>}
-                  value={bill.billNo}
-                  disabled={disabled}
-                  radioName={`supplementaryBill-${bill.id}-billNo`}
-                  onChange={(value) => onChange(bill.id, { billNo: value })}
-                />
-                <AmountByValueTypeField
-                  label="Supplementary bill amount"
-                  capitalSelected={capitalSelected}
-                  revenueSelected={revenueSelected}
-                  capitalValue={bill.billAmountCapital}
-                  revenueValue={bill.billAmountRevenue}
-                  disabled={disabled}
-                  testId={`add-field-supplementaryBill-${bill.id}-billAmountCapital`}
-                  onChange={(patch) =>
-                    onChange(bill.id, {
-                      billAmountCapital: patch.capital ?? "",
-                      billAmountRevenue: patch.revenue ?? "",
-                    })
-                  }
-                />
-                <DynamicField
-                  field={
-                    {
-                      key: "billSentForPaymentDate",
-                      label: "Supplementary bill submitted",
-                      type: "date",
-                    } as ExtraField<SupplyOrderKey>
-                  }
-                  value={bill.billSentForPaymentDate}
-                  disabled={disabled}
-                  radioName={`supplementaryBill-${bill.id}-billSentForPaymentDate`}
-                  onChange={(value) => onChange(bill.id, { billSentForPaymentDate: value })}
-                />
-                <div className="md:col-span-2">
-                  <BillReturnCyclesBlock
-                    cycles={bill.billReturnCycles}
+                    <div className="min-w-0 text-sm font-medium">
+                      Supplementary bill {index + 1}
+                    </div>
+                    <span
+                      className={
+                        "rounded-full border px-2 py-0.5 text-[11px] font-medium " +
+                        getCompletionBadgeClass(status)
+                      }
+                    >
+                      {status === "complete" ? "Full" : status === "partial" ? "Partial" : "Nil"}
+                    </span>
+                    <label
+                      className={
+                        "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium " +
+                        (isCurrentReturned
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border bg-secondary/30 text-muted-foreground")
+                      }
+                      title="Auto-derived from open supplementary bill return"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isCurrentReturned}
+                        readOnly
+                        tabIndex={-1}
+                        className="size-3 accent-primary"
+                        aria-label={`Supplementary bill ${index + 1} returned for correction current`}
+                      />
+                      Current
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRemove(bill.id)}
                     disabled={disabled}
-                    lockFilledFields={false}
-                    testIdPrefix={`add-field-supplementaryBill-${bill.id}-billReturnCycles`}
-                    onChange={(cycles) => onChange(bill.id, { billReturnCycles: cycles })}
-                  />
+                    className="inline-flex size-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label={`Remove supplementary bill ${index + 1}`}
+                    title="Remove"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
                 </div>
-                <DynamicField
-                  field={
-                    {
-                      key: "paymentDate",
-                      label: "Supplementary bill paid",
-                      type: "date",
-                    } as ExtraField<SupplyOrderKey>
-                  }
-                  value={bill.paymentDate}
-                  disabled={disabled}
-                  radioName={`supplementaryBill-${bill.id}-paymentDate`}
-                  onChange={(value) => onChange(bill.id, { paymentDate: value })}
-                />
-                <DynamicField
-                  field={
-                    {
-                      key: "paymentMode",
-                      label: "Payment mode(Online/Offline)",
-                      options: paymentModeOptions,
-                    } as ExtraField<SupplyOrderKey>
-                  }
-                  value={bill.paymentMode}
-                  disabled={disabled}
-                  radioName={`supplementaryBill-${bill.id}-paymentMode`}
-                  onChange={(value) => onChange(bill.id, { paymentMode: value })}
-                />
-                <AmountByValueTypeField
-                  label="Supplementary payment amount"
-                  capitalSelected={capitalSelected}
-                  revenueSelected={revenueSelected}
-                  capitalValue={bill.actualPaymentCapital}
-                  revenueValue={bill.actualPaymentRevenue}
-                  disabled={disabled}
-                  testId={`add-field-supplementaryBill-${bill.id}-actualPaymentCapital`}
-                  onChange={(patch) =>
-                    onChange(bill.id, {
-                      actualPaymentCapital: patch.capital ?? "",
-                      actualPaymentRevenue: patch.revenue ?? "",
-                    })
-                  }
-                />
-                <div className="md:col-span-2">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <DynamicField
+                    field={{ key: "billNo", label: "Bill No." } as ExtraField<FieldKey>}
+                    value={bill.billNo}
+                    disabled={disabled}
+                    radioName={`supplementaryBill-${bill.id}-billNo`}
+                    onChange={(value) => onChange(bill.id, { billNo: value })}
+                  />
+                  <AmountByValueTypeField
+                    label="Supplementary bill amount"
+                    capitalSelected={capitalSelected}
+                    revenueSelected={revenueSelected}
+                    capitalValue={bill.billAmountCapital}
+                    revenueValue={bill.billAmountRevenue}
+                    disabled={disabled}
+                    testId={`add-field-supplementaryBill-${bill.id}-billAmountCapital`}
+                    onChange={(patch) =>
+                      onChange(bill.id, {
+                        billAmountCapital: patch.capital ?? "",
+                        billAmountRevenue: patch.revenue ?? "",
+                      })
+                    }
+                  />
                   <DynamicField
                     field={
                       {
-                        key: "remarks",
-                        label: "Remarks",
-                        type: "textarea",
-                      } as ExtraField<FieldKey>
+                        key: "billSentForPaymentDate",
+                        label: "Supplementary bill submitted",
+                        type: "date",
+                      } as ExtraField<SupplyOrderKey>
                     }
-                    value={bill.remarks}
+                    value={bill.billSentForPaymentDate}
                     disabled={disabled}
-                    radioName={`supplementaryBill-${bill.id}-remarks`}
-                    onChange={(value) => onChange(bill.id, { remarks: value })}
+                    radioName={`supplementaryBill-${bill.id}-billSentForPaymentDate`}
+                    onChange={(value) => onChange(bill.id, { billSentForPaymentDate: value })}
                   />
+                  <div className="md:col-span-2">
+                    <BillReturnCyclesBlock
+                      cycles={bill.billReturnCycles}
+                      disabled={disabled}
+                      lockFilledFields={false}
+                      testIdPrefix={`add-field-supplementaryBill-${bill.id}-billReturnCycles`}
+                      onChange={(cycles) => onChange(bill.id, { billReturnCycles: cycles })}
+                    />
+                  </div>
+                  <DynamicField
+                    field={
+                      {
+                        key: "paymentDate",
+                        label: "Supplementary bill paid",
+                        type: "date",
+                      } as ExtraField<SupplyOrderKey>
+                    }
+                    value={bill.paymentDate}
+                    disabled={disabled}
+                    radioName={`supplementaryBill-${bill.id}-paymentDate`}
+                    onChange={(value) => onChange(bill.id, { paymentDate: value })}
+                  />
+                  <DynamicField
+                    field={
+                      {
+                        key: "paymentMode",
+                        label: "Payment mode(Online/Offline)",
+                        options: paymentModeOptions,
+                      } as ExtraField<SupplyOrderKey>
+                    }
+                    value={bill.paymentMode}
+                    disabled={disabled}
+                    radioName={`supplementaryBill-${bill.id}-paymentMode`}
+                    onChange={(value) => onChange(bill.id, { paymentMode: value })}
+                  />
+                  <AmountByValueTypeField
+                    label="Supplementary payment amount"
+                    capitalSelected={capitalSelected}
+                    revenueSelected={revenueSelected}
+                    capitalValue={bill.actualPaymentCapital}
+                    revenueValue={bill.actualPaymentRevenue}
+                    disabled={disabled}
+                    testId={`add-field-supplementaryBill-${bill.id}-actualPaymentCapital`}
+                    onChange={(patch) =>
+                      onChange(bill.id, {
+                        actualPaymentCapital: patch.capital ?? "",
+                        actualPaymentRevenue: patch.revenue ?? "",
+                      })
+                    }
+                  />
+                  <div className="md:col-span-2">
+                    <DynamicField
+                      field={
+                        {
+                          key: "remarks",
+                          label: "Remarks",
+                          type: "textarea",
+                        } as ExtraField<FieldKey>
+                      }
+                      value={bill.remarks}
+                      disabled={disabled}
+                      radioName={`supplementaryBill-${bill.id}-remarks`}
+                      onChange={(value) => onChange(bill.id, { remarks: value })}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
             );
           })}
         </div>
@@ -6481,12 +6510,8 @@ function isFocusRowMatch(
           form.ir,
           form.fileTypeGroup,
         ).current;
-      return getDerivedJobCompletionMilestoneState(
-        row,
-        form.fileType,
-        form.ir,
-        form.fileTypeGroup,
-      ).current;
+      return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir, form.fileTypeGroup)
+        .current;
     }
     if (state === "completed" || state === "received")
       return completed || hasFilledValue(row.materialReceiptDate);
@@ -6498,18 +6523,15 @@ function isFocusRowMatch(
         effectiveDp! < formatLocalDate(new Date())
       );
     }
-    return getDerivedDeliveryMilestoneState(row, form.fileType, form.ir, form.fileTypeGroup).current;
+    return getDerivedDeliveryMilestoneState(row, form.fileType, form.ir, form.fileTypeGroup)
+      .current;
   }
 
   if (config.kind === "jobcompletion") {
     if (!isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) return false;
     if (state === "completed" || state === "received") return isJobCompletionDone(row);
-    return getDerivedJobCompletionMilestoneState(
-      row,
-      form.fileType,
-      form.ir,
-      form.fileTypeGroup,
-    ).current;
+    return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir, form.fileTypeGroup)
+      .current;
   }
 
   if (config.kind === "irpreparation") {
@@ -6529,13 +6551,7 @@ function isFocusRowMatch(
   if (config.kind === "billpreparation") {
     if (state === "completed") return completed || hasFilledValue(row.billPreparationDate);
     return (
-      current ||
-      isAutoCurrentSupplyOrderMilestone(
-        row,
-        "Bill preparation",
-        form.fileType,
-        form.ir,
-      )
+      current || isAutoCurrentSupplyOrderMilestone(row, "Bill preparation", form.fileType, form.ir)
     );
   }
 
@@ -6556,9 +6572,7 @@ function isFocusRowMatch(
     }
     if (state === "resubmitted" || state === "completed") {
       return (
-        hasAnyReturn &&
-        !hasOpenReturn &&
-        (hasResubmittedReturn || hasFilledValue(row.paymentDate))
+        hasAnyReturn && !hasOpenReturn && (hasResubmittedReturn || hasFilledValue(row.paymentDate))
       );
     }
     if (state === "paid" || state === "actual") {
@@ -6749,8 +6763,12 @@ function hasPaymentWorkflowStarted(
   );
 }
 
-function hasBillReturnHistory(row: Pick<SupplyOrderDetail, "billReturnCycles"> | MilestoneRowState) {
-  return normalizeBillReturnCycles(row.billReturnCycles as BillReturnCycle[] | undefined).length > 0;
+function hasBillReturnHistory(
+  row: Pick<SupplyOrderDetail, "billReturnCycles"> | MilestoneRowState,
+) {
+  return (
+    normalizeBillReturnCycles(row.billReturnCycles as BillReturnCycle[] | undefined).length > 0
+  );
 }
 
 function getPaymentFocusStartDate(
@@ -7382,7 +7400,8 @@ function getDerivedJobCompletionMilestoneState(
   ir?: string,
   fileTypeGroup?: string,
 ) {
-  const completed = isJobCompletionWorkflow(fileType, ir, fileTypeGroup) && isJobCompletionDone(row);
+  const completed =
+    isJobCompletionWorkflow(fileType, ir, fileTypeGroup) && isJobCompletionDone(row);
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const autoCurrent =
     isJobCompletionWorkflow(fileType, ir, fileTypeGroup) &&
@@ -7540,7 +7559,12 @@ function SupplyOrderMilestonesBlock({
         <div className="text-center">Done</div>
       </div>
       {milestones.map((milestone) => {
-        const derivedDelivery = getDerivedDeliveryMilestoneState(order, fileType, ir, fileTypeGroup);
+        const derivedDelivery = getDerivedDeliveryMilestoneState(
+          order,
+          fileType,
+          ir,
+          fileTypeGroup,
+        );
         const isDeliveryMilestone = milestone === "Delivery";
         const isJobCompletionMilestone = milestone === "Job Completion";
         const isDateDrivenMilestone =
@@ -8524,7 +8548,9 @@ function getStageTimelineItems(
 ) {
   if (!isYes(order.stageDelivery ?? "") || !order.stageDeliveries?.length) return [];
   const stageDateFields = stageDeliveryFields.filter((field) => field.type === "date");
-  const billSentIndex = stageDateFields.findIndex((field) => field.key === "billSentForPaymentDate");
+  const billSentIndex = stageDateFields.findIndex(
+    (field) => field.key === "billSentForPaymentDate",
+  );
   const stageLabel = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
     ? "Delivery Period"
     : "Delivery";
@@ -8568,7 +8594,9 @@ function getAdvancePaymentTimelineItems(
   }
   const advance = applyAdvancePaymentRules(order.advancePaymentDetail ?? {}, true);
   const advanceDateFields = advancePaymentFields.filter((field) => field.type === "date");
-  const billSentIndex = advanceDateFields.findIndex((field) => field.key === "billSentForPaymentDate");
+  const billSentIndex = advanceDateFields.findIndex(
+    (field) => field.key === "billSentForPaymentDate",
+  );
   const advanceItems = advanceDateFields.map((field, fieldIndex) => {
     const key = field.key as AdvancePaymentKey;
     return {
@@ -9023,11 +9051,13 @@ function filterFileTypeOptionsForUser(
   const allowed = new Set(expandLegacyAllowedFileCategories(allowedCategories));
   return fileTypes.filter((fileType) => {
     const normalized = fileType.trim().toLowerCase();
+    const customKey = `fileType:${encodeURIComponent(fileType.trim())}`;
+    if (allowed.has(customKey)) return true;
     if (normalized === "amc") return allowed.has("amc");
     if (normalized === "mpc") return allowed.has("mpc");
     if (normalized === "cars") return allowed.has("cars");
     if (normalized === "o&m") return allowed.has("om");
-    return allowed.has("goodsServices");
+    return normalized === "goods & services" && allowed.has("goodsServices");
   });
 }
 
@@ -11522,9 +11552,7 @@ function isContractNoInspectionWorkflow(
 
 function isContractNoInspectionPaymentDue(
   order: Pick<SupplyOrderDetail, "dpDate" | "revisedDp">,
-  form:
-    | Pick<FormState, "fileType" | "fileTypeGroup" | "ir">
-    | undefined,
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir"> | undefined,
 ) {
   if (!form || !isContractNoInspectionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
     return false;
@@ -11814,6 +11842,7 @@ function ValueField({
   lockFilledFields = false,
   lockedSelectionFilled = false,
   lockedValueFilled = false,
+  inputRef,
   onChange,
 }: {
   capitalValue: string;
@@ -11825,6 +11854,7 @@ function ValueField({
   lockFilledFields?: boolean;
   lockedSelectionFilled?: boolean;
   lockedValueFilled?: boolean;
+  inputRef?: (element: HTMLInputElement | null) => void;
   onChange: (
     patch: Pick<
       FormState,
@@ -11893,6 +11923,7 @@ function ValueField({
           </label>
         </div>
         <input
+          ref={inputRef}
           value={value}
           onChange={(event) => updateValue(event.target.value)}
           inputMode="decimal"

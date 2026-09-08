@@ -10,6 +10,7 @@ import { ensureSupplyOrderBillReturnsSchema, loadFiles } from "./files.js";
 import { fromDbDate, fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildReportsSummary } from "../utils/report-summary.js";
 import {
+  getFileCategorySqlCondition,
   matchesFileCategorySelection,
   normalizeFileCategories,
   type FileCategoryKey,
@@ -454,6 +455,7 @@ const orderDelayMilestoneDefinitions = [
 type SettingsRow = {
   financial_year: string;
   selected_year: string;
+  setup_year: string | null;
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
@@ -484,10 +486,17 @@ function normalizeBgReceiptDelayDays(value: unknown) {
 }
 
 function mapSettings(row: SettingsRow): AppSettings {
+  const setupYear =
+    row.setup_year &&
+    row.setup_year !== "__all_active_files__" &&
+    row.setup_year !== "__active_plus_current_fy_closed__"
+      ? row.setup_year
+      : row.financial_year;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
-    financialYears: [row.financial_year, row.selected_year].filter(
+    setupYear,
+    financialYears: [row.financial_year, row.selected_year, setupYear].filter(
       (year) =>
         Boolean(year) &&
         year !== "__all_active_files__" &&
@@ -513,7 +522,7 @@ function mapSettings(row: SettingsRow): AppSettings {
 async function loadSettings() {
   return getCached("settings:reports", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               bg_receipt_delay_days, active_user_id
        from app_settings
@@ -593,6 +602,8 @@ function ensureCashOutGoPlanSchema() {
         constraint cash_out_go_plan_dp_offset_non_negative check (dp_offset_days >= 0)
       );
       alter table cash_out_go_plan_settings
+        drop constraint if exists cash_out_go_plan_settings_singleton;
+      alter table cash_out_go_plan_settings
         add column if not exists hand_submission_offset_days integer not null default 5;
       alter table cash_out_go_plan_settings
         add column if not exists use_custom_bill_offset_days boolean not null default false;
@@ -621,7 +632,7 @@ function ensureCashOutGoPlanSchema() {
   return cashOutGoPlanSchemaReady;
 }
 
-async function loadCashOutGoPlanSettings(): Promise<CashOutGoPlanSettings> {
+async function loadCashOutGoPlanSettings(userId: string): Promise<CashOutGoPlanSettings> {
   await ensureCashOutGoPlanSchema();
   const result = await pool.query<{
     bill_offset_days: number;
@@ -639,19 +650,40 @@ async function loadCashOutGoPlanSettings(): Promise<CashOutGoPlanSettings> {
        dp_offset_days,
        use_custom_dp_offset_days
      from cash_out_go_plan_settings
-     where id = 'global'`,
+     where id = $1`,
+    [userId],
   );
+  let row = result.rows[0];
+  if (!row && userId !== "global") {
+    const fallbackResult = await pool.query<{
+      bill_offset_days: number;
+      use_custom_bill_offset_days: boolean;
+      hand_submission_offset_days: number;
+      use_custom_hand_submission_offset_days: boolean;
+      dp_offset_days: number;
+      use_custom_dp_offset_days: boolean;
+    }>(
+      `select
+         bill_offset_days,
+         use_custom_bill_offset_days,
+         hand_submission_offset_days,
+         use_custom_hand_submission_offset_days,
+         dp_offset_days,
+         use_custom_dp_offset_days
+       from cash_out_go_plan_settings
+       where id = 'global'`,
+    );
+    row = fallbackResult.rows[0];
+  }
   return {
-    billOffsetDays: Number(result.rows[0]?.bill_offset_days ?? DEFAULT_BILL_PAYMENT_OFFSET_DAYS),
-    useCustomBillOffsetDays: Boolean(result.rows[0]?.use_custom_bill_offset_days),
+    billOffsetDays: Number(row?.bill_offset_days ?? DEFAULT_BILL_PAYMENT_OFFSET_DAYS),
+    useCustomBillOffsetDays: Boolean(row?.use_custom_bill_offset_days),
     handSubmissionOffsetDays: Number(
-      result.rows[0]?.hand_submission_offset_days ?? DEFAULT_BILL_SUBMISSION_OFFSET_DAYS,
+      row?.hand_submission_offset_days ?? DEFAULT_BILL_SUBMISSION_OFFSET_DAYS,
     ),
-    useCustomHandSubmissionOffsetDays: Boolean(
-      result.rows[0]?.use_custom_hand_submission_offset_days,
-    ),
-    dpOffsetDays: Number(result.rows[0]?.dp_offset_days ?? DEFAULT_DP_OFFSET_DAYS),
-    useCustomDpOffsetDays: Boolean(result.rows[0]?.use_custom_dp_offset_days),
+    useCustomHandSubmissionOffsetDays: Boolean(row?.use_custom_hand_submission_offset_days),
+    dpOffsetDays: Number(row?.dp_offset_days ?? DEFAULT_DP_OFFSET_DAYS),
+    useCustomDpOffsetDays: Boolean(row?.use_custom_dp_offset_days),
   };
 }
 
@@ -941,6 +973,7 @@ function buildCashOutGoPlan(
         const dpBaseDate = getDeliveryPeriodDate(order);
         if (hasFilledString(dpBaseDate)) {
           const baseDate = String(dpBaseDate);
+          if (fyRange && baseDate > fyRange.end) return;
           const dpExpired = baseDate < today;
           const expectedSentDate = dpExpired
             ? ""
@@ -965,6 +998,7 @@ function buildCashOutGoPlan(
               manualExpectedPaymentDate: dpExpired ? (assumption.expectedPaymentDate ?? "") : "",
               billOffsetDays: getEffectiveRowBillPaymentOffsetDays(settings, assumption),
               billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
+              zeroAmountAfterDate: !dpExpired ? fyRange?.end : undefined,
               today,
             }),
           );
@@ -978,7 +1012,13 @@ function buildCashOutGoPlan(
         if (hasFilledString(bill.paymentDate)) return;
         const amount = getSupplementaryBillPlanAmount(file, bill);
         if (amount.capital === 0 && amount.revenue === 0) return;
-        const rowKey = getSupplementaryBillCashOutGoPlanRowKey(file, order, orderIndex, bill, billIndex);
+        const rowKey = getSupplementaryBillCashOutGoPlanRowKey(
+          file,
+          order,
+          orderIndex,
+          bill,
+          billIndex,
+        );
         const assumption = assumptions.get(rowKey) ?? {};
         const openReturn = getOpenSupplementaryBillReturn(bill);
         if (openReturn) {
@@ -1088,9 +1128,7 @@ function buildExpenditureTillDateRows(
       );
     });
   const currentActual = actualPaymentsByMonth.get(currentMonthKey) ?? { capital: 0, revenue: 0 };
-  if (currentActual.capital || currentActual.revenue) {
-    rows.push(makeCashOutgoRow(currentMonthKey, currentActual.capital, currentActual.revenue));
-  }
+  rows.push(makeCashOutgoRow(currentMonthKey, currentActual.capital, currentActual.revenue));
   return rows;
 }
 
@@ -1177,6 +1215,7 @@ function makePlanDetailRow({
   manualExpectedPaymentDate = "",
   billOffsetDays,
   billOffsetOverride,
+  zeroAmountAfterDate,
   today,
 }: {
   rowKey: string;
@@ -1193,11 +1232,15 @@ function makePlanDetailRow({
   manualExpectedPaymentDate?: string;
   billOffsetDays: number;
   billOffsetOverride: string;
+  zeroAmountAfterDate?: string;
   today: string;
 }): CashOutGoPlanDetailRow {
   const sentDateForPayment = actualSentDate || expectedSentDate;
   const expectedPaymentDate =
     manualExpectedPaymentDate || addDays(sentDateForPayment, billOffsetDays) || "";
+  const amountCountsInPlan = !zeroAmountAfterDate || !expectedPaymentDate || expectedPaymentDate <= zeroAmountAfterDate;
+  const capital = amountCountsInPlan ? amount.capital : 0;
+  const revenue = amountCountsInPlan ? amount.revenue : 0;
   return {
     rowKey,
     section,
@@ -1215,21 +1258,15 @@ function makePlanDetailRow({
     billOffsetDays,
     billOffsetOverride,
     expectedPaymentDate,
-    capital: Math.round(amount.capital),
-    revenue: Math.round(amount.revenue),
-    total: Math.round(amount.capital + amount.revenue),
+    capital: Math.round(capital),
+    revenue: Math.round(revenue),
+    total: Math.round(capital + revenue),
     overdue: Boolean(expectedSentDate && expectedSentDate < today && !actualSentDate),
   };
 }
 
 function getCashOutGoPlanSourceFocusTarget(
-  source:
-    | "submitted"
-    | "handReturn"
-    | "handPrepared"
-    | "delivered"
-    | "dp"
-    | "dpExpired",
+  source: "submitted" | "handReturn" | "handPrepared" | "delivered" | "dp" | "dpExpired",
   context: { orderIndex: number; stageIndex?: number; advancePayment?: boolean },
 ) {
   const suffix = getCashOutGoPlanFocusIndexSuffix(context);
@@ -1241,10 +1278,7 @@ function getCashOutGoPlanSourceFocusTarget(
   return `deliveryperiod:${source === "dpExpired" ? "expired" : "any"}${suffix}`;
 }
 
-function getCashOutGoPlanFocusIndexSuffix(context: {
-  orderIndex: number;
-  stageIndex?: number;
-}) {
+function getCashOutGoPlanFocusIndexSuffix(context: { orderIndex: number; stageIndex?: number }) {
   return `:${context.orderIndex}${
     context.stageIndex === undefined ? "" : `:${context.stageIndex}`
   }`;
@@ -1337,8 +1371,12 @@ function getActiveSupplementaryBillSubmissionDate(bill: SupplementaryBillDetail)
 function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
   const cycles = normalizeBillReturnCycles(bill.billReturnCycles);
   return (
-    cycles.some((cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate)) &&
-    !cycles.some((cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate))
+    cycles.some(
+      (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
+    ) &&
+    !cycles.some(
+      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
+    )
   );
 }
 
@@ -1574,7 +1612,12 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
 
 function activeFilesExpression() {
   return `(not ${fileClosedExpression()}
-      and lower(coalesce(f.demand_cancelled, '')) <> 'yes')`;
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+      and not (${supplyOrderRowExists()} and not exists (
+        select 1 from supply_orders so_active
+        where so_active.file_id = f.id
+          and not ${isYesExpression("so_active.so_cancelled")}
+      )))`;
 }
 
 function getSelectedYearCondition(
@@ -1609,6 +1652,8 @@ function getReportWhereSql({
   scopeValues,
   selectedYear,
   fileYear,
+  fileInitiationFrom,
+  fileInitiationTo,
   currentFinancialYear,
   division,
   fileCategories,
@@ -1617,6 +1662,8 @@ function getReportWhereSql({
   scopeValues: unknown[];
   selectedYear: string | undefined;
   fileYear?: string | undefined;
+  fileInitiationFrom?: string | undefined;
+  fileInitiationTo?: string | undefined;
   currentFinancialYear?: string;
   division: string;
   fileCategories: FileCategoryKey[];
@@ -1634,6 +1681,14 @@ function getReportWhereSql({
     const placeholder = addValue(values, fileYear.trim());
     conditions.push(`f.year = ${placeholder}::text`);
   }
+  if (fileInitiationFrom) {
+    const placeholder = addValue(values, fileInitiationFrom);
+    conditions.push(`f.received_date >= ${placeholder}::date`);
+  }
+  if (fileInitiationTo) {
+    const placeholder = addValue(values, fileInitiationTo);
+    conditions.push(`f.received_date <= ${placeholder}::date`);
+  }
   if (division !== "all") {
     const placeholder = addValue(values, division.toLowerCase());
     conditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
@@ -1646,27 +1701,7 @@ function getReportWhereSql({
 }
 
 function getFileCategoryCondition(categories: FileCategoryKey[]) {
-  if (categories.length === 0) return "false";
-  const categorySet = new Set(categories);
-  const predicates: string[] = [];
-  if (categorySet.has("goodsServices")) {
-    predicates.push(
-      `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-    );
-  }
-  if (categorySet.has("amc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'amc'`);
-  }
-  if (categorySet.has("mpc")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'mpc'`);
-  }
-  if (categorySet.has("cars")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'cars'`);
-  }
-  if (categorySet.has("om")) {
-    predicates.push(`lower(trim(coalesce(f.file_type, ''))) = 'o&m'`);
-  }
-  return predicates.length ? `(${predicates.join(" or ")})` : "false";
+  return getFileCategorySqlCondition(categories);
 }
 
 function appendReportWhereClause(whereSql: string, extraConditions: string[] = []) {
@@ -2138,13 +2173,29 @@ function financialSanctionPendingExpression() {
 }
 
 function earliestSupplyOrderDateExpression(column: string) {
+  const fileFallbackColumns = new Set([
+    "financial_sanction_date",
+    "so_date",
+    "dp_date",
+    "revised_dp",
+    "material_receipt_date",
+    "ir_preparation_date",
+    "ir_receipt_date",
+    "bill_preparation_date",
+    "bill_sent_for_payment_date",
+    "payment_date",
+    "so_cancelled_date",
+  ]);
+  const fileFallback = fileFallbackColumns.has(column)
+    ? dateCastExpression(`f.${column}`)
+    : "null::date";
   return `case
     when ${supplyOrderRowExists()} then (
       select min(${dateCastExpression(`so_date_value.${column}`)})
       from supply_orders so_date_value
       where so_date_value.file_id = f.id and so_date_value.${column} is not null
     )
-    else ${dateCastExpression(`f.${column}`)}
+    else ${fileFallback}
   end`;
 }
 
@@ -2892,7 +2943,7 @@ async function loadCashOutgoRows(
 	            or effective.payment_date > ${toDatePlaceholder}::date
           )`;
       }
-	      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is not null and not ${hasOpenReturnedBillExpression} and effective.payment_date is null`;
+      return `${paymentWorkflowAppliesExpression} and not effective.so_cancelled_yes and effective.bill_preparation_date is not null and effective.bill_sent_for_payment_date is not null and not ${hasOpenReturnedBillExpression} and effective.payment_date is null`;
     }
     if (mode === "returnedBills") {
       return `${returnedDateExpression} is not null and not effective.so_cancelled_yes`;
@@ -3042,9 +3093,7 @@ async function loadCashOutgoRows(
 	         where not ${isYesExpression("so.stage_delivery")}
 	           or jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) = 0
 	       ) stage_row on true
-			       ${appendReportWhereClause(whereSql, [
-	             `not ${isCancelledExpression()}`,
-	           ])}
+			       ${appendReportWhereClause(whereSql, [`not ${isCancelledExpression()}`])}
 			     )
      select
        to_char(${dateExpression}, 'YYYY-MM') as month_key,
@@ -3219,8 +3268,18 @@ async function loadSupplementaryReturnedBillCashOutgoRows(
     fromDatePlaceholder && toDatePlaceholder
       ? ` and ${dateExpression} between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
       : "";
-  const capitalExpression = inrAmountExpression("supplementary_bill.bill ->> 'billAmountCapital'");
-  const revenueExpression = inrAmountExpression("supplementary_bill.bill ->> 'billAmountRevenue'");
+  const capitalExpression =
+    mode === "supplementaryReturnedBillsPaid"
+      ? inrAmountExpression(
+          "coalesce(nullif(supplementary_bill.bill ->> 'actualPaymentCapital', ''), supplementary_bill.bill ->> 'billAmountCapital')",
+        )
+      : inrAmountExpression("supplementary_bill.bill ->> 'billAmountCapital'");
+  const revenueExpression =
+    mode === "supplementaryReturnedBillsPaid"
+      ? inrAmountExpression(
+          "coalesce(nullif(supplementary_bill.bill ->> 'actualPaymentRevenue', ''), supplementary_bill.bill ->> 'billAmountRevenue')",
+        )
+      : inrAmountExpression("supplementary_bill.bill ->> 'billAmountRevenue'");
 
   const result = await pool.query<{
     month_key: string;
@@ -3464,6 +3523,16 @@ function effectiveOrderDelayRowsSource(supplyOrderStageStartDate: string, includ
         "bill_sent_for_payment_date",
         "billSentForPaymentDate",
       )} as bill_sent_for_payment_date,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then coalesce(stage_row.stage -> 'billReturnCycles', '[]'::jsonb)
+        when stage_row.stage is not null
+          and not ${isYesExpression("so.stage_payment")}
+          and stage_row.stage_index = jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb))
+          then coalesce(so.bill_return_cycles, '[]'::jsonb)
+        when stage_row.stage is not null then '[]'::jsonb
+        else coalesce(so.bill_return_cycles, '[]'::jsonb)
+      end as bill_return_cycles,
       ${soDate} as advance_payment_start_date,
       ${advancePaymentDate} as advance_payment_date,
       ${effectiveOrderDateExpression(
@@ -3616,9 +3685,9 @@ function orderDelayRowsSelects(
             and (lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
               or not effective_order.job_completion_done
               or effective_order.bill_sent_for_payment_date is not null)`
-        : milestone.key === "jobCompletion"
-          ? `${startDate} is not null and not ${contractPaymentDelay}`
-        : `${normalizeMilestoneExpression(currentMilestoneExpression)} = '${milestone.current}'`;
+          : milestone.key === "jobCompletion"
+            ? `${startDate} is not null and not ${contractPaymentDelay}`
+            : `${normalizeMilestoneExpression(currentMilestoneExpression)} = '${milestone.current}'`;
       return `select
           f.id::text as "fileId",
           (${baseFileRef} || ' / ' || ${orderRef}) as "fileRef",
@@ -3962,7 +4031,7 @@ reportsRouter.get(
       readString(request.query.includePreviousFySubmitted) === "true";
     const divisionId = readString(request.query.divisionId)?.trim() || "all";
     const [planSettings, assumptions, allocation, merRows, allFiles] = await Promise.all([
-      loadCashOutGoPlanSettings(),
+      loadCashOutGoPlanSettings(user.id),
       loadCashOutGoPlanAssumptions(),
       loadCashOutGoPlanAllocationForUser(financialYear, divisionId, user),
       loadMerCashOutgoRows(financialYear),
@@ -3989,7 +4058,7 @@ reportsRouter.get(
 reportsRouter.put(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
-    requireAuth(request as AuthRequest);
+    const user = requireAuth(request as AuthRequest);
     const body = request.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       throw new HttpError(400, "Request body is required.");
@@ -4004,12 +4073,13 @@ reportsRouter.put(
       record.handSubmissionOffsetDays,
       DEFAULT_BILL_SUBMISSION_OFFSET_DAYS,
     );
-    const useCustomHandSubmissionOffsetDays = readBoolean(
-      record.useCustomHandSubmissionOffsetDays,
-    );
+    const useCustomHandSubmissionOffsetDays = readBoolean(record.useCustomHandSubmissionOffsetDays);
     const dpOffsetDays = readPlanNonNegativeInteger(record.dpOffsetDays, DEFAULT_DP_OFFSET_DAYS);
     const useCustomDpOffsetDays = readBoolean(record.useCustomDpOffsetDays);
     const rows = Array.isArray(record.rows) ? record.rows : [];
+    const effectiveBillOffsetDays = useCustomBillOffsetDays
+      ? billOffsetDays
+      : DEFAULT_BILL_PAYMENT_OFFSET_DAYS;
 
     await ensureCashOutGoPlanSchema();
     const client = await pool.connect();
@@ -4027,7 +4097,7 @@ reportsRouter.put(
              use_custom_dp_offset_days,
              updated_at
            )
-         values ('global', $1, $2, $3, $4, $5, $6, now())
+         values ($1, $2, $3, $4, $5, $6, $7, now())
          on conflict (id) do update
          set bill_offset_days = excluded.bill_offset_days,
              use_custom_bill_offset_days = excluded.use_custom_bill_offset_days,
@@ -4038,6 +4108,7 @@ reportsRouter.put(
              use_custom_dp_offset_days = excluded.use_custom_dp_offset_days,
              updated_at = now()`,
         [
+          user.id,
           billOffsetDays,
           useCustomBillOffsetDays,
           handSubmissionOffsetDays,
@@ -4058,7 +4129,9 @@ reportsRouter.put(
           offsetText === "" || offsetText === undefined
             ? undefined
             : readPlanNonNegativeInteger(offsetText, billOffsetDays);
-        if (!expectedSentDate && !expectedPaymentDate && billOffsetOverride === undefined) {
+        const normalizedBillOffsetOverride =
+          billOffsetOverride === effectiveBillOffsetDays ? undefined : billOffsetOverride;
+        if (!expectedSentDate && !expectedPaymentDate && normalizedBillOffsetOverride === undefined) {
           await client.query("delete from cash_out_go_plan_assumptions where row_key = $1", [
             rowKey,
           ]);
@@ -4077,7 +4150,7 @@ reportsRouter.put(
             rowKey,
             expectedSentDate ?? null,
             expectedPaymentDate ?? null,
-            billOffsetOverride ?? null,
+            normalizedBillOffsetOverride ?? null,
           ],
         );
       }
@@ -4260,6 +4333,8 @@ reportsRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const division = readString(request.query.division) ?? "all";
     const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
     const delayDays = readNonNegativeInteger(request.query.delayDays, 5);
@@ -4280,15 +4355,19 @@ reportsRouter.get(
       scopeValues: scope.values,
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       currentFinancialYear: settings.financialYear,
       division,
       fileCategories,
     });
     const cacheKey = `reports:summary:${JSON.stringify({
-      version: 2,
+      version: 3,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
       division,
       fileCategories,
       delayDays,
@@ -4308,7 +4387,14 @@ reportsRouter.get(
       );
       const selectedYearFiles = files
         .filter((file) => isFileVisibleForSelectedYear(file, selectedYear, settings.financialYear))
-        .filter((file) => !fileYear || fileYear === "all" || file.year === fileYear);
+        .filter((file) => !fileYear || fileYear === "all" || file.year === fileYear)
+        .filter((file) => {
+          if (fileInitiationFrom && (!file.receivedDate || file.receivedDate < fileInitiationFrom))
+            return false;
+          if (fileInitiationTo && (!file.receivedDate || file.receivedDate > fileInitiationTo))
+            return false;
+          return true;
+        });
       const categoryFiles = selectedYearFiles.filter((file) =>
         matchesFileCategorySelection(file, fileCategories),
       );

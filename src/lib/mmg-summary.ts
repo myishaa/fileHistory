@@ -626,7 +626,7 @@ function getMmgSummaryValues(
     lpc: countMode(nonCancelledFiles, "LPC"),
     sbm: countMode(nonCancelledFiles, "SBM"),
     lbm: countMode(nonCancelledFiles, "LBM"),
-    goodsServices: countGoodsServicesFileType(nonCancelledFiles),
+    goodsServices: countFileType(nonCancelledFiles, "goods & services"),
     amc: countFileType(nonCancelledFiles, "amc"),
     mpc: countFileType(nonCancelledFiles, "mpc"),
     cars: countFileType(nonCancelledFiles, "cars"),
@@ -1059,7 +1059,7 @@ function getMmgSummaryValues(
     lpc: fileIds(filesForMode(nonCancelledFiles, "LPC")),
     sbm: fileIds(filesForMode(nonCancelledFiles, "SBM")),
     lbm: fileIds(filesForMode(nonCancelledFiles, "LBM")),
-    goodsServices: fileIds(nonCancelledFiles.filter((file) => !isContractFileType(file))),
+    goodsServices: fileIds(filesForType(nonCancelledFiles, "goods & services")),
     amc: fileIds(filesForType(nonCancelledFiles, "amc")),
     mpc: fileIds(filesForType(nonCancelledFiles, "mpc")),
     cars: fileIds(filesForType(nonCancelledFiles, "cars")),
@@ -2105,10 +2105,6 @@ function buildSupplyOrderFocusTarget(
   return `${kind}:${state}:${entry.orderIndex}${
     entry.stageIndex === undefined ? "" : `:${entry.stageIndex}`
   }`;
-}
-
-function countGoodsServicesFileType(files: FileRecord[]) {
-  return formatCount(files.filter((file) => !isContractFileType(file)).length);
 }
 
 function isDefaultMmgFileType(fileType: string | undefined) {

@@ -830,7 +830,7 @@ divisionsRouter.get(
 );
 
 divisionsRouter.post(
-  "/:id/restore",
+  "/archive/:id/restore",
   asyncHandler(async (request, response) => {
     requireAdmin(request as AuthRequest);
     const id = requireParam(request.params.id, "id");

@@ -3,8 +3,14 @@ import type { NextFunction, Request, Response } from "express";
 import { pool } from "../db/pool.js";
 import type { AppUserRole, AuthUser } from "../types.js";
 import { cacheTtl, deleteCached, getCached } from "./cache.js";
-import { normalizeFileCategories, type FileCategoryKey } from "./file-categories.js";
+import {
+  getFileCategorySqlCondition,
+  matchesFileCategorySelection,
+  normalizeFileCategories,
+  type FileCategoryKey,
+} from "./file-categories.js";
 import { HttpError } from "./http.js";
+import { ensureIpAccessControlSchema } from "./ip-access-control.js";
 
 const sessionCookieName = "recordkeeper_session";
 const sessionDays = 7;
@@ -22,6 +28,7 @@ type SessionRow = {
   name: string | null;
   username: string | null;
   role: AppUserRole | null;
+  emergency_ip_bypass: boolean | null;
   division_ids: string[] | null;
   allowed_file_categories: unknown;
 };
@@ -112,6 +119,7 @@ export async function loadAuthUser(request: Request): Promise<AuthUser | undefin
 }
 
 async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefined> {
+  await ensureIpAccessControlSchema();
   const result = await pool.query<SessionRow>(
     `select
        s.user_id,
@@ -120,13 +128,14 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
        u.name,
        u.username,
        u.role,
+       u.emergency_ip_bypass,
        u.allowed_file_categories,
        coalesce(
          array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
          array[]::text[]
        ) as division_ids
      from auth_sessions s
-     left join app_users u on u.id = s.user_id and u.is_active = true
+     left join app_users u on u.id = s.user_id and u.is_active = true and u.archived_at is null
      left join user_divisions ud on ud.user_id = u.id
      left join divisions d on d.id = ud.division_id
      left join divisions vd on vd.id = s.viewer_division_id
@@ -161,6 +170,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
     role: row.role,
     divisionIds: row.division_ids ?? [],
     allowedFileCategories,
+    emergencyIpBypass: Boolean(row.emergency_ip_bypass),
   };
 }
 
@@ -207,23 +217,13 @@ export function hasFileCategoryRestriction(user: AuthUser) {
   return user.role === "editor" && Array.isArray(user.allowedFileCategories);
 }
 
-export function canAccessFileCategory(user: AuthUser, file: { fileType?: string; mode?: string }) {
+export function canAccessFileCategory(
+  user: AuthUser,
+  file: { fileType?: string; fileTypeGroup?: string },
+) {
   const categories = getAllowedFileCategories(user);
   if (!categories) return true;
-  const fileType = (file.fileType ?? "").trim().toLowerCase();
-  return categories.some((category) => {
-    if (category === "cars") return fileType === "cars";
-    if (category === "amc") return fileType === "amc";
-    if (category === "mpc") return fileType === "mpc";
-    if (category === "om") return fileType === "o&m";
-    return (
-      fileType !== "amc" &&
-      fileType !== "mpc" &&
-      fileType !== "cars" &&
-      fileType !== "capsi" &&
-      fileType !== "o&m"
-    );
-  });
+  return matchesFileCategorySelection(file, categories);
 }
 
 export function getDivisionScopeCondition(user: AuthUser, alias = "f") {
@@ -239,26 +239,7 @@ export function getFileCategoryScopeCondition(user: AuthUser, alias = "f") {
   const categories = getAllowedFileCategories(user);
   if (!categories) return { sql: "", values: [] as unknown[] };
   if (categories.length === 0) return { sql: "1 = 0", values: [] as unknown[] };
-  const categorySet = new Set(categories);
-  const predicates: string[] = [];
-  if (categorySet.has("goodsServices")) {
-    predicates.push(
-      `lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-    );
-  }
-  if (categorySet.has("amc")) {
-    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'amc'`);
-  }
-  if (categorySet.has("mpc")) {
-    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'mpc'`);
-  }
-  if (categorySet.has("cars")) {
-    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'cars'`);
-  }
-  if (categorySet.has("om")) {
-    predicates.push(`lower(trim(coalesce(${alias}.file_type, ''))) = 'o&m'`);
-  }
-  return { sql: predicates.length ? `(${predicates.join(" or ")})` : "1 = 0", values: [] };
+  return { sql: getFileCategorySqlCondition(categories, alias), values: [] };
 }
 
 export function getAuthScopeCacheKey(user: AuthUser) {

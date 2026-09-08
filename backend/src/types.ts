@@ -33,6 +33,7 @@ export type Indentor = {
   email: string;
   createdBy?: string;
   createdByName?: string;
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -44,6 +45,8 @@ export type AppUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  emergencyIpBypass?: boolean;
+  archivedAt?: string;
 };
 
 export type AuthUser = {
@@ -53,11 +56,13 @@ export type AuthUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  emergencyIpBypass?: boolean;
 };
 
 export type AppSettings = {
   financialYear: string;
   selectedYear: string;
+  setupYear: string;
   financialYears: string[];
   yearSelectionLocked: boolean;
   theme: AppTheme;
@@ -283,6 +288,7 @@ export type MasterFirm = {
   firmRating?: string;
   createdBy?: string;
   createdByName?: string;
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 };

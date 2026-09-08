@@ -568,9 +568,7 @@ function getMonthlyFileInflow(files: FileRecord[]) {
 function getMonthWiseSupplyOrder(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
     normalizedRawSupplyOrders(file).forEach((order) => {
-      if (isSupplyOrderCancelled(file, order)) return;
       const month = getMonthKey(order.soDate);
       if (!month) return;
       counts.set(month, (counts.get(month) ?? 0) + 1);
@@ -1242,16 +1240,16 @@ function addSupplementaryBillCashOutgoTotal(
     revenue: 0,
     total: 0,
   };
-  const capital =
-    getInrAmount(
-      amountType === "actual" ? bill.actualPaymentCapital : bill.billAmountCapital,
-      file,
-    ) ?? 0;
-  const revenue =
-    getInrAmount(
-      amountType === "actual" ? bill.actualPaymentRevenue : bill.billAmountRevenue,
-      file,
-    ) ?? 0;
+  const capitalSource =
+    amountType === "actual" && hasFilledString(bill.actualPaymentCapital)
+      ? bill.actualPaymentCapital
+      : bill.billAmountCapital;
+  const revenueSource =
+    amountType === "actual" && hasFilledString(bill.actualPaymentRevenue)
+      ? bill.actualPaymentRevenue
+      : bill.billAmountRevenue;
+  const capital = getInrAmount(capitalSource, file) ?? 0;
+  const revenue = getInrAmount(revenueSource, file) ?? 0;
   current.capital += capital;
   current.revenue += revenue;
   current.total += capital + revenue;

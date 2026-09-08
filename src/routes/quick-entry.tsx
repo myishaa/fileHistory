@@ -77,6 +77,10 @@ type QuickStatusContext = {
   file: FileRecord;
   statuses: FileStatusUpdate[];
 };
+type QuickEntryDestination = {
+  title: string;
+  focusTarget?: string;
+};
 
 function QuickEntryPage() {
   const activeUser = useActiveUser();
@@ -160,7 +164,7 @@ function QuickEntryEditor() {
         tone: "error",
         text: file.currentMilestone
           ? `The current milestone "${file.currentMilestone}" is not linked to a Quick Entry stage. Please update the current status under Milestones.`
-          : "Current status is not selected for this file. Please select it under Milestones.",
+          : "Current status is not selected and no dated Quick Entry stage was found for this file. Please select the current status under Milestones.",
       });
       return;
     }
@@ -239,7 +243,10 @@ function QuickEntryEditor() {
     const result = await createFileStatusUpdate(context.file.id, statusDraft.trim()).catch(
       (error) => {
         console.error(error);
-        setLookupMessage({ tone: "error", text: error instanceof Error ? error.message : "Save failed." });
+        setLookupMessage({
+          tone: "error",
+          text: error instanceof Error ? error.message : "Save failed.",
+        });
         return undefined;
       },
     );
@@ -258,7 +265,10 @@ function QuickEntryEditor() {
     const result = await updateFileStatusUpdate(statusId, editingStatusText.trim()).catch(
       (error) => {
         console.error(error);
-        setLookupMessage({ tone: "error", text: error instanceof Error ? error.message : "Update failed." });
+        setLookupMessage({
+          tone: "error",
+          text: error instanceof Error ? error.message : "Update failed.",
+        });
         return undefined;
       },
     );
@@ -272,82 +282,82 @@ function QuickEntryEditor() {
   return (
     <div className="space-y-4">
       {!isReadOnlyQuickEntry ? (
-      <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="mb-5 flex items-start gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
-            <ScanLine className="size-5 text-primary" />
+        <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+          <div className="mb-5 flex items-start gap-3">
+            <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
+              <ScanLine className="size-5 text-primary" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">Quick Entry</h2>
+              <p className="text-xs text-muted-foreground">
+                Scan the file barcode to open the currently running stage and focus the first
+                unfilled field.
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base font-semibold">Quick Entry</h2>
-            <p className="text-xs text-muted-foreground">
-              Scan the file barcode to open the currently running stage and focus the first unfilled
-              field.
-            </p>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
-          <label className="block">
-            <div className="mb-1.5 text-xs font-medium">Unique code</div>
-            <input
-              value={uniqueCode}
-              onChange={(event) => {
-                setUniqueCode(event.target.value);
-                setMessage(null);
-                setMilestoneFileId("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && canEditFiles) {
-                  event.preventDefault();
-                  void continueToCurrentStage();
-                }
-              }}
-              autoFocus
-              placeholder="Scan barcode or type Unique code"
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void continueToCurrentStage()}
-            disabled={loading || !canEditFiles}
-            title={canEditFiles ? "Open current stage" : "Only editors/admins can open stages"}
-            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
-          </button>
-        </div>
-
-        {message ? (
-          <div
-            className={
-              "mt-4 rounded-md border px-3 py-2 text-sm " +
-              "border-destructive/40 bg-destructive/10 text-destructive"
-            }
-          >
-            <div>{message.text}</div>
-            {milestoneFileId ? (
-              <button
-                type="button"
-                onClick={() =>
-                  navigate({
-                    to: "/add",
-                    search: {
-                      fileId: milestoneFileId,
-                      section: "Milestones",
-                      milestone: undefined,
-                      quickFocus: true,
-                    },
-                  })
-                }
-                className="mt-2 h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
-              >
-                Open Milestones
-              </button>
-            ) : null}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">Unique code</div>
+              <input
+                value={uniqueCode}
+                onChange={(event) => {
+                  setUniqueCode(event.target.value);
+                  setMessage(null);
+                  setMilestoneFileId("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && canEditFiles) {
+                    event.preventDefault();
+                    void continueToCurrentStage();
+                  }
+                }}
+                autoFocus
+                placeholder="Scan barcode or type Unique code"
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void continueToCurrentStage()}
+              disabled={loading || !canEditFiles}
+              title={canEditFiles ? "Open current stage" : "Only editors/admins can open stages"}
+              className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
+            </button>
           </div>
-        ) : null}
-      </section>
+
+          {message ? (
+            <div
+              className={
+                "mt-4 rounded-md border px-3 py-2 text-sm " +
+                "border-destructive/40 bg-destructive/10 text-destructive"
+              }
+            >
+              <div>{message.text}</div>
+              {milestoneFileId ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate({
+                      to: "/add",
+                      search: {
+                        fileId: milestoneFileId,
+                        section: "Milestones",
+                        milestone: undefined,
+                        quickFocus: true,
+                      },
+                    })
+                  }
+                  className="mt-2 h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
+                >
+                  Open Milestones
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
@@ -432,7 +442,10 @@ function QuickEntryEditor() {
 
         {context ? (
           <div className="mt-5 space-y-5">
-            <FileConfirmation file={context.file} onOpenFullFile={() => openFullFile(navigate, context.file.id)} />
+            <FileConfirmation
+              file={context.file}
+              onOpenFullFile={() => openFullFile(navigate, context.file.id)}
+            />
             <StatusComposer
               value={statusDraft}
               onChange={setStatusDraft}
@@ -521,7 +534,11 @@ function StatusComposer({
         <label className="text-sm font-semibold" htmlFor="file-status-draft">
           File Status
         </label>
-        <span className={words > 50 ? "text-xs font-medium text-destructive" : "text-xs text-muted-foreground"}>
+        <span
+          className={
+            words > 50 ? "text-xs font-medium text-destructive" : "text-xs text-muted-foreground"
+          }
+        >
           {words}/50 words
         </span>
       </div>
@@ -612,9 +629,7 @@ function StatusHistoryPanel({
   onChange: (value: string) => void;
   onSave: (statusId: string) => void;
 }) {
-  const sortedStatuses = [...statuses].sort(
-    (a, b) => getTime(b.createdAt) - getTime(a.createdAt),
-  );
+  const sortedStatuses = [...statuses].sort((a, b) => getTime(b.createdAt) - getTime(a.createdAt));
   return (
     <div className="rounded-md border border-border bg-background/60 p-3">
       <h3 className="text-sm font-semibold">File Status history</h3>
@@ -634,7 +649,11 @@ function StatusHistoryPanel({
                       className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                     />
                     <div className="mt-2 flex items-center justify-between gap-2">
-                      <span className={words > 50 ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+                      <span
+                        className={
+                          words > 50 ? "text-xs text-destructive" : "text-xs text-muted-foreground"
+                        }
+                      >
                         {words}/50 words
                       </span>
                       <div className="flex gap-2">
@@ -696,7 +715,7 @@ function openFullFile(navigate: ReturnType<typeof useNavigate>, fileId: string) 
     to: "/add",
     search: {
       fileId,
-      section: "File Details",
+      section: "File details",
       milestone: undefined,
       quickFocus: false,
     },
@@ -763,9 +782,11 @@ function normalizeQuickEntryCode(value: string | undefined) {
   return value?.trim().toLowerCase() ?? "";
 }
 
-function getQuickEntryStageForCurrentMilestone(file: FileRecord) {
+function getQuickEntryStageForCurrentMilestone(
+  file: FileRecord,
+): QuickEntryDestination | undefined {
   const current = getEffectiveQuickEntryMilestone(file);
-  if (!current) return undefined;
+  if (!current) return getQuickEntryStageForLastFilledDate(file);
   const stage = quickEntryStageSections.find((item) =>
     item.milestones.some((milestone) => normalizeQuickEntryMilestone(milestone) === current),
   );
@@ -774,6 +795,68 @@ function getQuickEntryStageForCurrentMilestone(file: FileRecord) {
     ...stage,
     focusTarget: isSupplyOrderQuickEntryMilestone(current) ? `${current}:current` : undefined,
   };
+}
+
+function getQuickEntryStageForLastFilledDate(file: FileRecord): QuickEntryDestination | undefined {
+  const datedStages: { title: string; date: unknown }[] = [
+    { title: "File details", date: file.receivedDate },
+    { title: "Scrutiny and control", date: file.scrutinyDate },
+    { title: "Scrutiny and control", date: file.scrutinyResponseDate },
+    { title: "Scrutiny and control", date: file.scrutinyCompletionDate },
+    { title: "Scrutiny and control", date: file.immsDate },
+    { title: "Approval block", date: file.highValueMeetingDate },
+    { title: "Approval block", date: file.highValueMinutesDate },
+    { title: "Approval block", date: file.adSentDate },
+    { title: "Approval block", date: file.adVettingDate },
+    { title: "Approval block", date: file.rqaSentDate },
+    { title: "Approval block", date: file.rqaApprovalDate },
+    { title: "TCEC block", date: file.preTcecDate },
+    { title: "TCEC block", date: file.preTcecMinutesDate },
+    { title: "Approval block", date: file.ifaSentDate },
+    { title: "Approval block", date: file.ifaFinalDate },
+    { title: "Approval block", date: file.cfaSentDate },
+    { title: "Approval block", date: file.cfaDate },
+    { title: "Bidding details", date: file.gemUndertakingDate },
+    { title: "Bidding details", date: file.rfpVettingInitiationDate },
+    { title: "Bidding details", date: file.rfpVettingApprovalDate },
+    { title: "Bidding details", date: file.preBidMeetingDate },
+    { title: "Bidding details", date: file.bidDate },
+    { title: "Bidding details", date: file.bidOpeningDate },
+    { title: "Bidding details", date: file.refloatPreBidMeetingDate },
+    { title: "Bidding details", date: file.refloatBiddingDate },
+    { title: "Bidding details", date: file.refloatBidOpeningDate },
+    { title: "TCEC block", date: file.postTcecDate },
+    { title: "TCEC block", date: file.postTcecMinutesDate },
+    { title: "Bidding details", date: file.cncDate },
+    { title: "Bidding details", date: file.cncApprovalDate },
+    { title: "File details", date: file.demandCancelledDate },
+    { title: "File details", date: file.fileClosureDate },
+    ...rawSupplyOrders(file).flatMap((order) =>
+      [
+        order.financialSanctionDate,
+        order.soDate,
+        order.dpDate,
+        order.revisedDp,
+        order.materialReceiptDate,
+        order.jobCompletionDate,
+        order.irPreparationDate,
+        order.irReceiptDate,
+        order.billPreparationDate,
+        order.billSentForPaymentDate,
+        order.paymentDate,
+        order.soCancelledDate,
+        order.shortclosureDate,
+      ].map((date) => ({ title: "Supply order and payment", date })),
+    ),
+  ];
+
+  return datedStages
+    .map((stage, index) => ({ ...stage, index, parsedDate: parseDate(stage.date) }))
+    .filter((stage): stage is typeof stage & { parsedDate: Date } => Boolean(stage.parsedDate))
+    .sort((a, b) => {
+      const dateDiff = b.parsedDate.getTime() - a.parsedDate.getTime();
+      return dateDiff || b.index - a.index;
+    })[0];
 }
 
 function getEffectiveQuickEntryMilestone(file: FileRecord) {
@@ -794,10 +877,7 @@ function getCurrentSupplyOrderMilestone(file: FileRecord) {
   );
 }
 
-function getEffectiveQuickEntryOrderMilestone(
-  file: FileRecord,
-  order: { [key: string]: unknown },
-) {
+function getEffectiveQuickEntryOrderMilestone(file: FileRecord, order: { [key: string]: unknown }) {
   if (isYes(order.soCancelled)) return "";
   if (isFinancialSanctionReached(file) && !hasDate(order.financialSanctionDate)) {
     return "financialsanction";
@@ -919,7 +999,11 @@ function hasDate(value: unknown) {
 }
 
 function isYes(value: unknown) {
-  return String(value ?? "").trim().toLowerCase() === "yes";
+  return (
+    String(value ?? "")
+      .trim()
+      .toLowerCase() === "yes"
+  );
 }
 
 function isSupplyOrderQuickEntryMilestone(value: string) {

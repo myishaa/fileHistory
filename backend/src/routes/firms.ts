@@ -18,6 +18,7 @@ type MasterFirmRow = {
   firm_rating?: string | null;
   created_by: string | null;
   created_by_name: string | null;
+  archived_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -34,6 +35,7 @@ function mapFirm(row: MasterFirmRow): MasterFirm {
     firmRating: fromDbText(row.firm_rating) || undefined,
     createdBy: row.created_by ?? undefined,
     createdByName: row.created_by_name ?? undefined,
+    archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -70,23 +72,23 @@ function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
       : {};
   const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
   const normalized = fields.reduce<FirmRatingField[]>((result, item, index) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return result;
-      const candidate = item as Record<string, unknown>;
-      const label = toDbText(candidate.label) || `Rating ${index + 1}`;
-      const rawId = toDbText(candidate.id) || label;
-      const id =
-        rawId
-          .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
-          .replace(/^[^a-zA-Z]+/, "")
-          .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
-      const weight = Number.parseFloat(toDbText(candidate.weight) ?? "1");
-      result.push({
-        id,
-        label,
-        weight: Number.isFinite(weight) && weight > 0 ? String(weight) : "1",
-      });
-      return result;
-    }, []);
+    if (!item || typeof item !== "object" || Array.isArray(item)) return result;
+    const candidate = item as Record<string, unknown>;
+    const label = toDbText(candidate.label) || `Rating ${index + 1}`;
+    const rawId = toDbText(candidate.id) || label;
+    const id =
+      rawId
+        .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
+        .replace(/^[^a-zA-Z]+/, "")
+        .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+    const weight = Number.parseFloat(toDbText(candidate.weight) ?? "1");
+    result.push({
+      id,
+      label,
+      weight: Number.isFinite(weight) && weight > 0 ? String(weight) : "1",
+    });
+    return result;
+  }, []);
   return { fields: normalized.length ? normalized : defaultFirmRatingConfig.fields };
 }
 
@@ -158,8 +160,12 @@ async function getAverageFirmRatings(firms: MasterFirmRow[]) {
     for (const firm of firms) {
       const firmUniqueNo = fromDbText(firm.firm_unique_no)?.toLowerCase();
       const firmName = fromDbText(firm.firm_name)?.toLowerCase();
-      const matchesUniqueNo = Boolean(firmUniqueNo && orderUniqueNo && firmUniqueNo === orderUniqueNo);
-      const matchesName = Boolean(!matchesUniqueNo && firmName && orderFirmName && firmName === orderFirmName);
+      const matchesUniqueNo = Boolean(
+        firmUniqueNo && orderUniqueNo && firmUniqueNo === orderUniqueNo,
+      );
+      const matchesName = Boolean(
+        !matchesUniqueNo && firmName && orderFirmName && firmName === orderFirmName,
+      );
       if (!matchesUniqueNo && !matchesName) continue;
       const scores = scoresByFirmId.get(firm.id) ?? [];
       scores.push(score);
@@ -189,6 +195,22 @@ function canManageFirms(user: AuthUser) {
   return canMutateFiles(user);
 }
 
+async function verifyDeletionPassword(value: unknown) {
+  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
+  const result = await pool.query<{ ok: boolean; configured: boolean }>(
+    `select
+       deletion_password <> '' as configured,
+       deletion_password <> '' and deletion_password = $1 as ok
+     from app_settings
+     where id = true`,
+    [value],
+  );
+  if (!result.rows[0]?.configured) {
+    throw new HttpError(400, "Set a deletion password in admin settings before deleting firms.");
+  }
+  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
+}
+
 function readFirmPayload(body: Record<string, unknown>) {
   const firmName = toDbText(body.firmName);
   const emailId = toDbText(body.emailId);
@@ -214,13 +236,14 @@ function isUniqueViolation(error: unknown) {
   );
 }
 
-async function getFirm(id: string) {
+async function getFirm(id: string, includeArchived = false) {
   const result = await pool.query<MasterFirmRow>(
     `select mf.*, u.name as created_by_name
      from master_firms mf
      left join app_users u on u.id = mf.created_by
-     where mf.id = $1`,
-    [id],
+     where mf.id = $1
+       and ($2::boolean or mf.archived_at is null)`,
+    [id, includeArchived],
   );
   return result.rows[0] ? mapFirm(result.rows[0]) : undefined;
 }
@@ -230,7 +253,7 @@ firmsRouter.get(
   asyncHandler(async (request, response) => {
     requireAuth(request as AuthRequest);
     const values: unknown[] = [];
-    const where: string[] = [];
+    const where: string[] = ["mf.archived_at is null"];
     const q = typeof request.query.q === "string" ? request.query.q.trim() : "";
     const page = readPositiveInteger(request.query.page, 1, 1_000_000);
     const pageSize = readPositiveInteger(request.query.pageSize, 50, 500);
@@ -315,7 +338,7 @@ firmsRouter.patch(
       const result = await pool.query<MasterFirmRow>(
         `update master_firms
          set firm_name = $2, email_id = $3, city = $4, address = $5, firm_unique_no = $6, contact_no = $7
-         where id = $1
+         where id = $1 and archived_at is null
          returning *, null::text as created_by_name`,
         [
           id,
@@ -346,7 +369,72 @@ firmsRouter.delete(
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id);
     if (!firm) throw new HttpError(404, "Firm was not found.");
-    await pool.query("delete from master_firms where id = $1", [id]);
+    await pool.query(
+      `update master_firms
+       set archived_at = now(),
+           archived_by = $2,
+           archive_reason = 'Archived by admin'
+       where id = $1 and archived_at is null`,
+      [id, user.id],
+    );
+    response.json({ archived: true, firm });
+  }),
+);
+
+firmsRouter.get(
+  "/archive/list",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canManageFirms(user)) throw new HttpError(403, "You cannot view archived firms.");
+    const result = await pool.query<MasterFirmRow>(
+      `select mf.*, u.name as created_by_name
+       from master_firms mf
+       left join app_users u on u.id = mf.created_by
+       where mf.archived_at is not null
+       order by mf.archived_at desc, lower(coalesce(mf.firm_name, '')) asc`,
+    );
+    response.json({ firms: result.rows.map(mapFirm) });
+  }),
+);
+
+firmsRouter.post(
+  "/archive/:id/restore",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canManageFirms(user)) throw new HttpError(403, "You cannot restore firms.");
+    const id = requireParam(request.params.id, "id");
+    const firm = await getFirm(id, true);
+    if (!firm?.archivedAt) throw new HttpError(404, "Archived firm was not found.");
+    try {
+      await pool.query(
+        `update master_firms
+         set archived_at = null,
+             archived_by = null,
+             archive_reason = null
+         where id = $1`,
+        [id],
+      );
+      response.json({ firm: await getFirm(id) });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new HttpError(409, "Firm Unique No. already exists in active firms.");
+      }
+      throw error;
+    }
+  }),
+);
+
+firmsRouter.delete(
+  "/archive/:id",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await verifyDeletionPassword(body.deletionPassword);
+    const id = requireParam(request.params.id, "id");
+    const firm = await getFirm(id, true);
+    if (!firm?.archivedAt) throw new HttpError(404, "Archived firm was not found.");
+    await pool.query("delete from master_firms where id = $1 and archived_at is not null", [id]);
     response.json({ deleted: true, firm });
   }),
 );

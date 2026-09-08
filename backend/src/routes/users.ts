@@ -4,6 +4,7 @@ import type { AppUser, AppUserRole } from "../types.js";
 import { canUseAllDivisions, requireAdmin, requireAuth, type AuthRequest } from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { normalizeFileCategories } from "../utils/file-categories.js";
+import { ensureIpAccessControlSchema } from "../utils/ip-access-control.js";
 import {
   asyncHandler,
   HttpError,
@@ -41,6 +42,8 @@ type UserRow = {
   role: AppUserRole;
   division_ids: string[] | null;
   allowed_file_categories: unknown;
+  emergency_ip_bypass: boolean;
+  archived_at: Date | string | null;
 };
 
 function mapUser(row: UserRow): AppUser {
@@ -55,6 +58,8 @@ function mapUser(row: UserRow): AppUser {
           row.allowed_file_categories.filter((item): item is string => typeof item === "string"),
         )
       : undefined,
+    emergencyIpBypass: Boolean(row.emergency_ip_bypass),
+    archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
   };
 }
 
@@ -90,15 +95,35 @@ function clearUserCache() {
   clearCachePrefix("lookup:users");
 }
 
-async function listUsers() {
-  return getCached("lookup:users", cacheTtl.lookupMs, async () => {
+async function verifyDeletionPassword(value: unknown) {
+  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
+  const result = await pool.query<{ ok: boolean; configured: boolean }>(
+    `select
+       deletion_password <> '' as configured,
+       deletion_password <> '' and deletion_password = $1 as ok
+     from app_settings
+     where id = true`,
+    [value],
+  );
+  if (!result.rows[0]?.configured) {
+    throw new HttpError(400, "Set a deletion password in admin settings before deleting users.");
+  }
+  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
+}
+
+async function listUsers(includeArchived = false) {
+  await ensureIpAccessControlSchema();
+  const cacheKey = includeArchived ? "lookup:users:archived" : "lookup:users";
+  return getCached(cacheKey, cacheTtl.lookupMs, async () => {
     const result = await pool.query<UserRow>(
       `select
          u.id,
          u.name,
          u.username,
          u.role,
+         u.emergency_ip_bypass,
          u.allowed_file_categories,
+         u.archived_at,
          coalesce(
            array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
            array[]::text[]
@@ -106,6 +131,7 @@ async function listUsers() {
        from app_users u
        left join user_divisions ud on ud.user_id = u.id
        left join divisions d on d.id = ud.division_id
+       where ${includeArchived ? "u.archived_at is not null" : "u.archived_at is null"}
        group by u.id
        order by u.name asc`,
     );
@@ -115,6 +141,11 @@ async function listUsers() {
 
 async function getUser(id: string) {
   const users = await listUsers();
+  return users.find((user) => user.id === id);
+}
+
+async function getArchivedUser(id: string) {
+  const users = await listUsers(true);
   return users.find((user) => user.id === id);
 }
 
@@ -152,13 +183,18 @@ usersRouter.post(
     const password = requireString(body.password, "password");
     const divisionIds = readDivisionIds(body.divisionIds) ?? [];
     const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
+    const emergencyIpBypass = body.emergencyIpBypass === true && role === "admin";
 
     const client = await pool.connect();
     try {
+      await ensureIpAccessControlSchema();
       await client.query("begin");
       const result = await client.query<{ id: string }>(
-        `insert into app_users (name, username, role, password_hash, is_active, allowed_file_categories)
-         values ($1, $2, $3, crypt($4, gen_salt('bf')), true, $5::jsonb)
+        `insert into app_users (
+           name, username, role, password_hash, is_active, allowed_file_categories,
+           emergency_ip_bypass
+         )
+         values ($1, $2, $3, crypt($4, gen_salt('bf')), true, $5::jsonb, $6)
          returning id`,
         [
           name,
@@ -166,6 +202,7 @@ usersRouter.post(
           role,
           password,
           allowedFileCategories ? JSON.stringify(allowedFileCategories) : null,
+          emergencyIpBypass,
         ],
       );
       const userId = result.rows[0].id;
@@ -209,6 +246,7 @@ usersRouter.patch(
     if ("username" in body) addField("username", requireString(body.username, "username"));
     if ("role" in body) addField("role", readRole(body.role));
     if ("password" in body) addField("password_hash", requireString(body.password, "password"));
+    if ("emergencyIpBypass" in body) addField("emergency_ip_bypass", body.emergencyIpBypass === true);
     if ("allowedFileCategories" in body) {
       values.push(allowedFileCategories ? JSON.stringify(allowedFileCategories) : null);
       fields.push(`allowed_file_categories = $${values.length}::jsonb`);
@@ -216,6 +254,7 @@ usersRouter.patch(
 
     const client = await pool.connect();
     try {
+      await ensureIpAccessControlSchema();
       await client.query("begin");
       const existing = await client.query<{ id: string; role: AppUserRole; is_active: boolean }>(
         "select id, role, is_active from app_users where id = $1",
@@ -268,13 +307,66 @@ usersRouter.patch(
 usersRouter.delete(
   "/:id",
   asyncHandler(async (request, response) => {
-    requireAdmin(request as AuthRequest);
+    const admin = requireAdmin(request as AuthRequest);
     const id = requireParam(request.params.id, "id");
     const user = await getUser(id);
     if (!user) throw new HttpError(404, "User not found.");
     if (user.role === "admin") await ensureNotLastAdmin(id, "delete");
 
-    await pool.query("delete from app_users where id = $1", [id]);
+    await pool.query(
+      `update app_users
+       set archived_at = now(),
+           archived_by = $2,
+           archive_reason = 'Archived by admin',
+           is_active = false
+       where id = $1 and archived_at is null`,
+      [id, admin.id],
+    );
+    clearUserCache();
+    response.json({ archived: true, user });
+  }),
+);
+
+usersRouter.get(
+  "/archive/list",
+  asyncHandler(async (request, response) => {
+    requireAdmin(request as AuthRequest);
+    response.json({ users: await listUsers(true) });
+  }),
+);
+
+usersRouter.post(
+  "/archive/:id/restore",
+  asyncHandler(async (request, response) => {
+    requireAdmin(request as AuthRequest);
+    const id = requireParam(request.params.id, "id");
+    const user = await getArchivedUser(id);
+    if (!user) throw new HttpError(404, "Archived user not found.");
+    await pool.query(
+      `update app_users
+       set archived_at = null,
+           archived_by = null,
+           archive_reason = null,
+           is_active = true
+       where id = $1`,
+      [id],
+    );
+    clearUserCache();
+    response.json({ user: await getUser(id) });
+  }),
+);
+
+usersRouter.delete(
+  "/archive/:id",
+  asyncHandler(async (request, response) => {
+    requireAdmin(request as AuthRequest);
+    const body = requireObjectBody(request.body);
+    await verifyDeletionPassword(body.deletionPassword);
+    const id = requireParam(request.params.id, "id");
+    const user = await getArchivedUser(id);
+    if (!user) throw new HttpError(404, "Archived user not found.");
+    await pool.query("delete from user_divisions where user_id = $1", [id]);
+    await pool.query("delete from app_users where id = $1 and archived_at is not null", [id]);
     clearUserCache();
     response.json({ deleted: true, user });
   }),

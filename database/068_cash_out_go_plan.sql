@@ -1,5 +1,5 @@
 create table if not exists cash_out_go_plan_settings (
-  id text primary key default 'global',
+  id text primary key,
   bill_offset_days integer not null default 5,
   use_custom_bill_offset_days boolean not null default false,
   hand_submission_offset_days integer not null default 5,
@@ -7,13 +7,14 @@ create table if not exists cash_out_go_plan_settings (
   dp_offset_days integer not null default 10,
   use_custom_dp_offset_days boolean not null default false,
   updated_at timestamptz not null default now(),
-  constraint cash_out_go_plan_settings_singleton check (id = 'global'),
   constraint cash_out_go_plan_bill_offset_non_negative check (bill_offset_days >= 0),
   constraint cash_out_go_plan_hand_submission_offset_non_negative
     check (hand_submission_offset_days >= 0),
   constraint cash_out_go_plan_dp_offset_non_negative check (dp_offset_days >= 0)
 );
 
+alter table cash_out_go_plan_settings
+  drop constraint if exists cash_out_go_plan_settings_singleton;
 alter table cash_out_go_plan_settings
   add column if not exists hand_submission_offset_days integer not null default 5;
 alter table cash_out_go_plan_settings

@@ -42,12 +42,12 @@ import {
 import { downloadBackendExport, downloadBackendFileSearchExport } from "@/lib/export-download";
 import {
   allFileCategoryKeys,
-  fileCategoryOptions,
   fileMatchesCategory,
   filterFilesByCategory,
   getVisibleFileCategoryKeys,
   getVisibleFileCategoryOptions,
   serializeFileCategories,
+  type FileCategoryOption,
   type FileCategoryKey,
 } from "@/lib/file-categories";
 import { formatThousandsAndLakhs, getInrAmount, hasAmount, parseAmount } from "@/lib/money";
@@ -60,9 +60,26 @@ import {
   normalizeBillReturnCycles,
 } from "@/lib/refloat-returned-bill";
 import { isAllFilesYear, isCancelledFile } from "@/lib/year-filter";
-import { formatIsoDateForDisplay } from "@/components/date-input";
+import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ArrowRight, FileSpreadsheet, FileText, Info, Lock, Search, Unlock } from "lucide-react";
+import {
+  fileMatchesInitiationDateRange,
+  getActiveFileInitiationDateRange,
+  getFileInitiationDateSearchParams,
+  type FileInitiationDateRange,
+} from "@/lib/file-initiation-date-filter";
+import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
+import {
+  ArrowRight,
+  ChevronDown,
+  FileSpreadsheet,
+  FileText,
+  Info,
+  Lock,
+  RotateCcw,
+  Search,
+  Unlock,
+} from "lucide-react";
 
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
@@ -182,7 +199,17 @@ const fileYearSubfilterHelper = [
   "All file years means no extra file-year restriction, and is hidden when Global Filter is All files.",
   "Selecting a specific FY shows only files initiated in that FY from the already selected file set.",
   "It does not change the activity-year meaning of the main/global filter.",
-  "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
+];
+
+const fileYearLockHelper = [
+  "Locks the current File Year selection for Dashboard and Reports in this browser tab session.",
+  "It is not saved as a permanent user or admin setting.",
+  "Unlock it when you want File Year to return to the session default behavior.",
+];
+
+const fileInitiationDateRangeHelper = [
+  "Further narrows the File Year Subfilter using exact file initiation date.",
+  "Leave both dates blank when no initiation date restriction is required.",
 ];
 
 const analyticsMainHelper = [
@@ -229,7 +256,9 @@ const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
 
 type AnalyticsSearchTarget = {
   dashboardFilter?: string;
+  extraDashboardFilters?: string[];
   division?: string;
+  includeModes?: string[];
   analyticsType?: "firm" | "indentor";
   analyticsNames?: string[];
   focusSection?: string;
@@ -337,11 +366,38 @@ function hasAnomalyAdminAccess(role?: string) {
   return role === "admin" || role === "sub_admin";
 }
 
+const statusFileExportHelpers = {
+  pdf: "Exports the complete Status-1 file-status table as a PDF for printing or sharing.",
+  excel:
+    "Exports the complete Status-1 file-status table as an Excel file for sorting, filtering, or further analysis.",
+} as const;
+
 const statusActionModes = [
-  { key: "pdf", label: "PDF", icon: FileText },
-  { key: "excel", label: "Excel", icon: FileSpreadsheet },
-  { key: "search", label: "Search file", icon: Search },
-] satisfies Array<{ key: StatusActionMode; label: string; icon: typeof Search }>;
+  {
+    key: "pdf",
+    label: "PDF",
+    icon: FileText,
+    helper: "When a Status-1 count is clicked, opens the matching files as a PDF.",
+  },
+  {
+    key: "excel",
+    label: "Excel",
+    icon: FileSpreadsheet,
+    helper: "When a Status-1 count is clicked, downloads the matching files in Excel format.",
+  },
+  {
+    key: "search",
+    label: "Search file",
+    icon: Search,
+    helper:
+      "When a Status-1 count is clicked, opens the matching files in Search Files for review or action.",
+  },
+] satisfies Array<{
+  key: StatusActionMode;
+  label: string;
+  icon: typeof Search;
+  helper: string;
+}>;
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
@@ -482,6 +538,7 @@ async function downloadDashboardStatusFiles({
   division,
   selectedYear,
   fileYear,
+  fileInitiationDateRange,
   fileCategories,
   format,
   title,
@@ -490,6 +547,7 @@ async function downloadDashboardStatusFiles({
   division: string;
   selectedYear: string;
   fileYear?: string;
+  fileInitiationDateRange?: FileInitiationDateRange;
   fileCategories: FileCategoryKey[];
   format: "excel" | "pdf";
   title: string;
@@ -502,6 +560,7 @@ async function downloadDashboardStatusFiles({
       dashboardFilter,
       selectedYear,
       ...(fileYear && fileYear !== "all" ? { fileYear } : {}),
+      ...getFileInitiationDateSearchParams(fileInitiationDateRange),
       fileCategories: serializeFileCategories(fileCategories),
       ...(division === "all" ? {} : { divisionFilter: division }),
     },
@@ -520,6 +579,7 @@ const divisionFilterableAnalyticsPanels: AnalyticsPanelKey[] = [
   "cncSummary",
   "suspectedAnomaly",
   "delayStatus",
+  "milestoneClearingTable",
 ];
 const analyticsResultLimitOptions = [
   { value: "5", label: "Top 5" },
@@ -698,6 +758,8 @@ export function Dashboard() {
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
   const [fileYearLocked, setFileYearLocked] = useState(false);
+  const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
+  const [fileInitiationToDate, setFileInitiationToDate] = useState("");
   const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
     settings.liveStatusLockedFields,
   );
@@ -754,17 +816,29 @@ export function Dashboard() {
     setSelectedLiveMilestones(settings.liveStatusLockedFields);
   }, [settings.liveStatusLockedFields, activeUser?.id]);
   const visibleFileCategoryKeys = useMemo(
-    () => getVisibleFileCategoryKeys(activeUser?.allowedFileCategories),
-    [activeUser?.allowedFileCategories],
+    () =>
+      getVisibleFileCategoryKeys(
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
+        settings.fileTypes,
+      ),
+    [activeUser?.allowedFileCategories, activeUser?.role, settings.fileTypes],
   );
   const visibleFileCategoryOptions = useMemo(
-    () => getVisibleFileCategoryOptions(activeUser?.allowedFileCategories),
-    [activeUser?.allowedFileCategories],
+    () =>
+      getVisibleFileCategoryOptions(
+        activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
+        settings.fileTypes,
+      ),
+    [activeUser?.allowedFileCategories, activeUser?.role, settings.fileTypes],
   );
   useEffect(() => {
     setSelectedFileCategories((current) => {
+      const allFixedSelected = allFileCategoryKeys.every((key) => current.includes(key));
       const visible = new Set(visibleFileCategoryKeys);
       const next = current.filter((key) => visible.has(key));
+      if (allFixedSelected && next.length < visibleFileCategoryKeys.length) {
+        return visibleFileCategoryKeys;
+      }
       return next.length ? next : visibleFileCategoryKeys;
     });
   }, [visibleFileCategoryKeys]);
@@ -782,6 +856,9 @@ export function Dashboard() {
     [settings.financialYears],
   );
   const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const fileInitiationDateRangeStorageKey = `recordkeeper:file-initiation-date-range:${
+    activeUser?.id ?? "anonymous"
+  }`;
   const defaultFileYear = fileYearOptions.includes(settings.financialYear)
     ? settings.financialYear
     : (fileYearOptions[0] ?? "all");
@@ -833,13 +910,66 @@ export function Dashboard() {
       );
     }
   };
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.sessionStorage.getItem(fileInitiationDateRangeStorageKey);
+    if (!saved) {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      setFileInitiationFromDate(typeof parsed?.fromDate === "string" ? parsed.fromDate : "");
+      setFileInitiationToDate(typeof parsed?.toDate === "string" ? parsed.toDate : "");
+    } catch {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+    }
+  }, [fileInitiationDateRangeStorageKey]);
+  const updateFileInitiationDateRange = (patch: Partial<FileInitiationDateRange>) => {
+    const nextFromDate = patch.fromDate ?? fileInitiationFromDate;
+    const nextToDate = patch.toDate ?? fileInitiationToDate;
+    setFileInitiationFromDate(nextFromDate);
+    setFileInitiationToDate(nextToDate);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(
+        fileInitiationDateRangeStorageKey,
+        JSON.stringify({ fromDate: nextFromDate, toDate: nextToDate }),
+      );
+    }
+  };
+  const clearFileInitiationDateRange = () =>
+    updateFileInitiationDateRange({ fromDate: "", toDate: "" });
+  const activeFileInitiationDateRange = useMemo(
+    () => getActiveFileInitiationDateRange(fileInitiationFromDate, fileInitiationToDate),
+    [fileInitiationFromDate, fileInitiationToDate],
+  );
+  const fileInitiationDateQueryParams = useMemo(
+    () => getFileInitiationDateSearchParams(activeFileInitiationDateRange),
+    [activeFileInitiationDateRange],
+  );
+  const divisionFilterActive = activeDivision !== "all";
+  const fileYearFilterActive = activeFileYear !== defaultFileYear;
+  const fileInitiationDateFilterActive = Boolean(activeFileInitiationDateRange);
+  const fileCategoryFilterActive =
+    selectedFileCategories.filter((category) => visibleFileCategoryKeys.includes(category))
+      .length !== visibleFileCategoryKeys.length;
+  const analyticsDivisionFilterActive = activeAnalyticsDivision !== "all";
+  const dashboardExportDescription = getDashboardExportDescription({
+    globalYear: settings.selectedYear,
+    fileYear: activeFileYear,
+    division: activeDivision,
+    fileInitiationDateRange: activeFileInitiationDateRange,
+    selectedFileCategories,
+    visibleFileCategoryOptions,
+  });
   const dashboardFiles = useMemo(
     () =>
-      (activeDivision === "all"
-        ? files
-        : files.filter((file) => file.division === activeDivision)
-      ).filter((file) => activeFileYear === "all" || file.year === activeFileYear),
-    [activeDivision, activeFileYear, files],
+      (activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision))
+        .filter((file) => activeFileYear === "all" || file.year === activeFileYear)
+        .filter((file) => fileMatchesInitiationDateRange(file, activeFileInitiationDateRange)),
+    [activeDivision, activeFileInitiationDateRange, activeFileYear, files],
   );
   const categoryFilteredDashboardFiles = useMemo(
     () => filterFilesByCategory(dashboardFiles, selectedFileCategories),
@@ -864,13 +994,15 @@ export function Dashboard() {
             files.filter(
               (file) =>
                 file.division === activeAnalyticsDivision &&
-                (activeFileYear === "all" || file.year === activeFileYear),
+                (activeFileYear === "all" || file.year === activeFileYear) &&
+                fileMatchesInitiationDateRange(file, activeFileInitiationDateRange),
             ),
             selectedFileCategories,
           ).filter((file) => !isCancelledFile(file)),
     [
       activeAnalyticsDivision,
       activeDashboardStatusFiles,
+      activeFileInitiationDateRange,
       activeFileYear,
       files,
       selectedFileCategories,
@@ -891,6 +1023,7 @@ export function Dashboard() {
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     if (selectedLiveMilestones) {
       params.set("liveMilestones", selectedLiveMilestones.join(","));
@@ -899,6 +1032,7 @@ export function Dashboard() {
   }, [
     activeDivision,
     activeAnalyticsDivision,
+    fileInitiationDateQueryParams,
     activeFileYear,
     selectedFileCategories,
     selectedLiveMilestones,
@@ -913,17 +1047,25 @@ export function Dashboard() {
     params.set("division", activeDivision);
     params.set("selectedYear", settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     params.set("delayDays", "5");
     params.set("expectedCashOutgoDays", "10");
     params.set("delayMilestone", "all");
     return params.toString();
-  }, [activeDivision, activeFileYear, selectedFileCategories, settings.selectedYear]);
+  }, [
+    activeDivision,
+    activeFileYear,
+    fileInitiationDateQueryParams,
+    selectedFileCategories,
+    settings.selectedYear,
+  ]);
   const analyticsDelayQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     params.set("delayDays", analyticsDelayDays || "0");
     params.set("expectedCashOutgoDays", "0");
@@ -934,6 +1076,7 @@ export function Dashboard() {
     activeFileYear,
     analyticsDelayDays,
     analyticsDelayMilestoneKey,
+    fileInitiationDateQueryParams,
     selectedFileCategories,
     settings.selectedYear,
   ]);
@@ -943,12 +1086,14 @@ export function Dashboard() {
     params.set("analyticsDivision", activeAnalyticsDivision);
     params.set("selectedYear", settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     params.set("fileCategories", serializeFileCategories(selectedFileCategories));
     return params.toString();
   }, [
     activeAnalyticsDivision,
     activeDivision,
     activeFileYear,
+    fileInitiationDateQueryParams,
     selectedFileCategories,
     settings.selectedYear,
   ]);
@@ -1171,19 +1316,37 @@ export function Dashboard() {
   const localMiscellaneousCounts = needsLocalDashboardFallback
     ? getMiscellaneousCounts(categoryFilteredDashboardFiles)
     : undefined;
+  const localAnalyticsHistoryFiles =
+    activeAnalyticsDivision === "all"
+      ? categoryFilteredDashboardFiles
+      : filterFilesByCategory(
+          files.filter(
+            (file) =>
+              file.division === activeAnalyticsDivision &&
+              (activeFileYear === "all" || file.year === activeFileYear) &&
+              fileMatchesInitiationDateRange(file, activeFileInitiationDateRange),
+          ),
+          selectedFileCategories,
+        );
   const localAnalytics = needsLocalDashboardFallback
-    ? getAnalyticsSummary(
-        activeDashboardStatusFiles,
-        dashboardDivisions,
-        settings.valueThresholdLevels,
-      )
+    ? {
+        ...getAnalyticsSummary(
+          activeDashboardStatusFiles,
+          dashboardDivisions,
+          settings.valueThresholdLevels,
+        ),
+        monthWiseSupplyOrder: getMonthWiseSupplyOrder(categoryFilteredDashboardFiles),
+      }
     : undefined;
   const localDivisionFilteredAnalytics = needsLocalDashboardFallback
-    ? getAnalyticsSummary(
-        filteredAnalyticsFiles,
-        filteredAnalyticsDivisions,
-        settings.valueThresholdLevels,
-      )
+    ? {
+        ...getAnalyticsSummary(
+          filteredAnalyticsFiles,
+          filteredAnalyticsDivisions,
+          settings.valueThresholdLevels,
+        ),
+        monthWiseSupplyOrder: getMonthWiseSupplyOrder(localAnalyticsHistoryFiles),
+      }
     : undefined;
   const localMonthWiseDeliveryScheduleRows = useMemo(
     () => getMonthWiseDeliverySchedule(filteredAnalyticsFiles),
@@ -1348,13 +1511,16 @@ export function Dashboard() {
         : status4SourceFiles.filter((file) => file.division === activeDivision);
     return filterFilesByCategory(
       divisionScopedFiles.filter(
-        (file) => activeFileYear === "all" || file.year === activeFileYear,
+        (file) =>
+          (activeFileYear === "all" || file.year === activeFileYear) &&
+          fileMatchesInitiationDateRange(file, activeFileInitiationDateRange),
       ),
       selectedFileCategories,
     ).filter((file) => !isCancelledFile(file));
   }, [
     activeDashboardStatusFiles,
     activeDivision,
+    activeFileInitiationDateRange,
     activeFileYear,
     selectedFileCategories,
     status4SourceFiles,
@@ -1402,17 +1568,20 @@ export function Dashboard() {
   const milestoneClearingAvailableFiles = useMemo(() => {
     if (!milestoneClearingSourceFiles) return filteredAnalyticsFiles;
     const divisionScopedFiles =
-      activeDivision === "all"
+      activeAnalyticsDivision === "all"
         ? milestoneClearingSourceFiles
-        : milestoneClearingSourceFiles.filter((file) => file.division === activeDivision);
+        : milestoneClearingSourceFiles.filter((file) => file.division === activeAnalyticsDivision);
     return filterFilesByCategory(
       divisionScopedFiles.filter(
-        (file) => activeFileYear === "all" || file.year === activeFileYear,
+        (file) =>
+          (activeFileYear === "all" || file.year === activeFileYear) &&
+          fileMatchesInitiationDateRange(file, activeFileInitiationDateRange),
       ),
       selectedFileCategories,
     ).filter((file) => !isCancelledFile(file));
   }, [
-    activeDivision,
+    activeAnalyticsDivision,
+    activeFileInitiationDateRange,
     activeFileYear,
     filteredAnalyticsFiles,
     milestoneClearingSourceFiles,
@@ -1558,6 +1727,15 @@ export function Dashboard() {
   const compactSummaryStats: SummaryStat[] = [];
 
   const summaryStats: SummaryStat[] = [];
+  const snapshotExportRows = getSnapshotExportRows([
+    ...topSummaryStats,
+    biddingTypeSummaryStat,
+    gemBiddingModeSummaryStat,
+    ...(fileTypeStats ? [fileTypeStats] : []),
+    ...(firmTypeStats ? [firmTypeStats] : []),
+    ...compactSummaryStats,
+    ...summaryStats,
+  ]);
 
   const financePercentStats = [
     {
@@ -2203,6 +2381,7 @@ export function Dashboard() {
         dashboardFilter,
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath(getDashboardDrillPath(activeDashboardTab, dashboardFilter)),
@@ -2221,6 +2400,7 @@ export function Dashboard() {
         dashboardFilter,
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         division,
         fileCategories: serializeFileCategories(selectedFileCategories),
         drillPath: serializeDrillPath([
@@ -2242,6 +2422,7 @@ export function Dashboard() {
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         drillPath: serializeDrillPath(getStatus4DrillPath(filter)),
       },
     });
@@ -2257,6 +2438,7 @@ export function Dashboard() {
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         analyticsType: analyticsTransferType,
         analyticsNames: JSON.stringify(
           displayedAnalyticsPanel.rows
@@ -2281,12 +2463,17 @@ export function Dashboard() {
       to: "/search",
       search: {
         dashboardFilter: target.dashboardFilter,
+        extraDashboardFilters: target.extraDashboardFilters?.length
+          ? JSON.stringify(target.extraDashboardFilters)
+          : undefined,
         division:
           target.division ??
           (activeAnalyticsDivision === "all" ? undefined : activeAnalyticsDivision),
+        includeModes: target.includeModes?.length ? target.includeModes.join(",") : undefined,
         fileCategories: serializeFileCategories(selectedFileCategories),
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
         analyticsType: target.analyticsType,
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
@@ -2317,7 +2504,11 @@ export function Dashboard() {
         }`,
       };
     }
-    return getAnalyticsSearchTarget(displayedAnalyticsPanel.key, row, column.key);
+    return getAnalyticsSearchTarget(displayedAnalyticsPanel.key, row, column.key, {
+      milestoneClearingMode,
+      milestoneClearingValueThreshold,
+      valueThresholdLevels: effectiveValueThresholdLevels,
+    });
   };
   const getAnalyticsColumnTotalSearchTarget = (
     column: AnalyticsTableColumn,
@@ -2478,6 +2669,7 @@ export function Dashboard() {
         division: activeDivision,
         selectedYear: settings.selectedYear,
         fileYear: activeFileYear,
+        fileInitiationDateRange: activeFileInitiationDateRange,
         fileCategories: selectedFileCategories,
         format: statusActionMode === "excel" ? "excel" : "pdf",
         title,
@@ -2536,74 +2728,106 @@ export function Dashboard() {
             );
           })}
         </div>
-        <label className="flex min-w-[220px] flex-col gap-1 text-xs text-muted-foreground">
-          <span>Division</span>
-          <select
-            value={activeDivision}
-            onChange={(event) => setSelectedDivision(event.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+        <div className="flex flex-wrap items-end justify-end gap-3">
+          <div className="flex shrink-0 items-end gap-2">
+            <div className="flex items-end gap-1.5">
+              <label
+                className={filterLabelClass(
+                  fileYearFilterActive,
+                  "flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground",
+                )}
+              >
+                <span className="inline-flex items-center gap-1">
+                  File year
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="File year subfilter help"
+                          className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <Info className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        align="start"
+                        className="max-w-xs text-xs leading-relaxed"
+                      >
+                        <HelperBulletList items={fileYearSubfilterHelper} />
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </span>
+                <select
+                  value={activeFileYear}
+                  onChange={(event) => updateFileYearSelection(event.target.value)}
+                  className={filterControlClass(
+                    fileYearFilterActive,
+                    "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+                  )}
+                >
+                  {showAllFileYearsOption ? <option value="all">All file years</option> : null}
+                  {fileYearOptions.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex flex-col items-center gap-1">
+                <FloatingHelp label="File year lock help">{fileYearLockHelper}</FloatingHelp>
+                <button
+                  type="button"
+                  onClick={toggleFileYearLock}
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent"
+                  title={fileYearLocked ? "Unlock file year" : "Lock file year"}
+                  aria-label={fileYearLocked ? "Unlock file year" : "Lock file year"}
+                >
+                  {fileYearLocked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
+                </button>
+              </div>
+            </div>
+            <FileInitiationDateRangeFilter
+              fromDate={fileInitiationFromDate}
+              toDate={fileInitiationToDate}
+              active={fileInitiationDateFilterActive}
+              onFromDateChange={(fromDate) => updateFileInitiationDateRange({ fromDate })}
+              onToDateChange={(toDate) => updateFileInitiationDateRange({ toDate })}
+              onClear={clearFileInitiationDateRange}
+            />
+          </div>
+          <label
+            className={filterLabelClass(
+              divisionFilterActive,
+              "flex min-w-[150px] flex-col gap-1 text-xs text-muted-foreground",
+            )}
           >
-            <option value="all">All accessible divisions</option>
-            {divisions.map((division) => (
-              <option key={division.id} value={division.name}>
-                {division.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex items-end gap-1.5">
-          <label className="flex min-w-[160px] flex-col gap-1 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              File year
-              <TooltipProvider delayDuration={150}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="File year subfilter help"
-                      className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                    >
-                      <Info className="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent
-                    side="top"
-                    align="start"
-                    className="max-w-xs text-xs leading-relaxed"
-                  >
-                    <HelperBulletList items={fileYearSubfilterHelper} />
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </span>
+            <span>Division</span>
             <select
-              value={activeFileYear}
-              onChange={(event) => updateFileYearSelection(event.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              value={activeDivision}
+              onChange={(event) => setSelectedDivision(event.target.value)}
+              className={filterControlClass(
+                divisionFilterActive,
+                "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+              )}
             >
-              {showAllFileYearsOption ? <option value="all">All file years</option> : null}
-              {fileYearOptions.map((year) => (
-                <option key={year} value={year}>
-                  {year}
+              <option value="all">Divisions</option>
+              {divisions.map((division) => (
+                <option key={division.id} value={division.name}>
+                  {division.name}
                 </option>
               ))}
             </select>
           </label>
-          <button
-            type="button"
-            onClick={toggleFileYearLock}
-            className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent"
-            title={fileYearLocked ? "Unlock file year" : "Lock file year"}
-            aria-label={fileYearLocked ? "Unlock file year" : "Lock file year"}
-          >
-            {fileYearLocked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
-          </button>
+          <FileCategoryFilter
+            selectedCategories={selectedFileCategories}
+            options={visibleFileCategoryOptions}
+            active={fileCategoryFilterActive}
+            onChange={toggleFileCategory}
+          />
         </div>
-        <FileCategoryFilter
-          selectedCategories={selectedFileCategories}
-          options={visibleFileCategoryOptions}
-          onChange={toggleFileCategory}
-        />
       </div>
       {dashboardSummaryError || (dashboardSummaryLoading && !hasLoadedDashboardSummary) ? (
         <div
@@ -2622,8 +2846,34 @@ export function Dashboard() {
 
       {activeDashboardTab === "snapshot" ? (
         <section className="space-y-4">
-          <div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-bold">Snapshot</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  printSnapshotRowsToPdf(snapshotExportRows, "Snapshot", dashboardExportDescription)
+                }
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+              >
+                <FileText className="size-3.5" />
+                Export PDF
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  exportSnapshotRowsToExcel(
+                    snapshotExportRows,
+                    "Snapshot",
+                    dashboardExportDescription,
+                  )
+                }
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+              >
+                <FileSpreadsheet className="size-3.5" />
+                Export Excel
+              </button>
+            </div>
           </div>
           <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -2700,47 +2950,69 @@ export function Dashboard() {
               </div>
               <div className="flex flex-wrap items-end justify-end gap-2">
                 <div className="flex rounded-md border border-border bg-secondary/40 p-1">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      printStatusPageRowsToPdf(statusPageExportRows, statusPageExportTitle)
-                    }
-                    className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                  >
-                    <FileText className="size-3.5" />
-                    Export PDF
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      exportStatusPageRowsToExcel(statusPageExportRows, statusPageExportTitle)
-                    }
-                    className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                  >
-                    <FileSpreadsheet className="size-3.5" />
-                    Export Excel
-                  </button>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        printStatusPageRowsToPdf(
+                          statusPageExportRows,
+                          statusPageExportTitle,
+                          dashboardExportDescription,
+                        )
+                      }
+                      className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                    >
+                      <FileText className="size-3.5" />
+                      Export PDF
+                    </button>
+                    <FloatingHelp label="Export PDF status helper">
+                      {statusFileExportHelpers.pdf}
+                    </FloatingHelp>
+                  </div>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportStatusPageRowsToExcel(
+                          statusPageExportRows,
+                          statusPageExportTitle,
+                          dashboardExportDescription,
+                        )
+                      }
+                      className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                    >
+                      <FileSpreadsheet className="size-3.5" />
+                      Export Excel
+                    </button>
+                    <FloatingHelp label="Export Excel status helper">
+                      {statusFileExportHelpers.excel}
+                    </FloatingHelp>
+                  </div>
                 </div>
                 <div className="flex rounded-md border border-border bg-secondary/40 p-1">
                   {statusActionModes.map((mode) => {
                     const Icon = mode.icon;
                     const selected = statusActionMode === mode.key;
                     return (
-                      <button
-                        key={mode.key}
-                        type="button"
-                        onClick={() => setStatusActionMode(mode.key)}
-                        className={
-                          "flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium transition " +
-                          (selected
-                            ? "bg-card text-foreground shadow-sm"
-                            : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                        }
-                        aria-pressed={selected}
-                      >
-                        <Icon className="size-3.5" />
-                        {mode.label}
-                      </button>
+                      <div key={mode.key} className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setStatusActionMode(mode.key)}
+                          className={
+                            "flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium transition " +
+                            (selected
+                              ? "bg-card text-foreground shadow-sm"
+                              : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                          }
+                          aria-pressed={selected}
+                        >
+                          <Icon className="size-3.5" />
+                          {mode.label}
+                        </button>
+                        <FloatingHelp label={`${mode.label} status action helper`}>
+                          {mode.helper}
+                        </FloatingHelp>
+                      </div>
                     );
                   })}
                 </div>
@@ -2991,6 +3263,7 @@ export function Dashboard() {
           onLockMilestones={lockLiveStatusSelection}
           lockedMilestoneNames={settings.liveStatusLockedFields}
           onCountClick={openLiveStatusFilter}
+          exportDescription={dashboardExportDescription}
         />
       ) : null}
 
@@ -2999,6 +3272,7 @@ export function Dashboard() {
           groups={status3Groups}
           loading={status3Loading}
           error={status3Error}
+          exportDescription={dashboardExportDescription}
           onOpenStatus={(milestone, stage) =>
             openSearchFilter(getStatusSummaryDashboardFilter(milestone, stage))
           }
@@ -3030,6 +3304,7 @@ export function Dashboard() {
             }
           }}
           onCountClick={openStatus4Filter}
+          exportDescription={dashboardExportDescription}
         />
       ) : null}
 
@@ -3092,12 +3367,28 @@ export function Dashboard() {
                 actions={
                   <>
                     {analyticsDivisionFilterEnabled ? (
-                      <label className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium">
-                        <span className="text-muted-foreground">Division</span>
+                      <label
+                        className={filterControlClass(
+                          analyticsDivisionFilterActive,
+                          "flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium",
+                        )}
+                      >
+                        <span
+                          className={
+                            analyticsDivisionFilterActive
+                              ? "text-destructive"
+                              : "text-muted-foreground"
+                          }
+                        >
+                          Division
+                        </span>
                         <select
                           value={activeAnalyticsDivision}
                           onChange={(event) => setSelectedAnalyticsDivision(event.target.value)}
-                          className="h-6 min-w-32 bg-transparent text-xs text-foreground outline-none"
+                          className={
+                            "h-6 min-w-32 bg-transparent text-xs outline-none " +
+                            (analyticsDivisionFilterActive ? "text-destructive" : "text-foreground")
+                          }
                         >
                           <option value="all">All divisions</option>
                           {divisions.map((division) => (
@@ -3168,14 +3459,62 @@ export function Dashboard() {
                     ) : null}
                     <button
                       type="button"
-                      onClick={() => printAnalyticsPanelToPdf(displayedAnalyticsPanel)}
+                      onClick={() =>
+                        printAnalyticsPanelToPdf(
+                          getAnalyticsExportPanel(displayedAnalyticsPanel, {
+                            topFirmRows: topFirmRankedRows,
+                            indentorsByFilesRows: topIndentorsByFilesRankedRows,
+                            indentorsByValueRows: topIndentorsByValueRankedRows,
+                            preBidRows: selectedPreBidFiscalYear
+                              ? displayedPreBidRows
+                              : analyticsPreBidRows.map((row) => ({ ...row, name: row.monthKey })),
+                            tcecRows: activeTcecStatus.meetings
+                              .filter(
+                                (row) =>
+                                  !selectedTcecFiscalYear ||
+                                  getFinancialYearForDate(row.meetingDate) ===
+                                    selectedTcecFiscalYear,
+                              )
+                              .map((row) => ({ ...row, name: row.meetingDate })),
+                            cncRows: selectedCncFiscalYear
+                              ? displayedCncRows
+                              : divisionFilteredAnalytics.cncSummary,
+                            tcecStage: tcecStatusStage,
+                          }),
+                          dashboardExportDescription,
+                        )
+                      }
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
                     >
                       Export PDF
                     </button>
                     <button
                       type="button"
-                      onClick={() => exportAnalyticsPanelToExcel(displayedAnalyticsPanel)}
+                      onClick={() =>
+                        exportAnalyticsPanelToExcel(
+                          getAnalyticsExportPanel(displayedAnalyticsPanel, {
+                            topFirmRows: topFirmRankedRows,
+                            indentorsByFilesRows: topIndentorsByFilesRankedRows,
+                            indentorsByValueRows: topIndentorsByValueRankedRows,
+                            preBidRows: selectedPreBidFiscalYear
+                              ? displayedPreBidRows
+                              : analyticsPreBidRows.map((row) => ({ ...row, name: row.monthKey })),
+                            tcecRows: activeTcecStatus.meetings
+                              .filter(
+                                (row) =>
+                                  !selectedTcecFiscalYear ||
+                                  getFinancialYearForDate(row.meetingDate) ===
+                                    selectedTcecFiscalYear,
+                              )
+                              .map((row) => ({ ...row, name: row.meetingDate })),
+                            cncRows: selectedCncFiscalYear
+                              ? displayedCncRows
+                              : divisionFilteredAnalytics.cncSummary,
+                            tcecStage: tcecStatusStage,
+                          }),
+                          dashboardExportDescription,
+                        )
+                      }
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
                     >
                       Export Excel
@@ -3209,22 +3548,71 @@ export function Dashboard() {
                 ) : null}
                 {displayedAnalyticsPanel.key === "delayStatus" ? (
                   <div className="flex flex-wrap items-end gap-2">
-                    <label className="flex w-24 flex-col gap-1 text-xs text-muted-foreground">
-                      <span>Days</span>
-                      <input
-                        type="number"
-                        min="0"
-                        value={analyticsDelayDays}
-                        onChange={(event) => setAnalyticsDelayDays(event.target.value)}
-                        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-                      />
+                    <label
+                      className={filterLabelClass(
+                        analyticsDelayDays !== "5",
+                        "flex w-32 flex-col gap-1 text-xs text-muted-foreground",
+                      )}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        Days
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                aria-label="Delay status days help"
+                                className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                              >
+                                <Info className="size-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="top"
+                              align="start"
+                              className="max-w-xs text-xs leading-relaxed"
+                            >
+                              <HelperBulletList items="Default is 5 days. Use reset to restore the default threshold." />
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          value={analyticsDelayDays}
+                          onChange={(event) => setAnalyticsDelayDays(event.target.value)}
+                          className={filterControlClass(
+                            analyticsDelayDays !== "5",
+                            "h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+                          )}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAnalyticsDelayDays("5")}
+                          className="btn-ghost h-8 w-8 p-0"
+                          title="Reset days"
+                          aria-label="Reset days"
+                        >
+                          <RotateCcw className="size-3.5" />
+                        </button>
+                      </span>
                     </label>
-                    <label className="flex min-w-44 flex-col gap-1 text-xs text-muted-foreground">
+                    <label
+                      className={filterLabelClass(
+                        analyticsDelayMilestoneKey !== "all",
+                        "flex min-w-44 flex-col gap-1 text-xs text-muted-foreground",
+                      )}
+                    >
                       <span>Milestone</span>
                       <select
                         value={analyticsDelayMilestoneKey}
                         onChange={(event) => setAnalyticsDelayMilestoneKey(event.target.value)}
-                        className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                        className={filterControlClass(
+                          analyticsDelayMilestoneKey !== "all",
+                          "h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+                        )}
                       >
                         <option value="all">All milestones</option>
                         {delayMilestoneOptions.map((milestone) => (
@@ -3449,6 +3837,7 @@ export function Dashboard() {
                         financeExportTitle,
                         financeFirmTypeDistributionRows,
                         selectedFinanceFirmTypeDistributionLabel,
+                        dashboardExportDescription,
                       )
                     }
                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
@@ -3464,6 +3853,7 @@ export function Dashboard() {
                         financeExportTitle,
                         financeFirmTypeDistributionRows,
                         selectedFinanceFirmTypeDistributionLabel,
+                        dashboardExportDescription,
                       )
                     }
                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
@@ -3579,7 +3969,7 @@ export function Dashboard() {
                     title={`Carry Forward from previous FYs`}
                     total={financeTotals.previousCarryForward}
                     rows={financeTotals.previousCarryForwardBreakup}
-                    emptyText={`No older unpaid carry-forward rows as on ${selectedFinanceYearLabel} end.`}
+                    emptyText={`No older unpaid carry-forward as on ${selectedFinanceYearLabel} end.`}
                     help={`Payment rows from FYs before ${selectedFinanceYearLabel} that are still unpaid by ${selectedFinanceYearLabel} end. Year buttons open the pending files/S.O.`}
                     onOpenFilter={openSearchFilter}
                   />
@@ -3772,6 +4162,14 @@ function SummaryMetric({
 }
 
 function FloatingHelp({ label, children }: { label: string; children: ReactNode }) {
+  const content =
+    typeof children === "string" ||
+    (Array.isArray(children) && children.every((item) => typeof item === "string")) ? (
+      <HelperBulletList items={children as string | string[]} />
+    ) : (
+      children
+    );
+
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -3785,7 +4183,7 @@ function FloatingHelp({ label, children }: { label: string; children: ReactNode 
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
-          {typeof children === "string" ? <HelperBulletList items={children} /> : children}
+          {content}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -3876,6 +4274,7 @@ function LiveStatusSection({
   visibleMilestoneNames,
   rows,
   totalFiles,
+  exportDescription,
   onMilestoneToggle,
   onSelectAllMilestones,
   onClearMilestones,
@@ -3887,6 +4286,7 @@ function LiveStatusSection({
   visibleMilestoneNames: string[];
   rows: LiveStatusDivisionRow[];
   totalFiles: number;
+  exportDescription?: string;
   onMilestoneToggle: (milestoneName: string) => void;
   onSelectAllMilestones: () => void;
   onClearMilestones: () => void;
@@ -3937,7 +4337,12 @@ function LiveStatusSection({
               <button
                 type="button"
                 onClick={() =>
-                  printLiveStatusRowsToPdf(rows, displayedMilestones, "Live status dashboard")
+                  printLiveStatusRowsToPdf(
+                    rows,
+                    displayedMilestones,
+                    "Live status dashboard",
+                    exportDescription,
+                  )
                 }
                 disabled={!displayedMilestones.length}
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -3948,7 +4353,12 @@ function LiveStatusSection({
               <button
                 type="button"
                 onClick={() =>
-                  exportLiveStatusRowsToExcel(rows, displayedMilestones, "Live status dashboard")
+                  exportLiveStatusRowsToExcel(
+                    rows,
+                    displayedMilestones,
+                    "Live status dashboard",
+                    exportDescription,
+                  )
                 }
                 disabled={!displayedMilestones.length}
                 className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -4134,6 +4544,7 @@ function Status4Section({
   sortDirection,
   loading,
   error,
+  exportDescription,
   onDrillChange,
   onSortChange,
   onCountClick,
@@ -4147,6 +4558,7 @@ function Status4Section({
   sortDirection: AnalyticsSortDirection;
   loading: boolean;
   error?: string;
+  exportDescription?: string;
   onDrillChange: (drill: Status4DrillState) => void;
   onSortChange: (sortKey: Status4SortKey) => void;
   onCountClick: (filter: Status4SearchFilter) => void;
@@ -4197,6 +4609,30 @@ function Status4Section({
                 </Fragment>
               ))}
             </div>
+          </div>
+          <div className="flex rounded-md border border-border bg-secondary/40 p-1">
+            <button
+              type="button"
+              onClick={() =>
+                printStatus4RowsToPdf(rows, displayedMilestones, tableLabel, exportDescription)
+              }
+              disabled={!canShowTable || !rows.length}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <FileText className="size-3.5" />
+              PDF
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                exportStatus4RowsToExcel(rows, displayedMilestones, tableLabel, exportDescription)
+              }
+              disabled={!canShowTable || !rows.length}
+              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              <FileSpreadsheet className="size-3.5" />
+              Excel
+            </button>
           </div>
         </div>
 
@@ -4929,30 +5365,129 @@ function formatStatus4ValueRangeTitle(minValue?: number, maxValue?: number) {
 function FileCategoryFilter({
   selectedCategories,
   options,
+  active,
   onChange,
 }: {
   selectedCategories: FileCategoryKey[];
-  options: typeof fileCategoryOptions;
+  options: FileCategoryOption[];
+  active: boolean;
   onChange: (category: FileCategoryKey, checked: boolean) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const selectedVisibleCount = options.filter((option) =>
+    selectedCategories.includes(option.key),
+  ).length;
+  const summary = `${selectedVisibleCount}/${options.length} selected`;
+
   return (
-    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+    <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
       <span>File category</span>
-      <div className="flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-input bg-background px-2 py-1.5">
-        {options.map((option) => (
-          <label
-            key={option.key}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
+      <div className={filterControlClass(active, "rounded-md border border-input bg-background")}>
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+          className="flex min-h-9 w-full items-center justify-between gap-3 px-2 py-1.5 text-left text-sm text-foreground hover:bg-accent/60"
+        >
+          <span className="truncate">{summary}</span>
+          <ChevronDown
+            className={`size-4 shrink-0 text-muted-foreground transition-transform ${
+              open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+        {open ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border px-2 py-2">
+            {options.map((option) => (
+              <label
+                key={option.key}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedCategories.includes(option.key)}
+                  onChange={(event) => onChange(option.key, event.target.checked)}
+                  className="size-4 rounded border-input"
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function FileInitiationDateRangeFilter({
+  fromDate,
+  toDate,
+  active,
+  disabled = false,
+  onFromDateChange,
+  onToDateChange,
+  onClear,
+}: {
+  fromDate: string;
+  toDate: string;
+  active: boolean;
+  disabled?: boolean;
+  onFromDateChange: (value: string) => void;
+  onToDateChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  const hasRange = Boolean(fromDate || toDate);
+  return (
+    <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
+      <span className="inline-flex items-center gap-1">
+        Initiation date
+        <TooltipProvider delayDuration={150}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Initiation date range help"
+                className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Info className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" align="start" className="max-w-xs text-xs leading-relaxed">
+              <HelperBulletList items={fileInitiationDateRangeHelper} />
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </span>
+      <div className="flex items-center gap-1.5">
+        <DateInput
+          value={fromDate}
+          onChange={onFromDateChange}
+          disabled={disabled}
+          className={filterControlClass(
+            active,
+            "h-9 w-[132px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+          )}
+        />
+        <span className="text-xs text-muted-foreground">to</span>
+        <DateInput
+          value={toDate}
+          onChange={onToDateChange}
+          disabled={disabled}
+          className={filterControlClass(
+            active,
+            "h-9 w-[132px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+          )}
+        />
+        {hasRange ? (
+          <button
+            type="button"
+            onClick={onClear}
+            disabled={disabled}
+            className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <input
-              type="checkbox"
-              checked={selectedCategories.includes(option.key)}
-              onChange={(event) => onChange(option.key, event.target.checked)}
-              className="size-4 rounded border-input"
-            />
-            <span>{option.label}</span>
-          </label>
-        ))}
+            Clear
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -4962,11 +5497,13 @@ function DashboardStatusSummarySection({
   groups,
   loading,
   error,
+  exportDescription,
   onOpenStatus,
 }: {
   groups: StatusSummaryTableGroup[];
   loading: boolean;
   error?: string;
+  exportDescription?: string;
   onOpenStatus: (milestone: string, stage: string) => void;
 }) {
   const status3Presentation = useMemo(
@@ -4991,7 +5528,9 @@ function DashboardStatusSummarySection({
           <div className="flex rounded-md border border-border bg-secondary/40 p-1">
             <button
               type="button"
-              onClick={() => printStatusSummaryGroupsToPdf(exportGroups, "Status-3")}
+              onClick={() =>
+                printStatusSummaryGroupsToPdf(exportGroups, "Status-3", exportDescription)
+              }
               disabled={!exportGroups.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
@@ -5000,7 +5539,9 @@ function DashboardStatusSummarySection({
             </button>
             <button
               type="button"
-              onClick={() => exportStatusSummaryGroupsToExcel(exportGroups, "Status-3")}
+              onClick={() =>
+                exportStatusSummaryGroupsToExcel(exportGroups, "Status-3", exportDescription)
+              }
               disabled={!exportGroups.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
@@ -5314,6 +5855,7 @@ function normalizeCompletedMilestones(value: string[] | undefined) {
 
 function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string) {
   const normalized = normalizeMilestoneName(milestoneName);
+  if (normalized === "bankguarantee") return countBgPendingOrders(files, "psb");
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
   if (normalized === "supplementarybillreturnedforcorrection") {
     return countSupplementaryBillReturnedOrders(files);
@@ -5965,8 +6507,14 @@ function MilestoneClearingViewModeControl({
   value: MilestoneClearingViewMode;
   onChange: (mode: MilestoneClearingViewMode) => void;
 }) {
+  const active = value !== "ranking";
   return (
-    <div className="flex h-8 items-center gap-1 rounded-md border border-border bg-card p-0.5 text-xs font-medium">
+    <div
+      className={filterControlClass(
+        active,
+        "flex h-8 items-center gap-1 rounded-md border border-border bg-card p-0.5 text-xs font-medium",
+      )}
+    >
       {[
         { key: "ranking", label: "Ranking" },
         { key: "chronological", label: "Chronological" },
@@ -6042,13 +6590,22 @@ function MilestoneClearingSelect({
   onChange: (value: string) => void;
   children: ReactNode;
 }) {
+  const active = value !== "all";
   return (
-    <label className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium">
-      <span className="text-muted-foreground">{label}</span>
+    <label
+      className={filterControlClass(
+        active,
+        "flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium",
+      )}
+    >
+      <span className={filterLabelClass(active, "text-muted-foreground")}>{label}</span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-6 min-w-24 bg-transparent text-xs text-foreground outline-none"
+        className={
+          "h-6 min-w-24 bg-transparent text-xs outline-none " +
+          (active ? "text-destructive" : "text-foreground")
+        }
       >
         {children}
       </select>
@@ -7408,7 +7965,7 @@ function getMilestoneClearingAnalyticsColumns(
       { key: "medianDays", label: "Median" },
     );
   }
-  columns.push({ key: "sampleSize", label: "Files / S.O." });
+  columns.push({ key: "sampleSize", label: "Files" });
   return columns;
 }
 
@@ -7767,6 +8324,7 @@ function getAnalyticsSearchTarget(
   panelKey: AnalyticsPanelKey,
   row: Record<string, number | string>,
   columnKey: string,
+  context?: AnalyticsSearchContext,
 ): AnalyticsSearchTarget | undefined {
   const name = String(row.name ?? row.range ?? row.fileRef ?? "").trim();
   if (
@@ -7889,6 +8447,7 @@ function getAnalyticsSearchTarget(
       return {
         dashboardFilter: `${isSupplyOrder ? "soValueThreshold" : "valueThreshold"}:${name}`,
         focusSection: isSupplyOrder ? "Supply order and payment" : "File details",
+        focusTarget: isSupplyOrder ? "supplyorder:any" : "valueCapital",
       };
     }
     return undefined;
@@ -7903,9 +8462,51 @@ function getAnalyticsSearchTarget(
       : undefined;
   }
   if (panelKey === "milestoneClearingTable" && columnKey === "sampleSize") {
-    return getMilestoneClearingSearchTarget(name);
+    const target = withMilestoneClearingSearchFilters(
+      getMilestoneClearingSearchTarget(name),
+      context,
+    );
+    const fileIds = String(row.fileIds ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (!target || !fileIds.length) return target;
+    return {
+      ...target,
+      dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+      ...getMilestoneClearingSearchFocus(name, target),
+    };
   }
   return undefined;
+}
+
+type AnalyticsSearchContext = {
+  milestoneClearingMode: string;
+  milestoneClearingValueThreshold: MilestoneClearingThresholdFilter;
+  valueThresholdLevels: ValueThresholdLevel[];
+};
+
+function withMilestoneClearingSearchFilters(
+  target: AnalyticsSearchTarget | undefined,
+  context: AnalyticsSearchContext | undefined,
+): AnalyticsSearchTarget | undefined {
+  if (!target || !context) return target;
+  const extraDashboardFilters: string[] = [...(target.extraDashboardFilters ?? [])];
+  if (context.milestoneClearingValueThreshold === "unmatched") {
+    extraDashboardFilters.push("valueThreshold:Unmatched");
+  } else if (context.milestoneClearingValueThreshold.startsWith("level:")) {
+    const levelId = context.milestoneClearingValueThreshold.slice("level:".length).trim();
+    if (levelId) extraDashboardFilters.push(`valueThresholdId:${levelId}`);
+  }
+  const includeModes =
+    context.milestoneClearingMode && context.milestoneClearingMode !== "all"
+      ? [context.milestoneClearingMode]
+      : target.includeModes;
+  return {
+    ...target,
+    extraDashboardFilters: extraDashboardFilters.length ? extraDashboardFilters : undefined,
+    includeModes,
+  };
 }
 
 type AnalyticsTotalSearchContext = {
@@ -8207,6 +8808,37 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
   );
   if (milestone) return { dashboardFilter: `milestoneCleared:${milestone.key}` };
   return undefined;
+}
+
+function getMilestoneClearingSearchFocus(
+  name: string,
+  target: AnalyticsSearchTarget,
+): Pick<AnalyticsSearchTarget, "focusSection" | "focusMilestone" | "focusTarget"> {
+  if (target.focusSection || target.focusMilestone || target.focusTarget) {
+    return {
+      focusSection: target.focusSection,
+      focusMilestone: target.focusMilestone,
+      focusTarget: target.focusTarget,
+    };
+  }
+  const normalized = normalizeMilestoneName(name);
+  if (normalized === "scrutiny" || normalized === "controlling") {
+    return { focusSection: "Scrutiny and control" };
+  }
+  if (
+    normalized === "highvalue" ||
+    normalized === "pretcec" ||
+    normalized === "ad" ||
+    normalized === "rqa" ||
+    normalized === "ifa" ||
+    normalized === "cfa" ||
+    normalized === "posttcec" ||
+    normalized === "cnc"
+  ) {
+    return { focusSection: normalized.includes("tcec") ? "TCEC block" : "Approval block" };
+  }
+  if (normalized === "bidding") return { focusSection: "Bidding details" };
+  return { focusSection: "Supply order and payment" };
 }
 
 type AnomalyWorkflowTab =
@@ -10651,7 +11283,6 @@ function getFileFirmAnalysisRoles(file: FileRecord) {
   const participated = biddingApplicable ? getFirmNameSet(file.bidderFirms) : new Set<string>();
   const order = new Set<string>();
   fileSupplyOrders(file).forEach((orderRow) => {
-    if (isSupplyOrderCancelled(file, orderRow)) return;
     const name = normalizeFirmAnalysisName(orderRow.firm);
     if (name) order.add(name);
   });
@@ -10770,6 +11401,7 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
   return milestoneClearingDefinitions
     .map((definition, index) => {
       const durations = getMilestoneClearingDurationRows(files, definition);
+      const fileSampleSize = new Set(durations.map((row) => row.fileId)).size;
       const stats = getDurationStats(
         durations.map((row) => row.stageDays),
         durations.map((row) => row.cumulativeDays),
@@ -10777,6 +11409,8 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
       return {
         name: definition.name,
         ...stats,
+        sampleSize: fileSampleSize,
+        fileIds: Array.from(new Set(durations.map((row) => row.fileId))).join(","),
         sortOrder: index,
       };
     })
@@ -10784,7 +11418,7 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
     .sort((a, b) => b.averageDays - a.averageDays);
 }
 
-type MilestoneClearingDurationRow = { stageDays: number; cumulativeDays: number };
+type MilestoneClearingDurationRow = { fileId: string; stageDays: number; cumulativeDays: number };
 
 function getMilestoneClearingDurationRows(
   files: FileRecord[],
@@ -11048,7 +11682,7 @@ function getMilestoneClearingDurationRow(
   ) {
     return undefined;
   }
-  return { stageDays, cumulativeDays };
+  return { fileId: file.id, stageDays, cumulativeDays };
 }
 
 function isMilestoneClearingDefinitionApplicable(
@@ -11098,9 +11732,7 @@ function getMonthlyFileInflow(files: FileRecord[]) {
 function getMonthWiseSupplyOrder(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
     rawSupplyOrders(file).forEach((order) => {
-      if (isSupplyOrderCancelled(file, order)) return;
       const month = getMonthKey(order.soDate);
       if (!month) return;
       counts.set(month, (counts.get(month) ?? 0) + 1);
@@ -11543,9 +12175,7 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter(
-    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
-  );
+  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
   if (orders.length) {
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   }
@@ -11553,9 +12183,7 @@ function getFileCommittedCapitalValue(file: FileRecord) {
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter(
-    (order) => !isYes(order.soCancelled) && !isYes(order.shortclosure),
-  );
+  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
   if (orders.length) {
     return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   }
@@ -13161,7 +13789,7 @@ function isPaymentDueByDeliveryOrPeriod(file: FileRecord, order: SupplyOrderDeta
 
 function countLdOrders(files: FileRecord[]) {
   return effectiveSupplyOrderEntries(files).filter(
-    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled) && !isYes(order.shortclosure),
+    ({ order }) => isYes(order.ld) && !isYes(order.soCancelled),
   ).length;
 }
 
@@ -13181,26 +13809,19 @@ function isYes(value: string | undefined) {
 function getTcecCommittee(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecCommitteeNo?.trim()
-    : (isYes(file.refloat)
-        ? file.refloatPostTcecCommitteeNo
-        : file.postTcecCommitteeNumber
-      )?.trim();
+    : (file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim());
 }
 
 function getTcecMeetingDate(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecDate
-    : isYes(file.refloat)
-      ? file.refloatPostTcecDate
-      : file.postTcecDate;
+    : file.refloatPostTcecDate || file.postTcecDate;
 }
 
 function getTcecMinutesDate(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecMinutesDate
-    : isYes(file.refloat)
-      ? file.refloatPostTcecMinutesDate
-      : file.postTcecMinutesDate;
+    : file.refloatPostTcecMinutesDate || file.postTcecMinutesDate;
 }
 
 function isNo(value: string | undefined) {
@@ -13668,6 +14289,100 @@ type FinanceFirmTypeDistributionExportRow = {
   share: number;
 };
 
+type SnapshotExportRow = {
+  section: string;
+  metric: string;
+  value: string | number;
+};
+
+function getSnapshotExportRows(stats: SummaryStat[]): SnapshotExportRow[] {
+  return stats.flatMap((stat) => {
+    if (Array.isArray(stat.value)) {
+      return stat.value.map((item) => ({
+        section: stat.label,
+        metric: item.label,
+        value: item.value,
+      }));
+    }
+    if (isFinanceSplitValue(stat.value)) {
+      return [
+        { section: stat.label, metric: "Capital", value: stat.value.capital },
+        { section: stat.label, metric: "Revenue", value: stat.value.revenue },
+      ];
+    }
+    return [{ section: "Snapshot", metric: stat.label, value: stat.value }];
+  });
+}
+
+function getDashboardExportDescription({
+  globalYear,
+  fileYear,
+  division,
+  fileInitiationDateRange,
+  selectedFileCategories,
+  visibleFileCategoryOptions,
+}: {
+  globalYear: string;
+  fileYear: string;
+  division: string;
+  fileInitiationDateRange?: FileInitiationDateRange;
+  selectedFileCategories: FileCategoryKey[];
+  visibleFileCategoryOptions: FileCategoryOption[];
+}) {
+  const selectedCategoryLabels = visibleFileCategoryOptions
+    .filter((option) => selectedFileCategories.includes(option.key))
+    .map((option) => option.label);
+  return [
+    `Global filter: ${globalYear}`,
+    `File Year Subfilter: ${fileYear === "all" ? "All file years" : fileYear}`,
+    `Initiation date range: ${formatDateRangeForExport(fileInitiationDateRange)}`,
+    `Division: ${division === "all" ? "All accessible divisions" : division}`,
+    `File Category: ${
+      selectedCategoryLabels.length === visibleFileCategoryOptions.length
+        ? "All visible categories"
+        : selectedCategoryLabels.join(", ") || "None"
+    }`,
+  ].join("\n");
+}
+
+function formatDateRangeForExport(range: FileInitiationDateRange | undefined) {
+  if (!range) return "All initiation dates";
+  const fromDate = range.fromDate ? formatIsoDateForDisplay(range.fromDate) : "Start";
+  const toDate = range.toDate ? formatIsoDateForDisplay(range.toDate) : "End";
+  return `${fromDate} to ${toDate}`;
+}
+
+function getAnalyticsExportPanel(
+  panel: AnalyticsPanel,
+  fullRows: {
+    topFirmRows: Array<Record<string, number | string>>;
+    indentorsByFilesRows: Array<Record<string, number | string>>;
+    indentorsByValueRows: Array<Record<string, number | string>>;
+    preBidRows: Array<Record<string, number | string>>;
+    tcecRows: Array<Record<string, number | string>>;
+    cncRows: Array<Record<string, number | string>>;
+    tcecStage: TcecStatusStage;
+  },
+): AnalyticsPanel {
+  if (panel.key === "topFirms") return { ...panel, rows: fullRows.topFirmRows };
+  if (panel.key === "indentorsByFiles") return { ...panel, rows: fullRows.indentorsByFilesRows };
+  if (panel.key === "indentorsByValue") return { ...panel, rows: fullRows.indentorsByValueRows };
+  if (panel.key === "preBidMeetings") {
+    return { ...panel, columns: getPreBidMeetingAnalyticsColumns(), rows: fullRows.preBidRows };
+  }
+  if (panel.key === "tcecStatus") {
+    return {
+      ...panel,
+      columns: getTcecMeetingColumns(fullRows.tcecStage),
+      rows: fullRows.tcecRows,
+    };
+  }
+  if (panel.key === "cncSummary") {
+    return { ...panel, columns: getCncSummaryColumns(), rows: fullRows.cncRows };
+  }
+  return panel;
+}
+
 const dashboardFilterTitles: Record<string, string> = {
   deliveryCompleted: "Delivery Completed",
   deliveryDue: "Delivery Pending",
@@ -13939,9 +14654,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("supplyOrderMonth:")) {
     const monthKey = filter.slice("supplyOrderMonth:".length);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return true;
-    return rawSupplyOrders(file).some(
-      (order) => !isSupplyOrderCancelled(file, order) && getMonthKey(order.soDate) === monthKey,
-    );
+    return rawSupplyOrders(file).some((order) => getMonthKey(order.soDate) === monthKey);
   }
   if (filter.startsWith("fileInflowMonth:")) {
     const monthKey = filter.slice("fileInflowMonth:".length);
@@ -14153,6 +14866,12 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(15));
     if (!milestone) return true;
     if (milestone.key === "payment") return isPaymentPending(file) || isPaymentCompleted(file);
+    if (milestone.key === "financialSanction") {
+      return (
+        matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction") ||
+        matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction")
+      );
+    }
     return isBgMilestoneKey(milestone.key)
       ? fileSupplyOrders(file).some((order) => isBgCategoryApplicable(file, order, milestone.key))
       : isMilestoneApplicable(file, milestone);
@@ -14333,7 +15052,9 @@ function isCancellationDashboardFilter(filter: string) {
   return (
     filter === "miscDemandCancelled" ||
     filter === "miscSoCancelled" ||
-    filter === "miscShortclosedSo"
+    filter === "miscShortclosedSo" ||
+    filter.startsWith("supplyOrderMonth:") ||
+    filter.startsWith("supplyOrderYear:")
   );
 }
 
@@ -14410,6 +15131,7 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return isBgToBeReceived(file, category);
     if (stageKey === "expired") return isBgExpired(file, category);
     if (stageKey === "tobereturned") return isBgToBeReturned(file, category);
+    if (stageKey === "returned") return isBgReturned(file, category);
   }
 
   if (milestoneKey === "deliveryperiod") {
@@ -14625,22 +15347,32 @@ function getStatusPageExportRows(
   return rows;
 }
 
-function exportStatusSummaryGroupsToExcel(groups: StatusSummaryTableGroup[], title: string) {
-  void downloadStatusSummaryGroups(groups, title, "excel");
+function exportStatusSummaryGroupsToExcel(
+  groups: StatusSummaryTableGroup[],
+  title: string,
+  description?: string,
+) {
+  void downloadStatusSummaryGroups(groups, title, "excel", description);
 }
 
-function printStatusSummaryGroupsToPdf(groups: StatusSummaryTableGroup[], title: string) {
-  void downloadStatusSummaryGroups(groups, title, "pdf");
+function printStatusSummaryGroupsToPdf(
+  groups: StatusSummaryTableGroup[],
+  title: string,
+  description?: string,
+) {
+  void downloadStatusSummaryGroups(groups, title, "pdf", description);
 }
 
 async function downloadStatusSummaryGroups(
   groups: StatusSummaryTableGroup[],
   title: string,
   format: "excel" | "pdf",
+  description?: string,
 ) {
   await downloadBackendExport({
     format,
     title,
+    description,
     tables: groups.map((group) => ({
       title: group.title,
       headers: ["S.No.", "Milestone", ...group.columns],
@@ -14682,8 +15414,12 @@ function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
   `;
 }
 
-function exportStatusPageRowsToExcel(rows: StatusPageExportRow[], title: string) {
-  void downloadStatusPageRows(rows, title, "excel");
+function exportStatusPageRowsToExcel(
+  rows: StatusPageExportRow[],
+  title: string,
+  description?: string,
+) {
+  void downloadStatusPageRows(rows, title, "excel", description);
 }
 
 function getLiveStatusTableHtml(rows: LiveStatusDivisionRow[], milestones: LiveStatusMilestone[]) {
@@ -14725,30 +15461,122 @@ function exportLiveStatusRowsToExcel(
   rows: LiveStatusDivisionRow[],
   milestones: LiveStatusMilestone[],
   title: string,
+  description?: string,
 ) {
-  void downloadLiveStatusRows(rows, milestones, title, "excel");
+  void downloadLiveStatusRows(rows, milestones, title, "excel", description);
 }
 
 function printLiveStatusRowsToPdf(
   rows: LiveStatusDivisionRow[],
   milestones: LiveStatusMilestone[],
   title: string,
+  description?: string,
 ) {
-  void downloadLiveStatusRows(rows, milestones, title, "pdf");
+  void downloadLiveStatusRows(rows, milestones, title, "pdf", description);
 }
 
-function printStatusPageRowsToPdf(rows: StatusPageExportRow[], title: string) {
-  void downloadStatusPageRows(rows, title, "pdf");
+function printStatusPageRowsToPdf(
+  rows: StatusPageExportRow[],
+  title: string,
+  description?: string,
+) {
+  void downloadStatusPageRows(rows, title, "pdf", description);
+}
+
+function exportSnapshotRowsToExcel(rows: SnapshotExportRow[], title: string, description?: string) {
+  void downloadSnapshotRows(rows, title, "excel", description);
+}
+
+function printSnapshotRowsToPdf(rows: SnapshotExportRow[], title: string, description?: string) {
+  void downloadSnapshotRows(rows, title, "pdf", description);
+}
+
+async function downloadSnapshotRows(
+  rows: SnapshotExportRow[],
+  title: string,
+  format: "excel" | "pdf",
+  description?: string,
+) {
+  await downloadBackendExport({
+    format,
+    title,
+    description,
+    tables: [
+      {
+        headers: ["S.No.", "Section", "Metric", "Value"],
+        rows: rows.map((row, index) => [index + 1, row.section, row.metric, row.value]),
+      },
+    ],
+  });
+}
+
+function exportStatus4RowsToExcel(
+  rows: Status4TableRow[],
+  milestones: ReturnType<typeof getStatus4Milestones>,
+  title: string,
+  description?: string,
+) {
+  void downloadStatus4Rows(rows, milestones, title, "excel", description);
+}
+
+function printStatus4RowsToPdf(
+  rows: Status4TableRow[],
+  milestones: ReturnType<typeof getStatus4Milestones>,
+  title: string,
+  description?: string,
+) {
+  void downloadStatus4Rows(rows, milestones, title, "pdf", description);
+}
+
+async function downloadStatus4Rows(
+  rows: Status4TableRow[],
+  milestones: ReturnType<typeof getStatus4Milestones>,
+  title: string,
+  format: "excel" | "pdf",
+  description?: string,
+) {
+  await downloadBackendExport({
+    format,
+    title,
+    description,
+    tables: [
+      {
+        headers: [
+          "S.No.",
+          "Group",
+          "Total",
+          ...milestones.flatMap((milestone) => [
+            `${milestone.label} - Applicable`,
+            `${milestone.label} - Current`,
+            `${milestone.label} - Cleared`,
+          ]),
+        ],
+        rows: rows.map((row, index) => [
+          index + 1,
+          row.label,
+          row.total,
+          ...milestones.flatMap((milestone) => {
+            const metrics =
+              row.metrics[milestone.name] ??
+              ({ applicable: 0, current: 0, cleared: 0 } satisfies Status4MilestoneMetrics);
+            return [metrics.applicable, metrics.current, metrics.cleared];
+          }),
+        ]),
+      },
+    ],
+  });
 }
 
 async function downloadStatusPageRows(
   rows: StatusPageExportRow[],
   title: string,
   format: "excel" | "pdf",
+  description?: string,
 ) {
   await downloadBackendExport({
     format,
     title,
+    description,
     tables: [
       {
         headers: statusPageExportHeaders,
@@ -14763,10 +15591,12 @@ async function downloadLiveStatusRows(
   milestones: LiveStatusMilestone[],
   title: string,
   format: "excel" | "pdf",
+  description?: string,
 ) {
   await downloadBackendExport({
     format,
     title,
+    description,
     tables: [
       {
         headers: ["S.No.", "Division", "Total", ...milestones.map((milestone) => milestone.label)],
@@ -14786,6 +15616,7 @@ function exportFinanceRowsToExcel(
   title: string,
   firmTypeDistributionRows: FinanceFirmTypeDistributionExportRow[],
   firmTypeDistributionLabel: string,
+  description?: string,
 ) {
   void downloadFinanceRows(
     rows,
@@ -14793,11 +15624,12 @@ function exportFinanceRowsToExcel(
     firmTypeDistributionRows,
     firmTypeDistributionLabel,
     "excel",
+    description,
   );
 }
 
-function exportAnalyticsPanelToExcel(panel: AnalyticsPanel) {
-  void downloadAnalyticsPanel(panel, "excel");
+function exportAnalyticsPanelToExcel(panel: AnalyticsPanel, description?: string) {
+  void downloadAnalyticsPanel(panel, "excel", description);
 }
 
 function getAnalyticsCellValue(row: Record<string, number | string>, column: AnalyticsTableColumn) {
@@ -14837,8 +15669,8 @@ function getAnalyticsHeaderHtml(columns: AnalyticsTableColumn[], includeSerial =
   `;
 }
 
-function printAnalyticsPanelToPdf(panel: AnalyticsPanel) {
-  void downloadAnalyticsPanel(panel, "pdf");
+function printAnalyticsPanelToPdf(panel: AnalyticsPanel, description?: string) {
+  void downloadAnalyticsPanel(panel, "pdf", description);
 }
 
 function getAnalyticsExportCellHtml(
@@ -14898,8 +15730,16 @@ function printFinanceRowsToPdf(
   title: string,
   firmTypeDistributionRows: FinanceFirmTypeDistributionExportRow[],
   firmTypeDistributionLabel: string,
+  description?: string,
 ) {
-  void downloadFinanceRows(rows, title, firmTypeDistributionRows, firmTypeDistributionLabel, "pdf");
+  void downloadFinanceRows(
+    rows,
+    title,
+    firmTypeDistributionRows,
+    firmTypeDistributionLabel,
+    "pdf",
+    description,
+  );
 }
 
 async function downloadFinanceRows(
@@ -14908,10 +15748,12 @@ async function downloadFinanceRows(
   firmTypeDistributionRows: FinanceFirmTypeDistributionExportRow[],
   firmTypeDistributionLabel: string,
   format: "excel" | "pdf",
+  description?: string,
 ) {
   await downloadBackendExport({
     format,
     title,
+    description,
     tables: [
       {
         headers: financeExportHeaders,
@@ -14937,22 +15779,43 @@ async function downloadFinanceRows(
   });
 }
 
-async function downloadAnalyticsPanel(panel: AnalyticsPanel, format: "excel" | "pdf") {
+async function downloadAnalyticsPanel(
+  panel: AnalyticsPanel,
+  format: "excel" | "pdf",
+  description?: string,
+) {
+  const includeSerialColumn = shouldIncludeAnalyticsExportSerialColumn(panel.key);
+  const headers = panel.columns.map(getAnalyticsExportHeader);
+  const rows = panel.rows.map((row, index) => {
+    const values = panel.columns.map((column) =>
+      getAnalyticsCellValue(row, column).replace(/\n/g, " "),
+    );
+    return includeSerialColumn ? [index + 1, ...values] : values;
+  });
   await downloadBackendExport({
     format,
     title: panel.title,
     subtitle: panel.subtitle,
-    description: panel.exportNote,
+    description: [description, panel.exportNote, ...(panel.helper ?? [])]
+      .filter(Boolean)
+      .join("\n"),
     tables: [
       {
-        headers: ["S.No.", ...panel.columns.map(getAnalyticsExportHeader)],
-        rows: panel.rows.map((row, index) => [
-          index + 1,
-          ...panel.columns.map((column) => getAnalyticsCellValue(row, column).replace(/\n/g, " ")),
-        ]),
+        headers: includeSerialColumn ? ["S.No.", ...headers] : headers,
+        rows,
       },
     ],
   });
+}
+
+function shouldIncludeAnalyticsExportSerialColumn(panelKey: AnalyticsPanelKey) {
+  return !(
+    panelKey === "divisionFiles" ||
+    panelKey === "divisionValue" ||
+    panelKey === "divisionTotalValue" ||
+    panelKey === "divisionTurnaround" ||
+    panelKey === "topFirms"
+  );
 }
 
 function getDashboardFilterTitle(filter: string) {

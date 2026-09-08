@@ -17,6 +17,7 @@ const trialMmgLiveOptions = new Set(["status1", "status2", "finance"]);
 type SettingsRow = {
   financial_year: string;
   selected_year: string;
+  setup_year: string | null;
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
@@ -43,10 +44,17 @@ type DivisionRow = {
 };
 
 function mapSettings(row: SettingsRow): AppSettings {
+  const setupYear =
+    row.setup_year &&
+    row.setup_year !== "__all_active_files__" &&
+    row.setup_year !== "__active_plus_current_fy_closed__"
+      ? row.setup_year
+      : row.financial_year;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
-    financialYears: [row.financial_year, row.selected_year].filter(
+    setupYear,
+    financialYears: [row.financial_year, row.selected_year, setupYear].filter(
       (year) =>
         Boolean(year) &&
         year !== "__all_active_files__" &&
@@ -87,7 +95,7 @@ function mapDivision(row: DivisionRow): Division {
 async function loadSettings() {
   return getCached("settings:live", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               mmg_live_enabled, mmg_live_options, active_user_id
        from app_settings
@@ -127,9 +135,26 @@ function fileClosedExpression() {
         )`;
 }
 
+function isYesExpression(expression: string) {
+  return `lower(coalesce(${expression}, '')) = 'yes'`;
+}
+
+function supplyOrderRowExists() {
+  return `exists (select 1 from supply_orders so_any where so_any.file_id = f.id)`;
+}
+
+function allSupplyOrdersCancelledExpression() {
+  return `(${supplyOrderRowExists()} and not exists (
+        select 1 from supply_orders so_active
+        where so_active.file_id = f.id
+          and not ${isYesExpression("so_active.so_cancelled")}
+      ))`;
+}
+
 function activeFilesExpression() {
   return `not ${fileClosedExpression()}
-        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'`;
+        and not ${isYesExpression("f.demand_cancelled")}
+        and not ${allSupplyOrdersCancelledExpression()}`;
 }
 
 function getFinancialYearDateRange(financialYear: string | undefined) {

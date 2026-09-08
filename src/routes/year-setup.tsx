@@ -11,12 +11,7 @@ import {
   useActiveUser,
   useSettings,
 } from "@/lib/files-store";
-import {
-  displayFinancialYearLabel,
-  isActivePlusCurrentFyClosedYear,
-  isAllActiveFilesYear,
-  isFileVisibleForYear,
-} from "@/lib/year-filter";
+import { displayFinancialYearLabel, isFileVisibleForYear } from "@/lib/year-filter";
 import { formatThousandsAndLakhs, parseAmount } from "@/lib/money";
 import { DateInput } from "@/components/date-input";
 
@@ -78,11 +73,7 @@ export function YearSetupPanel() {
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitMessage, setSplitMessage] = useState("");
   const [activeSubview, setActiveSubview] = useState<YearSetupSubview>("setup");
-  const setupYear =
-    isAllActiveFilesYear(settings.selectedYear) ||
-    isActivePlusCurrentFyClosedYear(settings.selectedYear)
-    ? settings.financialYear
-    : settings.selectedYear;
+  const setupYear = settings.setupYear || settings.financialYear;
   const setupYearLabel = displayFinancialYearLabel(setupYear);
 
   const yearOptions = useMemo(
@@ -91,12 +82,7 @@ export function YearSetupPanel() {
         new Set(
           [settings.financialYear, setupYear, ...settings.financialYears]
             .map((year) => year?.trim())
-            .filter(
-              (year): year is string =>
-                Boolean(year) &&
-                !isAllActiveFilesYear(year) &&
-                !isActivePlusCurrentFyClosedYear(year),
-            ),
+            .filter((year): year is string => Boolean(year) && Boolean(year)),
         ),
       ).sort((a, b) => b.localeCompare(a)),
     [settings.financialYear, settings.financialYears, setupYear],
@@ -405,7 +391,7 @@ export function YearSetupPanel() {
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">Setup year</div>
           <select
             value={setupYear}
-            onChange={(event) => store.updateSettings({ selectedYear: event.target.value })}
+            onChange={(event) => store.updateSettings({ setupYear: event.target.value })}
             className="h-9 min-w-36 rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40"
           >
             {yearOptions.map((year) => (
