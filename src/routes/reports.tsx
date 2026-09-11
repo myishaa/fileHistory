@@ -370,13 +370,11 @@ function ReportsPage() {
   const [historicalReportToDate, setHistoricalReportToDate] = useState(() =>
     formatLocalDate(new Date()),
   );
-  const [cashOutgoCurrentFyFilter, setCashOutgoCurrentFyFilter] = useState(false);
   const [cashOutgoDateRangeFilter, setCashOutgoDateRangeFilter] = useState(false);
   const [reportScopeFromDate, setReportScopeFromDate] = useState(() =>
     getFinancialYearStartDate(settings.selectedYear || settings.financialYear),
   );
   const [reportScopeToDate, setReportScopeToDate] = useState(() => formatLocalDate(new Date()));
-  const [reportScopeCurrentFyFilter, setReportScopeCurrentFyFilter] = useState(false);
   const [reportScopeDateRangeFilter, setReportScopeDateRangeFilter] = useState(false);
   const [selectedCashOutgoMonth, setSelectedCashOutgoMonth] = useState(() => getCurrentMonthKey());
   const [merRows, setMerRows] = useState<MerCashOutgoRow[]>([]);
@@ -393,6 +391,7 @@ function ReportsPage() {
   const [cashOutGoPlanIncludePreviousFy, setCashOutGoPlanIncludePreviousFy] = useState(false);
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
+  const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(false);
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
   const [fileYearLocked, setFileYearLocked] = useState(false);
   const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
@@ -580,10 +579,11 @@ function ReportsPage() {
   const defaultFileYear = fileYearOptions.includes(settings.financialYear)
     ? settings.financialYear
     : (fileYearOptions[0] ?? "all");
-  const showAllFileYearsOption = !isAllFilesYear(settings.selectedYear);
+  const fileYearAllOptionLabel = isAllFilesYear(settings.selectedYear)
+    ? "Entire database"
+    : "All file years";
   const activeFileYear =
-    (selectedFileYear === "all" && showAllFileYearsOption) ||
-    fileYearOptions.includes(selectedFileYear)
+    selectedFileYear === "all" || fileYearOptions.includes(selectedFileYear)
       ? selectedFileYear
       : defaultFileYear;
   useEffect(() => {
@@ -599,16 +599,12 @@ function ReportsPage() {
       const locked = parsed?.locked === true;
       const year = typeof parsed?.year === "string" ? parsed.year : defaultFileYear;
       setFileYearLocked(locked);
-      setSelectedFileYear(
-        (year === "all" && showAllFileYearsOption) || fileYearOptions.includes(year)
-          ? year
-          : defaultFileYear,
-      );
+      setSelectedFileYear(year === "all" || fileYearOptions.includes(year) ? year : defaultFileYear);
     } catch {
       setFileYearLocked(false);
       setSelectedFileYear(defaultFileYear);
     }
-  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions, showAllFileYearsOption]);
+  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions]);
   const updateFileYearSelection = (year: string) => {
     setSelectedFileYear(year);
     if (typeof window !== "undefined") {
@@ -677,8 +673,12 @@ function ReportsPage() {
     !fileYearFilterDisabled && Boolean(activeFileInitiationDateRange);
   const fileCategoryFilterActive =
     !fileCategoryFilterDisabled &&
+    fileCategoryFilterTouched &&
     selectedFileCategories.filter((category) => visibleFileCategoryKeys.includes(category))
       .length !== visibleFileCategoryKeys.length;
+  const activeFileCategoriesParam = fileCategoryFilterActive
+    ? serializeFileCategories(selectedFileCategories)
+    : undefined;
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays);
   const delayStatusThresholdDays = getDelayThresholdDays(delayStatusDays);
   const normalizedBgReceiptDelayDays = useMemo(
@@ -686,37 +686,10 @@ function ReportsPage() {
     [bgReceiptDelayDays],
   );
   const normalizedWarrantyBgBufferDays = getDelayThresholdDays(warrantyBgBufferDays) || 60;
-  const currentFyFromDate = getFinancialYearStartDate(settings.financialYear);
-  const currentFyToDate = formatLocalDate(new Date());
   const optionalCashOutgoDateFilterActive = isOptionalCashOutgoDateFilterReport(reportMode);
   const optionalReportScopeDateFilterActive = isReportScopeDateFilterReport(reportMode);
-  const cashOutgoCurrentFyShortcutActive =
-    optionalCashOutgoDateFilterActive &&
-    reportMode !== "itemsDeliveredBillsPending" &&
-    reportMode !== "itemsDeliveredBillsPrepared" &&
-    reportMode !== "billsSubmitted" &&
-    reportMode !== "pendingReturnedBills" &&
-    reportMode !== "returnedBillsResubmitted" &&
-    reportMode !== "returnedBillsPaid" &&
-    reportMode !== "supplementaryBillsSubmitted" &&
-    reportMode !== "supplementaryPendingReturnedBills" &&
-    reportMode !== "supplementaryReturnedBillsResubmitted" &&
-    reportMode !== "supplementaryReturnedBillsPaid";
-  useEffect(() => {
-    if (!cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) {
-      setCashOutgoCurrentFyFilter(false);
-    }
-  }, [cashOutgoCurrentFyFilter, cashOutgoCurrentFyShortcutActive]);
-  useEffect(() => {
-    if (reportScopeCurrentFyFilter) {
-      setReportScopeCurrentFyFilter(false);
-    }
-  }, [reportScopeCurrentFyFilter]);
   const activeHistoricalDateRange = useMemo(() => {
     if (optionalCashOutgoDateFilterActive) {
-      if (cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) {
-        return { fromDate: currentFyFromDate, toDate: currentFyToDate };
-      }
       if (cashOutgoDateRangeFilter) {
         return { fromDate: historicalReportFromDate, toDate: historicalReportToDate };
       }
@@ -726,11 +699,7 @@ function ReportsPage() {
       ? { fromDate: historicalReportFromDate, toDate: historicalReportToDate }
       : undefined;
   }, [
-    cashOutgoCurrentFyFilter,
     cashOutgoDateRangeFilter,
-    currentFyFromDate,
-    currentFyToDate,
-    cashOutgoCurrentFyShortcutActive,
     historicalReportFromDate,
     historicalReportToDate,
     optionalCashOutgoDateFilterActive,
@@ -751,8 +720,8 @@ function ReportsPage() {
   const reportsQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
-    if (!fileCategoryFilterDisabled) {
-      params.set("fileCategories", serializeFileCategories(selectedFileCategories));
+    if (!fileCategoryFilterDisabled && activeFileCategoriesParam) {
+      params.set("fileCategories", activeFileCategoriesParam);
     }
     params.set("delayDays", String(delayStatusThresholdDays));
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
@@ -787,7 +756,7 @@ function ReportsPage() {
     normalizedBgReceiptDelayDays,
     normalizedWarrantyBgBufferDays,
     selectedCashOutgoMonth,
-    selectedFileCategories,
+    activeFileCategoriesParam,
     settings.selectedYear,
   ]);
 
@@ -952,27 +921,27 @@ function ReportsPage() {
       active = false;
     };
   }, [effectiveFinancialYear]);
-  const mmgFilteredFiles = filterFilesByCategory(
-    filterFilesByReceivedDateRange(
-      filterMmgFilesByDivision(mmgFiles, activeDivision).filter(fileMatchesActiveFileYear),
-      activeReportScopeDateRange,
-    ),
-    selectedFileCategories,
+  const mmgFilteredSourceFiles = filterFilesByReceivedDateRange(
+    filterMmgFilesByDivision(mmgFiles, activeDivision).filter(fileMatchesActiveFileYear),
+    activeReportScopeDateRange,
   );
-  const mmgPreviousFilteredFiles = filterFilesByCategory(
-    filterFilesByReceivedDateRange(
-      filterMmgFilesByDivision(
-        mmgPreviousFiles.filter(
-          (file) =>
-            isPreviousFinancialYearFile(file, effectiveFinancialYear) &&
-            fileMatchesActiveFileYear(file),
-        ),
-        activeDivision,
+  const mmgFilteredFiles = fileCategoryFilterActive
+    ? filterFilesByCategory(mmgFilteredSourceFiles, selectedFileCategories)
+    : mmgFilteredSourceFiles;
+  const mmgPreviousFilteredSourceFiles = filterFilesByReceivedDateRange(
+    filterMmgFilesByDivision(
+      mmgPreviousFiles.filter(
+        (file) =>
+          isPreviousFinancialYearFile(file, effectiveFinancialYear) &&
+          fileMatchesActiveFileYear(file),
       ),
-      activeReportScopeDateRange,
+      activeDivision,
     ),
-    selectedFileCategories,
+    activeReportScopeDateRange,
   );
+  const mmgPreviousFilteredFiles = fileCategoryFilterActive
+    ? filterFilesByCategory(mmgPreviousFilteredSourceFiles, selectedFileCategories)
+    : mmgPreviousFilteredSourceFiles;
   const mmgSummaryRows = buildMmgSummaryRows({
     files: mmgFilteredFiles,
     divisions:
@@ -1173,33 +1142,30 @@ function ReportsPage() {
     value: string,
   ) => {
     const nextValue = Math.max(0, Number.parseInt(value || "0", 10) || 0);
+    const enabledField =
+      field === "billOffsetDays"
+        ? "useCustomBillOffsetDays"
+        : field === "handSubmissionOffsetDays"
+          ? "useCustomHandSubmissionOffsetDays"
+          : "useCustomDpOffsetDays";
+    const defaultValue =
+      field === "billOffsetDays"
+        ? DEFAULT_BILL_PAYMENT_OFFSET_DAYS
+        : field === "handSubmissionOffsetDays"
+          ? DEFAULT_BILL_SUBMISSION_OFFSET_DAYS
+          : DEFAULT_DP_OFFSET_DAYS;
     setCashOutGoPlan((plan) =>
       plan
         ? recalculateCashOutGoPlan(
             {
               ...plan,
-              settings: { ...plan.settings, [field]: nextValue },
+              settings: {
+                ...plan.settings,
+                [field]: nextValue,
+                [enabledField]: nextValue !== defaultValue,
+              },
             },
             { preserveExpectedSentDate: field === "billOffsetDays" },
-          )
-        : plan,
-    );
-  };
-  const updateCashOutGoPlanSettingEnabled = (
-    field:
-      | "useCustomBillOffsetDays"
-      | "useCustomHandSubmissionOffsetDays"
-      | "useCustomDpOffsetDays",
-    value: boolean,
-  ) => {
-    setCashOutGoPlan((plan) =>
-      plan
-        ? recalculateCashOutGoPlan(
-            {
-              ...plan,
-              settings: { ...plan.settings, [field]: value },
-            },
-            { preserveExpectedSentDate: field === "useCustomBillOffsetDays" },
           )
         : plan,
     );
@@ -1322,10 +1288,12 @@ function ReportsPage() {
       })
       .finally(() => setCashOutGoPlanSaving(false));
   };
-  const monitoringSourceFiles = filterFilesByCategory(
-    filterMmgFilesByDivision(mmgFiles, activeDivision).filter(fileMatchesActiveFileYear),
-    selectedFileCategories,
+  const monitoringFilteredSourceFiles = filterMmgFilesByDivision(mmgFiles, activeDivision).filter(
+    fileMatchesActiveFileYear,
   );
+  const monitoringSourceFiles = fileCategoryFilterActive
+    ? filterFilesByCategory(monitoringFilteredSourceFiles, selectedFileCategories)
+    : monitoringFilteredSourceFiles;
   const pendingLiabilityAgeingRows = useMemo(
     () => getPendingLiabilityAgeingRows(monitoringSourceFiles, historicalReportToDate),
     [historicalReportToDate, monitoringSourceFiles],
@@ -1405,9 +1373,7 @@ function ReportsPage() {
   });
   const billingPaymentReportDescription = getBillingPaymentReportDescription(reportMode, {
     activeHistoricalDateRange,
-    cashOutgoCurrentFyFilter: cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter,
     cashOutgoDateRangeFilter,
-    currentFinancialYear: settings.financialYear,
     globalYear: settings.selectedYear,
   });
   const reportExportContextDescription = getReportsExportContextDescription({
@@ -1569,23 +1535,9 @@ function ReportsPage() {
           onToDateChange: setHistoricalReportToDate,
           helperText: getDateRangeHelperText(reportMode),
           dateRangeEnabled: cashOutgoDateRangeFilter,
-          active: Boolean(
-            (cashOutgoCurrentFyShortcutActive && cashOutgoCurrentFyFilter) ||
-            cashOutgoDateRangeFilter,
-          ),
-          ...(cashOutgoCurrentFyShortcutActive
-            ? {
-                currentFyEnabled: cashOutgoCurrentFyFilter,
-                currentFyLabel: `Current FY (${displayFinancialYearLabel(settings.financialYear)})`,
-                onCurrentFyEnabledChange: (checked: boolean) => {
-                  setCashOutgoCurrentFyFilter(checked);
-                  if (checked) setCashOutgoDateRangeFilter(false);
-                },
-              }
-            : {}),
+          active: cashOutgoDateRangeFilter,
           onDateRangeEnabledChange: (checked: boolean) => {
             setCashOutgoDateRangeFilter(checked);
-            if (checked) setCashOutgoCurrentFyFilter(false);
           },
         }
       : {
@@ -1606,10 +1558,7 @@ function ReportsPage() {
         helperText: getDateRangeHelperText(reportMode),
         dateRangeEnabled: reportScopeDateRangeFilter,
         active: reportScopeDateRangeFilter,
-        onDateRangeEnabledChange: (checked: boolean) => {
-          setReportScopeDateRangeFilter(checked);
-          if (checked) setReportScopeCurrentFyFilter(false);
-        },
+        onDateRangeEnabledChange: setReportScopeDateRangeFilter,
       }
     : undefined;
   const monthSelectionControls = isMonthSelectionReport(reportMode)
@@ -1636,6 +1585,11 @@ function ReportsPage() {
     isActivePlusCurrentFyClosedYear(settings.selectedYear) && isPendingBillingCashOutgoMode(mode)
       ? ALL_ACTIVE_FILES_YEAR
       : undefined;
+  const getCashOutgoAnySearchYear = (modes: CashOutgoFilterMode[]) =>
+    isActivePlusCurrentFyClosedYear(settings.selectedYear) &&
+    modes.some((mode) => isPendingBillingCashOutgoMode(mode))
+      ? ALL_ACTIVE_FILES_YEAR
+      : settings.selectedYear;
   const openCashOutgoSearch = (mode: CashOutgoFilterMode, monthKey: string) => {
     const dateContext = getCashOutgoDateContext();
     openCashOutgoSearchWithContext(mode, monthKey, dateContext);
@@ -1655,10 +1609,10 @@ function ReportsPage() {
           dateContext,
         ),
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
-        selectedYear: getCashOutgoSearchYear(mode),
+        selectedYear: getCashOutgoSearchYear(mode) ?? settings.selectedYear,
         drillPath: getReportSearchDrillPath([
           monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
         ]),
@@ -1684,9 +1638,10 @@ function ReportsPage() {
           dateContext,
         ),
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: getCashOutgoAnySearchYear(modes),
         drillPath: getReportSearchDrillPath([
           monthKey === "all" ? "All months" : formatMonthTitle(monthKey),
         ]),
@@ -1699,9 +1654,10 @@ function ReportsPage() {
       search: {
         dashboardFilter,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath(),
       },
     });
@@ -1712,9 +1668,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: getDelayStatusDashboardFilter(delayStatusThresholdDays, milestoneKey),
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath([milestoneKey === "all" ? undefined : milestoneKey]),
       },
     });
@@ -1725,9 +1682,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `biddingDelay:${delayStatusThresholdDays}:${breakupKey}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath([breakupKey]),
       },
     });
@@ -1764,9 +1722,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         focusSection: "Supply order and payment",
         focusTarget: rows[0]?.sourceFocusTarget || getFallbackCashOutGoPlanFocusTarget(rows[0]),
         focusTargets: serializeCashOutGoPlanFocusTargets(rows),
@@ -1834,9 +1793,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath([
           mode === "reverse" ? "Reverse / negative gap" : "Used rows",
         ]),
@@ -1850,9 +1810,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `fileIds:${row.fileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath([row.label]),
       },
     });
@@ -1865,9 +1826,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         drillPath: getReportSearchDrillPath(),
@@ -1885,7 +1847,7 @@ function ReportsPage() {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         selectedYear: settings.selectedYear,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         ...sourceFocus,
@@ -1917,9 +1879,10 @@ function ReportsPage() {
       search: {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
-        fileCategories: serializeFileCategories(selectedFileCategories),
+        fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
         focusSection: "Supply order and payment",
         focusTarget: "payment:liability",
         focusTargets: String(row.focusTargets ?? "") || undefined,
@@ -1928,6 +1891,7 @@ function ReportsPage() {
     });
   };
   const toggleFileCategory = (category: FileCategoryKey, checked: boolean) => {
+    setFileCategoryFilterTouched(true);
     setSelectedFileCategories((current) =>
       checked
         ? visibleFileCategoryKeys.filter((key) => new Set([...current, category]).has(key))
@@ -2027,7 +1991,7 @@ function ReportsPage() {
                 locked={fileYearLocked}
                 disabled={fileYearFilterDisabled}
                 active={fileYearFilterActive}
-                showAllOption={showAllFileYearsOption}
+                allOptionLabel={fileYearAllOptionLabel}
                 onChange={updateFileYearSelection}
                 onLockToggle={toggleFileYearLock}
               />
@@ -2327,7 +2291,6 @@ function ReportsPage() {
               includePreviousFy={cashOutGoPlanIncludePreviousFy}
               onIncludePreviousFyChange={setCashOutGoPlanIncludePreviousFy}
               onSettingChange={updateCashOutGoPlanSettings}
-              onSettingEnabledChange={updateCashOutGoPlanSettingEnabled}
               onOffsetReset={resetCashOutGoPlanOffset}
               onRowChange={updateCashOutGoPlanRow}
               onExpectedSentDateReset={resetCashOutGoPlanExpectedSentDate}
@@ -2402,10 +2365,15 @@ function ReportsPage() {
               onSelectedDaysSave={saveExpectedCashOutgoDays}
               onSelectedDaysReset={resetExpectedCashOutgoDays}
               monthSelection={monthSelectionControls}
-              onOpenMonth={(monthKey) => openCashOutgoSearch("expectedReceiptThrough", monthKey)}
+              onOpenMonth={(monthKey) =>
+                openCashOutgoAnySearch(
+                  ["expectedReceiptPendingBillThrough", "billPreparationThrough", "billSentThrough"],
+                  monthKey,
+                )
+              }
               onOpenAll={() =>
-                openCashOutgoSearchWithContext(
-                  "expectedReceiptThrough",
+                openCashOutgoAnySearchWithContext(
+                  ["expectedReceiptPendingBillThrough", "billPreparationThrough", "billSentThrough"],
                   getCashOutgoTotalMonthKey(currentLiabilityRows),
                   getCashOutgoTotalDateContext(currentLiabilityRows),
                 )
@@ -2800,16 +2768,27 @@ const reportModes = [
 type ReportModeOption = (typeof reportModes)[number];
 type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {
-  itemsDeliveredBillsPrepared:
+  itemsDeliveredBillsPrepared: [
     "Includes returned supplementary bills pending correction/resubmission.",
-  billsSubmitted: "Includes supplementary bills sent/resubmitted to PCDA and unpaid.",
-  spentTillDateFy:
-    "Includes paid supplementary bills by payment date.\nFor past months, entered MER values still override app-entered actuals.",
-  billsPaidInMonth: "Includes paid supplementary bills through Actual Cash Outgo by payment date.",
-  currentMonthLiability: "Includes supplementary bills that are submitted/resubmitted and unpaid.",
-  cashOutgoForMonth: "Includes supplementary bills expected to be paid.",
-  expectedExpenditureTillMonth: "Includes supplementary bills submitted/resubmitted/returned.",
-} satisfies Partial<Record<ReportMode, string>>;
+  ],
+  billsSubmitted: ["Includes supplementary bills sent/resubmitted to PCDA and unpaid."],
+  spentTillDateFy: [
+    "Includes paid supplementary bills by payment date.",
+    "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
+    "For past months, entered MER values still override app-entered actuals.",
+  ],
+  billsPaidInMonth: [
+    "Includes paid supplementary bills through Actual Cash Outgo by payment date.",
+    "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
+  ],
+  currentMonthLiability: [
+    "Includes supplementary bills that are submitted/resubmitted and unpaid.",
+  ],
+  cashOutgoForMonth: ["Includes supplementary bills expected to be paid."],
+  expectedExpenditureTillMonth: [
+    "Includes supplementary bills submitted/resubmitted/returned.",
+  ],
+} satisfies Partial<Record<ReportMode, HelperText>>;
 const reportModeHelperText = {
   mmgSummary: [
     "File Year restricts source files first.",
@@ -2831,16 +2810,22 @@ const reportModeHelperText = {
     "For a specific FY, MER uses that selected FY.",
     "File Year subfilter is not applied to this report.",
   ],
-  supplementaryBillsPaid: ["Returned and paid supplementary bills included."],
+  supplementaryBillsPaid: [
+    "Paid supplementary bills are counted by supplementary Payment Date.",
+    "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
+    "Returned and paid supplementary bills are included.",
+  ],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 type HelperText = string | string[];
 const fileYearSubfilterHelper = [
-  "File Year is a subfilter applied after the main/global filter.",
-  "Current FY is selected by default for each browser tab session.",
+  "This is a File Initiation Year subfilter applied after the Global filter.",
+  "Global filter decides the main file universe: all files, active files, active + current FY closed, or FY Activity.",
+  "A specific FY here means files initiated in that FY only; it does not mean activity year.",
+  "All file years means no extra initiation-year restriction inside the selected Global filter.",
+  "When Global Filter is All files, the no-restriction option is labelled Entire database.",
+  "Global All files + Entire database shows every accessible database file; Global All files + a specific FY shows every accessible file initiated in that FY.",
+  "Example: Global FY Activity 2026-27 + File Year 2025-26 shows files initiated in 2025-26 that remained active/continued in 2026-27.",
   "After you change File Year, that choice stays for the current tab session.",
-  "All file years means no extra file-year restriction, and is hidden when Global Filter is All files.",
-  "Selecting a specific FY shows only files initiated in that FY from the already selected file set.",
-  "It does not change the activity-year meaning of the main/global filter.",
   "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
 ];
 const fileInitiationDateRangeHelper = [
@@ -3651,9 +3636,11 @@ function getReportsExportContextDescription({
 }) {
   return [
     `Global filter: ${displayFinancialYearLabel(globalYear)}`,
-    `File Year Subfilter: ${
-      fileYearFilterDisabled ? "Not applied" : fileYear === "all" ? "All file years" : fileYear
-    }`,
+    `File Year Subfilter: ${formatFileYearSubfilterExportLabel(
+      globalYear,
+      fileYear,
+      fileYearFilterDisabled,
+    )}`,
     `Initiation date range: ${
       fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
     }`,
@@ -3702,9 +3689,11 @@ function getReportsCombinedCashOutgoExportContextDescription({
 }) {
   return [
     `Global filter: ${displayFinancialYearLabel(globalYear)}`,
-    `File Year Subfilter: ${
-      fileYearFilterDisabled ? "Not applied" : fileYear === "all" ? "All file years" : fileYear
-    }`,
+    `File Year Subfilter: ${formatFileYearSubfilterExportLabel(
+      globalYear,
+      fileYear,
+      fileYearFilterDisabled,
+    )}`,
     `Initiation date range: ${
       fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
     }`,
@@ -3738,6 +3727,16 @@ function formatFileCategoryExportSelection(
     .filter((option) => selectedVisible.includes(option.key))
     .map((option) => option.label);
   return labels.length ? labels.join(", ") : "None selected";
+}
+
+function formatFileYearSubfilterExportLabel(
+  globalYear: string,
+  fileYear: string,
+  disabled: boolean,
+) {
+  if (disabled) return "Not applied";
+  if (fileYear !== "all") return fileYear;
+  return isAllFilesYear(globalYear) ? "Entire database" : "All file years";
 }
 
 function getReportDateExportContext({
@@ -3785,9 +3784,7 @@ function getBillingPaymentReportDescription(
   mode: ReportMode,
   context: {
     activeHistoricalDateRange?: { fromDate: string; toDate: string };
-    cashOutgoCurrentFyFilter: boolean;
     cashOutgoDateRangeFilter: boolean;
-    currentFinancialYear: string;
     globalYear: string;
   },
 ) {
@@ -3816,9 +3813,8 @@ function getBillingPaymentReportDescription(
                           ? "Supplementary returned bill paid"
                           : "";
   if (!basis) return "";
-  const scope = context.cashOutgoCurrentFyFilter
-    ? `in Current FY ${displayFinancialYearLabel(context.currentFinancialYear)}`
-    : context.cashOutgoDateRangeFilter && context.activeHistoricalDateRange
+  const scope =
+    context.cashOutgoDateRangeFilter && context.activeHistoricalDateRange
       ? `from ${formatDateDisplay(context.activeHistoricalDateRange.fromDate)} to ${formatDateDisplay(
           context.activeHistoricalDateRange.toDate,
         )}`
@@ -3829,7 +3825,7 @@ function getBillingPaymentReportDescription(
           ? ""
           : "as per global filter";
   if (!scope) return "";
-  const subfilterActive = context.cashOutgoCurrentFyFilter || context.cashOutgoDateRangeFilter;
+  const subfilterActive = context.cashOutgoDateRangeFilter;
   const activeOnlyNote =
     isActivePlusCurrentFyClosedYear(context.globalYear) && !subfilterActive
       ? " Pending billing/payment rows show active files only; closed files are monitored through anomaly control."
@@ -4404,7 +4400,7 @@ function getDemandProcessingExtraFilterFields({
       label: "Demand description",
       group: "File details",
       type: "text",
-      getValue: ({ file }) => file.demandDescription,
+      getValue: ({ file }) => getDescriptionWithUniqueCode(file),
     },
     {
       id: "file.mode",
@@ -5521,12 +5517,9 @@ type HistoricalDateRangeControlsProps = {
   toDate: string;
   onFromDateChange: (value: string) => void;
   onToDateChange: (value: string) => void;
-  currentFyEnabled?: boolean;
   dateRangeEnabled?: boolean;
   active?: boolean;
-  currentFyLabel?: string;
   helperText?: HelperText;
-  onCurrentFyEnabledChange?: (checked: boolean) => void;
   onDateRangeEnabledChange?: (checked: boolean) => void;
 };
 
@@ -5599,15 +5592,12 @@ function HistoricalDateRangeControls({
   toDate,
   onFromDateChange,
   onToDateChange,
-  currentFyEnabled,
   dateRangeEnabled,
   active = false,
-  currentFyLabel = "Current FY",
   helperText,
-  onCurrentFyEnabledChange,
   onDateRangeEnabledChange,
 }: HistoricalDateRangeControlsProps) {
-  const optionalMode = Boolean(onCurrentFyEnabledChange || onDateRangeEnabledChange);
+  const optionalMode = Boolean(onDateRangeEnabledChange);
   const inputsDisabled = optionalMode && !dateRangeEnabled;
   return (
     <>
@@ -5618,17 +5608,6 @@ function HistoricalDateRangeControls({
             "flex min-h-9 items-center gap-3 rounded-md border border-border bg-secondary/20 px-3 text-xs font-medium text-foreground",
           )}
         >
-          {onCurrentFyEnabledChange ? (
-            <label className={filterLabelClass(active, "flex items-center gap-1.5")}>
-              <input
-                type="checkbox"
-                checked={Boolean(currentFyEnabled)}
-                onChange={(event) => onCurrentFyEnabledChange(event.target.checked)}
-                className="size-3.5 rounded border-input"
-              />
-              {currentFyLabel}
-            </label>
-          ) : null}
           {onDateRangeEnabledChange ? (
             <label className={filterLabelClass(active, "flex items-center gap-1.5")}>
               <input
@@ -6513,7 +6492,7 @@ function FileYearFilter({
   locked,
   disabled = false,
   active = false,
-  showAllOption = true,
+  allOptionLabel = "All file years",
   onChange,
   onLockToggle,
 }: {
@@ -6522,7 +6501,7 @@ function FileYearFilter({
   locked: boolean;
   disabled?: boolean;
   active?: boolean;
-  showAllOption?: boolean;
+  allOptionLabel?: string;
   onChange: (year: string) => void;
   onLockToggle: () => void;
 }) {
@@ -6559,7 +6538,7 @@ function FileYearFilter({
             "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground",
           )}
         >
-          {showAllOption ? <option value="all">All file years</option> : null}
+          <option value="all">{allOptionLabel}</option>
           {options.map((year) => (
             <option key={year} value={year}>
               {year}
@@ -7466,7 +7445,6 @@ function CashOutGoPlanOffsetControl({
   active,
   helperText,
   onReset,
-  onCustomEnabledChange,
   onCustomDaysChange,
 }: {
   label: string;
@@ -7477,7 +7455,6 @@ function CashOutGoPlanOffsetControl({
   active: boolean;
   helperText: HelperText;
   onReset: () => void;
-  onCustomEnabledChange: (checked: boolean) => void;
   onCustomDaysChange: (value: string) => void;
 }) {
   return (
@@ -7490,20 +7467,6 @@ function CashOutGoPlanOffsetControl({
         <span className="flex h-9 items-center rounded-md border border-border bg-secondary/20 px-2 text-xs text-muted-foreground">
           Default {defaultDays}d
         </span>
-        <label
-          className={filterControlClass(
-            active,
-            "flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-muted-foreground",
-          )}
-        >
-          <input
-            type="checkbox"
-            checked={customEnabled}
-            onChange={(event) => onCustomEnabledChange(event.target.checked)}
-            disabled={disabled}
-          />
-          Use custom
-        </label>
         <input
           type="number"
           min="0"
@@ -7513,8 +7476,8 @@ function CashOutGoPlanOffsetControl({
             active,
             "h-9 w-20 rounded-md border border-input bg-background px-2 text-sm",
           )}
-          disabled={disabled || !customEnabled}
-          aria-label={`${label} custom days`}
+          disabled={disabled}
+          aria-label={`${label} days`}
         />
         <button
           type="button"
@@ -7540,7 +7503,6 @@ function CashOutGoPlanReport({
   includePreviousFy,
   onIncludePreviousFyChange,
   onSettingChange,
-  onSettingEnabledChange,
   onOffsetReset,
   onRowChange,
   onExpectedSentDateReset,
@@ -7565,13 +7527,6 @@ function CashOutGoPlanReport({
   onSettingChange: (
     field: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays",
     value: string,
-  ) => void;
-  onSettingEnabledChange: (
-    field:
-      | "useCustomBillOffsetDays"
-      | "useCustomHandSubmissionOffsetDays"
-      | "useCustomDpOffsetDays",
-    value: boolean,
   ) => void;
   onOffsetReset: (field: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays") => void;
   onRowChange: (
@@ -7647,12 +7602,9 @@ function CashOutGoPlanReport({
             helperText={[
               "Used for Bills at Hand rows.",
               "Default is 5 days.",
-              "When Use custom is off, the default is applied and the input is locked.",
-              "When Use custom is on, this page uses the entered days after saving.",
+              "If the entered value is different from default, it is treated as custom and highlighted red.",
+              "Reset returns this offset to default.",
             ]}
-            onCustomEnabledChange={(checked) =>
-              onSettingEnabledChange("useCustomHandSubmissionOffsetDays", checked)
-            }
             onCustomDaysChange={(value) => onSettingChange("handSubmissionOffsetDays", value)}
             onReset={() => onOffsetReset("handSubmissionOffsetDays")}
           />
@@ -7667,11 +7619,9 @@ function CashOutGoPlanReport({
               "Used to calculate Expected payment after a bill is sent/resubmitted.",
               "Default is 5 days.",
               "Row Payment Offset Override applies only to that row and supersedes this value.",
-              "When Use custom is off, the default is applied and the input is locked.",
+              "If the entered value is different from default, it is treated as custom and highlighted red.",
+              "Reset returns this offset to default.",
             ]}
-            onCustomEnabledChange={(checked) =>
-              onSettingEnabledChange("useCustomBillOffsetDays", checked)
-            }
             onCustomDaysChange={(value) => onSettingChange("billOffsetDays", value)}
             onReset={() => onOffsetReset("billOffsetDays")}
           />
@@ -7686,11 +7636,9 @@ function CashOutGoPlanReport({
               "Used for D.P.-based expected sent/resubmission dates.",
               "Default is 10 days.",
               "For Items Based on D.P., one extra day is added after D.P. before this offset.",
-              "When Use custom is off, the default is applied and the input is locked.",
+              "If the entered value is different from default, it is treated as custom and highlighted red.",
+              "Reset returns this offset to default.",
             ]}
-            onCustomEnabledChange={(checked) =>
-              onSettingEnabledChange("useCustomDpOffsetDays", checked)
-            }
             onCustomDaysChange={(value) => onSettingChange("dpOffsetDays", value)}
             onReset={() => onOffsetReset("dpOffsetDays")}
           />
@@ -8305,7 +8253,7 @@ function CashOutGoDetailTable({
                   <FloatingHelper
                     text={[
                       "Optional row-specific payment offset.",
-                      "When blank, the global/default Bill payment offset is used.",
+                      "When blank, the global/default Bill payment offset is used and shown below the input.",
                       "If the entered value equals the global/default offset, it is treated as no override and saved blank.",
                       "When filled, this row becomes a manual override and is highlighted red.",
                       "Use the reset icon beside Save to clear this row override.",
@@ -8416,7 +8364,7 @@ function CashOutGoDetailTable({
                           type="number"
                           min="0"
                           value={row.billOffsetOverride || ""}
-                          placeholder={`Global ${row.billOffsetDays}`}
+                          placeholder={`Default ${row.billOffsetDays}`}
                           onChange={(event) =>
                             onRowChange(row.rowKey, "billOffsetOverride", event.target.value)
                           }
@@ -8425,6 +8373,16 @@ function CashOutGoDetailTable({
                             "h-8 w-24 rounded-md border border-input bg-background px-2 text-sm",
                           )}
                         />
+                        <span
+                          className={
+                            "text-[11px] leading-none " +
+                            (row.billOffsetOverride ? "text-destructive" : "text-muted-foreground")
+                          }
+                        >
+                          {row.billOffsetOverride
+                            ? `Override ${row.billOffsetOverride} days`
+                            : `Using default ${row.billOffsetDays} days`}
+                        </span>
                         {onSave ? (
                           <span className="flex items-center gap-1">
                             <button
@@ -8946,7 +8904,8 @@ function DelayStatusReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">
-            Files stuck in their current milestone for more than {thresholdDays} days.
+            Live/current delays only: files stuck in their current milestone or S.O. stage for more
+            than {thresholdDays} days. Already-cleared historical delays are excluded.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -10724,7 +10683,7 @@ function getBiddingDelay(
     fileRef: getFileReference(file),
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: file.demandDescription ?? "",
+    description: getDescriptionWithUniqueCode(file),
     milestoneKey: biddingDelayMilestoneKey,
     milestone: biddingDelayMilestoneLabel,
     stageStartDate: status.stageStartDate,
@@ -10822,7 +10781,7 @@ function getWorkflowNotStartedDelay(
     fileRef: getFileReference(file),
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: file.demandDescription ?? "",
+    description: getDescriptionWithUniqueCode(file),
     milestoneKey: "workflowNotStarted",
     milestone: "Workflow Not Started",
     stageStartDate,
@@ -10852,7 +10811,7 @@ function getCurrentMilestoneDelay(
     fileRef: getFileReference(file),
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: file.demandDescription ?? "",
+    description: getDescriptionWithUniqueCode(file),
     milestoneKey: milestone.key,
     milestone: milestone.label,
     stageStartDate,
@@ -11059,7 +11018,7 @@ function getCurrentOrderMilestoneDelayRows(
           fileRef: getSupplyOrderDelayReference(file, order, orderIndex),
           division: file.division ?? "",
           indentor: file.indentor ?? "",
-          description: file.demandDescription ?? "",
+          description: getDescriptionWithUniqueCode(file),
           milestoneKey: milestone.key,
           milestone: milestone.label,
           stageStartDate,
@@ -11093,7 +11052,7 @@ function getReturnedBillDelayRows(
         fileRef: getSupplyOrderDelayReference(file, order, orderIndex),
         division: file.division ?? "",
         indentor: file.indentor ?? "",
-        description: file.demandDescription ?? "",
+        description: getDescriptionWithUniqueCode(file),
         milestoneKey: billReturnedDelayMilestoneKey,
         milestone: "Bill returned for correction",
         stageStartDate,
@@ -11136,7 +11095,7 @@ function getSupplementaryReturnedBillDelayRows(
           fileRef: `${getSupplyOrderDelayReference(file, order, orderIndex)} / Supp. bill ${billIndex + 1}`,
           division: file.division ?? "",
           indentor: file.indentor ?? "",
-          description: file.demandDescription ?? "",
+          description: getDescriptionWithUniqueCode(file),
           milestoneKey: supplementaryBillReturnedDelayMilestoneKey,
           milestone: "Supplementary bill returned for correction",
           stageStartDate,
@@ -11207,12 +11166,18 @@ function getMilestoneStageStartDate(file: FileRecord, milestone: MilestoneDefini
 }
 
 function getPreviousApplicableMilestone(file: FileRecord, milestone: MilestoneDefinition) {
-  let previousMilestone: MilestoneDefinition | undefined;
-  for (const item of milestoneDefinitions) {
-    if (item.key === milestone.key) break;
-    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  const targetIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  if (targetIndex <= 0) return undefined;
+  if (isFlexiblePreControlMilestone(milestone)) {
+    return milestoneDefinitions.find((item) => item.key === "scrutiny");
   }
-  return previousMilestone;
+  const controlIndex = milestoneDefinitions.findIndex((item) => item.key === "control");
+  const previous = milestoneDefinitions.slice(0, targetIndex).filter((item) => {
+    if (!isMilestoneApplicable(file, item)) return false;
+    if (controlIndex >= 0 && targetIndex >= controlIndex) return true;
+    return item.key === "scrutiny";
+  });
+  return previous[previous.length - 1];
 }
 
 function getFieldDateValue(file: FileRecord, key: keyof FileRecord | keyof SupplyOrderDetail) {
@@ -11399,6 +11364,13 @@ function getFileReference(file: FileRecord) {
   return file.fileNo || file.uniqueCode || file.title || file.id;
 }
 
+function getDescriptionWithUniqueCode(file: FileRecord) {
+  const uniqueCode = (file.uniqueCode ?? "").trim();
+  const description = (file.demandDescription ?? "").trim();
+  if (uniqueCode && description) return `${uniqueCode} — ${description}`;
+  return description || uniqueCode;
+}
+
 function getDelayThresholdDays(value: string) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -11481,21 +11453,23 @@ function getCashOutgoAnyDashboardFilter(
 
 function getDelayStatusSummary(rows: DelayStatusRow[]) {
   const totalDays = rows.reduce((sum, row) => sum + row.daysInStage, 0);
-  const counts = new Map<string, { key: string; label: string; count: number }>();
+  const counts = new Map<string, { key: string; label: string; fileIds: Set<string> }>();
   rows.forEach((row) => {
     const current = counts.get(row.milestoneKey) ?? {
       key: row.milestoneKey,
       label: row.milestone,
-      count: 0,
+      fileIds: new Set<string>(),
     };
-    current.count += 1;
+    current.fileIds.add(row.fileId);
     counts.set(row.milestoneKey, current);
   });
 
   return {
     averageDays: rows.length ? Math.round(totalDays / rows.length) : 0,
     longestDays: rows.reduce((max, row) => Math.max(max, row.daysInStage), 0),
-    byMilestone: Array.from(counts.values()).sort((a, b) => b.count - a.count),
+    byMilestone: Array.from(counts.values())
+      .map(({ key, label, fileIds }) => ({ key, label, count: fileIds.size }))
+      .sort((a, b) => b.count - a.count),
   };
 }
 
@@ -11703,6 +11677,7 @@ const milestoneDefinitions = [
     label: "Bidding",
     totalLabel: "Total files",
     current: "biddingStageOver",
+    applies: (file) => isBiddingApplicableForFile(file),
   },
   {
     key: "postTcec",
@@ -12264,14 +12239,27 @@ function isEligibleMilestone(file: FileRecord, milestone: MilestoneDefinition) {
 }
 
 function isPreviousApplicableMilestoneComplete(file: FileRecord, milestone: MilestoneDefinition) {
-  let previousMilestone: MilestoneDefinition | undefined;
-  for (const item of milestoneDefinitions) {
-    if (item.key === milestone.key) break;
-    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  const targetIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  if (targetIndex <= 0) return hasMilestoneDate(file, "receivedDate");
+  if (isFlexiblePreControlMilestone(milestone)) {
+    const scrutiny = milestoneDefinitions.find((item) => item.key === "scrutiny");
+    return scrutiny ? isMilestoneComplete(file, scrutiny) : hasMilestoneDate(file, "receivedDate");
   }
-  return previousMilestone
-    ? isMilestoneComplete(file, previousMilestone)
-    : hasMilestoneDate(file, "receivedDate");
+  const controlIndex = milestoneDefinitions.findIndex((item) => item.key === "control");
+  if (controlIndex >= 0 && targetIndex >= controlIndex) {
+    return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+      if (!isMilestoneApplicable(file, item)) return true;
+      return isMilestoneComplete(file, item);
+    });
+  }
+  return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+    if (item.key !== "scrutiny") return true;
+    return !isMilestoneApplicable(file, item) || isMilestoneComplete(file, item);
+  });
+}
+
+function isFlexiblePreControlMilestone(milestone: Pick<MilestoneDefinition, "key">) {
+  return ["highValue", "tcec", "ad", "rqa"].includes(milestone.key);
 }
 
 function isMilestoneComplete(file: FileRecord, milestone: MilestoneDefinition) {
@@ -12577,7 +12565,9 @@ function shouldUseOrderMilestoneRows(file: FileRecord) {
 function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isCancelledFile(file) &&
-    isYes(file.biddingStageOver) &&
+    (isBiddingApplicableForFile(file)
+      ? isYes(file.biddingStageOver)
+      : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }
@@ -12655,7 +12645,9 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
   if (countCurrentOrderDrivenMilestoneStatuses([file], "financialsanction") > 0) return false;
   const current = normalizeMilestoneName(file.currentMilestone);
   if (isYes(file.tcec)) return current === "cnc" && hasFilledString(file.cncApprovalDate) === false;
-  return current === "bidding" && !isYes(file.biddingStageOver);
+  return isBiddingApplicableForFile(file)
+    ? current === "bidding" && !isYes(file.biddingStageOver)
+    : current === "cfa" && !hasFilledString(file.cfaDate);
 }
 
 function countCompletedOrderDrivenMilestoneStatuses(
@@ -12884,7 +12876,8 @@ function isLiveSupplyOrder(file: FileRecord) {
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order),
+      !isSupplyOrderCancelled(file, order) &&
+      !isYes(order.shortclosure),
   );
 }
 
@@ -13024,11 +13017,13 @@ function hasPaymentDueCompletion(file: FileRecord, order: SupplyOrderDetail) {
 
 function getPaymentDueCompletionDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
 }
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
 }
 
@@ -13125,6 +13120,7 @@ function countPreBidMeetingStatuses(
 }
 
 function isPreBidMeetingStatus(file: FileRecord, refloat: boolean, state: "due" | "completed") {
+  if (!isBiddingApplicableForFile(file)) return false;
   if (isCancelledFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)

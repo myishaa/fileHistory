@@ -9,6 +9,12 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "qa:guardrails": "node scripts/audit-file-category-matrix.mjs && node scripts/audit-reports-clickers.mjs && npx tsx scripts/audit-frontend-report-modules.ts && node scripts/audit-report-values.mjs && node scripts/audit-dashboard-values.mjs && node scripts/audit-export-parity.mjs && node scripts/audit-analytics.mjs && node scripts/audit-snapshot-clickers.mjs",
+    "qa:values": "node scripts/audit-report-values.mjs && node scripts/audit-dashboard-values.mjs",
+    "qa:reports": "node scripts/audit-file-category-matrix.mjs && node scripts/audit-reports-clickers.mjs && npx tsx scripts/audit-frontend-report-modules.ts",
+    "qa:exports": "node scripts/audit-export-parity.mjs",
+    "qa:analytics": "node scripts/audit-analytics.mjs",
+    "qa:snapshot": "node scripts/audit-snapshot-clickers.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

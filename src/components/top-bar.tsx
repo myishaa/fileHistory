@@ -350,6 +350,7 @@ export function TopBar() {
                 Year
               </span>
               <select
+                data-testid="global-year-select"
                 value={settings.selectedYear}
                 onChange={(event) => store.updateSessionSelectedYear(event.target.value)}
                 disabled={!canSelectYear}
@@ -437,12 +438,12 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
           : `FY ${selectedFyLabel}`;
   const description =
     normalizedSelected === ALL_FILES_YEAR
-      ? "Shows all accessible files, including active, closed, and cancelled files. Dashboard and report calculations keep their existing cancellation rules."
+      ? "Shows the full accessible file universe. Use the File Year / File Initiation Year subfilter to restrict this to files initiated in a particular FY."
       : normalizedSelected === ALL_ACTIVE_FILES_YEAR
-        ? "Shows files that are not closed and not cancelled, across all financial years."
+        ? "Shows files that are not closed and not cancelled, across all file initiation years unless the File Year subfilter narrows them."
         : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
           ? `Shows all active files, plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
-          : `Shows files active during FY ${selectedFyLabel}, including older files continued into FY ${selectedFyLabel}.`;
+          : `Shows files belonging to FY Activity ${selectedFyLabel}: files initiated in that FY plus older files continued/active in that FY.`;
 
   return {
     title,
@@ -451,20 +452,26 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "All files",
         description:
-          "Shows all accessible files; use File Year Subfilter to narrow down the list based on file initiation date.",
+          "Shows all accessible database files, including active, closed, and cancelled. Use File Year = Entire database for no initiation-year restriction, or select one FY for files initiated in that FY.",
       },
       {
         label: "All active files",
-        description: "Shows all currently open files across all file years.",
+        description:
+          "Shows currently active files only. File Year subfilter can show all initiation years or restrict to files initiated in one FY.",
       },
       {
         label: "Active + current FY closed (default)",
         description: `Shows currently open files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
       },
       {
-        label: "Specific FY",
+        label: "FY Activity: specific FY",
         description:
-          "Shows files active during that FY, including older files continued into that FY.",
+          "Shows files initiated in that FY plus older files that remained active/continued in that FY. It is not only initiation year.",
+      },
+      {
+        label: "File Year subfilter",
+        description:
+          "Narrows the already selected Global filter by file initiation year. Example: FY Activity 2026-27 + File Year 2025-26 shows old files active in 2026-27 but initiated in 2025-26.",
       },
       {
         label: "Value Reports",

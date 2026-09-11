@@ -87,6 +87,7 @@ export type AppSettings = {
   firmUniqueNoLabel?: string;
   firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
+  addEditRibbonFields?: string[];
 };
 
 export type FirmRatingField = {

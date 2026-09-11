@@ -160,7 +160,7 @@ function renderPdfPages(document: ExportDocument) {
 
   document.tables.flatMap(getPdfTableSegments).forEach((table) => {
     const columns = normalizeColumns(table.headers.length);
-    const columnWidths = getColumnWidths(table.headers, table.columnWidths);
+    const columnWidths = getColumnWidths(table.headers, table.rows, table.columnWidths);
     const rows = table.rows.length ? table.rows : [["No rows found."]];
 
     const ensureSpace = (height: number) => {
@@ -299,7 +299,7 @@ function getRepeatedPdfColumnCount(headers: string[]) {
   return 1;
 }
 
-function getColumnWidths(headers: string[], requestedWidths?: number[]) {
+function getColumnWidths(headers: string[], rows: string[][], requestedWidths?: number[]) {
   const columns = normalizeColumns(headers.length);
   if (
     requestedWidths?.length === columns.length &&
@@ -309,24 +309,137 @@ function getColumnWidths(headers: string[], requestedWidths?: number[]) {
     return requestedWidths.map((width) => (width / total) * pdfContentWidth);
   }
   if (columns.length === 1) return [pdfContentWidth];
-  const firstHeader = String(headers[0] ?? "").toLowerCase();
-  if (columns.length > 2 && /^s\.?\s*no\.?$|^serial/.test(firstHeader)) {
-    const serialWidth = 42;
-    const labelWidth = Math.min(260, Math.max(170, pdfContentWidth * 0.34));
-    const remainingWidth = pdfContentWidth - serialWidth - labelWidth;
-    return columns.map((_, index) =>
-      index === 0
-        ? serialWidth
-        : index === 1
-          ? labelWidth
-          : remainingWidth / Math.max(1, columns.length - 2),
+  const profiles = columns.map((index) => getPdfColumnProfile(headers[index] ?? "", index));
+  const desiredWidths = columns.map((index) => {
+    const profile = profiles[index];
+    const contentWidth = estimateColumnContentWidth(
+      headers[index] ?? "",
+      rows.map((row) => row[index] ?? ""),
+      profile,
     );
-  }
-  const firstColumnWidth = Math.min(280, Math.max(170, pdfContentWidth * 0.36));
-  const remainingWidth = pdfContentWidth - firstColumnWidth;
-  return columns.map((_, index) =>
-    index === 0 ? firstColumnWidth : remainingWidth / Math.max(1, columns.length - 1),
+    return clampNumber(Math.max(profile.base, contentWidth), profile.min, profile.max);
+  });
+  return fitColumnWidthsToPage(
+    desiredWidths,
+    profiles.map((profile) => profile.min),
+    profiles.map((profile) => profile.max),
   );
+}
+
+type PdfColumnProfile = {
+  min: number;
+  base: number;
+  max: number;
+  contentCap: number;
+};
+
+function getPdfColumnProfile(header: string, index: number): PdfColumnProfile {
+  const normalized = normalizeHeaderForWidth(header);
+  if (index === 0 && /^(sno|serial|srno|slno)$/.test(normalized)) {
+    return { min: 30, base: 36, max: 42, contentCap: 8 };
+  }
+  if (
+    /^(sno|serial|srno|slno|so|sono|stage|deliverystage|supplementarybill|billreturncycle)$/.test(
+      normalized,
+    )
+  ) {
+    return { min: 34, base: 42, max: 60, contentCap: 12 };
+  }
+  if (/(date|period|fy|year|dp|validity|expiry)/.test(normalized)) {
+    return { min: 58, base: 68, max: 88, contentCap: 16 };
+  }
+  if (/(amount|value|capital|revenue|cost|price|payment|paid|balance|allocation)/.test(normalized)) {
+    return { min: 64, base: 78, max: 108, contentCap: 18 };
+  }
+  if (/(yes|no|count|qty|quantity|number|mode|type|category|status|flag)/.test(normalized)) {
+    return { min: 46, base: 62, max: 92, contentCap: 18 };
+  }
+  if (/(description|remark|remarks|details|address|scope|subject|title|item|milestone|firm|vendor|indentor|division|reference)/.test(normalized)) {
+    return { min: 92, base: 132, max: 240, contentCap: 48 };
+  }
+  return { min: 58, base: 82, max: 150, contentCap: 28 };
+}
+
+function normalizeHeaderForWidth(header: string) {
+  return header
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function estimateColumnContentWidth(
+  header: string,
+  values: string[],
+  profile: PdfColumnProfile,
+) {
+  const samples = [header, ...values.slice(0, 80)].map(normalizeCell);
+  const contentScore = samples.reduce((max, value) => {
+    const longestWord = value.split(/\s+/).reduce((longest, word) => Math.max(longest, word.length), 0);
+    const usefulLength = Math.min(value.length, profile.contentCap);
+    return Math.max(max, Math.max(usefulLength * 0.72, longestWord));
+  }, 0);
+  return pdfCellPaddingX * 2 + contentScore * pdfFontSize * 0.5;
+}
+
+function fitColumnWidthsToPage(widths: number[], mins: number[], maxes: number[]) {
+  const total = widths.reduce((sum, width) => sum + width, 0);
+  if (Math.abs(total - pdfContentWidth) < 0.5) return widths;
+  if (total > pdfContentWidth) {
+    return shrinkColumnWidths(widths, mins, total - pdfContentWidth);
+  }
+  return growColumnWidths(widths, maxes, pdfContentWidth - total);
+}
+
+function shrinkColumnWidths(widths: number[], mins: number[], overflow: number) {
+  const next = [...widths];
+  let remaining = overflow;
+  for (let pass = 0; pass < 6 && remaining > 0.5; pass += 1) {
+    const shrinkableIndexes = next
+      .map((width, index) => ({ index, capacity: Math.max(0, width - mins[index]) }))
+      .filter((item) => item.capacity > 0);
+    if (!shrinkableIndexes.length) break;
+    const totalCapacity = shrinkableIndexes.reduce((sum, item) => sum + item.capacity, 0);
+    shrinkableIndexes.forEach(({ index, capacity }) => {
+      const reduction = Math.min(capacity, remaining * (capacity / totalCapacity));
+      next[index] -= reduction;
+    });
+    remaining = next.reduce((sum, width) => sum + width, 0) - pdfContentWidth;
+  }
+  return normalizeWidthRounding(next);
+}
+
+function growColumnWidths(widths: number[], maxes: number[], extra: number) {
+  const next = [...widths];
+  let remaining = extra;
+  for (let pass = 0; pass < 6 && remaining > 0.5; pass += 1) {
+    const growableIndexes = next
+      .map((width, index) => ({ index, capacity: Math.max(0, maxes[index] - width) }))
+      .filter((item) => item.capacity > 0);
+    if (!growableIndexes.length) break;
+    const totalCapacity = growableIndexes.reduce((sum, item) => sum + item.capacity, 0);
+    growableIndexes.forEach(({ index, capacity }) => {
+      const addition = Math.min(capacity, remaining * (capacity / totalCapacity));
+      next[index] += addition;
+    });
+    remaining = pdfContentWidth - next.reduce((sum, width) => sum + width, 0);
+  }
+  if (remaining > 0.5) {
+    const addition = remaining / next.length;
+    return normalizeWidthRounding(next.map((width) => width + addition));
+  }
+  return normalizeWidthRounding(next);
+}
+
+function normalizeWidthRounding(widths: number[]) {
+  const rounded = widths.map((width) => Number(width.toFixed(2)));
+  const delta = Number((pdfContentWidth - rounded.reduce((sum, width) => sum + width, 0)).toFixed(2));
+  if (rounded.length) rounded[rounded.length - 1] += delta;
+  return rounded;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function getMaxCharsForColumn(width: number) {

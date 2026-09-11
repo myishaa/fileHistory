@@ -59,10 +59,17 @@ import { fileSupplyOrders as expandedFileSupplyOrders } from "@/lib/effective-de
 import { displayFinancialYearLabel } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
 import {
+  fileTypeGroupOptions,
   getConfiguredFileTypeGroup,
   isBiddingApplicableForFile,
   isContractFileType,
 } from "@/lib/file-type-groups";
+import {
+  addEditRibbonFieldOptions,
+  defaultAddEditRibbonFields,
+  normalizeAddEditRibbonFields,
+  type AddEditRibbonFieldKey,
+} from "@/lib/add-edit-ribbon-fields";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   formatFirmRatingScore,
@@ -348,21 +355,89 @@ type AdvancePaymentKey = keyof AdvancePaymentDetail;
 type StageDeliveryKey = keyof StageDeliveryDetail;
 const specialBoardSections = new Set(["Timeline", "Remarks Summary", "Milestones"]);
 
-function getEditFileHeading(form: FormState, file: FileRecord | undefined) {
-  return (
-    [
-      form.demandDescription,
-      file?.demandDescription,
-      form.fileNo,
-      file?.fileNo,
-      form.uniqueCode,
-      file?.uniqueCode,
-      form.imms,
-      file?.imms,
-    ]
-      .map((value) => value?.trim())
-      .find((value): value is string => Boolean(value)) ?? "Edit file details"
-  );
+function getAddEditRibbonLines(
+  form: FormState,
+  file: FileRecord | undefined,
+  orders: SupplyOrderDetail[],
+  selectedFields: AddEditRibbonFieldKey[],
+) {
+  const demandDescription =
+    form.demandDescription.trim() || file?.demandDescription?.trim() || "Demand description not set";
+  const selected = normalizeAddEditRibbonFields(selectedFields);
+  return {
+    demandDescription,
+    fields: selected.map((key) => ({
+      key,
+      label: addEditRibbonFieldOptions.find((option) => option.key === key)?.label ?? key,
+      value: getAddEditRibbonFieldValue(key, form, file, orders),
+    })),
+  };
+}
+
+function getAddEditRibbonFieldValue(
+  key: AddEditRibbonFieldKey,
+  form: FormState,
+  file: FileRecord | undefined,
+  orders: SupplyOrderDetail[],
+) {
+  const latestOrder = getLatestRibbonSupplyOrder(orders);
+  const text = (value: string | undefined | null) => value?.trim() || "";
+  switch (key) {
+    case "imms":
+      return text(form.imms) || text(file?.imms) || "Not set";
+    case "indentor":
+      return text(form.indentor) || text(file?.indentor) || "Not set";
+    case "year":
+      return text(form.year) || text(file?.year) || "Not set";
+    case "uniqueCode":
+      return text(form.uniqueCode) || text(file?.uniqueCode) || "Not set";
+    case "division":
+      return text(form.division) || text(file?.division) || "Not set";
+    case "fileTypeGroup":
+      return getFileTypeGroupRibbonLabel(form.fileTypeGroup);
+    case "mode":
+      return text(form.mode) || text(file?.mode) || "Not set";
+    case "demandValue":
+      return formatRibbonAmount(totalDemandValue(form.valueCapital, form.valueRevenue));
+    case "valueCapital":
+      return formatRibbonAmount(parseMoneyAmount(form.valueCapital));
+    case "valueRevenue":
+      return formatRibbonAmount(parseMoneyAmount(form.valueRevenue));
+    case "latestSupplyOrderNo":
+      return text(latestOrder?.soNo) || text(latestOrder?.gemSoNo) || text(form.soNo) || "Not set";
+    case "latestFirmName":
+      return text(latestOrder?.firm) || text(form.firm) || "Not set";
+    default:
+      return "Not set";
+  }
+}
+
+function getLatestRibbonSupplyOrder(orders: SupplyOrderDetail[]) {
+  return [...orders]
+    .reverse()
+    .find((order) =>
+      [order.soNo, order.gemSoNo, order.firm, order.soDate].some((value) => value?.trim()),
+    );
+}
+
+function getFileTypeGroupRibbonLabel(value: string | undefined) {
+  const option = fileTypeGroupOptions.find((item) => item.value === value);
+  if (!option) return "Not set";
+  return option.value === "contract" ? "Contract" : "Goods & Services";
+}
+
+function totalDemandValue(capital: string | undefined, revenue: string | undefined) {
+  const capitalAmount = parseMoneyAmount(capital) ?? 0;
+  const revenueAmount = parseMoneyAmount(revenue) ?? 0;
+  const total = capitalAmount + revenueAmount;
+  return total > 0 ? total : undefined;
+}
+
+function formatRibbonAmount(value: number | undefined) {
+  if (value === undefined) return "Not set";
+  return new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 function createEmptyForm(financialYear: string): FormState {
@@ -543,6 +618,10 @@ function createSupplyOrdersFromFile(file: FileRecord | undefined): SupplyOrderDe
     hasFilledValue(file.noOfSo) ? (file.noOfSo ?? "") : String(rows.length),
   );
   return resizeSupplyOrders(rows, count);
+}
+
+function areSupplyOrderRowsEqual(left: SupplyOrderDetail[], right: SupplyOrderDetail[]) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>[] {
@@ -1528,6 +1607,39 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }),
     [form, generatedUniqueCode, originYear],
   );
+  const addEditRibbonLines = useMemo(
+    () =>
+      getAddEditRibbonLines(
+        formWithLockedYear,
+        editingFile,
+        supplyOrders,
+        settings.addEditRibbonFields ?? defaultAddEditRibbonFields,
+      ),
+    [editingFile, formWithLockedYear, settings.addEditRibbonFields, supplyOrders],
+  );
+  useEffect(() => {
+    if (readOnlyMode) return;
+    setSupplyOrders((current) => {
+      const next = current.map((order) => applySupplyOrderRules(order, formWithLockedYear));
+      return areSupplyOrderRowsEqual(current, next) ? current : next;
+    });
+  }, [
+    formWithLockedYear.bg,
+    formWithLockedYear.biddingStageOver,
+    formWithLockedYear.cfaDate,
+    formWithLockedYear.cncApprovalDate,
+    formWithLockedYear.demandCancelled,
+    formWithLockedYear.fileType,
+    formWithLockedYear.fileTypeGroup,
+    formWithLockedYear.gem,
+    formWithLockedYear.gemBiddingMode,
+    formWithLockedYear.ir,
+    formWithLockedYear.mode,
+    formWithLockedYear.tcec,
+    formWithLockedYear.valueCapitalSelected,
+    formWithLockedYear.valueRevenueSelected,
+    readOnlyMode,
+  ]);
   const uniqueCodeGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.uniqueCode);
   const cfaApprovalGateLocked = !readOnlyMode && !hasFilledValue(formWithLockedYear.cfaDate);
   const activeYearOptions = useMemo(
@@ -1921,18 +2033,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     if (k === "biddingStageOver" && isYes(v)) {
       const currentIsBidding = normalizeMilestoneName(currentMilestone) === "bidding";
-      const currentNeedsSelection = !currentMilestone || currentIsBidding;
       if (currentIsBidding) {
         setCurrentMilestone("");
-      }
-      if (currentNeedsSelection) {
-        setActiveBoardSection("Milestones");
-        setFocusedMilestone("");
-        window.setTimeout(() => {
-          alert(
-            "Bidding is now marked completed. Please select the next current status in Milestones.",
-          );
-        }, 100);
       }
     }
     setForm((f) => {
@@ -2992,13 +3094,17 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     <div className="w-full" onKeyDownCapture={handleQuickEntrySaveKey}>
       <div className="bg-card border border-border rounded-md shadow-[var(--shadow-card)] overflow-hidden">
         <div className="p-5 border-b border-border bg-secondary/30">
-          <h2 className="text-base font-semibold">
-            {readOnlyMode
-              ? "View file details"
-              : isEditing
-                ? getEditFileHeading(formWithLockedYear, editingFile)
-                : "Add a new file"}
-          </h2>
+          <div>
+            <div className="text-base font-semibold">{addEditRibbonLines.demandDescription}</div>
+            <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+              {addEditRibbonLines.fields.map((field) => (
+                <div key={field.key}>
+                  <span className="font-medium text-foreground/80">{field.label}:</span>{" "}
+                  <span>{field.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
           {drillPath.length ? (
             <DrillPathTrail
               items={[
@@ -7269,8 +7375,11 @@ function getSupplyOrderDisplaySummary(
 
 function getDeliveryPeriodRibbonLabel(order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
-    const firstStage = order.stageDeliveries[0];
-    return formatDeliveryPeriodRibbonLabel(firstStage?.revisedDp, firstStage?.dpDate);
+    const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
+    const stages = resizeStageDeliveries(order.stageDeliveries, stageCount);
+    const lastStageWithDp =
+      [...stages].reverse().find((stage) => stage.revisedDp || stage.dpDate) ?? stages.at(-1);
+    return formatDeliveryPeriodRibbonLabel(lastStageWithDp?.revisedDp, lastStageWithDp?.dpDate);
   }
   return formatDeliveryPeriodRibbonLabel(order.revisedDp, order.dpDate);
 }
@@ -7367,12 +7476,30 @@ function hasResubmittedBillReturn(
   );
 }
 
+function isBillReturnedForCorrectionMilestoneComplete(
+  row: Pick<SupplyOrderDetail, "billReturnCycles" | "paymentDate"> | MilestoneRowState,
+) {
+  return (
+    hasBillReturnHistory(row) &&
+    (isCompleteDateValue(String(row.paymentDate ?? "")) ||
+      (hasResubmittedBillReturn(row) && !hasOpenBillReturn(row)))
+  );
+}
+
 function isSupplementaryBillFocusMatch(bill: SupplementaryBillDetail, state: string) {
   const hasOpenReturn = hasOpenBillReturn(bill);
   const hasResubmittedReturn = hasResubmittedBillReturn(bill);
   if (state === "anyreturned") {
     return normalizeBillReturnCycles(bill.billReturnCycles).some((cycle) =>
       hasFilledValue(cycle.returnedDate),
+    );
+  }
+  if (state === "returnpaid") {
+    return (
+      hasFilledValue(bill.paymentDate) &&
+      normalizeBillReturnCycles(bill.billReturnCycles).some((cycle) =>
+        hasFilledValue(cycle.returnedDate),
+      )
     );
   }
   if (state === "paid" || state === "actual") return hasFilledValue(bill.paymentDate);
@@ -7616,9 +7743,7 @@ function SupplyOrderMilestonesBlock({
                   ? isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped }) &&
                     !hasOpenBillReturn(order)
                   : milestone === "Bill returned for correction"
-                    ? hasBillReturnHistory(order) &&
-                      (isCompleteDateValue(order.paymentDate ?? "") ||
-                        (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order)))
+                    ? isBillReturnedForCorrectionMilestoneComplete(order)
                     : isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped })
               : completedSet.has(milestone);
         const lockedValueFilled =
@@ -8701,6 +8826,13 @@ function getRemarkTime(value: string) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function getFormDescriptionWithUniqueCode(form: FormState) {
+  const uniqueCode = form.uniqueCode.trim();
+  const description = form.demandDescription.trim();
+  if (uniqueCode && description) return `${uniqueCode} — ${description}`;
+  return description || uniqueCode;
+}
+
 function exportTimelineReport(
   form: FormState,
   filledItems: TimelineItem[],
@@ -8709,7 +8841,7 @@ function exportTimelineReport(
   const details = [
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
-    { label: "Description", value: form.demandDescription },
+    { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
     { label: "Indentor", value: form.indentor },
   ];
   const timelineRows = filledItems.map((item, index) => {
@@ -8817,7 +8949,7 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
     { label: "Indentor", value: form.indentor },
-    { label: "Description", value: form.demandDescription },
+    { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
   ];
   void downloadBackendExport({
     format: "pdf",
@@ -9342,7 +9474,18 @@ function getSupplyOrderMilestoneProgress(
   orders: SupplyOrderDetail[],
   form: Pick<
     FormState,
-    "bg" | "ir" | "fileType" | "mode" | "biddingStageOver" | "tcec" | "cfaDate" | "cncApprovalDate"
+    | "bg"
+    | "ir"
+    | "fileType"
+    | "fileTypeGroup"
+    | "mode"
+    | "biddingStageOver"
+    | "tcec"
+    | "cfaDate"
+    | "cncApprovalDate"
+    | "demandCancelled"
+    | "gem"
+    | "gemBiddingMode"
   >,
   forceUse = shouldUseSupplyOrderMilestones(orders),
   mainCurrentMilestone = "",
@@ -9391,7 +9534,7 @@ function getSupplyOrderMilestoneProgress(
 
 function getDeliveryMilestoneProgress(
   orders: SupplyOrderDetail[],
-  form: Pick<FormState, "bg" | "ir" | "fileType">,
+  form: Pick<FormState, "bg" | "ir" | "fileType" | "fileTypeGroup">,
 ): MilestoneProgress | undefined {
   const rows = expandedFileSupplyOrders({ supplyOrders: orders } as FileRecord).filter(
     (order) => isCompleteDateValue(order.soDate ?? "") && !isYes(order.soCancelled),
@@ -9427,7 +9570,7 @@ function getDeliveryMilestoneProgress(
 function getProgressRowsForMilestone(
   orders: SupplyOrderDetail[],
   milestone: SupplyOrderMilestoneName,
-  form: Pick<FormState, "bg" | "ir" | "fileType">,
+  form: Pick<FormState, "bg" | "ir" | "fileType" | "fileTypeGroup">,
 ) {
   if (isStageDrivenMilestone(milestone)) {
     if ((milestone === "IR Preparation" || milestone === "IR Receipt") && isNo(form.ir)) return [];
@@ -9553,7 +9696,10 @@ function isSupplyOrderMilestoneDateComplete(
   options: { stageScoped?: boolean } = {},
 ) {
   if (milestone === "Delivery Period") {
-    return isCompleteDateValue(String((order.revisedDp ?? "") || (order.dpDate ?? "")));
+    return isDeliveryPeriodMilestoneDateComplete(order);
+  }
+  if (milestone === "Bill returned for correction") {
+    return isBillReturnedForCorrectionMilestoneComplete(order);
   }
   const dateKey = supplyOrderMilestoneDateKeys[milestone];
   if (!dateKey) return false;
@@ -9574,6 +9720,18 @@ function isSupplyOrderMilestoneDateComplete(
   return isCompleteDateValue(String(order[dateKey] ?? ""));
 }
 
+function isDeliveryPeriodMilestoneDateComplete(order: SupplyOrderDetail) {
+  if (isYes(order.stageDelivery ?? "")) {
+    const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
+    if (stageCount <= 0) return false;
+    const stages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
+    return stages.every((stage) =>
+      isCompleteDateValue(String((stage.revisedDp ?? "") || (stage.dpDate ?? ""))),
+    );
+  }
+  return isCompleteDateValue(String((order.revisedDp ?? "") || (order.dpDate ?? "")));
+}
+
 function getSupplyOrderMilestoneByName(milestone: string): SupplyOrderMilestoneName | undefined {
   return supplyOrderMilestoneNames.find(
     (item) => normalizeMilestoneName(item) === normalizeMilestoneName(milestone),
@@ -9583,7 +9741,7 @@ function getSupplyOrderMilestoneByName(milestone: string): SupplyOrderMilestoneN
 function getApplicableOrdersForMilestone(
   orders: SupplyOrderDetail[],
   milestone: SupplyOrderMilestoneName,
-  form: Pick<FormState, "bg" | "ir" | "fileType">,
+  form: Pick<FormState, "bg" | "ir" | "fileType" | "fileTypeGroup">,
 ) {
   if ((milestone === "PWB" || milestone === "PSB+PWB") && isNo(form.bg)) return [];
   if ((milestone === "IR Preparation" || milestone === "IR Receipt") && isNo(form.ir)) return [];
@@ -9628,11 +9786,7 @@ function isSupplyOrderMilestoneComplete(
     return isCompleteDateValue(order.billSentForPaymentDate ?? "") && !hasOpenBillReturn(order);
   }
   if (milestone === "Bill returned for correction") {
-    return (
-      hasBillReturnHistory(order) &&
-      (isCompleteDateValue(order.paymentDate ?? "") ||
-        (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order)))
-    );
+    return isBillReturnedForCorrectionMilestoneComplete(order);
   }
   if (milestone === "Payment") return isCompleteDateValue(order.paymentDate ?? "");
   return normalizeCompletedMilestones(order.completedMilestones).some(
@@ -9731,6 +9885,7 @@ function getSupplyOrderTabFieldLabel(
 }
 
 function dateLabelForSupplyOrderMilestone(milestone: SupplyOrderMilestoneName) {
+  if (milestone === "Bill returned for correction") return "resubmitted date";
   const dateKey = supplyOrderMilestoneDateKeys[milestone];
   if (!dateKey) return "date";
   const field = supplyOrderFields.find((item) => item.key === dateKey);
@@ -10349,7 +10504,10 @@ function cleanAdvancePaymentDetail(
 
 function cleanStageDeliveryRows(
   rows: StageDeliveryDetail[],
-  form?: Pick<FormState, "fileType" | "ir" | "valueCapitalSelected" | "valueRevenueSelected">,
+  form?: Pick<
+    FormState,
+    "fileType" | "fileTypeGroup" | "ir" | "valueCapitalSelected" | "valueRevenueSelected"
+  >,
   parentOrder?: SupplyOrderDetail,
 ) {
   const normalizedRows = rows.map((row) => applyStageDeliveryRules(row, form));
@@ -10498,7 +10656,20 @@ function resizeSupplyOrders(
   count: number,
   form?: Pick<
     FormState,
-    "bg" | "valueCapitalSelected" | "valueRevenueSelected" | "ir" | "fileType"
+    | "bg"
+    | "valueCapitalSelected"
+    | "valueRevenueSelected"
+    | "ir"
+    | "fileType"
+    | "fileTypeGroup"
+    | "mode"
+    | "biddingStageOver"
+    | "tcec"
+    | "cfaDate"
+    | "cncApprovalDate"
+    | "demandCancelled"
+    | "gem"
+    | "gemBiddingMode"
   >,
 ) {
   return Array.from({ length: count }, (_, index) => {
@@ -10799,7 +10970,23 @@ function applySupplyOrderRules(
   order: SupplyOrderDetail,
   form:
     | (Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected"> &
-        Partial<Pick<FormState, "bg" | "ir" | "fileType">>)
+        Partial<
+          Pick<
+            FormState,
+            | "bg"
+            | "ir"
+            | "fileType"
+            | "fileTypeGroup"
+            | "mode"
+            | "biddingStageOver"
+            | "tcec"
+            | "cfaDate"
+            | "cncApprovalDate"
+            | "demandCancelled"
+            | "gem"
+            | "gemBiddingMode"
+          >
+        >)
     | undefined,
 ) {
   let next: SupplyOrderDetail = { ...emptySupplyOrder, ...order };
@@ -10966,6 +11153,39 @@ function applySupplyOrderRules(
       ),
     };
   }
+  if (form && isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
+    next = {
+      ...next,
+      materialReceiptDate: "",
+      irPreparationDate: "",
+      irReceiptDate: "",
+      stageDeliveries: (next.stageDeliveries ?? []).map((stage) =>
+        applyStageDeliveryRules(
+          {
+            ...stage,
+            materialReceiptDate: "",
+            irPreparationDate: "",
+            irReceiptDate: "",
+          },
+          form,
+        ),
+      ),
+    };
+  } else if (form) {
+    next = {
+      ...next,
+      jobCompletionDate: "",
+      stageDeliveries: (next.stageDeliveries ?? []).map((stage) =>
+        applyStageDeliveryRules(
+          {
+            ...stage,
+            jobCompletionDate: "",
+          },
+          form,
+        ),
+      ),
+    };
+  }
   next = normalizeSupplyOrderMilestoneState(next, form);
   return next;
 }
@@ -10985,15 +11205,27 @@ function normalizeSupplyOrderMilestoneState(
           | "tcec"
           | "cfaDate"
           | "cncApprovalDate"
+          | "demandCancelled"
           | "gem"
           | "valueCapitalSelected"
           | "valueRevenueSelected"
+          | "gemBiddingMode"
         >
       >
     | undefined,
 ) {
-  const deliveryState = getDerivedDeliveryMilestoneState(order, form?.fileType, form?.ir);
-  const jobCompletionState = getDerivedJobCompletionMilestoneState(order, form?.fileType, form?.ir);
+  const deliveryState = getDerivedDeliveryMilestoneState(
+    order,
+    form?.fileType,
+    form?.ir,
+    form?.fileTypeGroup,
+  );
+  const jobCompletionState = getDerivedJobCompletionMilestoneState(
+    order,
+    form?.fileType,
+    form?.ir,
+    form?.fileTypeGroup,
+  );
   const applicable = getApplicableSupplyOrderMilestones(order, {
     bgDisabled: form ? isNo(form.bg) : false,
     irDisabled: form ? isNo(form.ir) : false,
@@ -11045,8 +11277,7 @@ function normalizeSupplyOrderMilestoneState(
     ...(isSupplyOrderTabComplete(order, form) && supplyOrderMilestone
       ? [supplyOrderMilestone]
       : []),
-    ...(isCompleteDateValue((order.revisedDp ?? "") || (order.dpDate ?? "")) &&
-    deliveryPeriodMilestone
+    ...(isDeliveryPeriodMilestoneDateComplete(order) && deliveryPeriodMilestone
       ? [deliveryPeriodMilestone]
       : []),
     ...(isCompleteDateValue(order.psbBgReceivedDate ?? "") && psbMilestone ? [psbMilestone] : []),
@@ -11071,10 +11302,7 @@ function normalizeSupplyOrderMilestoneState(
     billSentForPaymentMilestone
       ? [billSentForPaymentMilestone]
       : []),
-    ...(hasBillReturnHistory(order) &&
-    (isCompleteDateValue(order.paymentDate ?? "") ||
-      (hasResubmittedBillReturn(order) && !hasOpenBillReturn(order))) &&
-    billReturnedForCorrectionMilestone
+    ...(isBillReturnedForCorrectionMilestoneComplete(order) && billReturnedForCorrectionMilestone
       ? [billReturnedForCorrectionMilestone]
       : []),
     ...(isCompleteDateValue(order.paymentDate ?? "") && paymentMilestone ? [paymentMilestone] : []),
@@ -11362,9 +11590,19 @@ function getProportionalStageAmounts(value: string | undefined, stageCount: numb
 
 function applyStageDeliveryRules(
   stage: StageDeliveryDetail,
-  form?: Partial<Pick<FormState, "fileType">>,
+  form?: Partial<Pick<FormState, "fileType" | "fileTypeGroup" | "ir">>,
 ) {
   let next: StageDeliveryDetail = { ...emptyStageDelivery, ...stage };
+  if (form && isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
+    next = {
+      ...next,
+      materialReceiptDate: "",
+      irPreparationDate: "",
+      irReceiptDate: "",
+    };
+  } else if (form) {
+    next = { ...next, jobCompletionDate: "" };
+  }
   if (isDpExtensionInactiveFileType(form?.fileType)) {
     next = {
       ...next,
@@ -11562,8 +11800,19 @@ function isContractNoInspectionPaymentDue(
 }
 
 function isFinancialSanctionReachedForForm(
-  form: Pick<FormState, "mode" | "biddingStageOver" | "tcec" | "cfaDate" | "cncApprovalDate">,
+  form: Pick<
+    FormState,
+    | "mode"
+    | "fileType"
+    | "biddingStageOver"
+    | "tcec"
+    | "cfaDate"
+    | "cncApprovalDate"
+    | "demandCancelled"
+  > &
+    Partial<Pick<FormState, "gem" | "gemBiddingMode">>,
 ) {
+  if (isYes(form.demandCancelled)) return false;
   if (isYes(form.tcec)) return hasFilledValue(form.cncApprovalDate);
   return isBiddingApplicableForFile(form)
     ? isYes(form.biddingStageOver)

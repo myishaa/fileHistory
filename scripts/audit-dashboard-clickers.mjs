@@ -5,9 +5,12 @@ const username = process.env.AUDIT_USERNAME ?? "ovais";
 const password = process.env.AUDIT_PASSWORD ?? "ovais123";
 const maxPages = Number.parseInt(process.env.AUDIT_MAX_PAGES ?? "20", 10);
 const includeNotes = process.env.AUDIT_INCLUDE_NOTES === "1";
+const configuredFileCategories = process.env.AUDIT_FILE_CATEGORIES;
 
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
+const fixedFileCategoryKeys = ["goodsServices", "amc", "mpc", "cars", "om"];
+const defaultFileTypeLabels = new Set(["goods & services", "amc", "mpc", "cars", "o&m"]);
 
 const strictFileLevelFilters = new Set([
   "totalFiles",
@@ -62,6 +65,7 @@ function getLiveStatusDashboardFilter(milestoneName) {
 }
 
 function isFileVisibleForSelectedYear(file) {
+  if (selectedYear === "__all_files__") return true;
   if (
     !selectedYear ||
     selectedYear === allActiveFilesYear ||
@@ -100,6 +104,20 @@ async function login() {
   const match = cookie.match(/recordkeeper_session=([^;]+)/);
   if (!match) throw new Error("login did not return recordkeeper_session cookie");
   return decodeURIComponent(match[1]);
+}
+
+function getFileTypeCategoryKey(fileType) {
+  return `fileType:${encodeURIComponent(String(fileType ?? "").trim())}`;
+}
+
+function getAllFileCategoryKeys(fileTypes) {
+  return [
+    ...fixedFileCategoryKeys,
+    ...(fileTypes ?? [])
+      .map((fileType) => String(fileType ?? "").trim())
+      .filter((fileType) => fileType && !defaultFileTypeLabels.has(fileType.toLowerCase()))
+      .map(getFileTypeCategoryKey),
+  ];
 }
 
 function collectStatusCounters(summary) {
@@ -220,7 +238,7 @@ function collectStatusCounters(summary) {
         "Status-1",
         `${title} / At Previous Stage`,
         row.underProcess,
-        "milestonePending:financialSanction",
+        "statusSummary:Supply Order:At Previous Stage",
       );
       continue;
     }
@@ -427,13 +445,14 @@ function collectStatus3Counters(summary) {
   return counters;
 }
 
-async function searchResult(filter, token, division) {
+async function searchResult(filter, token, division, fileCategories) {
   const params = new URLSearchParams({
     selectedYear,
     dashboardFilter: filter,
     page: "1",
     pageSize: "500",
   });
+  if (fileCategories) params.set("fileCategories", fileCategories);
   if (fileYear && fileYear !== "all") params.set("fileYear", fileYear);
   if (division && division !== "all") params.set("divisionFilter", division);
   const result = await api(`/api/files/search?${params.toString()}`, token);
@@ -453,22 +472,30 @@ async function searchResult(filter, token, division) {
 async function main() {
   const token = await login();
   try {
+    const { settings } = await api("/api/settings", token);
+    const fileCategories =
+      configuredFileCategories === "__omit__"
+        ? undefined
+        : configuredFileCategories ??
+      getAllFileCategoryKeys(Array.isArray(settings?.fileTypes) ? settings.fileTypes : []).join(
+        ",",
+      );
     const params = new URLSearchParams({
       version: "5",
       selectedYear,
       division: "all",
-      analyticsDivision: "all",
     });
+    if (fileCategories !== undefined) params.set("fileCategories", fileCategories);
     if (fileYear && fileYear !== "all") params.set("fileYear", fileYear);
     const { summary } = await api(`/api/dashboard/summary?${params.toString()}`, token);
     const status3Params = new URLSearchParams({
       selectedYear,
       division: "all",
-      fileCategories: "goodsServices,amc,mpc,cars,om",
       delayDays: "5",
       expectedCashOutgoDays: "10",
       delayMilestone: "all",
     });
+    if (fileCategories !== undefined) status3Params.set("fileCategories", fileCategories);
     if (fileYear && fileYear !== "all") status3Params.set("fileYear", fileYear);
     const status3Payload = await api(`/api/reports/summary?${status3Params.toString()}`, token);
     const counters = [
@@ -480,7 +507,7 @@ async function main() {
     const issues = [];
     const notes = [];
     for (const counter of counters) {
-      const result = await searchResult(counter.filter, token, counter.division);
+      const result = await searchResult(counter.filter, token, counter.division, fileCategories);
       const yearLeaks = result.files
         .filter((file) => !isFileVisibleForSelectedYear(file))
         .map((file) => file.uniqueCode ?? file.fileNo ?? file.id)

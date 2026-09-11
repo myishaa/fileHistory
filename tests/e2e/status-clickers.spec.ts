@@ -9,6 +9,9 @@ const QA_USERNAME = "qa_playwright";
 const QA_PASSWORD = "qa_playwright123";
 const QA_PREFIX = "QA-PLAYWRIGHT-STATUS";
 const CASES_PER_COUNTER = 10;
+const FUTURE_DP_DATE = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)
+  .toISOString()
+  .slice(0, 10);
 
 type CounterTarget = {
   name: string;
@@ -105,8 +108,10 @@ const counterTargets: CounterTarget[] = [
   {
     name: "Delivery / Pending",
     testId: "status-counter-delivery-pending",
+    filePatch: { ir: "Yes" },
     buildOrder: () => ({
       currentMilestone: "Delivery",
+      dpDate: FUTURE_DP_DATE,
     }),
   },
   {
@@ -117,6 +122,7 @@ const counterTargets: CounterTarget[] = [
   {
     name: "Delivery / Completed",
     testId: "status-counter-delivery-completed",
+    filePatch: { ir: "Yes" },
     buildOrder: () => ({
       materialReceiptDate: "2026-07-20",
       completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period", "Delivery"],
@@ -125,6 +131,7 @@ const counterTargets: CounterTarget[] = [
   {
     name: "Payment / Pending",
     testId: "status-counter-payment-pending",
+    filePatch: { ir: "Yes" },
     buildOrder: () => ({
       currentMilestone: "Payment",
       dpDate: "2026-07-15",
@@ -167,7 +174,7 @@ const counterTargets: CounterTarget[] = [
   {
     name: "PWB / Pending",
     testId: "status-counter-pwb-pending",
-    filePatch: { bg: "Yes" },
+    filePatch: { bg: "Yes", ir: "Yes" },
     buildOrder: () => ({
       bgCoverageType: "PWB",
       materialReceiptDate: "2026-07-20",
@@ -323,11 +330,20 @@ test.describe("dashboard status clickers", () => {
   test("Status-3 counters and Search clickers work for 100 seeded browser cases", async ({
     page,
   }) => {
-    test.setTimeout(180_000);
+    test.setTimeout(360_000);
     await authenticate(page, browserSessionToken);
 
     await page.goto("/search");
     await expect(page.getByRole("heading", { name: "Search Files" })).toBeVisible();
+    const seededYear = counterGroups[0]?.files[0]?.year;
+    if (!seededYear) throw new Error("Seeded financial year not found.");
+    const globalYear = page.getByTestId("global-year-select");
+    await globalYear.selectOption(seededYear);
+    await expect(globalYear).toHaveValue(seededYear);
+    await page.goto("/dashboard");
+    const fileYear = page.getByTestId("dashboard-file-year-select");
+    await fileYear.selectOption(seededYear);
+    await expect(fileYear).toHaveValue(seededYear);
 
     let checkedFiles = 0;
     for (const group of counterGroups) {

@@ -17,6 +17,7 @@ import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
 import {
   addTrustedIp,
   archiveIpAttempt,
+  deleteArchivedIpAttempt,
   getIpAccessConfig,
   getRequestIp,
   type IpAccessMode,
@@ -40,6 +41,33 @@ const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const ipAccessModes = new Set<IpAccessMode>(["off", "notify", "restrict"]);
+const defaultAddEditRibbonFields = ["imms", "indentor"];
+const allowedAddEditRibbonFields = new Set([
+  "imms",
+  "indentor",
+  "year",
+  "uniqueCode",
+  "division",
+  "fileTypeGroup",
+  "mode",
+  "demandValue",
+  "valueCapital",
+  "valueRevenue",
+  "latestSupplyOrderNo",
+  "latestFirmName",
+]);
+
+async function verifyDeletionPassword(value: unknown) {
+  const deletionPassword = toDbText(value) ?? "";
+  if (!deletionPassword) throw new HttpError(400, "Deletion password is required.");
+  const result = await pool.query<{ deletion_password: string | null }>(
+    "select deletion_password from app_settings where id = true",
+  );
+  const expectedPassword = result.rows[0]?.deletion_password ?? "";
+  if (!expectedPassword || deletionPassword !== expectedPassword) {
+    throw new HttpError(403, "Invalid deletion password.");
+  }
+}
 
 type SettingsRow = {
   financial_year: string;
@@ -71,6 +99,7 @@ type SettingsRow = {
 type UserUiPreferencesRow = {
   theme: AppTheme | null;
   theme_tint: AppThemeTint | null;
+  add_edit_ribbon_fields: unknown;
 };
 
 const defaultFirmRatingConfig: FirmRatingConfig = {
@@ -109,6 +138,30 @@ function normalizeYearLabel(value: unknown, field = "financialYear") {
     throw new HttpError(400, `${field} must be a valid financial year like 2026-27.`);
   }
   return label;
+}
+
+function readAddEditRibbonFields(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "addEditRibbonFields must be an array.");
+  }
+  const unique = readAddEditRibbonFieldCandidates(value);
+  if (unique.length !== 2) {
+    throw new HttpError(400, "Select two valid Add/Edit ribbon fields.");
+  }
+  return unique;
+}
+
+function normalizeAddEditRibbonFields(value: unknown) {
+  if (!Array.isArray(value)) return defaultAddEditRibbonFields;
+  const unique = readAddEditRibbonFieldCandidates(value);
+  return unique.length === 2 ? unique : defaultAddEditRibbonFields;
+}
+
+function readAddEditRibbonFieldCandidates(value: unknown[]) {
+  const normalized = value.filter(
+    (field): field is string => typeof field === "string" && allowedAddEditRibbonFields.has(field),
+  );
+  return Array.from(new Set(normalized)).slice(0, 2);
 }
 
 function isFinancialYearLabel(label: string) {
@@ -326,8 +379,12 @@ async function ensureUserUiPreferencesTable() {
        theme_tint text check (
          theme_tint in ('plain', 'yellow', 'green', 'blue', 'pink', 'lavender')
        ),
+       add_edit_ribbon_fields jsonb,
        updated_at timestamptz not null default now()
      )`,
+  );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists add_edit_ribbon_fields jsonb",
   );
 }
 
@@ -335,7 +392,7 @@ async function loadUserUiPreferences(userId: string) {
   await ensureUserUiPreferencesTable();
   return getCached(`settings:ui-preferences:${userId}`, cacheTtl.settingsMs, async () => {
     const result = await pool.query<UserUiPreferencesRow>(
-      "select theme, theme_tint from user_ui_preferences where user_id = $1",
+      "select theme, theme_tint, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
       [userId],
     );
     return result.rows[0];
@@ -437,6 +494,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     specialFileMarkers: normalizeSpecialFileMarkers(fromDbJsonArray(row.special_file_markers)),
     firmUniqueNoLabel: fromDbText(row.firm_unique_no_label) || "Firm Unique No.",
     firmRatingConfig: normalizeFirmRatingConfig(row.firm_rating_config),
+    addEditRibbonFields: normalizeAddEditRibbonFields(uiPreferences?.add_edit_ribbon_fields),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -823,18 +881,31 @@ async function replaceUserLiveStatusFields(ownerKey: string, fieldKeys: string[]
 
 async function replaceUserUiPreferences(
   userId: string,
-  preferences: { theme?: AppTheme; themeTint?: AppThemeTint },
+  preferences: {
+    theme?: AppTheme;
+    themeTint?: AppThemeTint;
+    addEditRibbonFields?: string[];
+  },
 ) {
   await ensureUserUiPreferencesTable();
   await pool.query(
-    `insert into user_ui_preferences (user_id, theme, theme_tint)
-     values ($1, $2, $3)
+    `insert into user_ui_preferences (user_id, theme, theme_tint, add_edit_ribbon_fields)
+     values ($1, $2, $3, $4::jsonb)
      on conflict (user_id)
      do update set
        theme = coalesce(excluded.theme, user_ui_preferences.theme),
        theme_tint = coalesce(excluded.theme_tint, user_ui_preferences.theme_tint),
+       add_edit_ribbon_fields = coalesce(
+         excluded.add_edit_ribbon_fields,
+         user_ui_preferences.add_edit_ribbon_fields
+       ),
        updated_at = now()`,
-    [userId, preferences.theme ?? null, preferences.themeTint ?? null],
+    [
+      userId,
+      preferences.theme ?? null,
+      preferences.themeTint ?? null,
+      preferences.addEditRibbonFields ? JSON.stringify(preferences.addEditRibbonFields) : null,
+    ],
   );
 }
 
@@ -950,6 +1021,19 @@ settingsRouter.post(
   }),
 );
 
+settingsRouter.delete(
+  "/ip-access/attempts/:id",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const id = requireParam(request.params.id, "id");
+    const body = requireObjectBody(request.body);
+    await verifyDeletionPassword(body.deletionPassword);
+    await deleteArchivedIpAttempt(id);
+    response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
+  }),
+);
+
 settingsRouter.put(
   "/report-preferences/:reportKey",
   asyncHandler(async (request, response) => {
@@ -973,6 +1057,7 @@ settingsRouter.patch(
       "tableFieldPresets",
       "liveStatusLockedFields",
       "mmgSummaryFields",
+      "addEditRibbonFields",
     ]);
     const canUpdateTableFieldPresets =
       !("tableFieldPresets" in body) ||
@@ -1029,10 +1114,13 @@ settingsRouter.patch(
     }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
-    if ("theme" in body || "themeTint" in body) {
+    if ("theme" in body || "themeTint" in body || "addEditRibbonFields" in body) {
       await replaceUserUiPreferences(user.id, {
         ...("theme" in body ? { theme: readTheme(body.theme) } : {}),
         ...("themeTint" in body ? { themeTint: readThemeTint(body.themeTint) } : {}),
+        ...("addEditRibbonFields" in body
+          ? { addEditRibbonFields: readAddEditRibbonFields(body.addEditRibbonFields) }
+          : {}),
       });
     }
     if ("deletionPassword" in body)
@@ -1166,6 +1254,7 @@ settingsRouter.patch(
       !("mmgSummaryFields" in body) &&
       !("theme" in body) &&
       !("themeTint" in body) &&
+      !("addEditRibbonFields" in body) &&
       !("bgReceiptDelayDays" in body) &&
       !("specialFileMarkers" in body) &&
       !("firmUniqueNoLabel" in body)

@@ -1,5 +1,9 @@
 import type { FileRecord, SupplyOrderDetail } from "../types.js";
-import { isContractFileType, isDeliveryInspectionApplicableByGroup } from "./file-type-groups.js";
+import {
+  isBiddingApplicableForFile,
+  isContractFileType,
+  isDeliveryInspectionApplicableByGroup,
+} from "./file-type-groups.js";
 
 type SupplyOrderEntry = {
   order: SupplyOrderDetail;
@@ -440,7 +444,10 @@ function isJobCompletionWorkflow(file: FileRecord) {
 }
 
 function isFinancialSanctionReached(file: FileRecord) {
-  return hasFilledString(file.cfaDate) || hasFilledString(file.cncApprovalDate);
+  return (
+    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
+    (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
+  );
 }
 
 function isFinancialSanctionCompletedOrder(order: SupplyOrderDetail) {
@@ -618,6 +625,7 @@ function hasBillingTrackingStarted(order: SupplyOrderDetail) {
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
 }
 

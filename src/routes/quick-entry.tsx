@@ -919,6 +919,7 @@ function getEffectiveQuickEntryOrderMilestone(file: FileRecord, order: { [key: s
 
 function isFinancialSanctionReached(file: FileRecord) {
   return (
+    !isYes(file.demandCancelled) &&
     (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasDate(file.cfaDate)) &&
     (!isYes(file.tcec) || hasDate(file.cncApprovalDate))
   );

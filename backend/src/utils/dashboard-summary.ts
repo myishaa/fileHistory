@@ -52,6 +52,28 @@ type FinanceCarryForwardRow = {
   total: number;
   filter: string;
 };
+type FinancePaymentLiabilityEntry =
+  | {
+      kind: "main";
+      file: FileRecord;
+      order: SupplyOrderDetail;
+      sourceDate?: string;
+      paymentDate?: string;
+      capital: number;
+      revenue: number;
+      pending: boolean;
+    }
+  | {
+      kind: "supplementary";
+      file: FileRecord;
+      order: SupplyOrderDetail;
+      bill: SupplementaryBillDetail;
+      sourceDate?: string;
+      paymentDate?: string;
+      capital: number;
+      revenue: number;
+      pending: boolean;
+    };
 
 const defaultManualMilestones = [
   "Scrutiny",
@@ -291,19 +313,19 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
 
 export function buildDashboardSummary({
   files,
+  firmHistoryFiles,
   divisions,
   settings,
   division = "all",
-  analyticsDivision = "all",
   liveMilestones,
   financeFiles,
 }: {
   files: FileRecord[];
+  firmHistoryFiles?: FileRecord[];
   financeFiles?: FileRecord[];
   divisions: Division[];
   settings: AppSettings;
   division?: string;
-  analyticsDivision?: string;
   liveMilestones?: string[];
 }) {
   const activeDivision =
@@ -311,6 +333,7 @@ export function buildDashboardSummary({
   const dashboardFiles =
     activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision);
   const activeDashboardFiles = dashboardFiles.filter((file) => !isCancelledFile(file));
+  const processHistoryDashboardFiles = dashboardFiles.filter((file) => !isYes(file.demandCancelled));
   const rawFinanceFiles = financeFiles ?? files;
   const dashboardFinanceFiles =
     activeDivision === "all"
@@ -321,32 +344,14 @@ export function buildDashboardSummary({
   );
   const dashboardDivisions =
     activeDivision === "all" ? divisions : divisions.filter((item) => item.name === activeDivision);
-  const activeAnalyticsDivision =
-    analyticsDivision === "all" || divisions.some((item) => item.name === analyticsDivision)
-      ? analyticsDivision
-      : "all";
-  const filteredAnalyticsFiles =
-    activeAnalyticsDivision === "all"
-      ? activeDashboardFiles
-      : files
-          .filter((file) => file.division === activeAnalyticsDivision)
-          .filter((file) => !isCancelledFile(file));
-  const filteredAnalyticsHistoryFiles =
-    activeAnalyticsDivision === "all"
-      ? dashboardFiles
-      : files.filter((file) => file.division === activeAnalyticsDivision);
-  const filteredAnalyticsDivisions =
-    activeAnalyticsDivision === "all"
-      ? dashboardDivisions
-      : divisions.filter((item) => item.name === activeAnalyticsDivision);
+  const rawFirmHistoryFiles = firmHistoryFiles ?? files;
+  const dashboardFirmHistoryFiles =
+    activeDivision === "all"
+      ? rawFirmHistoryFiles
+      : rawFirmHistoryFiles.filter((file) => file.division === activeDivision);
   const analyticsSummary = getAnalyticsSummary(
     activeDashboardFiles,
     dashboardDivisions,
-    settings.valueThresholdLevels,
-  );
-  const divisionFilteredAnalyticsSummary = getAnalyticsSummary(
-    filteredAnalyticsFiles,
-    filteredAnalyticsDivisions,
     settings.valueThresholdLevels,
   );
   const manualMilestoneFlow = getManualMilestoneFlow(
@@ -367,12 +372,11 @@ export function buildDashboardSummary({
 
   return {
     activeDivision,
-    activeAnalyticsDivision,
     valueThresholdLevels: settings.valueThresholdLevels,
     dashboardFileCount: activeDashboardFiles.length,
     dashboardDivisions,
-    modeCounts: getModeCounts(activeDashboardFiles, settings.modes),
-    gemBiddingModeCounts: getGemBiddingModeCounts(activeDashboardFiles),
+    modeCounts: getModeCounts(processHistoryDashboardFiles, settings.modes),
+    gemBiddingModeCounts: getGemBiddingModeCounts(processHistoryDashboardFiles),
     topSummaryStats: getAttributeSummaryStats(activeDashboardFiles),
     fileTypeStats: getFileTypeSummaryStats(activeDashboardFiles, settings.fileTypes),
     firmTypeStats: getFirmTypeSummaryStats(activeDashboardFiles, settings.firmTypes),
@@ -388,11 +392,13 @@ export function buildDashboardSummary({
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
     analytics: {
       ...analyticsSummary,
+      divisionTurnaroundRanking: getDivisionTurnaroundRanking(processHistoryDashboardFiles),
+      biddingModeMix: getBiddingModeMix(processHistoryDashboardFiles),
+      topFirmSupplyOrders: getTopFirmSupplyOrders(dashboardFirmHistoryFiles),
+      firmAnalysis: getFirmAnalysisRows(dashboardFirmHistoryFiles),
       monthWiseSupplyOrder: getMonthWiseSupplyOrder(dashboardFiles),
-    },
-    divisionFilteredAnalytics: {
-      ...divisionFilteredAnalyticsSummary,
-      monthWiseSupplyOrder: getMonthWiseSupplyOrder(filteredAnalyticsHistoryFiles),
+      tcecStatus: getTcecStatusSummary(dashboardFiles),
+      cncSummary: getCncSummary(dashboardFiles),
     },
     financeTotals,
     financeFirmTypeDistributions: {
@@ -425,16 +431,15 @@ function getFinanceTotals(
 ) {
   const financeYear = getFinancialYearDateRange(selectedYear) ? selectedYear : currentFinancialYear;
   const financeYearRange = getFinancialYearDateRange(financeYear);
-  const actualPaymentEntries = effectivePaymentEntries(financeFiles).filter(
-    ({ file, order }) => !isSupplyOrderCancelled(file, order),
+  const paymentLiabilityEntries = getFinancePaymentLiabilityEntries(financeFiles);
+  const actualPaymentEntries = paymentLiabilityEntries.filter((entry) =>
+    hasFilledString(entry.paymentDate),
   );
   const paymentInYearEntries = financeYearRange
-    ? actualPaymentEntries.filter(({ order }) =>
-        isDateWithinRange(order.paymentDate, financeYearRange),
-      )
+    ? actualPaymentEntries.filter((entry) => isDateWithinRange(entry.paymentDate, financeYearRange))
     : actualPaymentEntries;
   const sameYearPaidEntries = financeYearRange
-    ? paymentInYearEntries.filter(({ order }) => isDateWithinRange(order.soDate, financeYearRange))
+    ? paymentInYearEntries.filter((entry) => isDateWithinRange(entry.sourceDate, financeYearRange))
     : [];
   const carryForwardRows = getFinanceCarryForwardRows(financeFiles, financeYear);
   return {
@@ -491,19 +496,19 @@ function getFinanceTotals(
       0,
     ),
     paidCapital: paymentInYearEntries.reduce(
-      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentCapital, file) ?? 0),
+      (sum, entry) => sum + entry.capital,
       0,
     ),
     paidRevenue: paymentInYearEntries.reduce(
-      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentRevenue, file) ?? 0),
+      (sum, entry) => sum + entry.revenue,
       0,
     ),
     sameYearPaidCapital: sameYearPaidEntries.reduce(
-      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentCapital, file) ?? 0),
+      (sum, entry) => sum + entry.capital,
       0,
     ),
     sameYearPaidRevenue: sameYearPaidEntries.reduce(
-      (sum, { file, order }) => sum + (getInrAmount(order.actualPaymentRevenue, file) ?? 0),
+      (sum, entry) => sum + entry.revenue,
       0,
     ),
     advanceCapital: advancePaymentEntries(files).reduce(
@@ -554,16 +559,15 @@ function getFinanceCarryForwardRows(files: FileRecord[], selectedYear: string | 
     Omit<FinanceCarryForwardRow, "year" | "filter">
   >();
 
-  for (const { file, order } of effectivePaymentEntries(files)) {
-    if (isSupplyOrderCancelled(file, order)) continue;
-    const sourceYear = getFinancialYearForDate(order.soDate);
+  for (const entry of getFinancePaymentLiabilityEntries(files)) {
+    const sourceYear = getFinancialYearForDate(entry.sourceDate);
     if (!sourceYear) continue;
-    const paymentDate = order.paymentDate;
+    const paymentDate = entry.paymentDate;
     const paidInSelectedYear = isDateWithinRange(paymentDate, range);
     const unpaidAtSelectedYearEnd =
       !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
-    const capital = getFinancePaymentCapital(file, order);
-    const revenue = getFinancePaymentRevenue(file, order);
+    const capital = entry.capital;
+    const revenue = entry.revenue;
 
     if (sourceYear === financialYear && unpaidAtSelectedYearEnd) {
       addFinanceCarryForward(carryForward, sourceYear, capital, revenue);
@@ -762,7 +766,7 @@ function isFileTypeMatch(file: FileRecord, fileType: string) {
 function getFirmTypeSummaryStats(files: FileRecord[], firmTypes: string[] | undefined) {
   return {
     label: "Firm Type",
-    value: getConfiguredFirmTypes(firmTypes).map((firmType) => ({
+    value: getConfiguredFirmTypes(firmTypes, files).map((firmType) => ({
       label: firmType,
       value: files.filter((file) =>
         normalizedFileSupplyOrders(file).some((order) => isFirmTypeMatch(order, firmType)),
@@ -773,10 +777,13 @@ function getFirmTypeSummaryStats(files: FileRecord[], firmTypes: string[] | unde
   };
 }
 
-function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
+function getConfiguredFirmTypes(firmTypes: string[] | undefined, files: FileRecord[] = []) {
   const defaults = ["MSE", "MSE (Women)", "Non-MSE"];
   const seen = new Set<string>();
-  return (firmTypes?.length ? firmTypes : defaults)
+  const existingFirmTypes = files.flatMap((file) =>
+    normalizedFileSupplyOrders(file).map(getEffectiveFirmType),
+  );
+  return [...(firmTypes?.length ? firmTypes : defaults), ...existingFirmTypes]
     .map((firmType) => firmType.trim())
     .filter((firmType) => {
       if (!firmType) return false;
@@ -789,10 +796,7 @@ function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
 
 function isFirmTypeMatch(order: SupplyOrderDetail, firmType: string) {
   const expected = firmType.trim().toUpperCase();
-  return (
-    order.firmType?.trim().toUpperCase() === expected ||
-    order.firmTypeOther?.trim().toUpperCase() === expected
-  );
+  return getEffectiveFirmType(order).toUpperCase() === expected;
 }
 
 function getMiscellaneousCounts(files: FileRecord[]) {
@@ -1869,10 +1873,10 @@ function getTcecStageStatus(files: FileRecord[], stage: TcecStatusStage) {
     }
   >();
   files.forEach((file) => {
-    const committee = getTcecCommittee(file, stage);
-    if (!committee) return;
     const minutesDate = getTcecMinutesDate(file, stage);
     const meetingDate = getTcecMeetingDate(file, stage);
+    if (!hasFilledString(meetingDate) && !hasFilledString(minutesDate)) return;
+    const committee = getTcecCommittee(file, stage) || "Unassigned committee";
     const signed = hasFilledString(minutesDate);
     const committeeCurrent = committeeRows.get(committee) ?? {
       reviewed: 0,
@@ -1992,6 +1996,7 @@ function getDivisionValueRanking(files: FileRecord[], divisions: Division[]) {
 function getDivisionTurnaroundRanking(files: FileRecord[]) {
   const durations = new Map<string, number[]>();
   files.forEach((file) => {
+    if (isYes(file.demandCancelled)) return;
     const days = getDayDifference(file.receivedDate, getFirstSoDate(file));
     if (days === undefined || days < 0) return;
     const name = getAnalyticsName(file.division, "Unassigned");
@@ -2010,7 +2015,6 @@ function getTopFirmSupplyOrders(files: FileRecord[]) {
   const totals = new Map<string, number>();
   files.forEach((file) => {
     fileSupplyOrders(file).forEach((order) => {
-      if (isSupplyOrderCancelled(file, order)) return;
       const name = getAnalyticsName(order.firm, "Unassigned firm");
       const value = getSupplyOrderTotalValue(file, order);
       if (value <= 0) return;
@@ -2129,14 +2133,15 @@ function getSupplyOrderValueDistributionByFirmType(
   configuredFirmTypes: string[] | undefined,
 ) {
   const totals = new Map<string, number>();
+  const configured = getConfiguredFirmTypes(configuredFirmTypes);
   effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
     if (isSupplyOrderCancelled(file, order)) return;
     const value = getSupplyOrderTotalValue(file, order);
     if (value <= 0) return;
-    const name = getFirmTypeDistributionName(order, configuredFirmTypes);
+    const name = getFirmTypeDistributionName(order, configured);
     totals.set(name, (totals.get(name) ?? 0) + value);
   });
-  return mapDistributionEntriesToRows(totals);
+  return mapDistributionEntriesToRows(totals, configured);
 }
 
 function getActualPaymentDistributionByFirmType(
@@ -2144,16 +2149,15 @@ function getActualPaymentDistributionByFirmType(
   configuredFirmTypes: string[] | undefined,
 ) {
   const totals = new Map<string, number>();
-  effectivePaymentEntries(files).forEach(({ file, order }) => {
-    if (isSupplyOrderCancelled(file, order)) return;
-    const value =
-      (getInrAmount(order.actualPaymentCapital, file) ?? 0) +
-      (getInrAmount(order.actualPaymentRevenue, file) ?? 0);
+  const configured = getConfiguredFirmTypes(configuredFirmTypes);
+  getFinancePaymentLiabilityEntries(files).forEach((entry) => {
+    if (!hasFilledString(entry.paymentDate)) return;
+    const value = entry.capital + entry.revenue;
     if (value <= 0) return;
-    const name = getFirmTypeDistributionName(order, configuredFirmTypes);
+    const name = getFirmTypeDistributionName(entry.order, configured);
     totals.set(name, (totals.get(name) ?? 0) + value);
   });
-  return mapDistributionEntriesToRows(totals);
+  return mapDistributionEntriesToRows(totals, configured);
 }
 
 function getTopIndentorsByFiles(files: FileRecord[]) {
@@ -2178,6 +2182,7 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
   return milestoneClearingDefinitions
     .map((definition, index) => {
       const durations = getMilestoneClearingDurationRows(files, definition);
+      const fileIds = Array.from(new Set(durations.map((row) => row.fileId)));
       const stats = getDurationStats(
         durations.map((row) => row.stageDays),
         durations.map((row) => row.cumulativeDays),
@@ -2185,6 +2190,8 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
       return {
         name: definition.name,
         ...stats,
+        sampleSize: fileIds.length,
+        fileIds: fileIds.join(","),
         sortOrder: index,
       };
     })
@@ -2192,7 +2199,7 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
     .sort((a, b) => b.averageDays - a.averageDays);
 }
 
-type MilestoneClearingDurationRow = { stageDays: number; cumulativeDays: number };
+type MilestoneClearingDurationRow = { fileId: string; stageDays: number; cumulativeDays: number };
 
 function getMilestoneClearingDurationRows(
   files: FileRecord[],
@@ -2359,7 +2366,7 @@ function getMilestoneClearingDurationRow(
   ) {
     return undefined;
   }
-  return { stageDays, cumulativeDays };
+  return { fileId: file.id, stageDays, cumulativeDays };
 }
 
 function isMilestoneClearingDefinitionApplicable(
@@ -2504,6 +2511,7 @@ function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetai
 function getBiddingModeMix(files: FileRecord[]) {
   const counts = new Map<string, number>();
   files.forEach((file) => {
+    if (isYes(file.demandCancelled)) return;
     const name = getAnalyticsName(file.mode?.trim().toUpperCase(), "Unassigned");
     counts.set(name, (counts.get(name) ?? 0) + 1);
   });
@@ -2715,12 +2723,16 @@ function getRiskRowCount(file: FileRecord) {
 
 function getPaymentPendingRowCount(file: FileRecord) {
   if (isYes(file.demandCancelled)) return 0;
-  return normalizedFilePaymentOrders(file).filter(
+  return normalizedFilePaymentOrders(file)
+    .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
+    .some(
     (order) =>
       isPaymentOrderActive(file, order) &&
       hasPaymentWorkflowStarted(file, order) &&
       !hasFilledString(order.paymentDate),
-  ).length;
+  )
+    ? 1
+    : 0;
 }
 
 const milestoneClearingDefinitions = [
@@ -3425,6 +3437,75 @@ function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
   );
 }
 
+function getFinancePaymentLiabilityEntries(files: FileRecord[]): FinancePaymentLiabilityEntry[] {
+  return files.flatMap((file) => {
+    if (isYes(file.demandCancelled)) return [];
+    return rawSupplyOrders(file).flatMap((baseOrder) => {
+      if (isSupplyOrderCancelled(file, baseOrder)) return [];
+      const mainEntries = normalizedFilePaymentOrders({ ...file, supplyOrders: [baseOrder] })
+        .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
+        .filter((order) => isPaymentOrderActive(file, order))
+        .map(
+          (order): FinancePaymentLiabilityEntry => ({
+            kind: "main",
+            file,
+            order,
+            sourceDate: order.soDate || baseOrder.soDate,
+            paymentDate: order.paymentDate,
+            capital: getFinancePaymentCapital(file, order),
+            revenue: getFinancePaymentRevenue(file, order),
+            pending: hasPaymentWorkflowStarted(file, order) && !hasFilledString(order.paymentDate),
+          }),
+        );
+      const supplementaryEntries = getSupplementaryBills(baseOrder)
+        .filter((bill) => isSupplementaryPaymentRelevant(bill))
+        .map(
+          (bill): FinancePaymentLiabilityEntry => ({
+            kind: "supplementary",
+            file,
+            order: baseOrder,
+            bill,
+            sourceDate: baseOrder.soDate,
+            paymentDate: bill.paymentDate,
+            capital: getSupplementaryFinancePaymentCapital(file, bill),
+            revenue: getSupplementaryFinancePaymentRevenue(file, bill),
+            pending: isSupplementaryPaymentPending(bill),
+          }),
+        );
+      return [...mainEntries, ...supplementaryEntries];
+    });
+  });
+}
+
+function isSupplementaryPaymentRelevant(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) ||
+    hasFilledString(bill.paymentDate) ||
+    hasSupplementaryBillReturnHistory(bill)
+  );
+}
+
+function isSupplementaryPaymentPending(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    (isSupplementaryBillSubmitted(bill) ||
+      isSupplementaryBillReturned(bill) ||
+      isSupplementaryBillResubmitted(bill))
+  );
+}
+
+function getSupplementaryFinancePaymentCapital(file: FileRecord, bill: SupplementaryBillDetail) {
+  return (
+    getInrAmount(bill.actualPaymentCapital, file) ?? getInrAmount(bill.billAmountCapital, file) ?? 0
+  );
+}
+
+function getSupplementaryFinancePaymentRevenue(file: FileRecord, bill: SupplementaryBillDetail) {
+  return (
+    getInrAmount(bill.actualPaymentRevenue, file) ?? getInrAmount(bill.billAmountRevenue, file) ?? 0
+  );
+}
+
 function getFinancialYearDateRange(financialYear: string | undefined) {
   const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
   if (!match) return undefined;
@@ -3462,9 +3543,13 @@ function mapEntriesToSortedRows<T extends "count" | "value">(values: Map<string,
     .sort((a, b) => b[key] - a[key]);
 }
 
-function mapDistributionEntriesToRows(values: Map<string, number>) {
-  const total = Array.from(values.values()).reduce((sum, value) => sum + value, 0);
-  return Array.from(values.entries())
+function mapDistributionEntriesToRows(values: Map<string, number>, seedNames: string[] = []) {
+  const seededValues = new Map(values);
+  seedNames.forEach((name) => {
+    if (!seededValues.has(name)) seededValues.set(name, 0);
+  });
+  const total = Array.from(seededValues.values()).reduce((sum, value) => sum + value, 0);
+  return Array.from(seededValues.entries())
     .map(([name, value]) => ({
       name,
       value: Math.round(value),
@@ -3475,15 +3560,21 @@ function mapDistributionEntriesToRows(values: Map<string, number>) {
 
 function getFirmTypeDistributionName(
   order: SupplyOrderDetail,
-  configuredFirmTypes: string[] | undefined,
+  configuredFirmTypes: string[],
 ) {
-  const configured = getConfiguredFirmTypes(configuredFirmTypes);
-  const raw = order.firmTypeOther?.trim() || order.firmType?.trim() || "";
+  const raw = getEffectiveFirmType(order);
   if (!raw) return "Unassigned firm type";
-  const configuredMatch = configured.find(
+  const configuredMatch = configuredFirmTypes.find(
     (firmType) => firmType.toLowerCase() === raw.toLowerCase(),
   );
   return configuredMatch ?? raw;
+}
+
+function getEffectiveFirmType(order: SupplyOrderDetail) {
+  const firmType = order.firmType?.trim() || "";
+  const firmTypeOther = order.firmTypeOther?.trim() || "";
+  if (firmType.toUpperCase() === "OTHER") return firmTypeOther || firmType;
+  return firmType || firmTypeOther;
 }
 
 function getRoundedAverage(values: number[]) {
@@ -3529,7 +3620,6 @@ function countPreBidMeetingFiles(
 }
 
 function isPreBidMeetingFile(file: FileRecord, refloat: boolean, state: "due" | "completed") {
-  if (isCancelledFile(file)) return false;
   if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
@@ -3579,13 +3669,7 @@ function getEarliestSupplyOrderDate(file: FileRecord, key: keyof SupplyOrderDeta
 }
 
 function isPaymentPending(file: FileRecord) {
-  if (isYes(file.demandCancelled)) return false;
-  return normalizedFilePaymentOrders(file).some(
-    (order) =>
-      isPaymentOrderActive(file, order) &&
-      hasPaymentWorkflowStarted(file, order) &&
-      !hasFilledString(order.paymentDate),
-  );
+  return getFinancePaymentLiabilityEntries([file]).some((entry) => entry.pending);
 }
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
@@ -3632,21 +3716,30 @@ function isPreviousApplicableMilestoneComplete(
       isBgCategoryApplicable(file, order, milestone.key),
     );
   }
-  let previousMilestone: (typeof milestoneDefinitions)[number] | undefined;
-  for (const item of milestoneDefinitions) {
-    if (item.key === milestone.key) break;
-    if (!isBlockingPreviousMilestone(item)) continue;
-    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  const targetIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  if (targetIndex <= 0) return hasMilestoneDate(file, "receivedDate");
+  if (isFlexiblePreControlMilestone(milestone)) {
+    const scrutiny = milestoneDefinitions.find((item) => item.key === "scrutiny");
+    return scrutiny ? isMilestoneComplete(file, scrutiny) : hasMilestoneDate(file, "receivedDate");
   }
-  return previousMilestone
-    ? isMilestoneComplete(file, previousMilestone)
-    : hasMilestoneDate(file, "receivedDate");
+  const controlIndex = milestoneDefinitions.findIndex((item) => item.key === "control");
+  if (controlIndex >= 0 && targetIndex >= controlIndex) {
+    return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+      if (!isMilestoneApplicable(file, item)) return true;
+      if (isFlexiblePreControlMilestone(item)) return isMilestoneComplete(file, item);
+      return isMilestoneComplete(file, item);
+    });
+  }
+  return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+    if (item.key !== "scrutiny") return true;
+    return !isMilestoneApplicable(file, item) || isMilestoneComplete(file, item);
+  });
 }
 
-function isBlockingPreviousMilestone(
+function isFlexiblePreControlMilestone(
   milestone: Pick<(typeof milestoneDefinitions)[number], "key">,
 ) {
-  return milestone.key !== "highValue";
+  return ["highValue", "tcec", "ad", "rqa"].includes(milestone.key);
 }
 
 function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
@@ -3705,13 +3798,11 @@ function isYes(value: string | undefined) {
 function getTcecCommittee(file: FileRecord, stage: TcecStatusStage) {
   return stage === "pre"
     ? file.preTcecCommitteeNo?.trim()
-    : (file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim());
+    : file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim();
 }
 
 function getTcecMeetingDate(file: FileRecord, stage: TcecStatusStage) {
-  return stage === "pre"
-    ? file.preTcecDate
-    : file.refloatPostTcecDate || file.postTcecDate;
+  return stage === "pre" ? file.preTcecDate : file.refloatPostTcecDate || file.postTcecDate;
 }
 
 function getTcecMinutesDate(file: FileRecord, stage: TcecStatusStage) {
@@ -3901,9 +3992,7 @@ function isBankGuaranteeEligible(file: FileRecord) {
   if (isCancelledFile(file)) return false;
   return (
     isYes(file.bg) &&
-    rawSupplyOrders(file).some(
-      (order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled),
-    )
+    rawSupplyOrders(file).some((order) => hasSupplyOrderDate(order) && !isYes(order.soCancelled))
   );
 }
 
@@ -3934,6 +4023,7 @@ function getDeliveryPeriodDate(order: SupplyOrderDetail) {
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
 }
 

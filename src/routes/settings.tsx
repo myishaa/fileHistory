@@ -73,6 +73,12 @@ import {
 } from "@/lib/year-filter";
 import { defaultFirmRatingFields, normalizeFirmRatingConfig } from "@/lib/firm-rating";
 import {
+  addEditRibbonFieldOptions,
+  defaultAddEditRibbonFields,
+  normalizeAddEditRibbonFields,
+  type AddEditRibbonFieldKey,
+} from "@/lib/add-edit-ribbon-fields";
+import {
   fileTypeGroupOptions,
   getDefaultFileTypeGroup,
   normalizeFileTypeGroups,
@@ -219,6 +225,30 @@ type AdminSection = {
   content: ReactNode;
 };
 
+const adminSectionKeys = new Set([
+  "user",
+  "workspace",
+  "yearSetup",
+  "mmgSummary",
+  "demandProcessing",
+  "divisions",
+  "indentors",
+  "firms",
+  "firmRating",
+  "fileTypes",
+  "modes",
+  "firmTypes",
+  "fileMarkers",
+  "tcec",
+  "thresholds",
+  "anomalyGovernance",
+  "milestones",
+  "presets",
+  "users",
+  "ipAccess",
+  "archive",
+]);
+
 const settingsSectionHelpers = {
   theme: [
     "Controls your personal display theme and tint.",
@@ -304,7 +334,7 @@ const settingsSectionHelpers = {
     "Controls login access by trusted IP address.",
     "Default mode is Off, so existing login behavior is unchanged unless Admin enables monitoring or restriction.",
     "Use Notify mode first to collect real IP addresses before switching to Restrict mode.",
-    "Archived IP attempts are kept in a separate bin and are never permanently deleted from this screen.",
+    "Archived IP attempts can be permanently deleted with the configured deletion password.",
   ],
   archive: [
     "Shows archived files and permanent delete options.",
@@ -414,7 +444,7 @@ const settingsControlHelpers = {
   ],
   ipAttemptBin: [
     "Shows archived new-IP login attempts.",
-    "These attempts are retained for audit and are not permanently deleted here.",
+    "Permanent deletion from this bin needs the configured deletion password.",
   ],
   anomalyWorkflow: [
     "Current shows active suspected issues.",
@@ -555,6 +585,15 @@ function SettingsPage() {
   const locationSearch = useRouterState({ select: (state) => state.location.search });
   const [activeAdminSection, setActiveAdminSection] = useState("divisions");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const requestedSection =
+      typeof locationSearch.section === "string" ? locationSearch.section : undefined;
+    if (requestedSection && adminSectionKeys.has(requestedSection)) {
+      setActiveAdminSection(requestedSection);
+    }
+  }, [locationSearch.section]);
+
   if (activeUser?.role === "viewer" || activeUser?.role === "division_user") {
     return (
       <div className="space-y-4 max-w-6xl">
@@ -772,14 +811,6 @@ function SettingsPage() {
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
     (universalViewer && ["user", "presets"].includes(selectedAdminSection.key));
 
-  useEffect(() => {
-    const requestedSection =
-      typeof locationSearch.section === "string" ? locationSearch.section : undefined;
-    if (requestedSection && adminSections.some((section) => section.key === requestedSection)) {
-      setActiveAdminSection(requestedSection);
-    }
-  }, [locationSearch.section]);
-
   const setAdminSectionUnlocked = (key: string, unlocked: boolean) => {
     setUnlockedAdminSections((current) => ({ ...current, [key]: unlocked }));
   };
@@ -991,24 +1022,27 @@ function restoreHelperAbbreviations(text: string) {
 function PreferenceSettings() {
   const settings = useSettings();
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <h2 className="text-sm font-semibold mb-1">UI theme</h2>
-      <p className="text-xs text-muted-foreground mb-5">
-        Choose the display theme for your own login.
-      </p>
+    <div className="space-y-5">
+      <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+        <h2 className="text-sm font-semibold mb-1">UI theme</h2>
+        <p className="text-xs text-muted-foreground mb-5">
+          Choose the display theme for your own login.
+        </p>
 
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <ThemeField
-          label="Theme"
-          value={settings.theme}
-          onChange={(value) => store.updateSettings({ theme: value })}
-        />
-        <ThemeTintField
-          label="Theme color"
-          value={settings.themeTint}
-          onChange={(value) => store.updateSettings({ themeTint: value })}
-        />
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <ThemeField
+            label="Theme"
+            value={settings.theme}
+            onChange={(value) => store.updateSettings({ theme: value })}
+          />
+          <ThemeTintField
+            label="Theme color"
+            value={settings.themeTint}
+            onChange={(value) => store.updateSettings({ themeTint: value })}
+          />
+        </div>
       </div>
+      <AddEditRibbonSettings />
     </div>
   );
 }
@@ -1048,6 +1082,47 @@ function AccountSettings() {
           />
         </div>
       )}
+
+      {activeUser ? (
+        <div className="mt-5">
+          <AddEditRibbonSettings />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AddEditRibbonSettings() {
+  const settings = useSettings();
+  const selected = normalizeAddEditRibbonFields(
+    settings.addEditRibbonFields ?? defaultAddEditRibbonFields,
+  );
+  const updateField = (index: number, value: AddEditRibbonFieldKey) => {
+    const next: AddEditRibbonFieldKey[] = [...selected];
+    next[index] = value;
+    store.updateSettings({ addEditRibbonFields: next });
+  };
+
+  return (
+    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <h2 className="text-sm font-semibold mb-1">Add/Edit file top ribbon</h2>
+      <p className="text-xs text-muted-foreground mb-5">
+        Demand description is always shown on the first line. Choose the second and third line for
+        your own login.
+      </p>
+
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <RibbonFieldSelect
+          label="Second line"
+          value={selected[0]}
+          onChange={(value) => updateField(0, value)}
+        />
+        <RibbonFieldSelect
+          label="Third line"
+          value={selected[1]}
+          onChange={(value) => updateField(1, value)}
+        />
+      </div>
     </div>
   );
 }
@@ -4931,6 +5006,18 @@ function IpAccessSettings() {
     setRemarks("");
   };
 
+  const permanentlyDeleteArchivedAttempt = async (attempt: IpLoginAttempt) => {
+    const deletionPassword = await promptDeletionPassword(
+      `permanently delete archived IP attempt "${attempt.ipAddress}"`,
+    );
+    if (deletionPassword === null) return;
+    try {
+      setConfig(await store.permanentlyDeleteArchivedIpLoginAttempt(attempt.id, deletionPassword));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to delete archived IP attempt.");
+    }
+  };
+
   const activeAttempts = config?.attempts ?? [];
   const archivedAttempts = config?.archivedAttempts ?? [];
 
@@ -5057,7 +5144,12 @@ function IpAccessSettings() {
         </div>
         {showArchive ? (
           <div className="mt-4">
-            <IpAttemptTable title="Archived IP attempts" rows={archivedAttempts} archived />
+            <IpAttemptTable
+              title="Archived IP attempts"
+              rows={archivedAttempts}
+              archived
+              onDelete={permanentlyDeleteArchivedAttempt}
+            />
           </div>
         ) : null}
       </div>
@@ -5147,11 +5239,13 @@ function IpAttemptTable({
   rows,
   archived,
   onArchive,
+  onDelete,
 }: {
   title: string;
   rows: IpLoginAttempt[];
   archived: boolean;
   onArchive?: (id: string) => Promise<void>;
+  onDelete?: (attempt: IpLoginAttempt) => Promise<void>;
 }) {
   return (
     <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
@@ -5198,6 +5292,19 @@ function IpAttemptTable({
                           Archive
                         </button>
                       </HelpedControl>
+                    ) : archived && onDelete ? (
+                      <div className="flex flex-col items-end gap-1.5">
+                        <span className="text-xs text-muted-foreground">
+                          {row.archivedByName ? `By ${row.archivedByName}` : "Archived"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void onDelete(row)}
+                          className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">
                         {row.archivedByName ? `By ${row.archivedByName}` : "Archived"}
@@ -5827,7 +5934,7 @@ function ArchiveSettings() {
                       {file.indentor || "Not set"}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {file.demandDescription || "Not set"}
+                      {getArchivedFileDescription(file)}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
                     <td className="py-3 pl-8 pr-4">
@@ -6131,6 +6238,13 @@ function formatDateTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function getArchivedFileDescription(file: FileRecord) {
+  const uniqueCode = (file.uniqueCode ?? "").trim();
+  const description = (file.demandDescription ?? "").trim();
+  if (uniqueCode && description) return `${uniqueCode} — ${description}`;
+  return description || uniqueCode || "Not set";
 }
 
 function getErrorMessage(error: unknown) {
@@ -6555,6 +6669,33 @@ function ThemeTintField({
         <option value="blue">Blue tinted</option>
         <option value="pink">Pink tinted</option>
         <option value="lavender">Lavender tinted</option>
+      </select>
+    </label>
+  );
+}
+
+function RibbonFieldSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: AddEditRibbonFieldKey;
+  onChange: (value: AddEditRibbonFieldKey) => void;
+}) {
+  return (
+    <label className="block">
+      <div className="text-xs font-medium mb-1.5">{label}</div>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as AddEditRibbonFieldKey)}
+        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+      >
+        {addEditRibbonFieldOptions.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
       </select>
     </label>
   );

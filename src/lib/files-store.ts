@@ -5,6 +5,10 @@ import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 import type { FileTypeGroup, FileTypeGroupSetting } from "@/lib/file-type-groups";
 import {
+  defaultAddEditRibbonFields,
+  type AddEditRibbonFieldKey,
+} from "@/lib/add-edit-ribbon-fields";
+import {
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
   isAllFilesYear,
@@ -553,6 +557,7 @@ export type AppSettings = {
   firmUniqueNoLabel?: string;
   firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
+  addEditRibbonFields?: AddEditRibbonFieldKey[];
 };
 
 function currentYear() {
@@ -603,6 +608,7 @@ const defaultSettings: AppSettings = {
       { id: "afterSalesService", label: "After Sales Service", weight: "1" },
     ],
   },
+  addEditRibbonFields: defaultAddEditRibbonFields,
 };
 
 const defaultUsers: AppUser[] = [];
@@ -992,6 +998,12 @@ export const store = {
   archiveIpLoginAttempt(id: string) {
     return request<{ ipAccess: IpAccessConfig }>(`/api/settings/ip-access/attempts/${id}/archive`, {
       method: "POST",
+    }).then((result) => result.ipAccess);
+  },
+  permanentlyDeleteArchivedIpLoginAttempt(id: string, deletionPassword: string) {
+    return request<{ ipAccess: IpAccessConfig }>(`/api/settings/ip-access/attempts/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ deletionPassword }),
     }).then((result) => result.ipAccess);
   },
   listSuspectedAnomalyAcceptances() {

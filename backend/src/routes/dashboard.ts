@@ -118,6 +118,35 @@ const snapshotAttributeDefinitions = [
   { key: "rst", column: "f.rst", label: "RST", yesLabel: "RST", noLabel: "Non RST" },
 ] as const;
 
+const requiredFileYesNoFields: Array<{
+  key: keyof FileRecord;
+  label: string;
+  onlyWhen?: (file: FileRecord) => boolean;
+}> = [
+  { key: "demandCancelled", label: "Demand Cancelled" },
+  { key: "tcec", label: "TCEC" },
+  { key: "gte", label: "GTE" },
+  { key: "gem", label: "GeM" },
+  { key: "highValue", label: "High Value" },
+  { key: "ad", label: "AD" },
+  { key: "rqa", label: "R&QA" },
+  { key: "ifa", label: "IFA" },
+  { key: "bg", label: "Warranty / BG" },
+  { key: "ir", label: "IR" },
+  { key: "rfpVetting", label: "RFP vetting" },
+  { key: "refloat", label: "Refloat" },
+  { key: "rst", label: "RST" },
+  { key: "preBidMeeting", label: "Pre-Bid Meeting", onlyWhen: isBiddingApplicableForFile },
+  { key: "tenderLive", label: "Tender Live", onlyWhen: isBiddingApplicableForFile },
+  { key: "bidOpened", label: "Bid Opened", onlyWhen: isBiddingApplicableForFile },
+  { key: "biddingStageOver", label: "Bidding Stage Over", onlyWhen: isBiddingApplicableForFile },
+  {
+    key: "refloatPreBidMeeting",
+    label: "Refloat Pre-Bid Meeting",
+    onlyWhen: (file) => isBiddingApplicableForFile(file) && isYes(file.refloat),
+  },
+];
+
 const statusMilestoneDefinitions = [
   {
     key: "scrutiny",
@@ -304,6 +333,7 @@ function getSuspectedAnomalyRows(
   files: FileRecord[],
   suppressions: AnomalySuppressions,
   customRules: CustomAnomalyRule[] = [],
+  configuredMilestones: string[] = [],
 ): SuspectedAnomalyRow[] {
   const rows: SuspectedAnomalyRow[] = [];
   const emittedAnomalyKeys = new Set<string>();
@@ -480,6 +510,10 @@ function getSuspectedAnomalyRows(
         }
       });
 
+    if (!isInactiveFile(file)) {
+      addBlankRequiredYesNoFlagAnomalies(file, addIssue);
+    }
+
     if (isBiddingApplicableForFile(file)) {
       if (
         isYes(file.refloat) &&
@@ -558,46 +592,45 @@ function getSuspectedAnomalyRows(
         );
       }
     }
+    addMilestoneSequenceGateAnomalies(file, configuredMilestones, addIssue);
     if (
-      isYes(file.highValue) &&
-      !hasFilledString(file.highValueMeetingDate) &&
-      hasLaterWorkflowAfterHighValue(file)
-    ) {
-      addIssue(
-        "High Value",
-        "High Value is Yes but meeting date is blank after later workflow exists",
-        "High Value meeting date",
-        "Filled",
-        "Later workflow",
-        "Exists",
-      );
-    }
-    if (
-      isYes(file.tcec) &&
-      (!hasFilledString(file.preTcecDate) || !hasFilledString(file.preTcecMinutesDate)) &&
-      hasLaterWorkflowAfterTcec(file)
+      (hasFilledString(file.preTcecDate) || hasFilledString(file.preTcecMinutesDate)) &&
+      !hasFilledString(file.preTcecCommitteeNo)
     ) {
       addIssue(
         "TCEC",
-        "TCEC is Yes but required TCEC dates are blank after later workflow exists",
-        "Pre-TCEC dates",
+        "Pre-TCEC date or minutes exists but committee is blank",
+        "Pre-TCEC committee",
         "Filled",
-        "Later workflow",
-        "Exists",
+        "Pre-TCEC committee",
+        "Blank",
       );
     }
     if (
-      isYes(file.ifa) &&
-      (!hasFilledString(file.ifaSentDate) || !hasFilledString(file.ifaFinalDate)) &&
-      hasSupplyOrderWorkflow
+      (hasFilledString(file.postTcecDate) || hasFilledString(file.postTcecMinutesDate)) &&
+      !hasFilledString(file.postTcecCommitteeNumber)
     ) {
       addIssue(
-        "IFA",
-        "IFA is Yes but IFA sent or final date is blank after S.O. exists",
-        "IFA dates",
+        "TCEC",
+        "Post-TCEC date or minutes exists but committee is blank",
+        "Post-TCEC committee",
         "Filled",
-        "S.O. workflow",
-        "Exists",
+        "Post-TCEC committee",
+        "Blank",
+      );
+    }
+    if (
+      (hasFilledString(file.refloatPostTcecDate) ||
+        hasFilledString(file.refloatPostTcecMinutesDate)) &&
+      !hasFilledString(file.refloatPostTcecCommitteeNo)
+    ) {
+      addIssue(
+        "TCEC",
+        "Refloat Post-TCEC date or minutes exists but committee is blank",
+        "Refloat Post-TCEC committee",
+        "Filled",
+        "Refloat Post-TCEC committee",
+        "Blank",
       );
     }
     if (
@@ -2156,6 +2189,22 @@ type AddAnomalyIssue = (
   context?: string,
 ) => void;
 
+function addBlankRequiredYesNoFlagAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
+  requiredFileYesNoFields.forEach((field) => {
+    if (field.onlyWhen && !field.onlyWhen(file)) return;
+    const value = file[field.key];
+    if (hasFilledString(typeof value === "string" ? value : undefined)) return;
+    addIssue(
+      "Data Completeness",
+      `Required Yes/No field is blank: ${field.label}`,
+      field.label,
+      "Yes or No",
+      field.label,
+      "Blank",
+    );
+  });
+}
+
 function addPreControlReceivedDateAnomalies(
   file: FileRecord,
   fileReceivedDate: string | undefined,
@@ -2190,6 +2239,253 @@ function addPreControlReceivedDateAnomalies(
       date,
     );
   });
+}
+
+type SequenceMilestoneRule = {
+  key: string;
+  label: string;
+  block: string;
+  applies?: (file: FileRecord) => boolean;
+  requiredFields: Array<{ label: string; value: (file: FileRecord) => string | undefined }>;
+  evidence?: (file: FileRecord) => boolean;
+};
+
+const flexiblePreControlMilestoneKeys = new Set(["highvalue", "tcec", "ad", "rqa"]);
+
+const sequenceMilestoneRules: SequenceMilestoneRule[] = [
+  {
+    key: "scrutiny",
+    label: "Scrutiny",
+    block: "Scrutiny",
+    requiredFields: [
+      { label: "Scrutiny completion date", value: (file) => file.scrutinyCompletionDate },
+    ],
+    evidence: (file) =>
+      hasFilledString(file.scrutinyDate) ||
+      hasFilledString(file.scrutinyResponseDate) ||
+      hasFilledString(file.scrutinyCompletionDate),
+  },
+  {
+    key: "highvalue",
+    label: "High Value",
+    block: "High Value",
+    applies: (file) => isYes(file.highValue),
+    requiredFields: [
+      { label: "High value meeting date", value: (file) => file.highValueMeetingDate },
+      { label: "High value minutes date", value: (file) => file.highValueMinutesDate },
+    ],
+  },
+  {
+    key: "tcec",
+    label: "Pre-TCEC",
+    block: "TCEC",
+    applies: (file) => isYes(file.tcec),
+    requiredFields: [
+      { label: "Pre-TCEC date", value: (file) => file.preTcecDate },
+      { label: "Pre-TCEC minutes date", value: (file) => file.preTcecMinutesDate },
+    ],
+  },
+  {
+    key: "ad",
+    label: "AD",
+    block: "AD",
+    applies: (file) => isYes(file.ad),
+    requiredFields: [
+      { label: "AD sent date", value: (file) => file.adSentDate },
+      { label: "AD vetting date", value: (file) => file.adVettingDate },
+    ],
+  },
+  {
+    key: "rqa",
+    label: "R&QA",
+    block: "R&QA",
+    applies: (file) => isYes(file.rqa),
+    requiredFields: [
+      { label: "R&QA sent date", value: (file) => file.rqaSentDate },
+      { label: "R&QA approval date", value: (file) => file.rqaApprovalDate },
+    ],
+  },
+  {
+    key: "control",
+    label: "Controlling",
+    block: "Control",
+    requiredFields: [{ label: "Control date", value: (file) => file.immsDate }],
+  },
+  {
+    key: "ifa",
+    label: "IFA",
+    block: "IFA",
+    applies: (file) => isYes(file.ifa),
+    requiredFields: [
+      { label: "IFA sent date", value: (file) => file.ifaSentDate },
+      { label: "IFA final date", value: (file) => file.ifaFinalDate },
+    ],
+  },
+  {
+    key: "cfa",
+    label: "CFA",
+    block: "CFA",
+    requiredFields: [
+      { label: "CFA sent date", value: (file) => file.cfaSentDate },
+      { label: "CFA approval date", value: (file) => file.cfaDate },
+    ],
+  },
+  {
+    key: "bidding",
+    label: "Bidding",
+    block: "Bidding",
+    applies: (file) => isBiddingApplicableForFile(file),
+    requiredFields: [
+      {
+        label: "Bidding Stage Over",
+        value: (file) => (isYes(file.biddingStageOver) ? "Yes" : undefined),
+      },
+    ],
+    evidence: (file) =>
+      isYes(file.tenderLive) ||
+      hasFilledString(file.bidDate) ||
+      hasFilledString(file.bidOpeningDate) ||
+      isYes(file.bidOpened) ||
+      isYes(file.biddingStageOver),
+  },
+  {
+    key: "posttcec",
+    label: "Post-TCEC",
+    block: "TCEC",
+    applies: (file) => isYes(file.tcec) && isBiddingApplicableForFile(file),
+    requiredFields: [
+      { label: "Post-TCEC date", value: (file) => file.postTcecDate },
+      { label: "Post-TCEC minutes date", value: (file) => file.postTcecMinutesDate },
+    ],
+  },
+  {
+    key: "refloatbidding",
+    label: "Refloat bidding",
+    block: "Refloat",
+    applies: (file) => isYes(file.refloat) && isBiddingApplicableForFile(file),
+    requiredFields: [
+      { label: "Refloat bidding date", value: (file) => file.refloatBiddingDate },
+      { label: "Refloat bid opening date", value: (file) => file.refloatBidOpeningDate },
+    ],
+  },
+  {
+    key: "refloatposttcec",
+    label: "Refloat Post-TCEC",
+    block: "TCEC",
+    applies: (file) => isYes(file.refloat) && isYes(file.tcec) && isBiddingApplicableForFile(file),
+    requiredFields: [
+      { label: "Refloat Post-TCEC date", value: (file) => file.refloatPostTcecDate },
+      {
+        label: "Refloat Post-TCEC minutes date",
+        value: (file) => file.refloatPostTcecMinutesDate,
+      },
+    ],
+  },
+  {
+    key: "cnc",
+    label: "CNC",
+    block: "CNC",
+    applies: (file) => isYes(file.tcec),
+    requiredFields: [
+      { label: "CNC date", value: (file) => file.cncDate },
+      { label: "CNC approval date", value: (file) => file.cncApprovalDate },
+    ],
+  },
+  {
+    key: "financialsanction",
+    label: "Financial Sanction",
+    block: "Financial Sanction",
+    requiredFields: [
+      {
+        label: "Financial Sanction date",
+        value: (file) =>
+          fileSupplyOrders(file).find((order) => hasFilledString(order.financialSanctionDate))
+            ?.financialSanctionDate,
+      },
+    ],
+    evidence: (file) =>
+      normalizeMilestoneName(file.currentMilestone ?? "") === "financialsanction" ||
+      fileSupplyOrders(file).some((order) => hasFilledString(order.financialSanctionDate)),
+  },
+  {
+    key: "supplyorder",
+    label: "Supply Order",
+    block: "Supply Order",
+    requiredFields: [
+      {
+        label: "S.O. date",
+        value: (file) => fileSupplyOrders(file).find((order) => hasFilledString(order.soDate))?.soDate,
+      },
+    ],
+    evidence: (file) =>
+      normalizeMilestoneName(file.currentMilestone ?? "") === "supplyorder" ||
+      fileSupplyOrders(file).some((order) => hasFilledString(order.soDate)),
+  },
+];
+
+function addMilestoneSequenceGateAnomalies(
+  file: FileRecord,
+  configuredMilestones: string[],
+  addIssue: AddAnomalyIssue,
+) {
+  if (isInactiveFile(file)) return;
+  const ruleByKey = new Map(sequenceMilestoneRules.map((rule) => [rule.key, rule]));
+  const configured = getConfiguredMilestones(configuredMilestones);
+  const orderedRules = configured
+    .map((milestone) => ruleByKey.get(normalizeMilestoneName(milestone)))
+    .filter((rule): rule is SequenceMilestoneRule => Boolean(rule));
+  if (!orderedRules.length) return;
+
+  const latestEvidenceIndex = orderedRules.reduce((latest, rule, index) => {
+    if (!isSequenceMilestoneApplicable(file, rule)) return latest;
+    return hasSequenceMilestoneEvidence(file, rule) ? index : latest;
+  }, -1);
+  if (latestEvidenceIndex <= 0) return;
+
+  const controlIndex = orderedRules.findIndex((rule) => rule.key === "control");
+  const scrutinyIndex = orderedRules.findIndex((rule) => rule.key === "scrutiny");
+  const latestRule = orderedRules[latestEvidenceIndex];
+  if (!latestRule) return;
+
+  orderedRules.forEach((rule, index) => {
+    if (index >= latestEvidenceIndex) return;
+    if (!isSequenceMilestoneApplicable(file, rule)) return;
+    if (flexiblePreControlMilestoneKeys.has(rule.key)) {
+      if (controlIndex === -1 || latestEvidenceIndex < controlIndex) return;
+    } else if (scrutinyIndex >= 0 && index > scrutinyIndex && controlIndex >= 0) {
+      const isBeforeControl = index < controlIndex;
+      if (isBeforeControl && latestEvidenceIndex < controlIndex) return;
+    }
+    const missingFields = getMissingSequenceMilestoneFields(file, rule);
+    if (!missingFields.length) return;
+    addIssue(
+      rule.block,
+      `${rule.label} is incomplete although later milestone ${latestRule.label} has started`,
+      missingFields.join(", "),
+      "Filled before later milestone",
+      "Later milestone",
+      latestRule.label,
+      `sequence:${rule.key}:${latestRule.key}`,
+    );
+  });
+}
+
+function isSequenceMilestoneApplicable(file: FileRecord, rule: SequenceMilestoneRule) {
+  return rule.applies ? rule.applies(file) : true;
+}
+
+function hasSequenceMilestoneEvidence(file: FileRecord, rule: SequenceMilestoneRule) {
+  if (rule.evidence?.(file)) return true;
+  const current = normalizeMilestoneName(file.currentMilestone ?? "");
+  if (current === rule.key) return true;
+  if (hasCompletedMilestone(file.completedMilestones, rule.label)) return true;
+  return rule.requiredFields.some((field) => hasFilledString(field.value(file)));
+}
+
+function getMissingSequenceMilestoneFields(file: FileRecord, rule: SequenceMilestoneRule) {
+  return rule.requiredFields
+    .filter((field) => !hasFilledString(field.value(file)))
+    .map((field) => field.label);
 }
 
 function addBgAnomalies({
@@ -2455,22 +2751,6 @@ function hasWrongAmountSide(
   const capital = parseAmount(order.actualPaymentCapital);
   const revenue = parseAmount(order.actualPaymentRevenue);
   return required === "Revenue" ? capital > 0 : revenue > 0;
-}
-
-function hasLaterWorkflowAfterHighValue(file: FileRecord) {
-  return hasIfaWorkflow(file) || hasSupplyOrderWorkflow(file);
-}
-
-function hasLaterWorkflowAfterTcec(file: FileRecord) {
-  return hasIfaWorkflow(file) || hasSupplyOrderWorkflow(file);
-}
-
-function hasIfaWorkflow(file: FileRecord) {
-  return hasFilledString(file.ifaSentDate) || hasFilledString(file.ifaFinalDate);
-}
-
-function hasSupplyOrderWorkflow(file: FileRecord) {
-  return fileSupplyOrders(file).some((order) => hasFilledString(order.soDate));
 }
 
 function hasAnyBgField(order: SupplyOrderDetail) {
@@ -3364,7 +3644,8 @@ function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, yea
 function isFileClosed(file: { completedMilestones?: string[] }) {
   return Boolean(
     file.completedMilestones?.some(
-      (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
+      (milestone) =>
+        normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone),
     ),
   );
 }
@@ -3486,6 +3767,13 @@ function getSelectedYearCondition(
   ))`;
 }
 
+function getFirmHistorySelectedYear(selectedYear: string | undefined) {
+  if (selectedYear === allActiveFilesYear || selectedYear === activePlusCurrentFyClosedYear) {
+    return undefined;
+  }
+  return selectedYear;
+}
+
 function getDashboardFileWhereSql({
   scopeSql,
   scopeValues,
@@ -3495,7 +3783,6 @@ function getDashboardFileWhereSql({
   fileInitiationTo,
   currentFinancialYear,
   activeDivision,
-  activeAnalyticsDivision,
   fileCategories,
 }: {
   scopeSql: string;
@@ -3506,8 +3793,7 @@ function getDashboardFileWhereSql({
   fileInitiationTo?: string | undefined;
   currentFinancialYear?: string;
   activeDivision: string;
-  activeAnalyticsDivision: string;
-  fileCategories: FileCategoryKey[];
+  fileCategories?: FileCategoryKey[];
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
@@ -3534,20 +3820,11 @@ function getDashboardFileWhereSql({
   }
 
   if (activeDivision !== "all") {
-    const divisionNames = Array.from(
-      new Set(
-        [activeDivision, activeAnalyticsDivision === "all" ? undefined : activeAnalyticsDivision]
-          .filter((value): value is string => Boolean(value))
-          .map((value) => value.toLowerCase()),
-      ),
-    );
-    if (divisionNames.length) {
-      const placeholder = addValue(values, divisionNames);
-      conditions.push(`lower(coalesce(d.name, '')) = any(${placeholder}::text[])`);
-    }
+    const placeholder = addValue(values, activeDivision.toLowerCase());
+    conditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
 
-  conditions.push(getFileCategoryCondition(fileCategories));
+  if (fileCategories) conditions.push(getFileCategoryCondition(fileCategories));
 
   return {
     whereSql: conditions.length ? `where ${conditions.join(" and ")}` : "",
@@ -3557,6 +3834,12 @@ function getDashboardFileWhereSql({
 
 function getFileCategoryCondition(categories: FileCategoryKey[]) {
   return getFileCategorySqlCondition(categories);
+}
+
+function readOptionalFileCategories(value: unknown) {
+  const rawFileCategories = readList(value);
+  if (!rawFileCategories?.length) return undefined;
+  return normalizeFileCategories(rawFileCategories);
 }
 
 function appendDashboardWhereClause(whereSql: string, extraConditions: string[] = []) {
@@ -3660,6 +3943,7 @@ type AverageDaysAnalyticsRow = {
   maxDays?: number;
   medianDays?: number;
   sampleSize: number;
+  fileIds?: string;
   sortOrder?: number;
 };
 type ThresholdAnalyticsRow = {
@@ -3790,6 +4074,11 @@ async function loadSimpleDashboardCounts({
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
   extraConditions.push(`not ${isCancelledExpression()}`);
+  const processHistoryConditions = extraConditions.map((condition) =>
+    condition === `not ${isCancelledExpression()}`
+      ? `not ${isYesExpression("f.demand_cancelled")}`
+      : condition,
+  );
 
   const modeNames = getConfiguredModeNames(modes);
   const modeSelects = modeNames.map(
@@ -3813,15 +4102,25 @@ async function loadSimpleDashboardCounts({
      ${appendDashboardWhereClause(whereSql, extraConditions)}`,
     queryValues,
   );
+  const modeResult = await pool.query<Record<string, number | string>>(
+    `select
+       ${[...modeSelects, ...gemBiddingModeSelects].join(",\n       ")}
+     from files f
+     left join divisions d on d.id = f.division_id
+     ${appendDashboardWhereClause(whereSql, processHistoryConditions)}`,
+    queryValues,
+  );
   const row = result.rows[0] ?? {};
+  const modeRow = modeResult.rows[0] ?? {};
   const readCount = (key: string) => Number(row[key] ?? 0);
+  const readModeCount = (key: string) => Number(modeRow[key] ?? 0);
 
   return {
     dashboardFileCount: readCount("dashboard_file_count"),
-    modeCounts: modeNames.map((name, index) => ({ name, count: readCount(`mode_${index}`) })),
+    modeCounts: modeNames.map((name, index) => ({ name, count: readModeCount(`mode_${index}`) })),
     gemBiddingModeCounts: gemBiddingModeOptions.map((name, index) => ({
       name,
-      count: readCount(`gem_bidding_mode_${index}`),
+      count: readModeCount(`gem_bidding_mode_${index}`),
     })),
     topSummaryStats: snapshotAttributeDefinitions.map((attribute, index) => ({
       label: attribute.label,
@@ -4437,20 +4736,36 @@ function statusActiveExpression(milestone: (typeof statusMilestoneDefinitions)[n
 }
 
 function previousApplicableCompleteExpression(index: number) {
-  const previous = statusMilestoneDefinitions
-    .slice(0, index)
-    .filter((milestone) => milestone.key !== "highValue")
-    .reverse();
-  if (!previous.length) return hasFilledExpression("f.received_date");
-  return `case
-    ${previous
-      .map(
-        (milestone) =>
-          `when ${statusAppliesExpression(milestone)} then ${statusCompleteExpression(milestone)}`,
-      )
-      .join("\n    ")}
-    else ${hasFilledExpression("f.received_date")}
-  end`;
+  const milestone = statusMilestoneDefinitions[index];
+  if (!milestone || index <= 0) return hasFilledExpression("f.received_date");
+  if (isFlexiblePreControlStatusMilestone(milestone)) {
+    const scrutiny = statusMilestoneDefinitions.find((item) => item.key === "scrutiny");
+    return scrutiny ? statusCompleteExpression(scrutiny) : hasFilledExpression("f.received_date");
+  }
+  const controlIndex = statusMilestoneDefinitions.findIndex((item) => item.key === "control");
+  if (controlIndex >= 0 && index >= controlIndex) {
+    return allApplicableStatusMilestonesCompleteExpression(
+      statusMilestoneDefinitions.slice(0, index),
+    );
+  }
+  const scrutiny = statusMilestoneDefinitions.find((item) => item.key === "scrutiny");
+  return scrutiny ? statusCompleteExpression(scrutiny) : hasFilledExpression("f.received_date");
+}
+
+function isFlexiblePreControlStatusMilestone(
+  milestone: Pick<(typeof statusMilestoneDefinitions)[number], "key">,
+) {
+  return ["highValue", "tcec", "ad", "rqa"].includes(milestone.key);
+}
+
+function allApplicableStatusMilestonesCompleteExpression(
+  milestones: Array<(typeof statusMilestoneDefinitions)[number]>,
+) {
+  const checks = milestones.map(
+    (milestone) =>
+      `(not (${statusAppliesExpression(milestone)}) or (${statusCompleteExpression(milestone)}))`,
+  );
+  return checks.length ? checks.join(" and ") : hasFilledExpression("f.received_date");
 }
 
 function statusPreviousStageExpression(
@@ -4531,6 +4846,14 @@ async function loadFinanceTotals({
   const committedRevenue = committedValueExpression("f.so_value_revenue", "so_value_revenue");
   const paidCapital = paymentValueExpression("actual_payment_capital", "actualPaymentCapital");
   const paidRevenue = paymentValueExpression("actual_payment_revenue", "actualPaymentRevenue");
+  const supplementaryPaidCapital = supplementaryPaymentValueExpression(
+    "actualPaymentCapital",
+    "billAmountCapital",
+  );
+  const supplementaryPaidRevenue = supplementaryPaymentValueExpression(
+    "actualPaymentRevenue",
+    "billAmountRevenue",
+  );
   const result = await pool.query<Record<string, string | number>>(
     `select
        coalesce(sum(case
@@ -4553,8 +4876,8 @@ async function loadFinanceTotals({
        end), 0) as projected_revenue,
        coalesce(sum(${committedCapital}), 0) as spent_capital,
        coalesce(sum(${committedRevenue}), 0) as spent_revenue,
-      coalesce(sum(${paidCapital}), 0) as paid_capital,
-       coalesce(sum(${paidRevenue}), 0) as paid_revenue,
+	      coalesce(sum(${paidCapital} + ${supplementaryPaidCapital}), 0) as paid_capital,
+       coalesce(sum(${paidRevenue} + ${supplementaryPaidRevenue}), 0) as paid_revenue,
        coalesce(sum(coalesce((
          select sum(
            ${inrAmountExpression("coalesce(nullif(so_advance.advance_payment_detail ->> 'actualPaymentCapital', ''), nullif(so_advance.advance_payment_detail ->> 'stageAmountCapital', ''))")}
@@ -4664,7 +4987,7 @@ function roundedFinanceTotals(totals: FinanceTotals): FinanceTotals {
   };
 }
 
-function analyticsDivisionExtraCondition(values: unknown[], divisionName: string) {
+function dashboardDivisionCondition(values: unknown[], divisionName: string) {
   if (divisionName === "all") return undefined;
   const placeholder = addValue(values, divisionName.toLowerCase());
   return `lower(coalesce(d.name, '')) = ${placeholder}::text`;
@@ -4697,9 +5020,7 @@ function paymentValueExpression(
   jsonColumn: "actualPaymentCapital" | "actualPaymentRevenue",
 ) {
   const directValue = inrAmountExpression(`so_payment.${supplyOrderColumn}`);
-  const stageValue = inrAmountExpression(
-    `nullif(stage_payment.stage ->> '${jsonColumn}', '')`,
-  );
+  const stageValue = inrAmountExpression(`nullif(stage_payment.stage ->> '${jsonColumn}', '')`);
   const advanceValue = inrAmountExpression(
     `nullif(so_payment.advance_payment_detail ->> '${jsonColumn}', '')`,
   );
@@ -4729,6 +5050,24 @@ function paymentValueExpression(
     )
     from supply_orders so_payment
     where so_payment.file_id = f.id
+  ), 0)`;
+}
+
+function supplementaryPaymentValueExpression(
+  actualJsonColumn: "actualPaymentCapital" | "actualPaymentRevenue",
+  billJsonColumn: "billAmountCapital" | "billAmountRevenue",
+) {
+  return `coalesce((
+    select sum(
+      ${inrAmountExpression(
+        `coalesce(nullif(supplementary_bill.bill ->> '${actualJsonColumn}', ''), nullif(supplementary_bill.bill ->> '${billJsonColumn}', ''))`,
+      )}
+    )
+    from supply_orders so_payment
+    join lateral jsonb_array_elements(coalesce(so_payment.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill) on true
+    where so_payment.file_id = f.id
+      and not ${isYesExpression("so_payment.so_cancelled")}
+      and ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
   ), 0)`;
 }
 
@@ -4763,6 +5102,11 @@ function clearingStatsSelect(
               coalesce(min(${days}), 0)::integer as "minDays",
               coalesce(max(${days}), 0)::integer as "maxDays",
               coalesce(round(percentile_cont(0.5) within group (order by ${days})), 0)::integer as "medianDays"`;
+}
+
+function clearingSampleSelect() {
+  return `count(distinct f.id)::integer as "sampleSize",
+              string_agg(distinct f.id::text, ',') as "fileIds"`;
 }
 
 function dateDiffCondition(startDate: string, endDate: string) {
@@ -4859,8 +5203,10 @@ async function loadAnalyticsSqlSlice({
 }): Promise<AnalyticsSqlSlice> {
   const fileRankingValues = [...values];
   const fileRankingConditions: string[] = [`not ${isCancelledExpression()}`];
-  const fileRankingDivision = analyticsDivisionExtraCondition(fileRankingValues, divisionName);
+  const fileRankingDivision = dashboardDivisionCondition(fileRankingValues, divisionName);
   if (fileRankingDivision) fileRankingConditions.push(fileRankingDivision);
+  const processHistoryConditions: string[] = [`not ${isYesExpression("f.demand_cancelled")}`];
+  if (fileRankingDivision) processHistoryConditions.push(fileRankingDivision);
 
   const divisionNameSql = analyticsNameExpression("d.name", "Unassigned");
   const fileRankingResult = await pool.query<{ name: string; count: number }>(
@@ -4900,7 +5246,7 @@ async function loadAnalyticsSqlSlice({
     `select ${modeNameSql} as name, count(*)::integer as count
      from files f
      left join divisions d on d.id = f.division_id
-     ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
+     ${appendDashboardWhereClause(whereSql, processHistoryConditions)}
      group by 1
      order by count desc`,
     fileRankingValues,
@@ -4914,7 +5260,7 @@ async function loadAnalyticsSqlSlice({
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, [
-       ...fileRankingConditions,
+       ...processHistoryConditions,
        dateDiffCondition("f.received_date", firstSoDate),
      ])}
      group by 1
@@ -4964,7 +5310,7 @@ async function loadAnalyticsSqlSlice({
     return `select ${index} as sort_order,
 	              '${definition.name}' as name,
 	              ${clearingStatsSelect(start, definition.end)},
-              count(*)::integer as "sampleSize"
+              ${clearingSampleSelect()}
        from files f
        left join divisions d on d.id = f.division_id
 	       ${appendDashboardWhereClause(whereSql, [
@@ -5050,7 +5396,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length} as sort_order,
             'Supply Order' as name,
             ${clearingStatsSelect(supplyOrderClearingStart, "so.so_date")},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5062,7 +5408,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 1} as sort_order,
             'IR Preparation' as name,
             ${clearingStatsSelect(paymentMaterialReceiptDate, paymentIrPreparationDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5075,7 +5421,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 2} as sort_order,
             'IR Receipt' as name,
             ${clearingStatsSelect(paymentIrPreparationDate, paymentIrReceiptDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5088,7 +5434,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 3} as sort_order,
             'Bill preparation' as name,
             ${clearingStatsSelect(billPreparationStart, paymentBillPreparationDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5100,7 +5446,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 4} as sort_order,
             'Bill sent for payment' as name,
             ${clearingStatsSelect(paymentBillPreparationDate, paymentBillSentDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5112,7 +5458,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 5} as sort_order,
             'Bill returned for correction' as name,
             ${clearingStatsSelect(returnedBillReturnedDate, returnedBillResubmittedDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5127,7 +5473,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 6} as sort_order,
             'Supplementary bill returned for correction' as name,
             ${clearingStatsSelect(supplementaryBillReturnedDate, supplementaryBillResubmittedDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5140,7 +5486,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 7} as sort_order,
             'Payment' as name,
             ${clearingStatsSelect(paymentBillSentDate, paymentDate)},
-            count(*)::integer as "sampleSize"
+            ${clearingSampleSelect()}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5174,7 +5520,7 @@ async function loadAnalyticsSqlSlice({
 
   const monthWiseSupplyOrderValues = [...values];
   const monthWiseSupplyOrderConditions: string[] = [];
-  const monthWiseSupplyOrderDivision = analyticsDivisionExtraCondition(
+  const monthWiseSupplyOrderDivision = dashboardDivisionCondition(
     monthWiseSupplyOrderValues,
     divisionName,
   );
@@ -5283,10 +5629,7 @@ async function loadAnalyticsSqlSlice({
        left join lateral jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_order(stage)
          on ${isYesExpression("so.stage_delivery")}
            and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0
-       ${appendDashboardWhereClause(whereSql, [
-         ...fileRankingConditions,
-         `not ${isYesExpression("so.so_cancelled")}`,
-       ])}
+       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions])}
        union all
        select
          f.id as file_id,
@@ -5366,6 +5709,7 @@ async function loadAnalyticsSqlSlice({
   const paymentPendingResult = await pool.query<CountAnalyticsRow>(
     `with effective_payment_rows as (
        select
+         f.id as file_id,
          ${divisionNameSql} as name,
          f.file_type,
          f.ir as file_ir,
@@ -5387,6 +5731,7 @@ async function loadAnalyticsSqlSlice({
        ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
        union all
        select
+         f.id as file_id,
          ${divisionNameSql} as name,
          f.file_type,
          f.ir as file_ir,
@@ -5399,11 +5744,11 @@ async function loadAnalyticsSqlSlice({
 	         f.revised_dp::text as revised_dp,
 	         '[]'::jsonb as completed_milestones,
 	         f.so_cancelled
-       from files f
-       left join divisions d on d.id = f.division_id
-       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, `not ${supplyOrderRowExists()}`])}
-     )
-     select name, count(*)::integer as count
+	       from files f
+	       left join divisions d on d.id = f.division_id
+	       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, `not ${supplyOrderRowExists()}`])}
+	     )
+     select name, count(distinct file_id)::integer as count
      from effective_payment_rows
      where not ${isYesExpression("so_cancelled")}
        and (
@@ -5726,7 +6071,7 @@ async function loadAnalyticsSqlSlice({
 
   const valueValues = [...values];
   const valueConditions: string[] = [];
-  const valueDivision = analyticsDivisionExtraCondition(valueValues, divisionName);
+  const valueDivision = dashboardDivisionCondition(valueValues, divisionName);
   if (valueDivision) valueConditions.push(valueDivision);
   const cancelled = isCancelledExpression();
   const demandCapital = inrAmountExpression("f.value_capital");
@@ -5841,6 +6186,7 @@ async function loadAnalyticsSqlSlice({
         maxDays: Number(row.maxDays ?? 0),
         medianDays: Number(row.medianDays ?? 0),
         sampleSize: Number(row.sampleSize ?? 0),
+        fileIds: row.fileIds,
         sortOrder: Number(row.sort_order ?? 0),
       })),
     monthlyFileInflow: monthlyResult.rows
@@ -7881,19 +8227,11 @@ dashboardRouter.get(
         : selectedYear;
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
-    const requestedAnalyticsDivision = readString(request.query.analyticsDivision) ?? "all";
-    const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
+    const fileCategories = readOptionalFileCategories(request.query.fileCategories);
     const activeDivision =
       requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
         ? requestedDivision
         : "all";
-    const activeAnalyticsDivision =
-      requestedAnalyticsDivision === "all" ||
-      divisions.some((item) => item.name === requestedAnalyticsDivision)
-        ? requestedAnalyticsDivision
-        : "all";
-    const effectiveAnalyticsDivision =
-      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -7902,8 +8240,7 @@ dashboardRouter.get(
       fileInitiationFrom,
       fileInitiationTo,
       currentFinancialYear: settings.financialYear,
-      activeDivision: effectiveAnalyticsDivision,
-      activeAnalyticsDivision: "all",
+      activeDivision,
       fileCategories,
     });
     await ensureAnomalyGovernanceSchema();
@@ -7965,9 +8302,12 @@ dashboardRouter.get(
       ),
     };
     const rows = getSuspectedAnomalyRows(
-      filesResult.filter((file) => matchesFileCategorySelection(file, fileCategories)),
+      fileCategories
+        ? filesResult.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : filesResult,
       suppressions,
       customRules,
+      settings.milestones,
     ).map((row) => {
       const acceptance = acceptanceBySignature.get(row.signature);
       if (!acceptance) return row;
@@ -8007,19 +8347,11 @@ dashboardRouter.get(
         : selectedYear;
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
-    const requestedAnalyticsDivision = readString(request.query.analyticsDivision) ?? "all";
-    const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
+    const fileCategories = readOptionalFileCategories(request.query.fileCategories);
     const activeDivision =
       requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
         ? requestedDivision
         : "all";
-    const activeAnalyticsDivision =
-      requestedAnalyticsDivision === "all" ||
-      divisions.some((item) => item.name === requestedAnalyticsDivision)
-        ? requestedAnalyticsDivision
-        : "all";
-    const effectiveAnalyticsDivision =
-      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -8028,8 +8360,7 @@ dashboardRouter.get(
       fileInitiationFrom,
       fileInitiationTo,
       currentFinancialYear: settings.financialYear,
-      activeDivision: effectiveAnalyticsDivision,
-      activeAnalyticsDivision: "all",
+      activeDivision,
       fileCategories,
     });
 
@@ -8064,16 +8395,10 @@ dashboardRouter.get(
       loadDivisions(user, divisionYear),
     ]);
     const requestedDivision = readString(request.query.division) ?? "all";
-    const requestedAnalyticsDivision = readString(request.query.analyticsDivision) ?? "all";
-    const fileCategories = normalizeFileCategories(readList(request.query.fileCategories));
+    const fileCategories = readOptionalFileCategories(request.query.fileCategories);
     const activeDivision =
       requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
         ? requestedDivision
-        : "all";
-    const activeAnalyticsDivision =
-      requestedAnalyticsDivision === "all" ||
-      divisions.some((item) => item.name === requestedAnalyticsDivision)
-        ? requestedAnalyticsDivision
         : "all";
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -8084,7 +8409,6 @@ dashboardRouter.get(
       fileInitiationTo,
       currentFinancialYear: settings.financialYear,
       activeDivision,
-      activeAnalyticsDivision,
       fileCategories,
     });
     const financeFileWhere = getDashboardFileWhereSql({
@@ -8096,7 +8420,17 @@ dashboardRouter.get(
       fileInitiationTo,
       currentFinancialYear: settings.financialYear,
       activeDivision,
-      activeAnalyticsDivision,
+      fileCategories,
+    });
+    const firmHistoryFileWhere = getDashboardFileWhereSql({
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+      scopeValues: scope.values,
+      selectedYear: getFirmHistorySelectedYear(selectedYear),
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      currentFinancialYear: settings.financialYear,
+      activeDivision,
       fileCategories,
     });
     const dashboardDivisions =
@@ -8104,15 +8438,9 @@ dashboardRouter.get(
         ? divisions
         : divisions.filter((division) => division.name === activeDivision);
     const analyticsSliceDivision = activeDivision;
-    const divisionFilteredSliceDivision =
-      activeAnalyticsDivision === "all" ? activeDivision : activeAnalyticsDivision;
-    const divisionFilteredSliceDivisions =
-      activeAnalyticsDivision === "all"
-        ? dashboardDivisions
-        : divisions.filter((division) => division.name === activeAnalyticsDivision);
     const liveMilestones = readList(request.query.liveMilestones);
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 6,
+      version: 8,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -8120,28 +8448,31 @@ dashboardRouter.get(
       fileInitiationTo,
       divisionYear,
       activeDivision,
-      activeAnalyticsDivision,
       fileCategories,
       liveMilestones,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
-      const [files, financeFiles] = await Promise.all([
+      const [files, financeFiles, firmHistoryFiles] = await Promise.all([
         loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
         loadFiles(financeFileWhere.whereSql, financeFileWhere.values),
+        loadFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values),
       ]);
-      const filteredFiles = files.filter((file) =>
-        matchesFileCategorySelection(file, fileCategories),
-      );
-      const filteredFinanceFiles = financeFiles.filter((file) =>
-        matchesFileCategorySelection(file, fileCategories),
-      );
+      const filteredFiles = fileCategories
+        ? files.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : files;
+      const filteredFinanceFiles = fileCategories
+        ? financeFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : financeFiles;
+      const filteredFirmHistoryFiles = fileCategories
+        ? firmHistoryFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : firmHistoryFiles;
       const normalizedSummary = buildDashboardSummary({
         files: filteredFiles,
+        firmHistoryFiles: filteredFirmHistoryFiles,
         financeFiles: filteredFinanceFiles,
         divisions,
-        settings: { ...settings, valueThresholdLevels },
+        settings: { ...settings, selectedYear, valueThresholdLevels },
         division: activeDivision,
-        analyticsDivision: activeAnalyticsDivision,
         liveMilestones,
       });
 
@@ -8152,7 +8483,6 @@ dashboardRouter.get(
           sqlMiscellaneousCounts,
           sqlStatusCounts,
           sqlAnalyticsSlice,
-          sqlDivisionFilteredAnalyticsSlice,
           sqlManualMilestoneSlice,
         ] = await Promise.all([
           loadSimpleDashboardCounts({
@@ -8182,13 +8512,6 @@ dashboardRouter.get(
             values: dashboardFileWhere.values,
             divisionName: analyticsSliceDivision,
             divisions: dashboardDivisions,
-            valueThresholdLevels,
-          }),
-          loadAnalyticsSqlSlice({
-            whereSql: dashboardFileWhere.whereSql,
-            values: dashboardFileWhere.values,
-            divisionName: divisionFilteredSliceDivision,
-            divisions: divisionFilteredSliceDivisions,
             valueThresholdLevels,
           }),
           loadManualMilestoneSqlSlice({
@@ -8224,11 +8547,6 @@ dashboardRouter.get(
           "dashboard",
           getAnalyticsSqlSlice(normalizedSummary.analytics),
           sqlAnalyticsSlice,
-        );
-        warnIfAnalyticsSqlSliceDiffers(
-          "division-filtered",
-          getAnalyticsSqlSlice(normalizedSummary.divisionFilteredAnalytics),
-          sqlDivisionFilteredAnalyticsSlice,
         );
         warnIfManualMilestoneSqlSliceDiffers(
           {

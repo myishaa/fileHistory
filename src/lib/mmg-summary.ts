@@ -22,7 +22,11 @@ import {
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
-import { isContractFileType, isDeliveryInspectionApplicableByGroup } from "@/lib/file-type-groups";
+import {
+  isBiddingApplicableForFile,
+  isContractFileType,
+  isDeliveryInspectionApplicableByGroup,
+} from "@/lib/file-type-groups";
 import {
   hasBillReturnHistory,
   hasCompletedBillReturn,
@@ -2385,6 +2389,7 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
 }
 
 function isPreBidMeetingStatus(file: FileRecord, refloat: boolean, state: "due" | "completed") {
+  if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
     : isYes(file.preBidMeeting);
@@ -2465,7 +2470,8 @@ function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) 
 
 function isFinancialSanctionReached(file: FileRecord) {
   return (
-    isYes(file.biddingStageOver) && (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
+    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
+    (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }
 

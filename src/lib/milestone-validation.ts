@@ -1,6 +1,6 @@
 import type { FileRecord, StageDeliveryDetail, SupplyOrderDetail } from "@/lib/files-store";
 import { fileSupplyOrders as normalizedFileSupplyOrders } from "@/lib/effective-deliveries";
-import { isContractFileType } from "@/lib/file-type-groups";
+import { isBiddingApplicableForFile, isContractFileType } from "@/lib/file-type-groups";
 
 type MilestoneCompletionRule = {
   aliases: string[];
@@ -58,6 +58,7 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   {
     aliases: ["Bidding"],
     completionLabel: "Bidding stage over",
+    isApplicable: (file) => isBiddingApplicableForFile(file),
     isComplete: (file) => isYes(file.biddingStageOver),
   },
   {
@@ -69,19 +70,24 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   {
     aliases: ["Refloat bidding"],
     completionLabel: "Bidding stage over",
-    isApplicable: (file) => isYes(file.refloat),
+    isApplicable: (file) => isYes(file.refloat) && isBiddingApplicableForFile(file),
     isComplete: (file) => isYes(file.biddingStageOver),
   },
   {
     aliases: ["Refloat Post-TCEC"],
     completionLabel: "Refloat Post-TCEC minutes date",
-    isApplicable: (file) => isYes(file.refloat) && isYes(file.tcec) && isYes(file.biddingStageOver),
+    isApplicable: (file) =>
+      isYes(file.refloat) &&
+      isYes(file.tcec) &&
+      isBiddingApplicableForFile(file) &&
+      isYes(file.biddingStageOver),
     isComplete: (file) => hasFilledString(file.refloatPostTcecMinutesDate),
   },
   {
     aliases: ["CNC"],
     completionLabel: "CNC approval date",
-    isApplicable: (file) => isYes(file.tcec) && isYes(file.biddingStageOver),
+    isApplicable: (file) =>
+      isYes(file.tcec) && (!isBiddingApplicableForFile(file) || isYes(file.biddingStageOver)),
     isComplete: (file) => hasFilledString(file.cncApprovalDate),
   },
   {

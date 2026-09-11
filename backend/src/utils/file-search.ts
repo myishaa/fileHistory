@@ -43,6 +43,7 @@ import {
 const biddingDelayMilestoneKey = "bidding";
 const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 export type IncludeExcludeFilter = "none" | "include" | "exclude";
+export type DatePresenceMode = "filled" | "blank" | "yes" | "no";
 
 export type FileSearchParams = {
   yearFilter?: string;
@@ -156,10 +157,8 @@ export type FileSearchParams = {
   fileClosureTo?: string;
   fileClosedPresenceFilter?: IncludeExcludeFilter;
   rstFilter?: boolean;
-  demandCancelledFilter?: boolean;
   demandCancelledPresenceFilter?: IncludeExcludeFilter;
-  soCancelledFilter?: boolean;
-  shortclosedSoFilter?: boolean;
+  soCancelledPresenceFilter?: IncludeExcludeFilter;
   shortclosedSoPresenceFilter?: IncludeExcludeFilter;
   freeText?: string;
   freeDate?: string;
@@ -171,6 +170,12 @@ export type FileSearchParams = {
   sortDirection?: "asc" | "desc";
   divisionWiseSort?: boolean;
   requiredFilledFields?: string[];
+  datePresenceField?: string;
+  datePresenceMode?: DatePresenceMode;
+  fieldConditionYesNoFields?: string[];
+  fieldConditionYesNoMode?: DatePresenceMode;
+  fieldConditionPresenceFields?: string[];
+  fieldConditionPresenceMode?: DatePresenceMode;
 };
 
 type FileKey = Exclude<
@@ -480,7 +485,9 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
   const selectedSpecialFileMarkers = [
     ...(params.specialFileMarkers ?? []),
     ...(params.specialFileMarker?.trim() ? [params.specialFileMarker] : []),
-  ].map((marker) => marker.trim().toUpperCase()).filter(Boolean);
+  ]
+    .map((marker) => marker.trim().toUpperCase())
+    .filter(Boolean);
   const soPresenceFilter = normalizeIncludeExcludeFilter(params.soPresenceFilter);
   const modePresenceFilter = normalizeIncludeExcludeFilter(params.modePresenceFilter, "include");
   const includeGemBiddingModes = firstOnlySearchList(
@@ -590,14 +597,24 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     const normalizedExcludeGemModes = excludeGemBiddingModes.map((mode) =>
       mode.trim().toLowerCase(),
     );
-    if (includeGemBiddingModes.length > 0 && (!isYes(file.gem) || !normalizedIncludeGemModes.includes(fileGemMode))) return false;
-    if (excludeGemBiddingModes.length > 0 && isYes(file.gem) && normalizedExcludeGemModes.includes(fileGemMode)) return false;
+    if (
+      includeGemBiddingModes.length > 0 &&
+      (!isYes(file.gem) || !normalizedIncludeGemModes.includes(fileGemMode))
+    )
+      return false;
+    if (
+      excludeGemBiddingModes.length > 0 &&
+      isYes(file.gem) &&
+      normalizedExcludeGemModes.includes(fileGemMode)
+    )
+      return false;
     if (
       !includeGemBiddingModes.length &&
       !excludeGemBiddingModes.length &&
       selectedGemBiddingModes.length > 0 &&
       !matchesIncludeExclude(gemModePresenceFilter, gemModeSelected)
-    ) return false;
+    )
+      return false;
     if (
       selectedFirmTypes.length > 0 &&
       !fileSupplyOrders(file).some((order) => matchesFirmTypeFilter(order, selectedFirmTypes))
@@ -631,11 +648,7 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     }
     if (
       params.actualPaymentFilter &&
-      !fileSupplyOrders(file).some(
-        (order) =>
-          hasNonZeroAmount(order.actualPaymentCapital) ||
-          hasNonZeroAmount(order.actualPaymentRevenue),
-      )
+      !fileSupplyOrders(file).some((order) => hasActualPaymentAmount(order))
     ) {
       return false;
     }
@@ -691,7 +704,10 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       return false;
     }
     if (params.cnc && !hasAny(file, ["cncDate", "cncApprovalDate"])) return false;
-    if (!matchesIncludeExclude(params.cncPresenceFilter, hasAny(file, ["cncDate", "cncApprovalDate"]))) return false;
+    if (
+      !matchesIncludeExclude(params.cncPresenceFilter, hasAny(file, ["cncDate", "cncApprovalDate"]))
+    )
+      return false;
     if (params.tcec && !isTcecFile(file)) return false;
     if (
       params.preBidMeetingFilter &&
@@ -714,22 +730,15 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       return false;
     }
     if (params.rstFilter && !isYes(file.rst)) return false;
-    if (params.demandCancelledFilter && !isYes(file.demandCancelled)) {
-      return false;
-    }
     if (!matchesIncludeExclude(params.demandCancelledPresenceFilter, isYes(file.demandCancelled))) {
       return false;
     }
     if (!matchesIncludeExclude(params.fileClosedPresenceFilter, isFileClosed(file))) return false;
     if (
-      params.soCancelledFilter &&
-      !fileSupplyOrders(file).some((order) => isYes(order.soCancelled))
-    ) {
-      return false;
-    }
-    if (
-      params.shortclosedSoFilter &&
-      !fileSupplyOrders(file).some((order) => isYes(order.shortclosure))
+      !matchesIncludeExclude(
+        params.soCancelledPresenceFilter,
+        fileSupplyOrders(file).some((order) => isYes(order.soCancelled)),
+      )
     ) {
       return false;
     }
@@ -873,7 +882,9 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     ) {
       return false;
     }
-    if (!matchesBillSubmissionEventDateRange(file, params.billSubmittedFrom, params.billSubmittedTo)) {
+    if (
+      !matchesBillSubmissionEventDateRange(file, params.billSubmittedFrom, params.billSubmittedTo)
+    ) {
       return false;
     }
     if (
@@ -946,6 +957,32 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       return false;
     if (params.freeDate && !matchesFreeDate(file, params.freeDate)) return false;
     if (!matchesRequiredFilledFields(file, requiredFilledFields)) return false;
+    if (!matchesFieldCondition(file, params.datePresenceField, params.datePresenceMode)) {
+      return false;
+    }
+    if (
+      !matchesFieldConditionGroups(
+        file,
+        params.fieldConditionYesNoFields,
+        params.fieldConditionYesNoMode === "yes" || params.fieldConditionYesNoMode === "no"
+          ? params.fieldConditionYesNoMode
+          : undefined,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFieldConditionGroups(
+        file,
+        params.fieldConditionPresenceFields,
+        params.fieldConditionPresenceMode === "filled" ||
+          params.fieldConditionPresenceMode === "blank"
+          ? params.fieldConditionPresenceMode
+          : undefined,
+      )
+    ) {
+      return false;
+    }
 
     return true;
   });
@@ -959,16 +996,38 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
 }
 
 function shouldShowDemandCancelledFiles(params: FileSearchParams) {
-  const dashboardFilter = params.dashboardFilter?.trim();
+  if (isFirmOriginatedSearch(params)) return true;
+  const dashboardFilters = [params.dashboardFilter, ...(params.extraDashboardFilters ?? [])]
+    .map((filter) => filter?.trim())
+    .filter((filter): filter is string => Boolean(filter));
+  if (dashboardFilters.length) {
+    return (
+      normalizeIncludeExcludeFilter(params.demandCancelledPresenceFilter) === "include" ||
+      dashboardFilters.some(shouldAllowDemandCancelledDashboardFilter)
+    );
+  }
+  return normalizeIncludeExcludeFilter(params.demandCancelledPresenceFilter) !== "exclude";
+}
+
+function isFirmOriginatedSearch(params: FileSearchParams) {
+  const dashboardFilters = [params.dashboardFilter, ...(params.extraDashboardFilters ?? [])]
+    .map((filter) => filter?.trim())
+    .filter((filter): filter is string => Boolean(filter));
   return (
-    normalizeIncludeExcludeFilter(params.demandCancelledPresenceFilter) !== "exclude" ||
-    params.demandCancelledFilter ||
-    params.dashboardFilter?.trim() === "miscDemandCancelled" ||
-    (dashboardFilter ? isCancellationDashboardFilter(dashboardFilter) : false)
+    params.analyticsType === "firm" ||
+    dashboardFilters.some((filter) => filter.startsWith("firmAnalysis:")) ||
+    Boolean(params.firm?.trim()) ||
+    Boolean(params.firmUniqueNo?.trim()) ||
+    Boolean(params.firmContactNo?.trim()) ||
+    Boolean(params.firmCity?.trim()) ||
+    Boolean(params.selectedFirmTypes?.length)
   );
 }
 
-function firstOnlySearchList(onlyValues: string[] | undefined, fallbackValues: string[] | undefined) {
+function firstOnlySearchList(
+  onlyValues: string[] | undefined,
+  fallbackValues: string[] | undefined,
+) {
   if (onlyValues?.length) return onlyValues.slice(0, 1);
   return fallbackValues ?? [];
 }
@@ -1002,6 +1061,128 @@ function matchesRequiredFilledFields(file: FileRecord, keys: string[]) {
   return fileSupplyOrders(file).some((order) =>
     supplyKeys.every((key) => hasRequiredSupplyOrderField(order, key)),
   );
+}
+
+const yesNoFieldConditionKeys = new Set<string>([
+  "gte",
+  "tcec",
+  "gem",
+  "highValue",
+  "ad",
+  "rqa",
+  "ifa",
+  "psb",
+  "bg",
+  "ir",
+  "rfpVetting",
+  "preBidMeeting",
+  "tenderLive",
+  "bidOpened",
+  "refloat",
+  "refloatPreBidMeeting",
+  "rst",
+  "biddingStageOver",
+  "demandCancelled",
+  "soCancelled",
+  "shortclosure",
+  "psbApplicable",
+  "dpExtension",
+  "ld",
+  "stageDelivery",
+  "stagePayment",
+  "advancePayment",
+  "cnc",
+]);
+
+function matchesFieldCondition(
+  file: FileRecord,
+  key: string | undefined,
+  mode: DatePresenceMode | undefined,
+) {
+  const trimmedKey = key?.trim();
+  if (!trimmedKey || !mode) return true;
+  if ((mode === "yes" || mode === "no") && !yesNoFieldConditionKeys.has(trimmedKey)) return true;
+  if (trimmedKey === "cnc") {
+    const hasCnc =
+      hasRequiredFileField(file, "cncDate") || hasRequiredFileField(file, "cncApprovalDate");
+    if (mode === "yes" || mode === "filled") return hasCnc;
+    if (mode === "no" || mode === "blank") return !hasCnc;
+    return true;
+  }
+  if (trimmedKey === "activeYears") {
+    return matchesFieldConditionValue(file.activeYears ?? [], mode);
+  }
+  if (trimmedKey === "bqFirmNames" || trimmedKey === "bqFirmUniqueNos") {
+    return matchesFirmFieldCondition(file.bqFirms, trimmedKey, mode);
+  }
+  if (trimmedKey === "invitedFirmNames" || trimmedKey === "invitedFirmUniqueNos") {
+    return matchesFirmFieldCondition(file.invitedFirms, trimmedKey, mode);
+  }
+  if (trimmedKey === "bidderFirmNames" || trimmedKey === "bidderFirmUniqueNos") {
+    return matchesFirmFieldCondition(file.bidderFirms, trimmedKey, mode);
+  }
+  if (supplyOrderKeySet.has(trimmedKey) || trimmedKey === "soCurrentMilestone") {
+    return fileSupplyOrders(file).some((order) =>
+      matchesSupplyOrderFieldCondition(order, trimmedKey, mode),
+    );
+  }
+  if (!(trimmedKey in file)) return true;
+  return matchesFieldConditionValue((file as Record<string, unknown>)[trimmedKey], mode);
+}
+
+function matchesFieldConditionGroups(
+  file: FileRecord,
+  groups: string[] | undefined,
+  mode: DatePresenceMode | undefined,
+) {
+  if (!mode) return true;
+  return (groups ?? [])
+    .map((group) =>
+      group
+        .split("|")
+        .map((field) => field.trim())
+        .filter(Boolean),
+    )
+    .filter((fields) => fields.length > 0)
+    .every((fields) => {
+      if (mode === "filled" || mode === "yes") {
+        return fields.some((field) => matchesFieldCondition(file, field, mode));
+      }
+      return fields.every((field) => matchesFieldCondition(file, field, mode));
+    });
+}
+
+function matchesFirmFieldCondition(
+  rows: FirmDetail[] | undefined,
+  key: string,
+  mode: DatePresenceMode,
+) {
+  const field = key.endsWith("UniqueNos") ? "firmUniqueNo" : "firmName";
+  const hasMatch = (rows ?? []).some((row) =>
+    matchesFieldConditionValue((row as Record<string, unknown>)[field], mode),
+  );
+  return mode === "blank" ? hasMatch || !(rows ?? []).length : hasMatch;
+}
+
+function matchesSupplyOrderFieldCondition(
+  order: SupplyOrderDetail,
+  key: string,
+  mode: DatePresenceMode,
+) {
+  if (mode === "filled") return hasRequiredSupplyOrderField(order, key);
+  if (mode === "blank") return !hasRequiredSupplyOrderField(order, key);
+  if (key === "soCurrentMilestone") return matchesFieldConditionValue(order.currentMilestone, mode);
+  if (key === "psbApplicable") return matchesFieldConditionValue(order.psbApplicable, mode);
+  return matchesFieldConditionValue((order as Record<string, unknown>)[key], mode);
+}
+
+function matchesFieldConditionValue(value: unknown, mode: DatePresenceMode): boolean {
+  if (mode === "filled") return hasRequiredValue(value);
+  if (mode === "blank") return !hasRequiredValue(value);
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return normalized === mode;
 }
 
 function hasRequiredFileField(file: FileRecord, key: string) {
@@ -1157,10 +1338,27 @@ function matchesSelectedFileTypes(
 }
 
 function matchesFirmTypeFilter(order: SupplyOrderDetail, selectedFirmTypes: string[]) {
-  const firmType = (order.firmType ?? "").trim().toUpperCase();
-  const firmTypeOther = (order.firmTypeOther ?? "").trim().toUpperCase();
+  const firmType = getEffectiveFirmType(order).toUpperCase();
   const normalizedFirmTypes = selectedFirmTypes.map((firmType) => firmType.trim().toUpperCase());
-  return normalizedFirmTypes.includes(firmType) || normalizedFirmTypes.includes(firmTypeOther);
+  return normalizedFirmTypes.includes(firmType);
+}
+
+function getEffectiveFirmType(order: SupplyOrderDetail) {
+  const firmType = order.firmType?.trim() || "";
+  const firmTypeOther = order.firmTypeOther?.trim() || "";
+  if (firmType.toUpperCase() === "OTHER") return firmTypeOther || firmType;
+  return firmType || firmTypeOther;
+}
+
+function hasActualPaymentAmount(order: SupplyOrderDetail) {
+  return (
+    hasNonZeroAmount(order.actualPaymentCapital) ||
+    hasNonZeroAmount(order.actualPaymentRevenue) ||
+    getSupplementaryBills(order).some(
+      (bill) =>
+        hasNonZeroAmount(bill.actualPaymentCapital) || hasNonZeroAmount(bill.actualPaymentRevenue),
+    )
+  );
 }
 
 function isYes(value: string | undefined) {
@@ -1170,13 +1368,11 @@ function isYes(value: string | undefined) {
 function getTcecCommittee(file: FileRecord, stage: "pre" | "post") {
   return stage === "pre"
     ? file.preTcecCommitteeNo?.trim()
-    : (file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim());
+    : file.refloatPostTcecCommitteeNo?.trim() || file.postTcecCommitteeNumber?.trim();
 }
 
 function getTcecMeetingDate(file: FileRecord, stage: "pre" | "post") {
-  return stage === "pre"
-    ? file.preTcecDate
-    : file.refloatPostTcecDate || file.postTcecDate;
+  return stage === "pre" ? file.preTcecDate : file.refloatPostTcecDate || file.postTcecDate;
 }
 
 function getTcecMinutesDate(file: FileRecord, stage: "pre" | "post") {
@@ -1600,10 +1796,7 @@ function matchesPaymentEventDateRange(
   if (!from && !to) return true;
   return filePaymentOrders(file).some((order) =>
     matchesAnyDateRange(
-      [
-        order.paymentDate,
-        ...getSupplementaryBills(order).map((bill) => bill.paymentDate),
-      ],
+      [order.paymentDate, ...getSupplementaryBills(order).map((bill) => bill.paymentDate)],
       from,
       to,
     ),
@@ -1611,9 +1804,7 @@ function matchesPaymentEventDateRange(
 }
 
 function getBillReturnResubmissionDates(cycles: BillReturnCycle[] | undefined) {
-  return (cycles ?? [])
-    .map((cycle) => cycle.resubmittedDate)
-    .filter(hasFilledString);
+  return (cycles ?? []).map((cycle) => cycle.resubmittedDate).filter(hasFilledString);
 }
 
 function matchesFreeDate(file: FileRecord, freeDate: string) {
@@ -1718,7 +1909,8 @@ function isLiveSupplyOrder(file: FileRecord) {
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order),
+      !isSupplyOrderCancelled(file, order) &&
+      !isYes(order.shortclosure),
   );
 }
 
@@ -2129,6 +2321,7 @@ function getLaterDate(first: string | undefined, second: string | undefined) {
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
+  if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
 }
 
@@ -2137,12 +2330,7 @@ function isPaymentDue(file: FileRecord) {
 }
 
 function isPaymentPending(file: FileRecord) {
-  return finalPaymentOrders(file).some(
-    (order) =>
-      hasPaymentWorkflowStarted(file, order) &&
-      !hasFilledString(order.paymentDate) &&
-      isPaymentOrderActive(file, order),
-  );
+  return getFinancePaymentLiabilityEntries(file).some((entry) => entry.pending);
 }
 
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
@@ -2174,17 +2362,13 @@ function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
   const sourceYear = decodeStatusFilterPart(rawSourceYear);
   const range = getFinancialYearDateRange(selectedYear);
   if (!selectedYear || !sourceYear || !range) return false;
-  return finalPaymentOrders(file).some((order) => {
-    if (!isPaymentOrderActive(file, order)) return false;
-    const orderYear = getFinancialYearForDate(order.soDate);
-    if (!orderYear || orderYear !== sourceYear) return false;
-    const paymentDate = order.paymentDate;
+  return getFinancePaymentLiabilityEntries(file).some((entry) => {
+    const orderYear = getFinancialYearForDate(entry.sourceDate);
+    if (!orderYear) return false;
+    const paymentDate = entry.paymentDate;
     const paidInSelectedYear = isDateWithinRange(paymentDate, range);
     const unpaidAtSelectedYearEnd =
       !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
-    if (mode === "carryForward") return orderYear === selectedYear && unpaidAtSelectedYearEnd;
-    if (mode === "clearedCarryForward") return orderYear < selectedYear && paidInSelectedYear;
-    if (mode === "previousCarryForward") return orderYear < selectedYear && unpaidAtSelectedYearEnd;
     if (mode === "futureClearedCarryForward") {
       return (
         orderYear === selectedYear &&
@@ -2193,8 +2377,51 @@ function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
         getFinancialYearForDate(paymentDate) === sourceYear
       );
     }
+    if (orderYear !== sourceYear) return false;
+    if (mode === "carryForward") return orderYear === selectedYear && unpaidAtSelectedYearEnd;
+    if (mode === "clearedCarryForward") return orderYear < selectedYear && paidInSelectedYear;
+    if (mode === "previousCarryForward") return orderYear < selectedYear && unpaidAtSelectedYearEnd;
     return false;
   });
+}
+
+function getFinancePaymentLiabilityEntries(file: FileRecord) {
+  if (isYes(file.demandCancelled)) return [];
+  return rawSupplyOrders(file).flatMap((baseOrder) => {
+    if (isSupplyOrderCancelled(file, baseOrder)) return [];
+    const mainEntries = finalPaymentOrders({ ...file, supplyOrders: [baseOrder] })
+      .filter((order) => isPaymentOrderActive(file, order))
+      .map((order) => ({
+        sourceDate: order.soDate || baseOrder.soDate,
+        paymentDate: order.paymentDate,
+        pending: hasPaymentWorkflowStarted(file, order) && !hasFilledString(order.paymentDate),
+      }));
+    const supplementaryEntries = getSupplementaryBills(baseOrder)
+      .filter(isSupplementaryPaymentRelevant)
+      .map((bill) => ({
+        sourceDate: baseOrder.soDate,
+        paymentDate: bill.paymentDate,
+        pending: isSupplementaryPaymentPending(bill),
+      }));
+    return [...mainEntries, ...supplementaryEntries];
+  });
+}
+
+function isSupplementaryPaymentRelevant(bill: SupplementaryBillDetail) {
+  return (
+    hasFilledString(bill.billSentForPaymentDate) ||
+    hasFilledString(bill.paymentDate) ||
+    hasSupplementaryBillReturnHistory(bill)
+  );
+}
+
+function isSupplementaryPaymentPending(bill: SupplementaryBillDetail) {
+  return (
+    !hasFilledString(bill.paymentDate) &&
+    (isSupplementaryBillSubmitted(bill) ||
+      isSupplementaryBillReturned(bill) ||
+      isSupplementaryBillResubmitted(bill))
+  );
 }
 
 function hasAdvancePaymentPaid(file: FileRecord) {
@@ -2796,13 +3023,18 @@ function getPreviousApplicableMilestone(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  let previousMilestone: (typeof milestoneDefinitions)[number] | undefined;
-  for (const item of milestoneDefinitions) {
-    if (item.key === milestone.key) break;
-    if (!isBlockingPreviousMilestone(item)) continue;
-    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  const targetIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  if (targetIndex <= 0) return undefined;
+  if (isFlexiblePreControlMilestone(milestone)) {
+    return milestoneDefinitions.find((item) => item.key === "scrutiny");
   }
-  return previousMilestone;
+  const controlIndex = milestoneDefinitions.findIndex((item) => item.key === "control");
+  const previous = milestoneDefinitions.slice(0, targetIndex).filter((item) => {
+    if (!isMilestoneApplicable(file, item)) return false;
+    if (controlIndex >= 0 && targetIndex >= controlIndex) return true;
+    return item.key === "scrutiny";
+  });
+  return previous[previous.length - 1];
 }
 
 function getFieldDateValue(file: FileRecord, key: FileKey | SupplyOrderKey) {
@@ -3321,21 +3553,29 @@ function isPreviousApplicableMilestoneComplete(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  let previousMilestone: (typeof milestoneDefinitions)[number] | undefined;
-  for (const item of milestoneDefinitions) {
-    if (item.key === milestone.key) break;
-    if (!isBlockingPreviousMilestone(item)) continue;
-    if (isMilestoneApplicable(file, item)) previousMilestone = item;
+  const targetIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  if (targetIndex <= 0) return hasMilestoneDate(file, "receivedDate");
+  if (isFlexiblePreControlMilestone(milestone)) {
+    const scrutiny = milestoneDefinitions.find((item) => item.key === "scrutiny");
+    return scrutiny ? isMilestoneComplete(file, scrutiny) : hasMilestoneDate(file, "receivedDate");
   }
-  return previousMilestone
-    ? isMilestoneComplete(file, previousMilestone)
-    : hasMilestoneDate(file, "receivedDate");
+  const controlIndex = milestoneDefinitions.findIndex((item) => item.key === "control");
+  if (controlIndex >= 0 && targetIndex >= controlIndex) {
+    return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+      if (!isMilestoneApplicable(file, item)) return true;
+      return isMilestoneComplete(file, item);
+    });
+  }
+  return milestoneDefinitions.slice(0, targetIndex).every((item) => {
+    if (item.key !== "scrutiny") return true;
+    return !isMilestoneApplicable(file, item) || isMilestoneComplete(file, item);
+  });
 }
 
-function isBlockingPreviousMilestone(
+function isFlexiblePreControlMilestone(
   milestone: Pick<(typeof milestoneDefinitions)[number], "key">,
 ) {
-  return milestone.key !== "highValue";
+  return ["highValue", "tcec", "ad", "rqa"].includes(milestone.key);
 }
 
 function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
@@ -3512,7 +3752,7 @@ function matchesStatus4CurrentMilestone(file: FileRecord, milestone: string) {
 }
 
 function matchesDashboardFilter(file: FileRecord, filter: string) {
-  if (!isCancellationDashboardFilter(filter) && isCancelledFile(file)) return false;
+  if (!shouldAllowInactiveDashboardFilter(filter) && isCancelledFile(file)) return false;
   if (filter.startsWith("delayFile:")) return file.id === filter.slice("delayFile:".length);
   if (filter.startsWith("financeCarryForward:")) {
     return matchesFinanceCarryForwardFilter(file, filter);
@@ -3542,15 +3782,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     }
     const fieldValue = String(file[key as keyof FileRecord] ?? "");
     if (value === "yes") return isYes(fieldValue);
-    if (value === "no") return isNo(fieldValue);
+    if (value === "no") return !isYes(fieldValue);
   }
   if (filter.startsWith("firmType:")) {
     const firmType = decodeURIComponent(filter.slice("firmType:".length)).trim().toUpperCase();
     if (!firmType) return true;
     return fileSupplyOrders(file).some(
-      (order) =>
-        order.firmType?.trim().toUpperCase() === firmType ||
-        order.firmTypeOther?.trim().toUpperCase() === firmType,
+      (order) => getEffectiveFirmType(order).toUpperCase() === firmType,
     );
   }
   if (filter.startsWith("gemBiddingMode:")) {
@@ -3597,10 +3835,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("cncSummaryFy:")) return matchesCncSummaryFiscalYearFilter(file, filter);
   if (filter.startsWith("cncSummary:")) return matchesCncSummaryFilter(file, filter);
   if (filter.startsWith("mode:"))
-    return (
-      (file.mode ?? "").trim().toUpperCase() ===
-      decodeURIComponent(filter.slice(5)).trim().toUpperCase()
-    );
+    return matchesBiddingModeValue(file.mode, decodeURIComponent(filter.slice(5)));
+  if (filter === "divisionTurnaroundSample") return isDivisionTurnaroundSample(file);
   if (filter.startsWith("manualMilestoneCurrent:")) {
     const milestone = filter.slice("manualMilestoneCurrent:".length);
     const normalized = normalizeMilestoneName(milestone);
@@ -3840,7 +4076,7 @@ function matchesTcecStatusFilter(file: FileRecord, filter: string) {
   if (!committee) return false;
   const meetingDate = decodeStatusFilterPart(rawMeetingDate).trim();
   const fileCommittee = getTcecCommittee(file, stage);
-  if ((fileCommittee ?? "").toLowerCase() !== committee) return false;
+  if (!matchesTcecCommitteeValue(fileCommittee, committee)) return false;
   const minutesDate = getTcecMinutesDate(file, stage);
   const fileMeetingDate = getTcecMeetingDate(file, stage);
   if (metric === "signed" && !hasFilledString(minutesDate)) return false;
@@ -3858,7 +4094,7 @@ function matchesTcecStatusFiscalYearFilter(file: FileRecord, filter: string) {
   const fiscalYear = decodeStatusFilterPart(rawFiscalYear).trim();
   const committee = decodeStatusFilterPart(rawCommittee).trim().toLowerCase();
   const fileCommittee = getTcecCommittee(file, stage);
-  if (committee && (fileCommittee ?? "").toLowerCase() !== committee) return false;
+  if (committee && !matchesTcecCommitteeValue(fileCommittee, committee)) return false;
   const meetingDate = getTcecMeetingDate(file, stage);
   if (!hasFilledString(meetingDate)) return false;
   if (fiscalYear !== "all" && getFinancialYearForDate(meetingDate) !== fiscalYear) return false;
@@ -3913,6 +4149,60 @@ function isCancellationDashboardFilter(filter: string) {
     filter.startsWith("supplyOrderMonth:") ||
     filter.startsWith("supplyOrderYear:")
   );
+}
+
+function isInactiveHistoryDashboardFilter(filter: string) {
+  return (
+    filter === "divisionTurnaroundSample" ||
+    filter.startsWith("mode:") ||
+    filter.startsWith("preBidMeeting:") ||
+    filter.startsWith("refloatPreBidMeeting:") ||
+    filter.startsWith("preBidMeetingFy:") ||
+    filter.startsWith("refloatPreBidMeetingFy:") ||
+    filter.startsWith("tcecStatus:") ||
+    filter.startsWith("tcecStatusFy:") ||
+    filter.startsWith("cncSummary:") ||
+    filter.startsWith("cncSummaryFy:")
+  );
+}
+
+function shouldAllowInactiveDashboardFilter(filter: string) {
+  return isCancellationDashboardFilter(filter) || isInactiveHistoryDashboardFilter(filter);
+}
+
+function shouldAllowDemandCancelledDashboardFilter(filter: string) {
+  return (
+    isCancellationDashboardFilter(filter) ||
+    (isInactiveHistoryDashboardFilter(filter) &&
+      filter !== "divisionTurnaroundSample" &&
+      !filter.startsWith("mode:") &&
+      !filter.startsWith("gemBiddingMode:"))
+  );
+}
+
+function isDivisionTurnaroundSample(file: FileRecord) {
+  const days = getDateDifference(file.receivedDate, getEarliestSupplyOrderDate(file, "soDate"));
+  return days !== undefined && days >= 0;
+}
+
+function getDateDifference(from: string | undefined, to: string | undefined) {
+  const fromTime = parseLocalDateTime(from ?? "");
+  const toTime = parseLocalDateTime(to ?? "");
+  if (fromTime === undefined || toTime === undefined) return undefined;
+  return Math.round((toTime - fromTime) / 86_400_000);
+}
+
+function matchesBiddingModeValue(value: string | undefined, expected: string) {
+  const normalizedValue = (value ?? "").trim().toUpperCase();
+  const normalizedExpected = expected.trim().toUpperCase();
+  if (normalizedExpected === "UNASSIGNED") return !normalizedValue;
+  return normalizedValue === normalizedExpected;
+}
+
+function matchesTcecCommitteeValue(value: string | undefined, expected: string) {
+  const normalizedValue = (value ?? "").trim().toLowerCase();
+  if (expected === "unassigned committee") return !normalizedValue;
+  return normalizedValue === expected;
 }
 
 function hasOrderFinancialSanctionCompleted(file: FileRecord) {
@@ -4091,7 +4381,7 @@ function hasLiveSupplyOrderRow(file: FileRecord) {
 }
 
 function isPreBidMeetingStatus(file: FileRecord, refloat: boolean, state: "due" | "completed") {
-  if (isCancelledFile(file)) return false;
+  if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
     : isYes(file.preBidMeeting);

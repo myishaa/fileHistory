@@ -334,6 +334,11 @@ export async function archiveIpAttempt(id: string, user: { id: string; name: str
   );
 }
 
+export async function deleteArchivedIpAttempt(id: string) {
+  await ensureIpAccessControlSchema();
+  await pool.query("delete from ip_login_attempts where id = $1 and archived_at is not null", [id]);
+}
+
 async function archiveAttemptsForIp(
   ipAddress: string,
   user: { id: string; name: string },
