@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { pool } from "../db/pool.js";
-import type { AppUserRole, AuthUser } from "../types.js";
+import type { AppUserRole, AuthUser, UniversalViewerCashOutgoEditScope } from "../types.js";
 import { cacheTtl, deleteCached, getCached } from "./cache.js";
 import {
   getFileCategorySqlCondition,
@@ -28,10 +28,28 @@ type SessionRow = {
   name: string | null;
   username: string | null;
   role: AppUserRole | null;
+  cash_outgo_edit_scope: UniversalViewerCashOutgoEditScope | null;
   emergency_ip_bypass: boolean | null;
   division_ids: string[] | null;
   allowed_file_categories: unknown;
 };
+
+let userPermissionSchemaReady: Promise<void> | undefined;
+
+export function ensureUserPermissionSchema() {
+  userPermissionSchemaReady ??= pool
+    .query(
+      `alter table app_users
+         add column if not exists cash_outgo_edit_scope text not null default 'none';
+       alter table app_users
+         drop constraint if exists app_users_cash_outgo_edit_scope_check;
+       alter table app_users
+         add constraint app_users_cash_outgo_edit_scope_check
+         check (cash_outgo_edit_scope in ('none', 'personal', 'global'))`,
+    )
+    .then(() => undefined);
+  return userPermissionSchemaReady;
+}
 
 function hashToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -120,6 +138,7 @@ export async function loadAuthUser(request: Request): Promise<AuthUser | undefin
 
 async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefined> {
   await ensureIpAccessControlSchema();
+  await ensureUserPermissionSchema();
   const result = await pool.query<SessionRow>(
     `select
        s.user_id,
@@ -128,6 +147,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
        u.name,
        u.username,
        u.role,
+       u.cash_outgo_edit_scope,
        u.emergency_ip_bypass,
        u.allowed_file_categories,
        coalesce(
@@ -170,6 +190,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
     role: row.role,
     divisionIds: row.division_ids ?? [],
     allowedFileCategories,
+    cashOutgoEditScope: row.cash_outgo_edit_scope ?? "none",
     emergencyIpBypass: Boolean(row.emergency_ip_bypass),
   };
 }

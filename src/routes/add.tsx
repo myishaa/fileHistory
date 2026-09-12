@@ -927,7 +927,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
   { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
-  { key: "billReturnCycles", label: "Bill returned for correction" },
+  { key: "billReturnCycles", label: "Returned Bills" },
   { key: "billAmountCapital", label: "Bill amount" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
@@ -944,6 +944,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
 
 const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "stageAmountCapital", label: "Stage amount" },
+  { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "deliveryPeriodStartDate", label: "Period start date", type: "date" },
   { key: "dpDate", label: "D.P. date", type: "date" },
   { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
@@ -957,20 +958,19 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
   { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
-  { key: "billReturnCycles", label: "Bill returned for correction" },
+  { key: "billReturnCycles", label: "Returned Bills" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
-  { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "actualPaymentCapital", label: "Actual payment amount" },
 ];
 
 const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
   { key: "stageAmountCapital", label: "Advance amount" },
+  { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
   { key: "billNo", label: "Bill No." },
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
-  { key: "billReturnCycles", label: "Bill returned for correction" },
+  { key: "billReturnCycles", label: "Returned Bills" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
-  { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "actualPaymentCapital", label: "Actual payment amount" },
 ];
 
@@ -1013,13 +1013,13 @@ const supplyOrderSubviewFields = {
   dp: ["dpDate", "dpExtension", "dpExtensionCount", "ld", "revisedDp"],
   delivery: ["materialReceiptDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
   payment: [
+    "paymentMode",
     "billPreparationDate",
     "billNo",
     "billSentForPaymentDate",
     "billReturnCycles",
     "billAmountCapital",
     "paymentDate",
-    "paymentMode",
     "actualPaymentCapital",
   ],
   supplementaryBills: [],
@@ -1085,7 +1085,6 @@ const supplyOrderFieldPrerequisites = {
   billReturnCycles: ["billSentForPaymentDate"],
   billAmountCapital: ["billPreparationDate"],
   paymentDate: ["billSentForPaymentDate"],
-  paymentMode: ["paymentDate"],
   actualPaymentCapital: ["paymentDate"],
   shortclosure: ["soDate"],
   shortclosureDate: ["shortclosure"],
@@ -6076,6 +6075,19 @@ function SupplementaryBillsDraftBlock({
                 </div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <DynamicField
+                    field={
+                      {
+                        key: "paymentMode",
+                        label: "Payment mode(Online/Offline)",
+                        options: paymentModeOptions,
+                      } as ExtraField<SupplyOrderKey>
+                    }
+                    value={bill.paymentMode}
+                    disabled={disabled}
+                    radioName={`supplementaryBill-${bill.id}-paymentMode`}
+                    onChange={(value) => onChange(bill.id, { paymentMode: value })}
+                  />
+                  <DynamicField
                     field={{ key: "billNo", label: "Bill No." } as ExtraField<FieldKey>}
                     value={bill.billNo}
                     disabled={disabled}
@@ -6131,19 +6143,6 @@ function SupplementaryBillsDraftBlock({
                     disabled={disabled}
                     radioName={`supplementaryBill-${bill.id}-paymentDate`}
                     onChange={(value) => onChange(bill.id, { paymentDate: value })}
-                  />
-                  <DynamicField
-                    field={
-                      {
-                        key: "paymentMode",
-                        label: "Payment mode(Online/Offline)",
-                        options: paymentModeOptions,
-                      } as ExtraField<SupplyOrderKey>
-                    }
-                    value={bill.paymentMode}
-                    disabled={disabled}
-                    radioName={`supplementaryBill-${bill.id}-paymentMode`}
-                    onChange={(value) => onChange(bill.id, { paymentMode: value })}
                   />
                   <AmountByValueTypeField
                     label="Supplementary payment amount"
@@ -7784,7 +7783,7 @@ function SupplyOrderMilestonesBlock({
               (isCurrent ? "bg-primary/10 font-semibold text-primary" : "")
             }
           >
-            <div className="min-w-0 truncate">{milestone}</div>
+            <div className="min-w-0 truncate">{getSupplyOrderMilestoneDisplayLabel(milestone)}</div>
             <div className="flex justify-center">
               <input
                 type="checkbox"
@@ -7894,7 +7893,7 @@ function BillReturnCyclesBlock({
   return (
     <div className="rounded-md border border-border bg-background/70 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-semibold">Bill returned for correction</div>
+        <div className="text-sm font-semibold">Returned Bills</div>
         <button
           type="button"
           onClick={addCycle}
@@ -9348,6 +9347,12 @@ function isMilestoneApplicableToFile(
 
 function normalizeMilestoneName(value: string | undefined | null) {
   return (value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function getSupplyOrderMilestoneDisplayLabel(milestone: string) {
+  return normalizeMilestoneName(milestone) === "billreturnedforcorrection"
+    ? "Returned Bills"
+    : milestone;
 }
 
 function normalizeStatusStage(value: string | undefined) {

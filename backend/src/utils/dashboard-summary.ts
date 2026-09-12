@@ -2170,12 +2170,20 @@ function getTopIndentorsByFiles(files: FileRecord[]) {
 }
 
 function getTopIndentorsByValue(files: FileRecord[]) {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, { capital: number; revenue: number; value: number }>();
   files.forEach((file) => {
     const name = getAnalyticsName(file.indentor, "Unassigned indentor");
-    totals.set(name, (totals.get(name) ?? 0) + getFileTotalValue(file));
+    const current = totals.get(name) ?? { capital: 0, revenue: 0, value: 0 };
+    const capital = getInrAmount(file.valueCapital, file) ?? 0;
+    const revenue = getInrAmount(file.valueRevenue, file) ?? 0;
+    current.capital += capital;
+    current.revenue += revenue;
+    current.value += capital + revenue;
+    totals.set(name, current);
   });
-  return mapEntriesToSortedRows(totals, "value");
+  return Array.from(totals.entries())
+    .map(([name, values]) => ({ name, ...values }))
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
 }
 
 function getMilestoneClearingRanking(files: FileRecord[]) {

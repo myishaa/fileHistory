@@ -6,6 +6,11 @@ import { cacheTtl, getCached } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
+import {
+  getDivisionScopeCondition,
+  requireAuth,
+  type AuthRequest,
+} from "../utils/auth.js";
 
 export const liveRouter = Router();
 
@@ -202,7 +207,8 @@ function getSelectedYearWhere(selectedYear: string, currentFinancialYear: string
 
 liveRouter.get(
   "/mmg",
-  asyncHandler(async (_request, response) => {
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
     const settings = await loadSettings();
     const selectedYear = settings.selectedYear || settings.financialYear;
     const divisionYear =
@@ -212,11 +218,20 @@ liveRouter.get(
         ? settings.financialYear
         : selectedYear;
     const selectedYearWhere = getSelectedYearWhere(selectedYear, settings.financialYear);
+    const scope = getDivisionScopeCondition(user);
+    const whereSql = [selectedYearWhere.whereSql.replace(/^where\s+/i, ""), scope.sql]
+      .filter(Boolean)
+      .join(" and ");
+    const values = [...selectedYearWhere.values, ...scope.values];
     const [divisions, files] = await Promise.all([
       loadActiveDivisions(divisionYear),
-      loadFiles(selectedYearWhere.whereSql, selectedYearWhere.values),
+      loadFiles(whereSql ? `where ${whereSql}` : "", values),
     ]);
-    const summary = buildDashboardSummary({ files, divisions, settings });
+    const visibleDivisions =
+      scope.values.length && Array.isArray(scope.values[0])
+        ? divisions.filter((division) => (scope.values[0] as string[]).includes(division.id))
+        : divisions;
+    const summary = buildDashboardSummary({ files, divisions: visibleDivisions, settings });
     response.json({
       live: {
         enabled: settings.mmgLiveEnabled === true,

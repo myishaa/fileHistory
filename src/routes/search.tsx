@@ -39,9 +39,9 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
-  CircleHelp,
   FileSpreadsheet,
   Filter,
+  Info,
   Lock,
   Unlock,
   Printer,
@@ -649,7 +649,7 @@ const delayStatusMilestoneLabels: Record<string, string> = {
   irReceipt: "IR Receipt",
   billPreparation: "Bill preparation",
   billSentForPayment: "Bill sent for payment",
-  billReturnedForCorrection: "Bill returned for correction",
+  billReturnedForCorrection: "Returned Bills",
   supplementaryBillReturnedForCorrection: "Supplementary bill returned for correction",
   payment: "Payment",
 };
@@ -998,7 +998,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "billPreparationDate", label: "Bill preparation", type: "date" },
       { key: "billNo", label: "Bill No." },
       { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
-      { key: "billReturnCycles", label: "Bill returned for correction" },
+      { key: "billReturnCycles", label: "Returned Bills" },
       { key: "paymentDate", label: "Payment date", type: "date" },
       { key: "paymentMode", label: "Payment mode (Online/Offline)", options: paymentModeOptions },
       { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
@@ -1131,6 +1131,7 @@ function getPrintColumnValue(file: FileRecord, key: TableFieldKey) {
   if (isFirmDetailTableFieldKey(key)) return getFirmDetailTableValue(file, key);
   if (isSupplyOrderKey(key)) return getSupplyOrderFieldValue(file, key);
   if (key === "valueCapital" || key === "valueRevenue") return getFileAmountFieldValue(file, key);
+  if (key === "currentMilestone") return getWorkflowDisplayLabel(String(file.currentMilestone ?? ""));
   return String(file[key] ?? "");
 }
 
@@ -4488,9 +4489,9 @@ function SearchHelper({ items, label }: { items: string[]; label: string }) {
             type="button"
             aria-label={label}
             onClick={(event) => event.preventDefault()}
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            className="inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground transition hover:text-foreground"
           >
-            <CircleHelp className="size-3.5" />
+            <Info className="size-3" />
           </button>
         </TooltipTrigger>
         <TooltipContent
@@ -5619,7 +5620,8 @@ function getSupplyOrderFieldValue(file: FileRecord, key: SupplyOrderKey) {
     .map((order, index) => {
       const value = getSupplyOrderValue(order, key);
       if (!value.trim()) return "";
-      return rows.length > 1 ? `${index + 1}. ${value}` : value;
+      const displayValue = getWorkflowDisplayLabel(value);
+      return rows.length > 1 ? `${index + 1}. ${displayValue}` : displayValue;
     })
     .filter(Boolean)
     .join("\n");
@@ -6160,6 +6162,12 @@ function normalizeMilestoneName(value: string | undefined) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function getWorkflowDisplayLabel(value: string | undefined) {
+  return normalizeMilestoneName(value) === "billreturnedforcorrection"
+    ? "Returned Bills"
+    : (value ?? "");
 }
 
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {

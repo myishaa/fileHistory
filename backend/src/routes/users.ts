@@ -1,7 +1,13 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import type { AppUser, AppUserRole } from "../types.js";
-import { canUseAllDivisions, requireAdmin, requireAuth, type AuthRequest } from "../utils/auth.js";
+import type { AppUser, AppUserRole, UniversalViewerCashOutgoEditScope } from "../types.js";
+import {
+  canUseAllDivisions,
+  ensureUserPermissionSchema,
+  requireAdmin,
+  requireAuth,
+  type AuthRequest,
+} from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { normalizeFileCategories } from "../utils/file-categories.js";
 import { ensureIpAccessControlSchema } from "../utils/ip-access-control.js";
@@ -42,6 +48,7 @@ type UserRow = {
   role: AppUserRole;
   division_ids: string[] | null;
   allowed_file_categories: unknown;
+  cash_outgo_edit_scope: UniversalViewerCashOutgoEditScope;
   emergency_ip_bypass: boolean;
   archived_at: Date | string | null;
 };
@@ -58,6 +65,7 @@ function mapUser(row: UserRow): AppUser {
           row.allowed_file_categories.filter((item): item is string => typeof item === "string"),
         )
       : undefined,
+    cashOutgoEditScope: row.cash_outgo_edit_scope ?? "none",
     emergencyIpBypass: Boolean(row.emergency_ip_bypass),
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
   };
@@ -90,6 +98,12 @@ function readAllowedFileCategories(value: unknown) {
   return normalizeFileCategories(value);
 }
 
+function readCashOutgoEditScope(value: unknown): UniversalViewerCashOutgoEditScope | undefined {
+  if (value === undefined) return undefined;
+  if (value === "none" || value === "personal" || value === "global") return value;
+  throw new HttpError(400, "cashOutgoEditScope must be none, personal, or global.");
+}
+
 function clearUserCache() {
   clearCachePrefix("auth:");
   clearCachePrefix("lookup:users");
@@ -113,6 +127,7 @@ async function verifyDeletionPassword(value: unknown) {
 
 async function listUsers(includeArchived = false) {
   await ensureIpAccessControlSchema();
+  await ensureUserPermissionSchema();
   const cacheKey = includeArchived ? "lookup:users:archived" : "lookup:users";
   return getCached(cacheKey, cacheTtl.lookupMs, async () => {
     const result = await pool.query<UserRow>(
@@ -121,6 +136,7 @@ async function listUsers(includeArchived = false) {
          u.name,
          u.username,
          u.role,
+         u.cash_outgo_edit_scope,
          u.emergency_ip_bypass,
          u.allowed_file_categories,
          u.archived_at,
@@ -183,18 +199,23 @@ usersRouter.post(
     const password = requireString(body.password, "password");
     const divisionIds = readDivisionIds(body.divisionIds) ?? [];
     const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
+    const cashOutgoEditScope =
+      role === "universal_viewer"
+        ? (readCashOutgoEditScope(body.cashOutgoEditScope) ?? "none")
+        : "none";
     const emergencyIpBypass = body.emergencyIpBypass === true && role === "admin";
 
     const client = await pool.connect();
     try {
       await ensureIpAccessControlSchema();
+      await ensureUserPermissionSchema();
       await client.query("begin");
       const result = await client.query<{ id: string }>(
         `insert into app_users (
            name, username, role, password_hash, is_active, allowed_file_categories,
-           emergency_ip_bypass
+           cash_outgo_edit_scope, emergency_ip_bypass
          )
-         values ($1, $2, $3, crypt($4, gen_salt('bf')), true, $5::jsonb, $6)
+         values ($1, $2, $3, crypt($4, gen_salt('bf')), true, $5::jsonb, $6, $7)
          returning id`,
         [
           name,
@@ -202,6 +223,7 @@ usersRouter.post(
           role,
           password,
           allowedFileCategories ? JSON.stringify(allowedFileCategories) : null,
+          cashOutgoEditScope,
           emergencyIpBypass,
         ],
       );
@@ -236,6 +258,8 @@ usersRouter.patch(
     const values: unknown[] = [];
     const divisionIds = readDivisionIds(body.divisionIds);
     const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
+    const nextRole = "role" in body ? readRole(body.role) : undefined;
+    const cashOutgoEditScope = readCashOutgoEditScope(body.cashOutgoEditScope);
 
     const addField = (column: string, value: unknown) => {
       values.push(value);
@@ -244,7 +268,7 @@ usersRouter.patch(
 
     if ("name" in body) addField("name", requireString(body.name, "name"));
     if ("username" in body) addField("username", requireString(body.username, "username"));
-    if ("role" in body) addField("role", readRole(body.role));
+    if ("role" in body) addField("role", nextRole);
     if ("password" in body) addField("password_hash", requireString(body.password, "password"));
     if ("emergencyIpBypass" in body) addField("emergency_ip_bypass", body.emergencyIpBypass === true);
     if ("allowedFileCategories" in body) {
@@ -255,12 +279,20 @@ usersRouter.patch(
     const client = await pool.connect();
     try {
       await ensureIpAccessControlSchema();
+      await ensureUserPermissionSchema();
       await client.query("begin");
       const existing = await client.query<{ id: string; role: AppUserRole; is_active: boolean }>(
         "select id, role, is_active from app_users where id = $1",
         [id],
       );
       if (existing.rowCount === 0) throw new HttpError(404, "User not found.");
+      if ("cashOutgoEditScope" in body || nextRole) {
+        const targetRole = nextRole ?? existing.rows[0].role;
+        addField(
+          "cash_outgo_edit_scope",
+          targetRole === "universal_viewer" ? (cashOutgoEditScope ?? "none") : "none",
+        );
+      }
       if (
         existing.rows[0].role === "admin" &&
         existing.rows[0].is_active &&

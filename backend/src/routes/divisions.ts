@@ -1,7 +1,12 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { Division } from "../types.js";
-import { requireAdmin, type AuthRequest } from "../utils/auth.js";
+import {
+  canUseAllDivisions,
+  requireAdmin,
+  requireAuth,
+  type AuthRequest,
+} from "../utils/auth.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { fromDbDate, fromDbText, toDbNumber, toDbText } from "../utils/db-values.js";
 import {
@@ -142,6 +147,7 @@ function clearDivisionCache() {
 divisionsRouter.get(
   "/",
   asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
     const financialYear = await readAllocationYear(request.query.year);
     const includeInactive = request.query.includeInactive === "true";
     const includeArchived = request.query.includeArchived === "true";
@@ -171,7 +177,10 @@ divisionsRouter.get(
         return result.rows.map(mapDivision);
       },
     );
-    response.json({ divisions });
+    const visibleDivisions = canUseAllDivisions(user)
+      ? divisions
+      : divisions.filter((division) => user.divisionIds.includes(division.id));
+    response.json({ divisions: visibleDivisions });
   }),
 );
 

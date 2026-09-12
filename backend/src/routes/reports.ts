@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type {
   AppSettings,
+  AuthUser,
   FileRecord,
   SupplementaryBillDetail,
   SupplyOrderDetail,
@@ -42,6 +43,7 @@ export const reportsRouter = Router();
 const DEFAULT_BILL_PAYMENT_OFFSET_DAYS = 5;
 const DEFAULT_BILL_SUBMISSION_OFFSET_DAYS = 5;
 const DEFAULT_DP_OFFSET_DAYS = 10;
+const DEFAULT_PRE_SO_OFFSET_DAYS = 30;
 
 type CashOutgoRow = {
   monthKey: string;
@@ -469,6 +471,8 @@ type SettingsRow = {
   table_field_presets: unknown;
   bg_receipt_delay_days: unknown;
   active_user_id: string | null;
+  pre_so_default_so_offset_days: number;
+  pre_so_default_payment_offset_days: number;
 };
 
 const defaultBgReceiptDelayDays = [10, 30, 60];
@@ -516,15 +520,23 @@ function mapSettings(row: SettingsRow): AppSettings {
     tableFieldPresets: fromDbJsonArray(row.table_field_presets),
     bgReceiptDelayDays: normalizeBgReceiptDelayDays(fromDbJsonArray(row.bg_receipt_delay_days)),
     activeUserId: fromDbText(row.active_user_id) || undefined,
+    preSoDefaultSoOffsetDays: Number(
+      row.pre_so_default_so_offset_days ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+    ),
+    preSoDefaultPaymentOffsetDays: Number(
+      row.pre_so_default_payment_offset_days ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+    ),
   };
 }
 
 async function loadSettings() {
   return getCached("settings:reports", cacheTtl.settingsMs, async () => {
+    await ensurePreSoCashOutgoSchema();
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
-              bg_receipt_delay_days, active_user_id
+              bg_receipt_delay_days, active_user_id,
+              pre_so_default_so_offset_days, pre_so_default_payment_offset_days
        from app_settings
        where id = true`,
     );
@@ -618,6 +630,7 @@ function ensureCashOutGoPlanSchema() {
       on conflict (id) do nothing;
       create table if not exists cash_out_go_plan_assumptions (
         row_key text primary key,
+        scope_key text not null default 'global',
         expected_sent_date date,
         expected_payment_date date,
         bill_offset_days integer,
@@ -626,13 +639,180 @@ function ensureCashOutGoPlanSchema() {
           check (bill_offset_days is null or bill_offset_days >= 0)
       );
       alter table cash_out_go_plan_assumptions
-        add column if not exists expected_payment_date date`,
+        add column if not exists scope_key text not null default 'global';
+      alter table cash_out_go_plan_assumptions
+        add column if not exists expected_payment_date date;
+      alter table cash_out_go_plan_assumptions
+        drop constraint if exists cash_out_go_plan_assumptions_pkey;
+      alter table cash_out_go_plan_assumptions
+        add primary key (scope_key, row_key)`,
     )
     .then(() => undefined);
   return cashOutGoPlanSchemaReady;
 }
 
-async function loadCashOutGoPlanSettings(userId: string): Promise<CashOutGoPlanSettings> {
+function getCashOutGoPlanScopeKey(user: AuthUser) {
+  if (user.role === "universal_viewer" && user.cashOutgoEditScope === "personal") return user.id;
+  return "global";
+}
+
+function canSaveCashOutGoPlan(user: AuthUser) {
+  return (
+    user.role === "admin" ||
+    user.role === "sub_admin" ||
+    user.role === "editor" ||
+    (user.role === "universal_viewer" &&
+      (user.cashOutgoEditScope === "personal" || user.cashOutgoEditScope === "global"))
+  );
+}
+
+let preSoCashOutgoSchemaReady: Promise<void> | undefined;
+
+function ensurePreSoCashOutgoSchema() {
+  preSoCashOutgoSchemaReady ??= pool
+    .query(
+      `alter table app_settings
+         add column if not exists pre_so_default_so_offset_days integer not null default 30;
+       alter table app_settings
+         add column if not exists pre_so_default_payment_offset_days integer not null default 30;
+       create table if not exists pre_so_cash_outgo_stage_offsets (
+         scope_key text not null,
+         stage_key text not null,
+         so_offset_days integer not null,
+         payment_offset_days integer not null,
+         updated_by uuid references app_users(id) on delete set null,
+         updated_at timestamptz not null default now(),
+         primary key (scope_key, stage_key),
+         constraint pre_so_stage_so_offset_non_negative check (so_offset_days >= 0),
+         constraint pre_so_stage_payment_offset_non_negative check (payment_offset_days >= 0)
+       );
+       create table if not exists pre_so_cash_outgo_file_plans (
+         scope_key text not null,
+         file_id uuid not null references files(id) on delete cascade,
+         included boolean not null default false,
+         tentative_so_date date,
+         tentative_payment_date date,
+         updated_by uuid references app_users(id) on delete set null,
+         updated_at timestamptz not null default now(),
+         primary key (scope_key, file_id)
+       )`,
+    )
+    .then(() => undefined);
+  return preSoCashOutgoSchemaReady;
+}
+
+function getPreSoCashOutgoScopeKey(user: AuthUser) {
+  if (user.role === "universal_viewer" && user.cashOutgoEditScope === "personal") return user.id;
+  return "global";
+}
+
+function canSavePreSoCashOutgoPlan(user: AuthUser) {
+  return (
+    user.role === "admin" ||
+    user.role === "sub_admin" ||
+    user.role === "editor" ||
+    (user.role === "universal_viewer" &&
+      (user.cashOutgoEditScope === "personal" || user.cashOutgoEditScope === "global"))
+  );
+}
+
+function canSavePreSoStageOffsets(user: AuthUser) {
+  return (
+    user.role === "admin" ||
+    user.role === "sub_admin" ||
+    (user.role === "universal_viewer" && user.cashOutgoEditScope === "global")
+  );
+}
+
+async function loadPreSoCashOutgoPlan(scopeKey: string, user?: AuthUser) {
+  await ensurePreSoCashOutgoSchema();
+  const scopeKeys = scopeKey === "global" ? ["global"] : ["global", scopeKey];
+  const [stageResult, fileResult] = await Promise.all([
+    pool.query<{
+      scope_key: string;
+      stage_key: string;
+      so_offset_days: number;
+      payment_offset_days: number;
+    }>(
+      `select scope_key, stage_key, so_offset_days, payment_offset_days
+       from pre_so_cash_outgo_stage_offsets
+       where scope_key = any($1::text[])
+       order by case when scope_key = $2 then 1 else 0 end`,
+      [scopeKeys, scopeKey],
+    ),
+    pool.query<{
+      scope_key: string;
+      file_id: string;
+      included: boolean;
+      tentative_so_date: Date | string | null;
+      tentative_payment_date: Date | string | null;
+    }>(
+      `select p.scope_key, p.file_id, p.included, p.tentative_so_date, p.tentative_payment_date
+       from pre_so_cash_outgo_file_plans p
+       join files f on f.id = p.file_id and f.archived_at is null
+       where p.scope_key = any($1::text[])
+         and (
+           $3::boolean
+           or f.division_id = any($4::uuid[])
+           or f.division_id is null
+         )
+       order by case when scope_key = $2 then 1 else 0 end`,
+      [scopeKeys, scopeKey, !user || canUseAllDivisions(user), user?.divisionIds ?? []],
+    ),
+  ]);
+  const stageOffsets: Record<string, { soOffsetDays: number; paymentOffsetDays: number }> = {};
+  stageResult.rows.forEach((row) => {
+    stageOffsets[row.stage_key] = {
+      soOffsetDays: Number(row.so_offset_days ?? DEFAULT_PRE_SO_OFFSET_DAYS),
+      paymentOffsetDays: Number(row.payment_offset_days ?? DEFAULT_PRE_SO_OFFSET_DAYS),
+    };
+  });
+  const filePlans: Record<
+    string,
+    { included: boolean; tentativeSoDate: string; tentativePaymentDate: string }
+  > = {};
+  fileResult.rows.forEach((row) => {
+    filePlans[row.file_id] = {
+      included: Boolean(row.included),
+      tentativeSoDate: fromDbDate(row.tentative_so_date) ?? "",
+      tentativePaymentDate: fromDbDate(row.tentative_payment_date) ?? "",
+    };
+  });
+  return { stageOffsets, filePlans };
+}
+
+async function assertPreSoFilePlanAccess(
+  user: AuthUser,
+  fileIds: string[],
+): Promise<Set<string>> {
+  const uniqueFileIds = Array.from(new Set(fileIds.filter(Boolean)));
+  if (!uniqueFileIds.length) return new Set();
+  const result = await pool.query<{ id: string; division_id: string | null }>(
+    `select id, division_id
+     from files
+     where id = any($1::uuid[]) and archived_at is null`,
+    [uniqueFileIds],
+  );
+  const accessibleIds = new Set<string>();
+  result.rows.forEach((row) => {
+    if (canAccessDivision(user, row.division_id)) accessibleIds.add(row.id);
+  });
+  if (accessibleIds.size !== uniqueFileIds.length) {
+    throw new HttpError(403, "You cannot save Pre-S.O. plan rows for files outside your divisions.");
+  }
+  return accessibleIds;
+}
+
+function canSaveMerData(user: AuthUser) {
+  return (
+    user.role === "admin" ||
+    user.role === "sub_admin" ||
+    user.role === "editor" ||
+    (user.role === "universal_viewer" && user.cashOutgoEditScope === "global")
+  );
+}
+
+async function loadCashOutGoPlanSettings(scopeKey: string): Promise<CashOutGoPlanSettings> {
   await ensureCashOutGoPlanSchema();
   const result = await pool.query<{
     bill_offset_days: number;
@@ -651,10 +831,10 @@ async function loadCashOutGoPlanSettings(userId: string): Promise<CashOutGoPlanS
        use_custom_dp_offset_days
      from cash_out_go_plan_settings
      where id = $1`,
-    [userId],
+    [scopeKey],
   );
   let row = result.rows[0];
-  if (!row && userId !== "global") {
+  if (!row && scopeKey !== "global") {
     const fallbackResult = await pool.query<{
       bill_offset_days: number;
       use_custom_bill_offset_days: boolean;
@@ -714,15 +894,21 @@ function getRowBillPaymentOffsetOverride(assumption: CashOutGoPlanAssumption) {
   return assumption.billOffsetDays === undefined ? "" : String(assumption.billOffsetDays);
 }
 
-async function loadCashOutGoPlanAssumptions() {
+async function loadCashOutGoPlanAssumptions(scopeKey: string) {
   await ensureCashOutGoPlanSchema();
+  const scopeKeys = scopeKey === "global" ? ["global"] : ["global", scopeKey];
   const result = await pool.query<{
     row_key: string;
+    scope_key: string;
     expected_sent_date: Date | string | null;
     expected_payment_date: Date | string | null;
     bill_offset_days: number | null;
   }>(
-    "select row_key, expected_sent_date, expected_payment_date, bill_offset_days from cash_out_go_plan_assumptions",
+    `select row_key, scope_key, expected_sent_date, expected_payment_date, bill_offset_days
+     from cash_out_go_plan_assumptions
+     where scope_key = any($1::text[])
+     order by case when scope_key = $2 then 1 else 0 end asc`,
+    [scopeKeys, scopeKey],
   );
   const assumptions = new Map<string, CashOutGoPlanAssumption>();
   for (const row of result.rows) {
@@ -2607,28 +2793,28 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
          where ${paymentRowPendingExpression("payment_row")}`,
       );
       selects.push(
-        `select 'Bill returned for correction' as milestone,
+        `select 'Returned Bills' as milestone,
                 'Total' as stage,
                 count(*)::integer as count
          from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
          where ${paymentRowReturnedBillExpression("payment_row")}`,
       );
       selects.push(
-        `select 'Bill returned for correction' as milestone,
+        `select 'Returned Bills' as milestone,
                 'Pending' as stage,
                 count(*)::integer as count
          from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
          where ${paymentRowOpenReturnedBillExpression("payment_row")}`,
       );
       selects.push(
-        `select 'Bill returned for correction' as milestone,
+        `select 'Returned Bills' as milestone,
                 'Completed' as stage,
                 count(*)::integer as count
          from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
          where ${paymentRowResubmittedReturnedBillExpression("payment_row")}`,
       );
       selects.push(
-        `select 'Bill returned for correction' as milestone,
+        `select 'Returned Bills' as milestone,
                 'Returned paid' as stage,
                 count(*)::integer as count
          from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
@@ -2708,28 +2894,28 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
   });
 
   selects.push(
-    `select 'Bill returned for correction' as milestone,
+    `select 'Returned Bills' as milestone,
             'Total' as stage,
             count(*)::integer as count
      from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
      where ${paymentRowReturnedBillExpression("payment_row")}`,
   );
   selects.push(
-    `select 'Bill returned for correction' as milestone,
+    `select 'Returned Bills' as milestone,
             'Pending' as stage,
             count(*)::integer as count
      from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
      where ${paymentRowOpenReturnedBillExpression("payment_row")}`,
   );
   selects.push(
-    `select 'Bill returned for correction' as milestone,
+    `select 'Returned Bills' as milestone,
             'Completed' as stage,
             count(*)::integer as count
      from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
      where ${paymentRowResubmittedReturnedBillExpression("payment_row")}`,
   );
   selects.push(
-    `select 'Bill returned for correction' as milestone,
+    `select 'Returned Bills' as milestone,
             'Returned paid' as stage,
             count(*)::integer as count
      from ${reportPaymentRowsSource(whereSql, [`not ${isCancelledExpression()}`])} payment_row
@@ -3966,7 +4152,7 @@ function returnedBillDelayRowsSelects(
         coalesce(f.indentor, '') as indentor,
         coalesce(f.demand_description, '') as description,
         '${billReturnedDelayMilestoneKey}' as "milestoneKey",
-        'Bill returned for correction' as milestone,
+        'Returned Bills' as milestone,
         (${startDate})::text as "stageStartDate",
         (current_date - (${startDate})::date)::integer as "daysInStage",
         coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
@@ -4191,7 +4377,8 @@ reportsRouter.get(
 reportsRouter.put(
   "/mer-data",
   asyncHandler(async (request, response) => {
-    requireAuth(request as AuthRequest);
+    const user = requireAuth(request as AuthRequest);
+    if (!canSaveMerData(user)) throw new HttpError(403, "You cannot edit MER data.");
     const body = request.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       throw new HttpError(400, "Request body is required.");
@@ -4250,9 +4437,10 @@ reportsRouter.get(
     const includePreviousFySubmitted =
       readString(request.query.includePreviousFySubmitted) === "true";
     const divisionId = readString(request.query.divisionId)?.trim() || "all";
+    const scopeKey = getCashOutGoPlanScopeKey(user);
     const [planSettings, assumptions, allocation, merRows, allFiles] = await Promise.all([
-      loadCashOutGoPlanSettings(user.id),
-      loadCashOutGoPlanAssumptions(),
+      loadCashOutGoPlanSettings(scopeKey),
+      loadCashOutGoPlanAssumptions(scopeKey),
       loadCashOutGoPlanAllocationForUser(financialYear, divisionId, user),
       loadMerCashOutgoRows(financialYear),
       loadFiles("", [], false),
@@ -4279,6 +4467,10 @@ reportsRouter.put(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    if (!canSaveCashOutGoPlan(user)) {
+      throw new HttpError(403, "You cannot save Cash Out Go Plan changes.");
+    }
+    const scopeKey = getCashOutGoPlanScopeKey(user);
     const body = request.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       throw new HttpError(400, "Request body is required.");
@@ -4306,7 +4498,7 @@ reportsRouter.put(
     try {
       await client.query("begin");
       await client.query(
-        `insert into cash_out_go_plan_settings
+          `insert into cash_out_go_plan_settings
            (
              id,
              bill_offset_days,
@@ -4328,7 +4520,7 @@ reportsRouter.put(
              use_custom_dp_offset_days = excluded.use_custom_dp_offset_days,
              updated_at = now()`,
         [
-          user.id,
+          scopeKey,
           billOffsetDays,
           useCustomBillOffsetDays,
           handSubmissionOffsetDays,
@@ -4352,21 +4544,23 @@ reportsRouter.put(
         const normalizedBillOffsetOverride =
           billOffsetOverride === effectiveBillOffsetDays ? undefined : billOffsetOverride;
         if (!expectedSentDate && !expectedPaymentDate && normalizedBillOffsetOverride === undefined) {
-          await client.query("delete from cash_out_go_plan_assumptions where row_key = $1", [
-            rowKey,
-          ]);
+          await client.query(
+            "delete from cash_out_go_plan_assumptions where scope_key = $1 and row_key = $2",
+            [scopeKey, rowKey],
+          );
           continue;
         }
         await client.query(
           `insert into cash_out_go_plan_assumptions
-             (row_key, expected_sent_date, expected_payment_date, bill_offset_days, updated_at)
-           values ($1, $2, $3, $4, now())
-           on conflict (row_key) do update
+             (scope_key, row_key, expected_sent_date, expected_payment_date, bill_offset_days, updated_at)
+           values ($1, $2, $3, $4, $5, now())
+           on conflict (scope_key, row_key) do update
            set expected_sent_date = excluded.expected_sent_date,
                expected_payment_date = excluded.expected_payment_date,
                bill_offset_days = excluded.bill_offset_days,
                updated_at = now()`,
           [
+            scopeKey,
             rowKey,
             expectedSentDate ?? null,
             expectedPaymentDate ?? null,
@@ -4383,6 +4577,131 @@ reportsRouter.put(
     }
 
     response.json({ ok: true });
+  }),
+);
+
+reportsRouter.get(
+  "/pre-so-cash-outgo-plan",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const settings = await loadSettings();
+    const scopeKey = getPreSoCashOutgoScopeKey(user);
+    const plan = await loadPreSoCashOutgoPlan(scopeKey, user);
+    response.json({
+      plan: {
+        defaultSoOffsetDays: settings.preSoDefaultSoOffsetDays ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+        defaultPaymentOffsetDays:
+          settings.preSoDefaultPaymentOffsetDays ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+        canSave: canSavePreSoCashOutgoPlan(user),
+        canSaveStageOffsets: canSavePreSoStageOffsets(user),
+        ...plan,
+      },
+    });
+  }),
+);
+
+reportsRouter.put(
+  "/pre-so-cash-outgo-plan",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canSavePreSoCashOutgoPlan(user)) {
+      throw new HttpError(403, "You cannot save Pre-S.O. cash outgo plan changes.");
+    }
+    const body = request.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new HttpError(400, "Request body is required.");
+    }
+    const record = body as Record<string, unknown>;
+    const stageOffsets = Array.isArray(record.stageOffsets) ? record.stageOffsets : [];
+    const filePlans = Array.isArray(record.filePlans) ? record.filePlans : [];
+    const scopeKey = getPreSoCashOutgoScopeKey(user);
+    const normalizedFilePlans = filePlans
+      .filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === "object" && !Array.isArray(item)),
+      )
+      .map((row) => ({
+        fileId: readString(row.fileId)?.trim() ?? "",
+        included: readBoolean(row.included),
+        tentativeSoDate: readDateString(row.tentativeSoDate),
+        tentativePaymentDate: readDateString(row.tentativePaymentDate),
+      }))
+      .filter((row) => row.fileId);
+    const submittedFileIds = normalizedFilePlans.map((row) => row.fileId);
+    const accessibleFileIds = await assertPreSoFilePlanAccess(user, submittedFileIds);
+
+    await ensurePreSoCashOutgoSchema();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      if (canSavePreSoStageOffsets(user)) {
+        await client.query("delete from pre_so_cash_outgo_stage_offsets where scope_key = $1", [
+          scopeKey,
+        ]);
+        for (const item of stageOffsets) {
+          if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+          const row = item as Record<string, unknown>;
+          const stageKey = readString(row.stageKey)?.trim();
+          if (!stageKey) continue;
+          await client.query(
+            `insert into pre_so_cash_outgo_stage_offsets
+               (scope_key, stage_key, so_offset_days, payment_offset_days, updated_by, updated_at)
+             values ($1, $2, $3, $4, $5, now())`,
+            [
+              scopeKey,
+              stageKey,
+              readPlanNonNegativeInteger(row.soOffsetDays, DEFAULT_PRE_SO_OFFSET_DAYS),
+              readPlanNonNegativeInteger(row.paymentOffsetDays, DEFAULT_PRE_SO_OFFSET_DAYS),
+              user.id,
+            ],
+          );
+        }
+      }
+
+      if (submittedFileIds.length) {
+        await client.query(
+          `delete from pre_so_cash_outgo_file_plans
+           where scope_key = $1 and file_id = any($2::uuid[])`,
+          [scopeKey, submittedFileIds],
+        );
+      }
+      for (const row of normalizedFilePlans) {
+        if (!accessibleFileIds.has(row.fileId)) continue;
+        const { fileId, included, tentativeSoDate, tentativePaymentDate } = row;
+        if (!included && !tentativeSoDate && !tentativePaymentDate) continue;
+        await client.query(
+          `insert into pre_so_cash_outgo_file_plans
+             (scope_key, file_id, included, tentative_so_date, tentative_payment_date, updated_by, updated_at)
+           values ($1, $2, $3, $4, $5, $6, now())`,
+          [
+            scopeKey,
+            fileId,
+            included,
+            tentativeSoDate ?? null,
+            tentativePaymentDate ?? null,
+            user.id,
+          ],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const settings = await loadSettings();
+    const plan = await loadPreSoCashOutgoPlan(scopeKey, user);
+    response.json({
+      plan: {
+        defaultSoOffsetDays: settings.preSoDefaultSoOffsetDays ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+        defaultPaymentOffsetDays:
+          settings.preSoDefaultPaymentOffsetDays ?? DEFAULT_PRE_SO_OFFSET_DAYS,
+        canSave: canSavePreSoCashOutgoPlan(user),
+        canSaveStageOffsets: canSavePreSoStageOffsets(user),
+        ...plan,
+      },
+    });
   }),
 );
 

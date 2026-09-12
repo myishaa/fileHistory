@@ -1,7 +1,9 @@
 import type {
   AdvancePaymentDetail,
+  BillReturnCycle,
   FileRecord,
   StageDeliveryDetail,
+  SupplementaryBillDetail,
   SupplyOrderDetail,
 } from "@/lib/files-store";
 import { getInrAmount } from "@/lib/money";
@@ -42,6 +44,7 @@ export type DemandProcessingAnalysisRow = {
   gapDays: number;
   valueCapital: number;
   valueRevenue: number;
+  paymentMode?: string;
 };
 
 type DateFieldConfig = {
@@ -104,6 +107,9 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "order.billPreparationDate", label: "Bill preparation date", group: "Bill / Payment", scope: "order", key: "billPreparationDate" },
   { id: "order.billSentForPaymentDate", label: "Bill sent for payment date", group: "Bill / Payment", scope: "order", key: "billSentForPaymentDate" },
   { id: "order.paymentDate", label: "Payment date", group: "Bill / Payment", scope: "order", key: "paymentDate" },
+  { id: "payment.unifiedSubmissionDate", label: "Unified bill submission / resubmission date", group: "Bill / Payment", scope: "order", key: "__unifiedSubmissionDate" },
+  { id: "payment.unifiedReturnDate", label: "Unified bill return date", group: "Bill / Payment", scope: "order", key: "__unifiedReturnDate" },
+  { id: "payment.unifiedPaymentDate", label: "Unified payment date", group: "Bill / Payment", scope: "order", key: "__unifiedPaymentDate" },
   { id: "order.soCancelledDate", label: "S.O. cancelled date", group: "Cancellation / Closure", scope: "order", key: "soCancelledDate" },
   { id: "stage.deliveryPeriodStartDate", label: "Stage delivery period start date", group: "Stage delivery", scope: "stage", key: "deliveryPeriodStartDate" },
   { id: "stage.dpDate", label: "Stage D.P. date", group: "Stage delivery", scope: "stage", key: "dpDate" },
@@ -132,17 +138,19 @@ export const demandProcessingDateFields: DemandProcessingDateField[] = dateField
 );
 
 export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
-  { id: "builtin-received-control", name: "Demand received date to Demand control date", fromFieldId: "file.receivedDate", toFieldId: "file.immsDate", active: true },
-  { id: "builtin-control-so", name: "Demand control date to S.O. date", fromFieldId: "file.immsDate", toFieldId: "order.soDate", active: true },
-  { id: "builtin-fs-so", name: "Financial Sanction date to S.O. date", fromFieldId: "order.financialSanctionDate", toFieldId: "order.soDate", active: true },
-  { id: "builtin-so-material", name: "S.O. date to Material receipt date", fromFieldId: "order.soDate", toFieldId: "order.materialReceiptDate", active: true },
-  { id: "builtin-material-payment", name: "Material receipt date to Payment date", fromFieldId: "order.materialReceiptDate", toFieldId: "order.paymentDate", active: true },
-  { id: "builtin-bill-sent-payment", name: "Bill sent for payment date to Payment date", fromFieldId: "order.billSentForPaymentDate", toFieldId: "order.paymentDate", active: true },
-  { id: "builtin-ifa", name: "IFA sent date to IFA final date", fromFieldId: "file.ifaSentDate", toFieldId: "file.ifaFinalDate", active: true },
-  { id: "builtin-pre-tcec", name: "Pre-TCEC date to Pre-TCEC minutes date", fromFieldId: "file.preTcecDate", toFieldId: "file.preTcecMinutesDate", active: true },
-  { id: "builtin-post-tcec", name: "Post-TCEC date to Post-TCEC minutes date", fromFieldId: "file.postTcecDate", toFieldId: "file.postTcecMinutesDate", active: true },
-  { id: "builtin-refloat-post-tcec", name: "Refloat Post-TCEC date to Refloat Post-TCEC minutes date", fromFieldId: "file.refloatPostTcecDate", toFieldId: "file.refloatPostTcecMinutesDate", active: true },
-  { id: "builtin-cnc", name: "CNC date to CNC approval date", fromFieldId: "file.cncDate", toFieldId: "file.cncApprovalDate", active: true },
+  { id: "builtin-received-control", name: "Demand control based on Demand received date", fromFieldId: "file.receivedDate", toFieldId: "file.immsDate", active: true },
+  { id: "builtin-control-so", name: "S.O. based on Demand control date", fromFieldId: "file.immsDate", toFieldId: "order.soDate", active: true },
+  { id: "builtin-fs-so", name: "S.O. based on Financial Sanction date", fromFieldId: "order.financialSanctionDate", toFieldId: "order.soDate", active: true },
+  { id: "builtin-so-material", name: "Material receipt based on S.O. date", fromFieldId: "order.soDate", toFieldId: "order.materialReceiptDate", active: true },
+  { id: "builtin-payment-submission-payment", name: "Payment: Unified payment based on Unified bill submission / resubmission", fromFieldId: "payment.unifiedSubmissionDate", toFieldId: "payment.unifiedPaymentDate", active: true },
+  { id: "builtin-payment-material-submission", name: "Payment: Unified bill submission / resubmission based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
+  { id: "builtin-payment-job-submission", name: "Payment: Unified bill submission / resubmission based on Job Completion", fromFieldId: "order.jobCompletionDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
+  { id: "builtin-payment-material-payment", name: "Payment: Unified payment based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedPaymentDate", active: true },
+  { id: "builtin-ifa", name: "IFA final based on IFA sent date", fromFieldId: "file.ifaSentDate", toFieldId: "file.ifaFinalDate", active: true },
+  { id: "builtin-pre-tcec", name: "Pre-TCEC minutes based on Pre-TCEC date", fromFieldId: "file.preTcecDate", toFieldId: "file.preTcecMinutesDate", active: true },
+  { id: "builtin-post-tcec", name: "Post-TCEC minutes based on Post-TCEC date", fromFieldId: "file.postTcecDate", toFieldId: "file.postTcecMinutesDate", active: true },
+  { id: "builtin-refloat-post-tcec", name: "Refloat Post-TCEC minutes based on Refloat Post-TCEC date", fromFieldId: "file.refloatPostTcecDate", toFieldId: "file.refloatPostTcecMinutesDate", active: true },
+  { id: "builtin-cnc", name: "CNC approval based on CNC date", fromFieldId: "file.cncDate", toFieldId: "file.cncApprovalDate", active: true },
 ];
 
 export function getDemandProcessingField(id: string) {
@@ -190,6 +198,8 @@ export function buildDemandProcessingRows(
   const fromField = getDemandProcessingField(fromFieldId);
   const toField = getDemandProcessingField(toFieldId);
   if (!fromField || !toField) return [];
+  const usesUnifiedPaymentField =
+    isUnifiedPaymentField(fromFieldId) || isUnifiedPaymentField(toFieldId);
   const scope = getAnalysisScope(fromField.scope, toField.scope);
   const rows: DemandProcessingAnalysisRow[] = [];
 
@@ -204,6 +214,7 @@ export function buildDemandProcessingRows(
       valueRevenue: number,
       orderIndex?: number,
       stageIndex?: number,
+      paymentMode?: string,
     ) => {
       if (!isIsoDate(fromDate) || !isIsoDate(toDate)) return;
       rows.push({
@@ -219,8 +230,28 @@ export function buildDemandProcessingRows(
         gapDays: differenceInDays(fromDate, toDate),
         valueCapital,
         valueRevenue,
+        paymentMode,
       });
     };
+
+    if (usesUnifiedPaymentField) {
+      (file.supplyOrders ?? []).forEach((order, orderIndex) => {
+        getUnifiedPaymentEvents(file, order, orderIndex).forEach((event) => {
+          addRow(
+            event.basis,
+            event.orderRef,
+            getUnifiedDemandProcessingValue(fromField, file, order, event),
+            getUnifiedDemandProcessingValue(toField, file, order, event),
+            event.valueCapital,
+            event.valueRevenue,
+            orderIndex,
+            event.stageIndex,
+            event.paymentMode,
+          );
+        });
+      });
+      return;
+    }
 
     if (scope === "file") {
       const value = getDemandProcessingFileValue(file);
@@ -278,6 +309,188 @@ export function buildDemandProcessingRows(
     });
   });
   return rows;
+}
+
+type UnifiedPaymentEvent = {
+  basis: DemandProcessingAnalysisRow["basis"];
+  orderRef: string;
+  orderIndex: number;
+  stageIndex?: number;
+  submissionDate?: string;
+  returnDate?: string;
+  paymentDate?: string;
+  paymentMode?: string;
+  valueCapital: number;
+  valueRevenue: number;
+};
+
+function isUnifiedPaymentField(fieldId: string) {
+  return fieldId.startsWith("payment.unified");
+}
+
+function getUnifiedDemandProcessingValue(
+  field: DemandProcessingDateField,
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  event: UnifiedPaymentEvent,
+) {
+  if (field.id === "payment.unifiedSubmissionDate") return event.submissionDate;
+  if (field.id === "payment.unifiedReturnDate") return event.returnDate;
+  if (field.id === "payment.unifiedPaymentDate") return event.paymentDate;
+  return field.getValue(file, order);
+}
+
+function getUnifiedPaymentEvents(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  orderIndex: number,
+): UnifiedPaymentEvent[] {
+  const orderRef = order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`;
+  const orderValue = getDemandProcessingOrderValue(file, order);
+  const events: UnifiedPaymentEvent[] = [
+    ...buildUnifiedPaymentEventsForPaymentObject({
+      basis: "S.O.",
+      orderRef,
+      orderIndex,
+      paymentObject: order,
+      fallbackValue: orderValue,
+    }),
+  ];
+
+  (order.stageDeliveries ?? []).forEach((stage, stageIndex) => {
+    events.push(
+      ...buildUnifiedPaymentEventsForPaymentObject({
+        basis: "Stage",
+        orderRef: `${orderRef} / Stage ${stageIndex + 1}`,
+        orderIndex,
+        stageIndex,
+        paymentObject: stage,
+        fallbackValue: orderValue,
+        amountCapital: stage.stageAmountCapital,
+        amountRevenue: stage.stageAmountRevenue,
+        file,
+      }),
+    );
+  });
+
+  if (order.advancePaymentDetail) {
+    events.push(
+      ...buildUnifiedPaymentEventsForPaymentObject({
+        basis: "Advance",
+        orderRef: `${orderRef} / Advance`,
+        orderIndex,
+        paymentObject: order.advancePaymentDetail,
+        fallbackValue: orderValue,
+        amountCapital:
+          order.advancePaymentDetail.actualPaymentCapital ||
+          order.advancePaymentDetail.stageAmountCapital,
+        amountRevenue:
+          order.advancePaymentDetail.actualPaymentRevenue ||
+          order.advancePaymentDetail.stageAmountRevenue,
+        file,
+      }),
+    );
+  }
+
+  (order.supplementaryBills ?? []).forEach((bill, billIndex) => {
+    events.push(
+      ...buildUnifiedPaymentEventsForPaymentObject({
+        basis: "S.O.",
+        orderRef: `${orderRef} / Supplementary bill ${billIndex + 1}`,
+        orderIndex,
+        paymentObject: bill,
+        fallbackValue: orderValue,
+        amountCapital: bill.actualPaymentCapital || bill.billAmountCapital,
+        amountRevenue: bill.actualPaymentRevenue || bill.billAmountRevenue,
+        file,
+      }),
+    );
+  });
+
+  return events;
+}
+
+type PaymentLike = Pick<
+  SupplyOrderDetail,
+  "billSentForPaymentDate" | "billReturnCycles" | "paymentDate" | "paymentMode"
+> &
+  Partial<
+    Pick<
+      StageDeliveryDetail &
+        AdvancePaymentDetail &
+        SupplementaryBillDetail,
+      | "stageAmountCapital"
+      | "stageAmountRevenue"
+      | "billAmountCapital"
+      | "billAmountRevenue"
+      | "actualPaymentCapital"
+      | "actualPaymentRevenue"
+    >
+  >;
+
+function buildUnifiedPaymentEventsForPaymentObject({
+  basis,
+  orderRef,
+  orderIndex,
+  stageIndex,
+  paymentObject,
+  fallbackValue,
+  amountCapital,
+  amountRevenue,
+  file,
+}: {
+  basis: DemandProcessingAnalysisRow["basis"];
+  orderRef: string;
+  orderIndex: number;
+  stageIndex?: number;
+  paymentObject: PaymentLike;
+  fallbackValue: { capital: number; revenue: number };
+  amountCapital?: string;
+  amountRevenue?: string;
+  file?: FileRecord;
+}): UnifiedPaymentEvent[] {
+  const value = {
+    capital: file ? (getInrAmount(amountCapital, file) ?? fallbackValue.capital) : fallbackValue.capital,
+    revenue: file ? (getInrAmount(amountRevenue, file) ?? fallbackValue.revenue) : fallbackValue.revenue,
+  };
+  const base = {
+    basis,
+    orderRef,
+    orderIndex,
+    stageIndex,
+    paymentDate: paymentObject.paymentDate,
+    paymentMode: cleanPaymentModeValue(paymentObject.paymentMode),
+    valueCapital: value.capital,
+    valueRevenue: value.revenue,
+  };
+  const cycles = normalizeBillReturnCycles(paymentObject.billReturnCycles);
+  const returnedEvents = cycles
+    .filter((cycle) => hasFilledString(cycle.returnedDate))
+    .map((cycle) => ({
+      ...base,
+      returnDate: cycle.returnedDate,
+      submissionDate: cycle.resubmittedDate,
+    }));
+  if (returnedEvents.length) return returnedEvents;
+  if (hasFilledString(paymentObject.billSentForPaymentDate) || hasFilledString(paymentObject.paymentDate)) {
+    return [{ ...base, submissionDate: paymentObject.billSentForPaymentDate }];
+  }
+  return [];
+}
+
+function normalizeBillReturnCycles(cycles: BillReturnCycle[] | undefined) {
+  return (Array.isArray(cycles) ? cycles : []).filter((cycle) =>
+    [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(hasFilledString),
+  );
+}
+
+function hasFilledString(value: string | undefined) {
+  return Boolean(value?.trim());
+}
+
+function cleanPaymentModeValue(value: string | undefined) {
+  const normalized = String(value ?? "").trim();
+  return normalized.toLowerCase() === "select" ? "" : normalized;
 }
 
 function getDemandProcessingFileValue(file: FileRecord) {

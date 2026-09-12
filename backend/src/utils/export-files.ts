@@ -12,6 +12,15 @@ type ExportDocument = {
   tables: ExportTable[];
 };
 
+type ExportDescriptionRow =
+  | { kind: "pair"; label: string; value: string }
+  | { kind: "note"; value: string };
+
+type ExportDescriptionSections = {
+  details: Array<{ label: string; value: string }>;
+  notes: string[];
+};
+
 const pdfPageWidth = 842;
 const pdfPageHeight = 595;
 const pdfMargin = 36;
@@ -29,6 +38,8 @@ type PdfPage = {
   y: number;
 };
 
+type AddPdfPage = () => PdfPage;
+
 export function getExportFileName(title: string, extension: "xls" | "pdf") {
   const base =
     title
@@ -40,7 +51,8 @@ export function getExportFileName(title: string, extension: "xls" | "pdf") {
 }
 
 export function renderExcelDocument(document: ExportDocument) {
-  const descriptionLines = splitExportDescription(document.description);
+  const descriptionSections = parseExportDescriptionSections(document.description);
+  const generatedAt = formatGeneratedAt();
   const tables = document.tables
     .map(
       (table) => `
@@ -77,14 +89,25 @@ export function renderExcelDocument(document: ExportDocument) {
           h1 { font-size: 18px; margin: 0 0 6px; }
           h2 { font-size: 14px; margin: 14px 0 6px; }
           p { margin: 0 0 10px; color: #4b5563; }
-          table.description { border-collapse: collapse; margin: 0 0 10px; }
-          table.description td { border: 0; padding: 2px 0; color: #4b5563; }
+          table.export-title { border-collapse: collapse; width: 100%; margin: 0 0 6px; }
+          table.export-title td { border: 0; padding: 0; }
+          table.export-title .stamp { text-align: right; color: #64748b; font-size: 11px; white-space: nowrap; }
+          table.description { border-collapse: collapse; margin: 0 0 12px; max-width: 900px; }
+          table.description th, table.description td { border: 1px solid #cbd5e1; padding: 5px 7px; color: #374151; }
+          table.description th { background: #e0f2fe; width: 180px; white-space: nowrap; }
+          table.description-notes { border-collapse: collapse; margin: 0 0 12px; max-width: 900px; }
+          table.description-notes td { border: 1px solid #e2e8f0; padding: 5px 7px; color: #475569; background: #f8fafc; font-style: italic; }
         </style>
       </head>
       <body>
-        <h1>${escapeHtml(document.title)}</h1>
+        <table class="export-title">
+          <tr>
+            <td><h1>${escapeHtml(document.title)}</h1></td>
+            <td class="stamp">${escapeHtml(generatedAt)}</td>
+          </tr>
+        </table>
         ${document.subtitle ? `<p>${escapeHtml(document.subtitle)}</p>` : ""}
-        ${renderDescriptionHtml(descriptionLines)}
+        ${renderDescriptionHtml(descriptionSections)}
         ${tables}
       </body>
     </html>`;
@@ -92,6 +115,7 @@ export function renderExcelDocument(document: ExportDocument) {
 
 export function renderPdfDocument(document: ExportDocument) {
   const pages = renderPdfPages(document);
+  addPdfPageNumbers(pages);
 
   const objects: string[] = [];
   const pageObjectIds: number[] = [];
@@ -136,27 +160,29 @@ function renderPdfPages(document: ExportDocument) {
   const pages: PdfPage[] = [];
   let page = createPdfPage();
   pages.push(page);
+  const generatedAt = formatGeneratedAt();
 
   const addPage = () => {
     page = createPdfPage();
     pages.push(page);
+    return page;
   };
 
   drawText(page, document.title, pdfMargin, page.y, pdfTitleFontSize);
+  drawTextRight(page, generatedAt, pdfPageWidth - pdfMargin, page.y + 2, pdfSubheadingFontSize);
   page.y -= 24;
   if (document.subtitle) {
     drawText(page, document.subtitle, pdfMargin, page.y, pdfSubheadingFontSize);
     page.y -= 15;
   }
-  if (document.description) {
-    splitExportDescription(document.description).forEach((descriptionLine) => {
-      wrapText(`- ${descriptionLine}`, 145).forEach((line) => {
-        drawText(page, line, pdfMargin, page.y, pdfSubheadingFontSize);
-        page.y -= 13;
-      });
-    });
+  const descriptionSections = parseExportDescriptionSections(document.description);
+  if (descriptionSections.details.length) {
+    page = drawDescriptionTable(page, descriptionSections.details, addPage);
   }
-  page.y -= 8;
+  if (descriptionSections.notes.length) {
+    page = drawDescriptionNotes(page, descriptionSections.notes, addPage);
+  }
+  page.y -= descriptionSections.notes.length ? 22 : 10;
 
   document.tables.flatMap(getPdfTableSegments).forEach((table) => {
     const columns = normalizeColumns(table.headers.length);
@@ -164,7 +190,7 @@ function renderPdfPages(document: ExportDocument) {
     const rows = table.rows.length ? table.rows : [["No rows found."]];
 
     const ensureSpace = (height: number) => {
-      if (page.y - height < pdfMargin) addPage();
+      if (page.y - height < pdfMargin) page = addPage();
     };
 
     if (table.title) {
@@ -173,6 +199,7 @@ function renderPdfPages(document: ExportDocument) {
       page.y -= 17;
     }
 
+    ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
     drawTableHeader(page, table.headers, columnWidths);
 
     rows.forEach((row) => {
@@ -187,13 +214,14 @@ function renderPdfPages(document: ExportDocument) {
       );
 
       if (page.y - rowHeight < pdfMargin) {
-        addPage();
+        page = addPage();
+        ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
         drawTableHeader(page, table.headers, columnWidths);
       }
       drawTableRow(page, wrappedCells, columnWidths, rowHeight);
     });
 
-    page.y -= 14;
+    page.y -= 24;
   });
 
   return pages;
@@ -203,21 +231,45 @@ function createPdfPage(): PdfPage {
   return { commands: [], y: pdfPageHeight - pdfMargin };
 }
 
+function addPdfPageNumbers(pages: PdfPage[]) {
+  const totalPages = pages.length;
+  pages.forEach((page, index) => {
+    drawTextRight(
+      page,
+      `${index + 1} of ${totalPages}`,
+      pdfPageWidth - pdfMargin,
+      pdfMargin / 2,
+      pdfFontSize,
+    );
+  });
+}
+
 function drawTableHeader(page: PdfPage, headers: string[], columnWidths: number[]) {
   const columns = normalizeColumns(headers.length);
   const cells = columns.map((columnIndex) => normalizeCell(headers[columnIndex] ?? ""));
   const wrappedCells = cells.map((cell, index) =>
     wrapText(cell, getMaxCharsForColumn(columnWidths[index])),
   );
-  const rowHeight = Math.max(
+  const rowHeight = getWrappedCellsHeight(wrappedCells);
+  drawTableRow(page, wrappedCells, columnWidths, rowHeight, true);
+}
+
+function getTableHeaderHeight(headers: string[], columnWidths: number[]) {
+  const cells = normalizeColumns(headers.length).map((columnIndex) =>
+    normalizeCell(headers[columnIndex] ?? ""),
+  );
+  const wrappedCells = cells.map((cell, index) =>
+    wrapText(cell, getMaxCharsForColumn(columnWidths[index])),
+  );
+  return getWrappedCellsHeight(wrappedCells);
+}
+
+function getWrappedCellsHeight(wrappedCells: string[][]) {
+  return Math.max(
     pdfMinRowHeight,
     Math.max(...wrappedCells.map((cellLines) => cellLines.length)) * pdfLineHeight +
       pdfCellPaddingY * 2,
   );
-  if (page.y - rowHeight < pdfMargin) {
-    page.y = pdfPageHeight - pdfMargin;
-  }
-  drawTableRow(page, wrappedCells, columnWidths, rowHeight, true);
 }
 
 function drawTableRow(
@@ -254,6 +306,71 @@ function drawTableRow(
   page.y = yBottom;
 }
 
+function drawDescriptionTable(
+  page: PdfPage,
+  rows: Array<{ label: string; value: string }>,
+  addPage: AddPdfPage,
+) {
+  const labelWidth = 148;
+  const valueWidth = pdfContentWidth - labelWidth;
+  const columnWidths = [labelWidth, valueWidth];
+  const headerHeight = pdfMinRowHeight;
+  if (page.y - headerHeight < pdfMargin) {
+    page = addPage();
+  }
+  drawTableRow(
+    page,
+    [["Export detail"], ["Selection / note"]],
+    columnWidths,
+    headerHeight,
+    true,
+  );
+
+  rows.forEach((row) => {
+    const wrappedCells = [
+      wrapText(row.label, getMaxCharsForColumn(columnWidths[0])),
+      wrapText(row.value, getMaxCharsForColumn(columnWidths[1])),
+    ];
+    const rowHeight = Math.max(
+      pdfMinRowHeight,
+      Math.max(...wrappedCells.map((cellLines) => cellLines.length)) * pdfLineHeight +
+        pdfCellPaddingY * 2,
+    );
+    if (page.y - rowHeight < pdfMargin) {
+      page = addPage();
+      drawTableRow(
+        page,
+        [["Export detail"], ["Selection / note"]],
+        columnWidths,
+        headerHeight,
+        true,
+      );
+    }
+    drawTableRow(page, wrappedCells, columnWidths, rowHeight);
+  });
+  return page;
+}
+
+function drawDescriptionNotes(page: PdfPage, notes: string[], addPage: AddPdfPage) {
+  const columnWidths = [pdfContentWidth];
+  const headerHeight = pdfMinRowHeight;
+  if (page.y - headerHeight < pdfMargin) {
+    page = addPage();
+  }
+  drawTableRow(page, [["Notes"]], columnWidths, headerHeight, true);
+
+  notes.forEach((note) => {
+    const wrappedCells = [wrapText(note, getMaxCharsForColumn(columnWidths[0]))];
+    const rowHeight = getWrappedCellsHeight(wrappedCells);
+    if (page.y - rowHeight < pdfMargin) {
+      page = addPage();
+      drawTableRow(page, [["Notes"]], columnWidths, headerHeight, true);
+    }
+    drawTableRow(page, wrappedCells, columnWidths, rowHeight);
+  });
+  return page;
+}
+
 function drawText(page: PdfPage, value: string, x: number, y: number, fontSize: number) {
   page.commands.push("0 0 0 rg");
   page.commands.push("BT");
@@ -261,6 +378,11 @@ function drawText(page: PdfPage, value: string, x: number, y: number, fontSize: 
   page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(y)} Td`);
   page.commands.push(`(${escapePdfText(value)}) Tj`);
   page.commands.push("ET");
+}
+
+function drawTextRight(page: PdfPage, value: string, rightX: number, y: number, fontSize: number) {
+  const estimatedWidth = value.length * fontSize * 0.48;
+  drawText(page, value, Math.max(pdfMargin, rightX - estimatedWidth), y, fontSize);
 }
 
 function normalizeColumns(count: number) {
@@ -461,7 +583,8 @@ function wrapText(value: string, maxLength: number) {
   let remaining = text;
   while (remaining.length > maxLength) {
     const breakAt = remaining.lastIndexOf(" ", maxLength);
-    const index = breakAt > 20 ? breakAt : maxLength;
+    const minimumUsefulBreak = Math.max(8, Math.floor(maxLength * 0.4));
+    const index = breakAt >= minimumUsefulBreak ? breakAt : maxLength;
     lines.push(remaining.slice(0, index));
     remaining = remaining.slice(index).trim();
   }
@@ -469,11 +592,56 @@ function wrapText(value: string, maxLength: number) {
   return lines;
 }
 
-function renderDescriptionHtml(lines: string[]) {
-  if (!lines.length) return "";
-  return `<table class="description">${lines
-    .map((line) => `<tr><td>${escapeHtml(`- ${line}`)}</td></tr>`)
-    .join("")}</table>`;
+function renderDescriptionHtml(sections: ExportDescriptionSections) {
+  const detailsHtml = sections.details.length
+    ? `<table class="description">
+        <thead><tr><th>Export detail</th><th>Selection</th></tr></thead>
+        <tbody>
+          ${sections.details
+            .map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`)
+            .join("")}
+        </tbody>
+      </table>`
+    : "";
+  const notesHtml = sections.notes.length
+    ? `<table class="description-notes">
+        <tbody>
+          ${sections.notes.map((note) => `<tr><td>${escapeHtml(note)}</td></tr>`).join("")}
+        </tbody>
+      </table>`
+    : "";
+  return `${detailsHtml}${notesHtml}`;
+}
+
+function parseExportDescriptionSections(description: string | undefined): ExportDescriptionSections {
+  const sections: ExportDescriptionSections = { details: [], notes: [] };
+  splitExportDescription(description).forEach((line) => {
+    const pair = parseExportDescriptionPair(line);
+    if (pair) {
+      sections.details.push(pair);
+    } else {
+      sections.notes.push(line);
+    }
+  });
+  return sections;
+}
+
+function parseExportDescriptionPair(line: string): { label: string; value: string } | undefined {
+  const separatorIndex = line.indexOf(":");
+  if (separatorIndex <= 0) return undefined;
+  const label = line.slice(0, separatorIndex).trim();
+  const value = line.slice(separatorIndex + 1).trim();
+  if (!label || !value || label.length > 48 || !isExportDetailLabel(label)) return undefined;
+  return { label, value };
+}
+
+function isExportDetailLabel(label: string) {
+  const normalized = label.trim().toLowerCase();
+  return (
+    /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|filter|subfilter|value type|payment mode|stage|milestone|generated by|layout|files)$/.test(
+      normalized,
+    ) || /^(global|selected|active|from|to) /.test(normalized)
+  );
 }
 
 function splitExportDescription(description: string | undefined) {
@@ -505,6 +673,19 @@ function restoreDescriptionAbbreviations(text: string) {
     .replaceAll("F__Y__", "F.Y.")
     .replaceAll("FY__", "FY.")
     .replaceAll("No__", "No.");
+}
+
+function formatGeneratedAt() {
+  const formatter = new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  return formatter.format(new Date());
 }
 
 function formatPdfNumber(value: number) {

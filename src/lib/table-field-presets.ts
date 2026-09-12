@@ -159,7 +159,7 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "billPreparationDate", label: "Bill preparation" },
       { key: "billNo", label: "Bill No." },
       { key: "billSentForPaymentDate", label: "Bill sent for payment" },
-      { key: "billReturnCycles", label: "Bill returned for correction" },
+      { key: "billReturnCycles", label: "Returned Bills" },
       { key: "paymentDate", label: "Payment date" },
       { key: "paymentMode", label: "Payment mode (Online/Offline)" },
       { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },

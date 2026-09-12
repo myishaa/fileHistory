@@ -457,6 +457,7 @@ export type AppUserRole =
   | "editor"
   | "viewer"
   | "universal_viewer";
+export type UniversalViewerCashOutgoEditScope = "none" | "personal" | "global";
 export type AppUser = {
   id: string;
   name: string;
@@ -464,6 +465,7 @@ export type AppUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
   archivedAt?: string;
 };
@@ -558,6 +560,8 @@ export type AppSettings = {
   firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
   addEditRibbonFields?: AddEditRibbonFieldKey[];
+  preSoDefaultSoOffsetDays?: number;
+  preSoDefaultPaymentOffsetDays?: number;
 };
 
 function currentYear() {
@@ -609,6 +613,8 @@ const defaultSettings: AppSettings = {
     ],
   },
   addEditRibbonFields: defaultAddEditRibbonFields,
+  preSoDefaultSoOffsetDays: 30,
+  preSoDefaultPaymentOffsetDays: 30,
 };
 
 const defaultUsers: AppUser[] = [];
@@ -1569,6 +1575,52 @@ export function saveMerCashOutgo(
     method: "PUT",
     body: JSON.stringify({ financialYear, rows }),
   });
+}
+
+export type PreSoCashOutgoStageOffsetPayload = {
+  soOffsetDays: number;
+  paymentOffsetDays: number;
+};
+
+export type PreSoCashOutgoFilePlanPayload = {
+  included: boolean;
+  tentativeSoDate: string;
+  tentativePaymentDate: string;
+};
+
+export type PreSoCashOutgoPlanPayload = {
+  defaultSoOffsetDays: number;
+  defaultPaymentOffsetDays: number;
+  canSave: boolean;
+  canSaveStageOffsets?: boolean;
+  stageOffsets: Record<string, PreSoCashOutgoStageOffsetPayload>;
+  filePlans: Record<string, PreSoCashOutgoFilePlanPayload>;
+};
+
+export function fetchPreSoCashOutgoPlan() {
+  return request<{ plan: PreSoCashOutgoPlanPayload }>("/api/reports/pre-so-cash-outgo-plan");
+}
+
+export function savePreSoCashOutgoPlan(payload: {
+  stageOffsets: Array<{
+    stageKey: string;
+    soOffsetDays: number;
+    paymentOffsetDays: number;
+  }>;
+  filePlans: Array<{
+    fileId: string;
+    included: boolean;
+    tentativeSoDate: string;
+    tentativePaymentDate: string;
+  }>;
+}) {
+  return request<{ plan: Partial<PreSoCashOutgoPlanPayload> }>(
+    "/api/reports/pre-so-cash-outgo-plan",
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function fetchFile(id: string) {

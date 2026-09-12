@@ -5,6 +5,7 @@ export type AppUserRole =
   | "editor"
   | "viewer"
   | "universal_viewer";
+export type UniversalViewerCashOutgoEditScope = "none" | "personal" | "global";
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
 export type FileTypeGroup = "goodsServices" | "contract";
@@ -45,6 +46,7 @@ export type AppUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
   archivedAt?: string;
 };
@@ -56,6 +58,7 @@ export type AuthUser = {
   role: AppUserRole;
   divisionIds: string[];
   allowedFileCategories?: string[] | null;
+  cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
 };
 
@@ -88,6 +91,8 @@ export type AppSettings = {
   firmRatingConfig?: FirmRatingConfig;
   activeUserId?: string;
   addEditRibbonFields?: string[];
+  preSoDefaultSoOffsetDays?: number;
+  preSoDefaultPaymentOffsetDays?: number;
 };
 
 export type FirmRatingField = {

@@ -225,7 +225,7 @@ test.describe("refloat and returned bill status visibility", () => {
     await page.getByTestId("dashboard-tab-liveStatus").click();
     await expect(page.getByRole("columnheader", { name: "Refloat bidding" })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "Refloat Post-TCEC" })).toBeVisible();
-    await expect(page.getByRole("columnheader", { name: "Bill returned for correction" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Returned Bills" })).toBeVisible();
 
     await page.getByTestId("dashboard-tab-status3").click();
     await expect(page.getByTestId("status-counter-refloat-bidding-in-process")).toBeVisible();
@@ -238,7 +238,7 @@ test.describe("refloat and returned bill status visibility", () => {
     await page.getByTestId("dashboard-tab-status4").click();
     await expect(page.getByRole("columnheader", { name: "Refloat bidding" })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "Refloat Post-TCEC" })).toBeVisible();
-    await expect(page.getByRole("columnheader", { name: "Bill returned for correction" })).toHaveCount(0);
+    await expect(page.getByRole("columnheader", { name: "Returned Bills" })).toHaveCount(0);
 
     await page.getByTestId("dashboard-tab-status3").click();
     await page.getByTestId("status-counter-refloat-post-tcec-in-process").click();

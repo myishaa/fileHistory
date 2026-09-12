@@ -195,6 +195,10 @@ function canManageFirms(user: AuthUser) {
   return canMutateFiles(user);
 }
 
+function canDeleteFirms(user: AuthUser) {
+  return user.role === "admin" || user.role === "sub_admin";
+}
+
 async function verifyDeletionPassword(value: unknown) {
   if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
   const result = await pool.query<{ ok: boolean; configured: boolean }>(
@@ -365,7 +369,7 @@ firmsRouter.delete(
   "/:id",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (!canManageFirms(user)) throw new HttpError(403, "You cannot delete firms.");
+    if (!canDeleteFirms(user)) throw new HttpError(403, "You cannot delete firms.");
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id);
     if (!firm) throw new HttpError(404, "Firm was not found.");
@@ -385,7 +389,7 @@ firmsRouter.get(
   "/archive/list",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (!canManageFirms(user)) throw new HttpError(403, "You cannot view archived firms.");
+    if (!canDeleteFirms(user)) throw new HttpError(403, "You cannot view archived firms.");
     const result = await pool.query<MasterFirmRow>(
       `select mf.*, u.name as created_by_name
        from master_firms mf
@@ -401,7 +405,7 @@ firmsRouter.post(
   "/archive/:id/restore",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (!canManageFirms(user)) throw new HttpError(403, "You cannot restore firms.");
+    if (!canDeleteFirms(user)) throw new HttpError(403, "You cannot restore firms.");
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id, true);
     if (!firm?.archivedAt) throw new HttpError(404, "Archived firm was not found.");

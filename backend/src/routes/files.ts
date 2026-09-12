@@ -3835,11 +3835,11 @@ function cncSummaryFyFilterSql(filter: string, values: unknown[]) {
 
 function bgReceiptDelayBaseExpiredSql(category: string, days: number) {
   const normalized = normalizeMilestoneName(category);
-  if (normalized === "psb") {
+  if (normalized === "psb" || normalized === "psbpwb") {
     return `${hasTextSql("so.so_date")}
       and so.so_date + (${days} * interval '1 day') < current_date`;
   }
-  if (normalized !== "pwb" && normalized !== "psbpwb") return "false";
+  if (normalized !== "pwb") return "false";
   const amcMpcOmFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'o&m')`;
   const goodsServicesIrNoFileType = `(lower(trim(coalesce(f.file_type, ''))) = 'goods & services' and ${isNoSql("f.ir")})`;
   const nonDeliveryFileType = `(not ${isYesSql("f.ir")} or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`;
@@ -3859,6 +3859,7 @@ function bgReceiptDelayBaseExpiredSql(category: string, days: number) {
   )`;
   const finalJobStageExpired = `${isYesSql("so.stage_delivery")}
     and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0
+    and not ${isYesSql("so.stage_payment")}
     and not exists (
       select 1
       from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as bg_delay_stage(stage)
@@ -3886,6 +3887,8 @@ function bgReceiptDelayBaseExpiredSql(category: string, days: number) {
         (
           ${goodsServicesIrNoFileType}
           and (
+            (${isYesSql("so.stage_payment")} and ${jobStageExpired})
+            or
             (${finalJobStageExpired})
             or (
               not ${isYesSql("so.stage_delivery")}

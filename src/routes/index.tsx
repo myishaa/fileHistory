@@ -127,6 +127,7 @@ type DivisionValueSortMode = "value" | "percent";
 type DivisionValueDisplayMode = "value" | "percent" | "both";
 type AnalyticsResultLimitKey = "5" | "10" | "20" | "50" | "all";
 type AnalyticsSortDirection = "desc" | "asc";
+type IndentorValueSortKey = "value" | "capital" | "revenue";
 type MilestoneClearingViewMode = "ranking" | "chronological";
 type MilestoneClearingThresholdFilter = "all" | "unmatched" | `level:${string}`;
 type DivisionValueSortKey =
@@ -277,6 +278,8 @@ type AnalyticsSearchTarget = {
   includeModes?: string[];
   analyticsType?: "firm" | "indentor";
   analyticsNames?: string[];
+  capitalOnly?: boolean;
+  revenueOnly?: boolean;
   focusSection?: string;
   focusMilestone?: string;
   focusTarget?: string;
@@ -648,7 +651,7 @@ const delayMilestoneOptions = [
   { key: "irReceipt", label: "IR Receipt" },
   { key: "billPreparation", label: "Bill preparation" },
   { key: "billSentForPayment", label: "Bill sent for payment" },
-  { key: "billReturnedForCorrection", label: "Bill returned for correction" },
+  { key: "billReturnedForCorrection", label: "Returned Bills" },
   {
     key: "supplementaryBillReturnedForCorrection",
     label: "Supplementary bill returned for correction",
@@ -764,6 +767,8 @@ export function Dashboard() {
     useState<FinanceFirmTypeDistributionKey>("supplyOrderValue");
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
   const [indentorsByValueLimit, setIndentorsByValueLimit] = useState<AnalyticsResultLimitKey>("10");
+  const [indentorsByValueSortKey, setIndentorsByValueSortKey] =
+    useState<IndentorValueSortKey>("value");
   const [topFirmPage, setTopFirmPage] = useState(1);
   const [indentorsByFilesPage, setIndentorsByFilesPage] = useState(1);
   const [indentorsByValuePage, setIndentorsByValuePage] = useState(1);
@@ -1958,8 +1963,9 @@ export function Dashboard() {
     ),
   );
   const topIndentorsByValueRankedRows = withAnalyticsRanks(
-    sortAnalyticsRows(
+    sortIndentorValueRows(
       analytics.topIndentorsByValue,
+      indentorsByValueSortKey,
       getAnalyticsSortDirection("indentorsByValue"),
     ),
   );
@@ -2164,14 +2170,20 @@ export function Dashboard() {
       key: "indentorsByValue",
       title: "Top indentors by value",
       subtitle: "Total demand value",
+      exportNote: `Sorted by ${
+        indentorValueSortOptions.find((option) => option.key === indentorsByValueSortKey)?.label ??
+        "Total"
+      } value.`,
       helper: [
         "Main filter and File Year first decide the file set.",
-        "Value uses demand capital plus revenue from those selected files.",
+        "Capital value is the sum of demand Capital value from selected files.",
+        "Revenue value is the sum of demand Revenue value from selected files.",
+        "Total value is Capital value plus Revenue value, and sorting is by Total value.",
         "It does not apply a separate activity-date filter.",
         "Active files normally hides closed files, cancelled demands, and files where every S.O. is cancelled.",
         "All files or a matching FY-based selection can include those records when they belong to the selected file set.",
       ],
-      columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Indentor", "Total value")),
+      columns: withRankAnalyticsColumns(getIndentorValueAnalyticsColumns()),
       rows: indentorsByValuePagination.rows,
     },
     {
@@ -2212,23 +2224,26 @@ export function Dashboard() {
     {
       key: "paymentPending",
       title: "Payment pending by division",
-      subtitle: "Material received but payment not completed",
+      subtitle: "Delivery/job completion done but payment not completed",
       helper: [
         "Main filter and File Year first decide the file set.",
-        "Payment pending is calculated from the current workflow state inside those selected files.",
-        "Main, stage, returned, and supplementary bill payment liabilities are included.",
-        "Cancelled S.O.s are excluded from normal payment-pending workflow.",
-        "Shortclosed S.O.s remain included where payment workflow still exists for delivered or processed work.",
+        "Payment pending is calculated from the current payment status inside those selected files.",
+        "Normal bills, stage-wise bills, returned bills, and supplementary bills are included.",
+        "If delivery/job completion is done but payment is not done, it can be counted as payment pending.",
+        "For stage-wise payments, a stage is counted when that stage is due for payment but its payment date is still blank.",
+        "Cancelled S.O.s are excluded.",
+        "Shortclosed S.O.s remain included if payment is still pending for work already delivered/completed.",
       ],
       helperExamples: {
         title: "Payment pending examples",
         items: [
-          "Material received but Payment Date is blank: the file can count as payment pending.",
-          "Stage payment started but the stage Payment Date is blank: the file can count as payment pending.",
-          "Returned bill is still not finally resubmitted/paid: the file can remain payment pending.",
-          "Supplementary bill sent or resubmitted but unpaid: the file can count as payment pending.",
-          "Cancelled S.O.: it is excluded from normal payment-pending workflow.",
-          "Shortclosed S.O.: payment for delivered or processed work can still keep the file pending.",
+          "Material received, but Payment Date is blank.",
+          "Job completion done, but Payment Date is blank.",
+          "A stage delivery/job is completed, but payment date for that stage is blank.",
+          "A returned bill is still not finally resubmitted/paid.",
+          "A supplementary bill is submitted or resubmitted, but payment is still blank.",
+          "Cancelled S.O.: excluded.",
+          "Shortclosed S.O.: payment for delivered/completed work can still keep the file pending.",
         ],
       },
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
@@ -2669,6 +2684,8 @@ export function Dashboard() {
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
           : undefined,
+        capitalOnly: target.capitalOnly || undefined,
+        revenueOnly: target.revenueOnly || undefined,
         focusSection: target.focusSection,
         focusMilestone: target.focusMilestone,
         focusTarget: target.focusTarget,
@@ -3264,7 +3281,7 @@ export function Dashboard() {
                     <StatusFlowNode
                       key={milestone.key}
                       index={index}
-                      title={milestone.label}
+                      title={getWorkflowDisplayLabel(milestone.label)}
                       isLast={false}
                       items={[
                         {
@@ -3292,7 +3309,7 @@ export function Dashboard() {
                     <StatusFlowNode
                       key={milestone.key}
                       index={index}
-                      title={milestone.label}
+                      title={getWorkflowDisplayLabel(milestone.label)}
                       isLast={false}
                       items={[
                         {
@@ -3597,6 +3614,15 @@ export function Dashboard() {
                         onChange={(direction) =>
                           setAnalyticsSortDirection(selectedAnalyticsPanel.key, direction)
                         }
+                      />
+                    ) : null}
+                    {selectedAnalyticsPanel.key === "indentorsByValue" ? (
+                      <IndentorValueSortControl
+                        value={indentorsByValueSortKey}
+                        onChange={(value) => {
+                          setIndentorsByValueSortKey(value);
+                          setIndentorsByValuePage(1);
+                        }}
                       />
                     ) : null}
                     {displayedAnalyticsPanel.key === "milestoneClearingTable" ? (
@@ -4172,7 +4198,7 @@ export function Dashboard() {
                   help={[
                     `Actual final payment amount where Payment Date falls in ${selectedFinanceYearLabel}.`,
                     "Main, stage, returned, and supplementary bill payment amounts are included.",
-                    "File Closed files are included when they pass the selected year/date/category filters.",
+                    "Closed Files are included when they pass the selected year/date/category filters.",
                     "Cancelled S.O. rows are excluded.",
                     "Shortclosed S.O. rows remain included.",
                     "Advance payment rows are shown separately under Advance Payment.",
@@ -4207,13 +4233,22 @@ export function Dashboard() {
                     rows={financeTotals.previousCarryForwardBreakup}
                     emptyText={`No older unpaid carry-forward as on ${selectedFinanceYearLabel} end.`}
                     help={[
-                      `Payment rows from FYs before ${selectedFinanceYearLabel} that are still unpaid by ${selectedFinanceYearLabel} end.`,
-                      "Supplementary bills are included as payment liability rows.",
-                      "File Closed files are included when payment liability history matches.",
+                      "Unpaid payment rows from earlier FYs that are still unpaid.",
+                      "Supplementary bills are included if they are still unpaid.",
+                      "Closed Files are included when payment liability history matches.",
                       "Cancelled S.O. rows are excluded.",
                       "Shortclosed S.O. rows remain included.",
-                      "Year buttons open the pending files/S.O.",
+                      "Year button opens the matching pending files/S.O.",
                     ]}
+                    examples={{
+                      title: "Example",
+                      items: [
+                        "Opening older unpaid liability: ₹100.",
+                        `Paid during ${selectedFinanceYearLabel}: ₹40.`,
+                        `Unpaid at ${selectedFinanceYearLabel} end: ₹60.`,
+                        "This panel shows ₹60 as still unpaid from previous FYs.",
+                      ],
+                    }}
                     onOpenFilter={openSearchFilter}
                   />
                   <FinanceCarryForwardPanel
@@ -4222,13 +4257,22 @@ export function Dashboard() {
                     rows={financeTotals.clearedCarryForwardBreakup}
                     emptyText={`No previous-year carry-forward cleared in ${selectedFinanceYearLabel}.`}
                     help={[
-                      `Older carry-forward payment rows whose Payment Date falls inside ${selectedFinanceYearLabel}.`,
-                      "Supplementary bills are included as payment liability rows.",
-                      "File Closed files are included when payment liability history matches.",
+                      `Earlier-FY carry-forward rows that were paid during ${selectedFinanceYearLabel}.`,
+                      "Supplementary bills are included if their payment date falls in this FY.",
+                      "Closed Files are included when payment liability history matches.",
                       "Cancelled S.O. rows are excluded.",
                       "Shortclosed S.O. rows remain included.",
-                      "Year buttons show which previous FY they came from.",
+                      "Year button shows the FY from which the liability came.",
                     ]}
+                    examples={{
+                      title: "Example",
+                      items: [
+                        "Previous FY unpaid liability: ₹100.",
+                        `Paid during ${selectedFinanceYearLabel}: ₹40.`,
+                        "This panel shows ₹40 as cleared carry forward.",
+                        "The remaining ₹60 stays unpaid unless paid later.",
+                      ],
+                    }}
                     onOpenFilter={openSearchFilter}
                   />
                   <FinanceCarryForwardPanel
@@ -4237,13 +4281,22 @@ export function Dashboard() {
                     rows={financeTotals.carryForwardBreakup}
                     emptyText={`No ${selectedFinanceYearLabel} payment rows carried forward.`}
                     help={[
-                      `Payment rows from S.O. placed in ${selectedFinanceYearLabel} where Payment Date is blank or after ${selectedFinanceYearLabel} end.`,
-                      "Supplementary bills are included as payment liability rows.",
-                      "File Closed files are included when payment liability history matches.",
+                      `Payment rows of ${selectedFinanceYearLabel} that remain unpaid at FY end.`,
+                      "Supplementary bills are included if they remain unpaid at FY end.",
+                      "Closed Files are included when payment liability history matches.",
                       "Cancelled S.O. rows are excluded.",
                       "Shortclosed S.O. rows remain included.",
-                      "Year buttons open the contributing files/S.O.",
+                      "Year button opens the contributing files/S.O.",
                     ]}
+                    examples={{
+                      title: "Example",
+                      items: [
+                        `S.O. / bill belongs to ${selectedFinanceYearLabel}: ₹75.`,
+                        "Payment date is blank or after FY end.",
+                        `This panel shows ₹75 as Carry Forward of ${selectedFinanceYearLabel}.`,
+                        "After the FY closes, this carry-forward snapshot remains fixed.",
+                      ],
+                    }}
                     onOpenFilter={openSearchFilter}
                   />
                   <FinanceCarryForwardPanel
@@ -4252,13 +4305,22 @@ export function Dashboard() {
                     rows={financeTotals.futureClearedCarryForwardBreakup}
                     emptyText={`No ${selectedFinanceYearLabel} carry-forward cleared in later FYs.`}
                     help={[
-                      `Payment rows that became carry-forward at ${selectedFinanceYearLabel} end and were paid in a later FY.`,
-                      "Supplementary bills are included as payment liability rows.",
-                      "File Closed files are included when payment liability history matches.",
+                      `${selectedFinanceYearLabel} carry-forward rows that were paid after this FY ended.`,
+                      "Supplementary bills are included if they were carried forward and later paid.",
+                      "Closed Files are included when payment liability history matches.",
                       "Cancelled S.O. rows are excluded.",
                       "Shortclosed S.O. rows remain included.",
-                      "Year buttons show the future clearing FY.",
+                      "Year button shows the future clearing FY.",
                     ]}
+                    examples={{
+                      title: "Example",
+                      items: [
+                        `${selectedFinanceYearLabel} carry-forward at FY end: ₹75.`,
+                        "Paid in a later FY: ₹50.",
+                        "This panel shows ₹50 as cleared later.",
+                        "The unpaid balance, if any, continues as pending carry-forward.",
+                      ],
+                    }}
                     onOpenFilter={openSearchFilter}
                   />
                 </div>
@@ -4482,7 +4544,7 @@ function FloatingHelp({ label, children }: { label: string; children: ReactNode 
             <Info className="size-3.5" />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="top" align="end" className="max-w-72 leading-relaxed">
+        <TooltipContent side="top" align="end" className="max-w-[34rem] leading-relaxed">
           {content}
         </TooltipContent>
       </Tooltip>
@@ -4525,6 +4587,7 @@ function FinanceCarryForwardPanel({
   rows,
   emptyText,
   help,
+  examples,
   onOpenFilter,
 }: {
   title: string;
@@ -4532,6 +4595,7 @@ function FinanceCarryForwardPanel({
   rows?: FinanceCarryForwardRow[];
   emptyText: string;
   help: string | string[];
+  examples?: HelperExamples;
   onOpenFilter: (filter: string) => void;
 }) {
   const safeTotal = total ?? { count: 0, capital: 0, revenue: 0, total: 0 };
@@ -4541,7 +4605,9 @@ function FinanceCarryForwardPanel({
         <div>
           <div className="flex items-center gap-1.5">
             <div className="text-[11px] font-semibold text-foreground">{title}</div>
-            <FloatingHelp label={`${title} help`}>{help}</FloatingHelp>
+            <FloatingHelp label={`${title} help`}>
+              <HelperWithExamples items={help} examples={examples} />
+            </FloatingHelp>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">{safeTotal.count} rows</div>
         </div>
@@ -4722,7 +4788,9 @@ function LiveStatusSection({
                     onChange={() => onMilestoneToggle(milestone.name)}
                     className="size-3 accent-primary"
                   />
-                  <span className="max-w-[150px] truncate">{milestone.label}</span>
+                  <span className="max-w-[150px] truncate">
+                    {getWorkflowDisplayLabel(milestone.label)}
+                  </span>
                   <span className="rounded bg-secondary px-1.5 py-0.5 tabular-nums">
                     {currentCount}
                   </span>
@@ -4747,7 +4815,9 @@ function LiveStatusSection({
                   <th className="px-3 py-2 text-center font-medium">Total</th>
                   {displayedMilestones.map((milestone) => (
                     <th key={milestone.name} className="px-3 py-2 text-center font-medium">
-                      <span className="block truncate">{milestone.label}</span>
+                      <span className="block truncate">
+                        {getWorkflowDisplayLabel(milestone.label)}
+                      </span>
                     </th>
                   ))}
                 </tr>
@@ -4768,7 +4838,7 @@ function LiveStatusSection({
                               type="button"
                               onClick={() => onCountClick(row.division, milestone.name)}
                               className="h-8 min-w-12 rounded-md border border-border bg-secondary/35 px-2 font-semibold tabular-nums transition hover:bg-accent hover:ring-2 hover:ring-ring/25"
-                              aria-label={`Open ${count} ${row.division} files at ${milestone.label}`}
+                              aria-label={`Open ${count} ${row.division} files at ${getWorkflowDisplayLabel(milestone.label)}`}
                             >
                               {count}
                             </button>
@@ -4955,6 +5025,8 @@ function Status4Section({
           </div>
         ) : null}
 
+        <Status4HelperToolbar drill={drill} />
+
         {drill.fiscalYear && !drill.mode ? (
           <div className="grid gap-3 sm:grid-cols-2">
             <button
@@ -5051,7 +5123,7 @@ function Status4Table({
             {milestones.map((milestone) => (
               <Status4SortableHeader
                 key={milestone.name}
-                label={milestone.label}
+                label={getWorkflowDisplayLabel(milestone.label)}
                 sortKey={`milestone:${milestone.name}`}
                 activeSortKey={sortKey}
                 sortDirection={sortDirection}
@@ -5236,6 +5308,136 @@ function getStatus4RowHeaderLabel(drill: Status4DrillState) {
   if (!drill.fiscalYear) return "FY";
   if (drill.mode === "monthwise" && !drill.monthKey) return "Month";
   return "Value Range";
+}
+
+function Status4HelperToolbar({ drill }: { drill: Status4DrillState }) {
+  const helpers = getStatus4HelperItems(drill);
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-secondary/20 px-3 py-2">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Status-4 helper
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {helpers.map((helper) => (
+          <div
+            key={helper.label}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2 py-1 text-xs"
+          >
+            <span className="font-medium text-foreground">{helper.label}</span>
+            <FloatingHelp label={`${helper.label} help`}>{helper.items}</FloatingHelp>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getStatus4HelperItems(drill: Status4DrillState): Array<{
+  label: string;
+  items: string[];
+}> {
+  const common = [
+    {
+      label: "Total",
+      items: [
+        "Total is the number of non-cancelled files in that row.",
+        "It is file count, not number of stages or number of supply orders.",
+      ],
+    },
+    {
+      label: "Applicable",
+      items: [
+        "Files for which that milestone is relevant/applicable.",
+        "Example: IFA applies only where IFA is marked Yes; TCEC stages apply only to TCEC files.",
+      ],
+    },
+    {
+      label: "Cleared",
+      items: [
+        "Applicable files where that milestone has already been completed/cleared.",
+        "Click a non-zero cleared count to open matching files in Search.",
+      ],
+    },
+    {
+      label: "Current",
+      items: [
+        "Files currently pending/live at that milestone.",
+        "This is live current position, not historical delay or past stuck position.",
+      ],
+    },
+    {
+      label: "Milestone columns",
+      items: [
+        "Columns come from selected Status-2 milestones.",
+        "Status-4 shows stages up to Supply Order and excludes later delivery/payment milestones.",
+      ],
+    },
+  ];
+
+  if (!drill.fiscalYear) {
+    return [
+      {
+        label: "FY",
+        items: [
+          "Rows are grouped by file initiation/received financial year.",
+          "Click an FY row to choose Value Threshold or Monthwise drill-down for that FY.",
+        ],
+      },
+      ...common,
+    ];
+  }
+
+  if (!drill.mode) {
+    return [
+      {
+        label: "Value Threshold",
+        items: [
+          "Shows value-range rows for the selected FY.",
+          "Value range uses Demand Capital + Demand Revenue for the file.",
+          "Use it to see milestone progress by demand-value slab.",
+        ],
+      },
+      {
+        label: "Monthwise",
+        items: [
+          "Shows month rows inside the selected FY.",
+          "Month is file initiation/received month, not S.O. month or delivery month.",
+          "Click a month to see value-threshold breakup inside that month.",
+        ],
+      },
+    ];
+  }
+
+  if (drill.mode === "monthwise" && !drill.monthKey) {
+    return [
+      {
+        label: "Month",
+        items: [
+          "Rows are grouped by file initiation/received month within the selected FY.",
+          "Click a month to drill into value-threshold rows for only that month.",
+        ],
+      },
+      ...common,
+    ];
+  }
+
+  return [
+    {
+      label: "Value Range",
+      items: drill.monthKey
+        ? [
+            "Rows are value ranges for files initiated/received in the selected month.",
+            "Value range uses Demand Capital + Demand Revenue for the file.",
+            "Unmatched appears if a file has no matching configured value slab.",
+          ]
+        : [
+            "Rows are value ranges for files initiated/received in the selected FY.",
+            "Value range uses Demand Capital + Demand Revenue for the file.",
+            "Unmatched appears if a file has no matching configured value slab.",
+          ],
+    },
+    ...common,
+  ];
 }
 
 function getStatus4DisplayRows({
@@ -5519,16 +5721,23 @@ function getStatus4MilestoneMetrics(
   const normalized = normalizeMilestoneName(milestoneName);
   if (normalized === "financialsanction") {
     return {
-      applicable: countEffectiveSupplyOrders(files),
-      cleared: countCompletedSupplyOrderMilestoneStatuses(files, "financialsanction"),
-      current: countCurrentSupplyOrderMilestoneStatuses(files, "financialsanction"),
+      applicable: files.filter((file) => countExpectedSupplyOrderRows(file) > 0).length,
+      cleared: files.filter(
+        (file) =>
+          countCompletedSupplyOrderMilestoneStatuses([file], "financialsanction") > 0,
+      ).length,
+      current: files.filter(
+        (file) => countCurrentSupplyOrderMilestoneStatuses([file], "financialsanction") > 0,
+      ).length,
     };
   }
   if (normalized === "supplyorder") {
     return {
-      applicable: countEffectiveSupplyOrders(files),
-      cleared: countPlacedSupplyOrders(files),
-      current: countCurrentSupplyOrderMilestoneStatuses(files, "supplyorder"),
+      applicable: files.filter((file) => countExpectedSupplyOrderRows(file) > 0).length,
+      cleared: files.filter((file) => countPlacedSupplyOrders([file]) > 0).length,
+      current: files.filter(
+        (file) => countCurrentSupplyOrderMilestoneStatuses([file], "supplyorder") > 0,
+      ).length,
     };
   }
   if (normalized === "billreturnedforcorrection") {
@@ -5954,11 +6163,12 @@ function DashboardStatusSummaryValue({
 
 function Status3MilestoneNameCell({ name }: { name: string }) {
   const helper = getStatus3MilestoneHelper(name);
-  if (!helper) return name;
+  const displayName = getWorkflowDisplayLabel(name);
+  if (!helper) return displayName;
   return (
     <span className="inline-flex max-w-[16rem] items-center gap-1.5 align-middle">
-      <span className="truncate">{name}</span>
-      <FloatingHelp label={`${name} status logic`}>{helper}</FloatingHelp>
+      <span className="truncate">{displayName}</span>
+      <FloatingHelp label={`${displayName} status logic`}>{helper}</FloatingHelp>
     </span>
   );
 }
@@ -6781,6 +6991,37 @@ function AnalyticsSortDirectionControl({
         </button>
       ))}
     </div>
+  );
+}
+
+const indentorValueSortOptions = [
+  { key: "value", label: "Total" },
+  { key: "capital", label: "Capital" },
+  { key: "revenue", label: "Revenue" },
+] satisfies Array<{ key: IndentorValueSortKey; label: string }>;
+
+function IndentorValueSortControl({
+  value,
+  onChange,
+}: {
+  value: IndentorValueSortKey;
+  onChange: (value: IndentorValueSortKey) => void;
+}) {
+  return (
+    <label className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium">
+      <span className="text-muted-foreground">Sort by</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as IndentorValueSortKey)}
+        className="h-6 min-w-20 bg-transparent text-xs text-foreground outline-none"
+      >
+        {indentorValueSortOptions.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -7840,6 +8081,15 @@ function getValueAnalyticsColumns(nameLabel: string, valueLabel: string): Analyt
   ];
 }
 
+function getIndentorValueAnalyticsColumns(): AnalyticsTableColumn[] {
+  return [
+    { key: "name", label: "Indentor", align: "left" },
+    { key: "capital", label: "Capital value", format: (value) => formatCurrency(Number(value)) },
+    { key: "revenue", label: "Revenue value", format: (value) => formatCurrency(Number(value)) },
+    { key: "value", label: "Total value", format: (value) => formatCurrency(Number(value)) },
+  ];
+}
+
 function getFirmAnalysisColumns(): AnalyticsTableColumn[] {
   return [
     { key: "name", label: "Firm", align: "left" },
@@ -8293,17 +8543,18 @@ function getMilestoneClearingAnalyticsColumns(
 
 function MilestoneClearingNameCell({ name }: { name: string }) {
   const helper = getMilestoneClearingHelper(name);
-  if (!helper) return name;
+  const displayName = getWorkflowDisplayLabel(name);
+  if (!helper) return displayName;
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
-      <span className="truncate">{name}</span>
+      <span className="truncate">{displayName}</span>
       <TooltipProvider delayDuration={150}>
         <Tooltip>
           <TooltipTrigger asChild>
             <span
               tabIndex={0}
               className="inline-flex size-5 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring/40"
-              aria-label={`${name} clearing time logic`}
+              aria-label={`${displayName} clearing time logic`}
             >
               <Info className="size-3.5" />
             </span>
@@ -8346,7 +8597,7 @@ function getMilestoneClearingHelper(name: string) {
     billsentforpayment:
       "Bill sent for payment clearing = Bill Sent for Payment Date - Bill Preparation Date.",
     billreturnedforcorrection:
-      "Bill returned for correction clearing = Resubmitted Date - Returned Date, counted per completed return cycle.",
+      "Returned Bills clearing = Resubmitted Date - Returned Date, counted per completed return cycle.",
     supplementarybillreturnedforcorrection:
       "Supplementary bill returned for correction clearing = Supplementary Resubmitted Date - Supplementary Returned Date, counted per completed supplementary return cycle.",
     payment: "Payment clearing = Payment Date - Bill Sent for Payment Date.",
@@ -8518,6 +8769,24 @@ function sortAnalyticsRows(
   direction: AnalyticsSortDirection,
 ) {
   return direction === "desc" ? rows : [...rows].reverse();
+}
+
+function sortIndentorValueRows(
+  rows: Array<Record<string, number | string>>,
+  sortKey: IndentorValueSortKey,
+  direction: AnalyticsSortDirection,
+) {
+  return [...rows].sort((a, b) => {
+    const left = Number(a[sortKey] ?? 0);
+    const right = Number(b[sortKey] ?? 0);
+    const diff = direction === "desc" ? right - left : left - right;
+    if (diff !== 0) return diff;
+    const leftTotal = Number(a.value ?? 0);
+    const rightTotal = Number(b.value ?? 0);
+    const totalDiff = rightTotal - leftTotal;
+    if (totalDiff !== 0) return totalDiff;
+    return String(a.name ?? "").localeCompare(String(b.name ?? ""));
+  });
 }
 
 function sortMilestoneClearingRows(
@@ -8767,10 +9036,15 @@ function getAnalyticsSearchTarget(
       focusTarget: "indentor",
     };
   }
-  if (panelKey === "indentorsByValue" && columnKey === "value") {
+  if (
+    panelKey === "indentorsByValue" &&
+    (columnKey === "capital" || columnKey === "revenue" || columnKey === "value")
+  ) {
     return {
       analyticsType: "indentor",
       analyticsNames: [name],
+      capitalOnly: columnKey === "capital",
+      revenueOnly: columnKey === "revenue",
       focusSection: "File details",
       focusTarget: "indentor",
     };
@@ -10221,7 +10495,9 @@ function MilestoneFlowNode({
               {String(index + 1).padStart(2, "0")}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">{milestone.label}</span>
+              <span className="block truncate text-sm font-semibold">
+                {getWorkflowDisplayLabel(milestone.label)}
+              </span>
             </span>
           </span>
           <GroupedStatusMetricGrid
@@ -10660,7 +10936,9 @@ function DeliveryPeriodFlowNode({
               {String(index + 1).padStart(2, "0")}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">{milestone.label}</span>
+              <span className="block truncate text-sm font-semibold">
+                {getWorkflowDisplayLabel(milestone.label)}
+              </span>
             </span>
           </span>
           <span className="grid grid-cols-3 gap-1.5">
@@ -10770,7 +11048,9 @@ function DeliveryFlowNode({
               {String(index + 1).padStart(2, "0")}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">{milestone.label}</span>
+              <span className="block truncate text-sm font-semibold">
+                {getWorkflowDisplayLabel(milestone.label)}
+              </span>
             </span>
           </span>
           <span className="flex flex-col gap-1.5">
@@ -10866,7 +11146,9 @@ function JobCompletionFlowNode({
               {String(index + 1).padStart(2, "0")}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">{milestone.label}</span>
+              <span className="block truncate text-sm font-semibold">
+                {getWorkflowDisplayLabel(milestone.label)}
+              </span>
             </span>
           </span>
           <span className="grid grid-cols-2 gap-1.5">
@@ -11762,12 +12044,20 @@ function getTopIndentorsByFiles(files: FileRecord[]) {
 }
 
 function getTopIndentorsByValue(files: FileRecord[]) {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, { capital: number; revenue: number; value: number }>();
   files.forEach((file) => {
     const name = getAnalyticsName(file.indentor, "Unassigned indentor");
-    totals.set(name, (totals.get(name) ?? 0) + getFileTotalValue(file));
+    const current = totals.get(name) ?? { capital: 0, revenue: 0, value: 0 };
+    const capital = getInrAmount(file.valueCapital, file) ?? 0;
+    const revenue = getInrAmount(file.valueRevenue, file) ?? 0;
+    current.capital += capital;
+    current.revenue += revenue;
+    current.value += capital + revenue;
+    totals.set(name, current);
   });
-  return mapEntriesToSortedRows(totals, "value");
+  return Array.from(totals.entries())
+    .map(([name, values]) => ({ name, ...values }))
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
 }
 
 function filterMilestoneClearingFiles(
@@ -13605,6 +13895,12 @@ function normalizeMilestoneName(value: string | undefined) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function getWorkflowDisplayLabel(value: string | undefined) {
+  return normalizeMilestoneName(value) === "billreturnedforcorrection"
+    ? "Returned Bills"
+    : (value ?? "");
 }
 
 function hasMilestoneDate(file: FileRecord, key: keyof FileRecord | keyof SupplyOrderDetail) {
@@ -15815,20 +16111,21 @@ function getStatusPageExportRows(
   ];
 
   statusFlow.forEach((milestone) => {
+    const milestoneLabel = getWorkflowDisplayLabel(milestone.label);
     if ("valid" in milestone) {
       rows.push(
-        { section: milestone.label, metric: "Valid", count: milestone.valid },
-        { section: milestone.label, metric: "Expired", count: milestone.expired },
-        { section: milestone.label, metric: "Extended", count: milestone.extended },
+        { section: milestoneLabel, metric: "Valid", count: milestone.valid },
+        { section: milestoneLabel, metric: "Expired", count: milestone.expired },
+        { section: milestoneLabel, metric: "Extended", count: milestone.extended },
       );
       return;
     }
 
     if ("due" in milestone) {
       rows.push(
-        { section: milestone.label, metric: "Completed", count: milestone.completed },
-        { section: milestone.label, metric: "Pending", count: milestone.due },
-        { section: milestone.label, metric: "Overdue", count: milestone.overdue },
+        { section: milestoneLabel, metric: "Completed", count: milestone.completed },
+        { section: milestoneLabel, metric: "Pending", count: milestone.due },
+        { section: milestoneLabel, metric: "Overdue", count: milestone.overdue },
       );
       return;
     }
@@ -15836,16 +16133,16 @@ function getStatusPageExportRows(
     if ("irPreparationPending" in milestone) {
       rows.push(
         {
-          section: milestone.label,
+          section: milestoneLabel,
           metric: "IR Preparation Pending",
           count: milestone.irPreparationPending,
         },
         {
-          section: milestone.label,
+          section: milestoneLabel,
           metric: "IR Receipt Pending",
           count: milestone.irReceiptPending,
         },
-        { section: milestone.label, metric: "IR Completed", count: milestone.irCompleted },
+        { section: milestoneLabel, metric: "IR Completed", count: milestone.irCompleted },
       );
       return;
     }
@@ -15882,7 +16179,7 @@ function getStatusPageExportRows(
       }),
       milestone.key,
     ).forEach((metric) => {
-      rows.push({ section: milestone.label, metric: metric.label, count: metric.count });
+      rows.push({ section: milestoneLabel, metric: metric.label, count: metric.count });
     });
   });
 
@@ -15942,7 +16239,7 @@ async function downloadStatusSummaryGroups(
       headers: ["S.No.", "Milestone", ...group.columns],
       rows: group.rows.map((row, index) => [
         index + 1,
-        row.milestone,
+        getWorkflowDisplayLabel(row.milestone),
         ...group.columns.map((column) => row.counts[column] ?? "-"),
       ]),
     })),
@@ -15965,7 +16262,7 @@ function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
             (row, index) => `
               <tr>
                 <td>${index + 1}</td>
-                <td>${escapeHtml(row.milestone)}</td>
+                <td>${escapeHtml(getWorkflowDisplayLabel(row.milestone))}</td>
                 ${group.columns
                   .map((column) => `<td>${escapeHtml(row.counts[column] ?? "-")}</td>`)
                   .join("")}
@@ -15987,7 +16284,12 @@ function exportStatusPageRowsToExcel(
 }
 
 function getLiveStatusTableHtml(rows: LiveStatusDivisionRow[], milestones: LiveStatusMilestone[]) {
-  const headers = ["S.No.", "Division", "Total", ...milestones.map((milestone) => milestone.label)];
+  const headers = [
+    "S.No.",
+    "Division",
+    "Total",
+    ...milestones.map((milestone) => getWorkflowDisplayLabel(milestone.label)),
+  ];
   return `
     <table>
       <thead>
@@ -16110,9 +16412,9 @@ async function downloadStatus4Rows(
           "Group",
           "Total",
           ...milestones.flatMap((milestone) => [
-            `${milestone.label} - Applicable`,
-            `${milestone.label} - Current`,
-            `${milestone.label} - Cleared`,
+            `${getWorkflowDisplayLabel(milestone.label)} - Applicable`,
+            `${getWorkflowDisplayLabel(milestone.label)} - Current`,
+            `${getWorkflowDisplayLabel(milestone.label)} - Cleared`,
           ]),
         ],
         rows: rows.map((row, index) => [
@@ -16163,7 +16465,12 @@ async function downloadLiveStatusRows(
     description,
     tables: [
       {
-        headers: ["S.No.", "Division", "Total", ...milestones.map((milestone) => milestone.label)],
+        headers: [
+          "S.No.",
+          "Division",
+          "Total",
+          ...milestones.map((milestone) => getWorkflowDisplayLabel(milestone.label)),
+        ],
         rows: rows.map((row, index) => [
           index + 1,
           row.division,
@@ -16378,7 +16685,12 @@ function shouldIncludeAnalyticsExportSerialColumn(panelKey: AnalyticsPanelKey) {
     panelKey === "divisionValue" ||
     panelKey === "divisionTotalValue" ||
     panelKey === "divisionTurnaround" ||
-    panelKey === "topFirms"
+    panelKey === "topFirms" ||
+    panelKey === "indentorsByFiles" ||
+    panelKey === "indentorsByValue" ||
+    panelKey === "biddingMode" ||
+    panelKey === "fileValueThresholds" ||
+    panelKey === "paymentPending"
   );
 }
 

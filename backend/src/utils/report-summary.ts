@@ -680,10 +680,15 @@ function getBgReceiptDelayBaseDate(
   order: SupplyOrderDetail,
   category: "psb" | "pwb" | "psbpwb",
 ) {
-  if (category === "psb" || isAmcMpcOmFile(file)) return order.soDate;
+  if (category === "psb" || category === "psbpwb" || isAmcMpcOmFile(file)) return order.soDate;
   const useMaterialReceipt = isDeliveryInspectionApplicable(file);
   if (isGoodsServicesIrNo(file) && isYes(order.stageDelivery) && order.stageDeliveries?.length) {
     const stageDates = order.stageDeliveries.map((stage) => stage.jobCompletionDate);
+    if (isYes(order.stagePayment)) {
+      return stageDates
+        .filter((value): value is string => hasFilledString(value))
+        .sort((a, b) => a.localeCompare(b))[0];
+    }
     if (stageDates.some((value) => !hasFilledString(value))) return undefined;
     return stageDates
       .filter((value): value is string => hasFilledString(value))
@@ -1782,7 +1787,7 @@ function getReturnedBillDelayRows(
         indentor: file.indentor ?? "",
         description: file.demandDescription ?? "",
         milestoneKey: billReturnedDelayMilestoneKey,
-        milestone: "Bill returned for correction",
+        milestone: "Returned Bills",
         stageStartDate,
         daysInStage,
         lastFilledDate: getLastFilledDateValue(file) ?? "",
@@ -2079,22 +2084,22 @@ export function getStatusSummaryTableGroups(files: FileRecord[]): StatusSummaryT
   [
     ...getStatusSummaryRows(files),
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Total",
       count: countReturnedBillOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Pending",
       count: countReturnedBillPendingOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Completed",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Returned paid",
       count: countReturnedBillPaidOrders(files),
     },
@@ -2330,22 +2335,22 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
   ];
   const billReturnRows = [
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Total",
       count: countReturnedBillOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Pending",
       count: countReturnedBillPendingOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Completed",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Returned paid",
       count: countReturnedBillPaidOrders(files),
     },

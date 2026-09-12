@@ -2,8 +2,8 @@ import { useRouterState } from "@tanstack/react-router";
 import {
   BarChart3,
   CalendarDays,
-  CircleHelp,
   FilePlus2,
+  Info,
   LayoutDashboard,
   Moon,
   ScanLine,
@@ -376,17 +376,56 @@ export function TopBar() {
                 type="button"
                 title="Global filter help"
                 aria-label="Global filter help"
-                className="size-8 rounded-md border border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground grid place-items-center"
+                className="grid size-8 place-items-center text-muted-foreground hover:text-foreground focus:text-foreground"
               >
-                <CircleHelp className="size-4" />
+                <Info className="size-3" />
               </button>
-              <div className="pointer-events-none absolute right-0 top-10 z-40 w-[min(360px,calc(100vw-2rem))] origin-top-right scale-95 rounded-md border border-border bg-popover p-3 text-popover-foreground opacity-0 shadow-lg transition group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:scale-100 group-focus-within:opacity-100">
+              <div className="pointer-events-none absolute right-0 top-10 z-40 max-h-[80vh] w-[min(760px,calc(100vw-2rem))] origin-top-right scale-95 overflow-y-auto rounded-md border border-border bg-popover p-3 text-popover-foreground opacity-0 shadow-lg transition group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:scale-100 group-focus-within:opacity-100">
                 <div className="text-xs font-semibold uppercase text-muted-foreground">
                   Global filter
                 </div>
                 <div className="mt-1 text-sm font-semibold">{globalFilterHelp.title}</div>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
                   {globalFilterHelp.description}
+                </p>
+                <div className="mt-3 overflow-x-auto rounded-md border border-border">
+                  <table className="w-full min-w-[520px] border-collapse text-xs">
+                    <thead className="bg-secondary text-muted-foreground">
+                      <tr>
+                        <th className="border-b border-border px-2 py-1.5 text-left font-semibold">
+                          Global filter selected
+                        </th>
+                        <th className="border-b border-border px-2 py-1.5 text-left font-semibold">
+                          File pool shown
+                        </th>
+                        <th className="border-b border-border px-2 py-1.5 text-left font-semibold">
+                          FY used for reports / month columns / MER / date defaults
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {globalFilterHelp.fyRows.map((row) => (
+                        <tr key={row.filter} className="border-t border-border">
+                          <td className="px-2 py-1.5 align-top font-medium">{row.filter}</td>
+                          <td className="px-2 py-1.5 align-top text-muted-foreground">
+                            {row.filePool}
+                          </td>
+                          <td className="px-2 py-1.5 align-top text-muted-foreground">
+                            {row.reportFy}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  File Year subfilter only narrows the file pool by initiation year. It does not
+                  change the FY used for month-wise reports.
+                </p>
+                <p className="mt-2 rounded-md border border-border bg-secondary/30 px-2 py-1.5 text-xs leading-5 text-muted-foreground">
+                  Future-year payments do not change previous-FY actual cash outgo. Example:
+                  payment dated 10-Apr-2026 belongs to FY 2026-27, not FY 2025-26. Previous-FY
+                  reports change only if data is backdated or edited into that previous FY.
                 </p>
                 <ul className="mt-3 list-disc space-y-2 border-t border-border pl-4 pt-2 text-xs leading-5">
                   {globalFilterHelp.options.map((option) => (
@@ -448,6 +487,28 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
   return {
     title,
     description,
+    fyRows: [
+      {
+        filter: "All files",
+        filePool: "All accessible database files",
+        reportFy: `Current FY from Settings: ${currentFyLabel}`,
+      },
+      {
+        filter: "All active files",
+        filePool: "Active, non-cancelled files",
+        reportFy: `Current FY from Settings: ${currentFyLabel}`,
+      },
+      {
+        filter: "Active + current FY closed",
+        filePool: `Active files + files closed during ${currentFyLabel}`,
+        reportFy: `Current FY from Settings: ${currentFyLabel}`,
+      },
+      {
+        filter: `Specific FY, e.g. ${selectedFyLabel}`,
+        filePool: "Files active/continued/initiated in that FY activity",
+        reportFy: `Same selected FY, e.g. ${selectedFyLabel}`,
+      },
+    ],
     options: [
       {
         label: "All files",
@@ -477,6 +538,11 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
         label: "Value Reports",
         description:
           "In active-file modes, allocation uses current FY allocation; intended, booked, committed, and S.O. values come from the selected files.",
+      },
+      {
+        label: "Previous FY cash outgo",
+        description:
+          "Future-year payments do not alter previous-FY actual cash outgo. Previous-FY reports change only if dates/amounts/MER are backdated or edited into that FY.",
       },
     ],
   };

@@ -94,6 +94,8 @@ type SettingsRow = {
   firm_unique_no_label: string;
   firm_rating_config: unknown;
   active_user_id: string | null;
+  pre_so_default_so_offset_days: number;
+  pre_so_default_payment_offset_days: number;
 };
 
 type UserUiPreferencesRow = {
@@ -495,6 +497,8 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     firmUniqueNoLabel: fromDbText(row.firm_unique_no_label) || "Firm Unique No.",
     firmRatingConfig: normalizeFirmRatingConfig(row.firm_rating_config),
     addEditRibbonFields: normalizeAddEditRibbonFields(uiPreferences?.add_edit_ribbon_fields),
+    preSoDefaultSoOffsetDays: Number(row.pre_so_default_so_offset_days ?? 30),
+    preSoDefaultPaymentOffsetDays: Number(row.pre_so_default_payment_offset_days ?? 30),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -575,17 +579,33 @@ async function replaceValueThresholdLevels(financialYear: string, levels: unknow
 async function getSettings(user?: AuthRequest["authUser"]) {
   const key = `settings:app:${user?.id ?? "anonymous"}:${user?.role ?? "none"}`;
   return getCached(key, cacheTtl.settingsMs, async () => {
+    await ensurePreSoSettingsSchema();
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
-              bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id
+              bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
+              pre_so_default_so_offset_days, pre_so_default_payment_offset_days
        from app_settings
        where id = true`,
     );
     if (!result.rows[0]) throw new HttpError(404, "Settings row not found. Run seed defaults.");
     return mapSettings(result.rows[0], user);
   });
+}
+
+let preSoSettingsSchemaReady: Promise<void> | undefined;
+
+function ensurePreSoSettingsSchema() {
+  preSoSettingsSchemaReady ??= pool
+    .query(
+      `alter table app_settings
+         add column if not exists pre_so_default_so_offset_days integer not null default 30;
+       alter table app_settings
+         add column if not exists pre_so_default_payment_offset_days integer not null default 30`,
+    )
+    .then(() => undefined);
+  return preSoSettingsSchemaReady;
 }
 
 function clearSettingsCache() {
@@ -628,6 +648,15 @@ function normalizeBgReceiptDelayDays(value: unknown) {
     ),
   ).sort((a, b) => a - b);
   return days.length ? days.slice(0, 6) : defaultBgReceiptDelayDays;
+}
+
+function readNonNegativeInteger(value: unknown, field: string) {
+  const parsed =
+    typeof value === "number" ? value : Number.parseInt(typeof value === "string" ? value : "", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new HttpError(400, `${field} must be a non-negative number.`);
+  }
+  return Math.floor(parsed);
 }
 
 function readBgReceiptDelayDays(value: unknown) {
@@ -1069,12 +1098,20 @@ settingsRouter.patch(
       user.role === "universal_viewer";
     const canUpdateMmgSummaryFields =
       !("mmgSummaryFields" in body) || user.role === "admin" || user.role === "sub_admin";
+    const preSoDefaultFields = new Set([
+      "preSoDefaultSoOffsetDays",
+      "preSoDefaultPaymentOffsetDays",
+    ]);
+    const canUpdatePreSoDefaults =
+      bodyFields.length > 0 &&
+      bodyFields.every((field) => preSoDefaultFields.has(field)) &&
+      (user.role === "admin" || user.role === "sub_admin");
     const canUpdateUserPreference =
       canUpdateTableFieldPresets &&
       canUpdateMmgSummaryFields &&
       bodyFields.length > 0 &&
       bodyFields.every((field) => userEditableFields.has(field));
-    if (user.role !== "admin" && !canUpdateUserPreference)
+    if (user.role !== "admin" && !canUpdateUserPreference && !canUpdatePreSoDefaults)
       throw new HttpError(403, "Admin access required.");
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -1211,6 +1248,27 @@ settingsRouter.patch(
         JSON.stringify(normalizeFirmRatingConfig(body.firmRatingConfig)),
         "::jsonb",
       );
+    if ("preSoDefaultSoOffsetDays" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin/Sub-admin access required.");
+      }
+      addField(
+        "pre_so_default_so_offset_days",
+        readNonNegativeInteger(body.preSoDefaultSoOffsetDays, "Pre-S.O. default S.O. offset days"),
+      );
+    }
+    if ("preSoDefaultPaymentOffsetDays" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin/Sub-admin access required.");
+      }
+      addField(
+        "pre_so_default_payment_offset_days",
+        readNonNegativeInteger(
+          body.preSoDefaultPaymentOffsetDays,
+          "Pre-S.O. default payment offset days",
+        ),
+      );
+    }
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",
@@ -1257,7 +1315,9 @@ settingsRouter.patch(
       !("addEditRibbonFields" in body) &&
       !("bgReceiptDelayDays" in body) &&
       !("specialFileMarkers" in body) &&
-      !("firmUniqueNoLabel" in body)
+      !("firmUniqueNoLabel" in body) &&
+      !("preSoDefaultSoOffsetDays" in body) &&
+      !("preSoDefaultPaymentOffsetDays" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }

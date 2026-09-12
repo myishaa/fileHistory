@@ -5,7 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  CircleHelp,
+  Info,
   Lock,
   Pencil,
   Plus,
@@ -41,6 +41,7 @@ import {
   type MasterFirm,
   type SpecialFileMarker,
   type TrustedIpAddress,
+  type UniversalViewerCashOutgoEditScope,
   type ValueThresholdAppliesTo,
   type ValueThresholdLevel,
 } from "@/lib/files-store";
@@ -397,6 +398,11 @@ const settingsControlHelpers = {
     "Moves this user account out of active use.",
     "This action needs the deletion password.",
   ],
+  universalViewerCashOutgoScope: [
+    "View only cannot save MER or Cash Out Go Plan changes.",
+    "Personal Cash Out Go saves planning offsets and row dates only for that Universal Viewer account.",
+    "Global Cash Out Go + MER can save official Cash Out Go Plan changes and MER for the software.",
+  ],
   archiveRestore: [
     "Restores the archived item back to active records.",
     "Review details after restore if related settings have changed.",
@@ -569,7 +575,7 @@ type AnomalyRuleRow = {
 type AnomalyRuleField = { key: string; label: string; scope: string };
 
 function canViewAdminSettings(role: AppUserRole | undefined) {
-  return role === "admin" || role === "universal_viewer";
+  return role === "admin" || role === "sub_admin" || role === "universal_viewer";
 }
 
 function isUniversalViewer(role: AppUserRole | undefined) {
@@ -676,7 +682,7 @@ function SettingsPage() {
     );
   }
 
-  const adminSections: AdminSection[] = [
+  const allAdminSections: AdminSection[] = [
     {
       key: "user",
       label: "User",
@@ -804,6 +810,10 @@ function SettingsPage() {
       content: <ArchiveSettings />,
     },
   ];
+  const adminSections =
+    activeUser?.role === "sub_admin"
+      ? allAdminSections.filter((section) => section.key === "user" || section.key === "workspace")
+      : allAdminSections;
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
   const universalViewer = isUniversalViewer(activeUser?.role);
@@ -955,9 +965,9 @@ function SettingsHelper({ items, label }: { items: string[]; label: string }) {
             type="button"
             aria-label={label}
             onClick={(event) => event.preventDefault()}
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            className="inline-flex size-6 shrink-0 items-center justify-center text-muted-foreground transition hover:text-foreground"
           >
-            <CircleHelp className="size-3.5" />
+            <Info className="size-3" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
@@ -1227,6 +1237,7 @@ function MmgLiveSettings() {
 
 function WorkspaceSettings() {
   const settings = useSettings();
+  const activeUser = useActiveUser();
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
   const [newFinancialYearError, setNewFinancialYearError] = useState("");
@@ -1270,6 +1281,8 @@ function WorkspaceSettings() {
     workspaceYear !== settings.financialYear &&
     selectedYearFileCount === 0 &&
     financialYears.length > 1;
+  const canEditWorkspaceGlobals = activeUser?.role === "admin";
+  const canEditPreSoOffsets = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
 
   const addFinancialYear = () => {
     const label = newFinancialYear.trim() || suggestedFinancialYear;
@@ -1331,6 +1344,7 @@ function WorkspaceSettings() {
               <select
                 value={workspaceYear}
                 onChange={(event) => setWorkspaceYear(event.target.value)}
+                disabled={!canEditWorkspaceGlobals}
                 className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
               >
                 {financialYears.map((year) => (
@@ -1357,11 +1371,13 @@ function WorkspaceSettings() {
                     if (event.key === "Enter") addFinancialYear();
                   }}
                   placeholder={suggestedFinancialYear}
+                  disabled={!canEditWorkspaceGlobals}
                   className="h-10 min-w-0 flex-1 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
                 />
                 <button
                   type="button"
                   onClick={addFinancialYear}
+                  disabled={!canEditWorkspaceGlobals}
                   className="h-10 shrink-0 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
                 >
                   <Plus className="size-4" /> Add Year
@@ -1376,7 +1392,7 @@ function WorkspaceSettings() {
               <button
                 type="button"
                 onClick={setCurrentFinancialYear}
-                disabled={workspaceYear === settings.financialYear}
+                disabled={!canEditWorkspaceGlobals || workspaceYear === settings.financialYear}
                 className="h-10 min-w-40 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
                 <Check className="size-4" /> Set as Current FY
@@ -1389,6 +1405,7 @@ function WorkspaceSettings() {
               <button
                 type="button"
                 onClick={toggleYearSelectionLock}
+                disabled={!canEditWorkspaceGlobals}
                 className={
                   "h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border text-sm font-medium " +
                   (settings.yearSelectionLocked
@@ -1415,7 +1432,7 @@ function WorkspaceSettings() {
                 <button
                   type="button"
                   onClick={deleteSelectedFinancialYear}
-                  disabled={!canDeleteSelectedYear}
+                  disabled={!canEditWorkspaceGlobals || !canDeleteSelectedYear}
                   className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                 >
                   <Trash2 className="size-4" /> Delete
@@ -1437,9 +1454,53 @@ function WorkspaceSettings() {
         <PasswordField
           label="Deletion password"
           value={settings.deletionPassword}
-          onChange={(value) => store.updateSettings({ deletionPassword: value })}
+          onChange={(value) => {
+            if (canEditWorkspaceGlobals) store.updateSettings({ deletionPassword: value });
+          }}
+          disabled={!canEditWorkspaceGlobals}
           helper={deletionPasswordHelper}
         />
+        <div className="md:col-span-2 rounded-md border border-border bg-secondary/20 p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Pre-S.O. expected cash outgo defaults</h3>
+            <p className="text-xs text-muted-foreground">
+              These defaults are used in Reports → Pre-S.O. based expected cash outgo unless a stage
+              override is saved in the report.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">Default S.O. offset days</div>
+              <input
+                type="number"
+                min="0"
+                value={settings.preSoDefaultSoOffsetDays ?? 30}
+                disabled={!canEditPreSoOffsets}
+                onChange={(event) =>
+                  store.updateSettings({
+                    preSoDefaultSoOffsetDays: Math.max(0, Number(event.target.value || 0)),
+                  })
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+              />
+            </label>
+            <label className="block">
+              <div className="mb-1.5 text-xs font-medium">Default payment offset days</div>
+              <input
+                type="number"
+                min="0"
+                value={settings.preSoDefaultPaymentOffsetDays ?? 30}
+                disabled={!canEditPreSoOffsets}
+                onChange={(event) =>
+                  store.updateSettings({
+                    preSoDefaultPaymentOffsetDays: Math.max(0, Number(event.target.value || 0)),
+                  })
+                }
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+              />
+            </label>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -3998,6 +4059,7 @@ function FirmDatabaseSettings() {
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor";
+  const canDeleteFirms = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const [draft, setDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -4110,7 +4172,7 @@ function FirmDatabaseSettings() {
   };
 
   const removeFirm = async (id: string) => {
-    if (!canManage) return;
+    if (!canDeleteFirms) return;
     try {
       await deleteMasterFirm(id);
       if (firms.length === 1 && page > 1) {
@@ -4345,19 +4407,20 @@ function FirmDatabaseSettings() {
                             >
                               <Pencil className="size-4" />
                             </button>
-                            <HelpedControl
-                              helper={settingsControlHelpers.genericDelete}
-                              label={`Delete ${firm.firmName || "firm"} help`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => void removeFirm(firm.id)}
-                                disabled={!canManage}
-                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            {canDeleteFirms ? (
+                              <HelpedControl
+                                helper={settingsControlHelpers.genericDelete}
+                                label={`Delete ${firm.firmName || "firm"} help`}
                               >
-                                <Trash2 className="size-4" />
-                              </button>
-                            </HelpedControl>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeFirm(firm.id)}
+                                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 className="size-4" />
+                                </button>
+                              </HelpedControl>
+                            ) : null}
                           </>
                         )}
                       </div>
@@ -5349,6 +5412,8 @@ function UserSettings() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<AppUserRole>("editor");
+  const [cashOutgoEditScope, setCashOutgoEditScope] =
+    useState<UniversalViewerCashOutgoEditScope>("none");
   const [emergencyIpBypass, setEmergencyIpBypass] = useState(false);
   const [divisionIds, setDivisionIds] = useState<string[]>([]);
   const [allowedFileCategories, setAllowedFileCategories] =
@@ -5358,6 +5423,8 @@ function UserSettings() {
   const [editUsername, setEditUsername] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [editRole, setEditRole] = useState<AppUserRole>("editor");
+  const [editCashOutgoEditScope, setEditCashOutgoEditScope] =
+    useState<UniversalViewerCashOutgoEditScope>("none");
   const [editEmergencyIpBypass, setEditEmergencyIpBypass] = useState(false);
   const [editDivisionIds, setEditDivisionIds] = useState<string[]>([]);
   const [editAllowedFileCategories, setEditAllowedFileCategories] = useState<FileCategoryKey[]>([]);
@@ -5369,6 +5436,7 @@ function UserSettings() {
       username: username.trim(),
       password: password.trim(),
       role,
+      cashOutgoEditScope: role === "universal_viewer" ? cashOutgoEditScope : "none",
       emergencyIpBypass: role === "admin" && emergencyIpBypass,
       divisionIds,
       allowedFileCategories,
@@ -5377,6 +5445,7 @@ function UserSettings() {
     setUsername("");
     setPassword("");
     setRole("editor");
+    setCashOutgoEditScope("none");
     setEmergencyIpBypass(false);
     setDivisionIds([]);
     setAllowedFileCategories(allFileAccessKeys);
@@ -5388,6 +5457,7 @@ function UserSettings() {
     setEditUsername(user.username);
     setEditPassword("");
     setEditRole(user.role);
+    setEditCashOutgoEditScope(user.cashOutgoEditScope ?? "none");
     setEditEmergencyIpBypass(Boolean(user.emergencyIpBypass));
     setEditDivisionIds(user.divisionIds ?? []);
     setEditAllowedFileCategories(
@@ -5402,6 +5472,7 @@ function UserSettings() {
       username: editUsername.trim(),
       ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
       role: editRole,
+      cashOutgoEditScope: editRole === "universal_viewer" ? editCashOutgoEditScope : "none",
       emergencyIpBypass: editRole === "admin" && editEmergencyIpBypass,
       divisionIds: editDivisionIds,
       allowedFileCategories: editAllowedFileCategories,
@@ -5437,6 +5508,13 @@ function UserSettings() {
           onChange={setEmergencyIpBypass}
         />
       </div>
+      <div className="mt-3">
+        <UniversalViewerCashOutgoScopeSelect
+          role={role}
+          value={cashOutgoEditScope}
+          onChange={setCashOutgoEditScope}
+        />
+      </div>
 
       <div className="mt-3">
         <DivisionAccessPicker
@@ -5455,20 +5533,22 @@ function UserSettings() {
       </div>
 
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[980px] table-fixed text-sm">
+        <table className="w-full min-w-[1100px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[17%]" />
-            <col className="w-[16%]" />
+            <col className="w-[15%]" />
+            <col className="w-[15%]" />
             <col className="w-[13%]" />
-            <col className="w-[28%]" />
-            <col className="w-[16%]" />
-            <col className="w-[10%]" />
+            <col className="w-[14%]" />
+            <col className="w-[23%]" />
+            <col className="w-[12%]" />
+            <col className="w-[8%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
               <th className="text-left font-medium px-4 py-2.5">Name</th>
               <th className="text-left font-medium px-4 py-2.5">Username</th>
               <th className="text-left font-medium px-4 py-2.5">Role</th>
+              <th className="text-left font-medium px-4 py-2.5">Cash plan/MER</th>
               <th className="text-left font-medium px-4 py-2.5">Visible divisions</th>
               <th className="text-left font-medium px-4 py-2.5">File types</th>
               <th className="text-right font-medium px-4 py-2.5">Action</th>
@@ -5477,7 +5557,7 @@ function UserSettings() {
           <tbody>
             {users.length === 0 ? (
               <tr className="border-t border-border">
-                <td className="px-4 py-6 text-muted-foreground text-center" colSpan={6}>
+                <td className="px-4 py-6 text-muted-foreground text-center" colSpan={7}>
                   No users added yet.
                 </td>
               </tr>
@@ -5489,6 +5569,8 @@ function UserSettings() {
                   editUsername.trim() !== user.username ||
                   Boolean(editPassword.trim()) ||
                   editRole !== user.role ||
+                  (editRole === "universal_viewer" ? editCashOutgoEditScope : "none") !==
+                    (user.cashOutgoEditScope ?? "none") ||
                   (editRole === "admin" && editEmergencyIpBypass) !==
                     Boolean(user.emergencyIpBypass) ||
                   !isSettingsDirtyValueEqual(
@@ -5547,6 +5629,18 @@ function UserSettings() {
                             <div className="mt-1 text-xs text-destructive">Emergency IP bypass</div>
                           ) : null}
                         </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {isEditing ? (
+                        <UniversalViewerCashOutgoScopeSelect
+                          role={editRole}
+                          value={editCashOutgoEditScope}
+                          onChange={setEditCashOutgoEditScope}
+                          compact
+                        />
+                      ) : (
+                        cashOutgoEditScopeLabel(user.role, user.cashOutgoEditScope)
                       )}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
@@ -5649,6 +5743,52 @@ function UserRoleSelect({
       <option value="editor">Editor</option>
       <option value="universal_viewer">Universal Viewer</option>
     </select>
+  );
+}
+
+function UniversalViewerCashOutgoScopeSelect({
+  role,
+  value,
+  onChange,
+  compact = false,
+}: {
+  role: AppUserRole;
+  value: UniversalViewerCashOutgoEditScope;
+  onChange: (value: UniversalViewerCashOutgoEditScope) => void;
+  compact?: boolean;
+}) {
+  if (role !== "universal_viewer") {
+    return compact ? (
+      <span className="text-xs text-muted-foreground">Not applicable</span>
+    ) : (
+      <div className="text-xs text-muted-foreground">Cash Out Go/MER edit: not applicable</div>
+    );
+  }
+  return (
+    <label className={compact ? "block" : "block max-w-md"}>
+      <span className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        Universal Viewer Cash Out Go / MER edit
+        <SettingsHelper
+          items={settingsControlHelpers.universalViewerCashOutgoScope}
+          label="Universal Viewer Cash Out Go / MER edit help"
+        />
+      </span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as UniversalViewerCashOutgoEditScope)}
+        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+      >
+        <option value="none">View only</option>
+        <option value="personal">Personal Cash Out Go only</option>
+        <option value="global">Global Cash Out Go + MER</option>
+      </select>
+      {!compact ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Personal saves affect only this Universal Viewer. Global saves affect the software and can
+          edit MER.
+        </p>
+      ) : null}
+    </label>
   );
 }
 
@@ -6379,6 +6519,13 @@ function roleLabel(role: AppUserRole) {
   return "Viewer";
 }
 
+function cashOutgoEditScopeLabel(role: AppUserRole, scope?: string | null) {
+  if (role !== "universal_viewer") return "Not applicable";
+  if (scope === "personal") return "Personal Cash Out Go";
+  if (scope === "global") return "Global Cash Out Go + MER";
+  return "View only";
+}
+
 function normalizeUserFileCategories(
   values: string[] | null | undefined,
   options: FileCategoryOption[] = fileCategoryOptions,
@@ -6448,11 +6595,13 @@ function PasswordField({
   label,
   value,
   onChange,
+  disabled = false,
   helper,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
   helper?: string[];
 }) {
   return (
@@ -6466,7 +6615,8 @@ function PasswordField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Required for delete actions"
-        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+        disabled={disabled}
+        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
       />
     </label>
   );

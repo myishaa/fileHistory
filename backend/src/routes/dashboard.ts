@@ -346,6 +346,9 @@ function getSuspectedAnomalyRows(
       fileSupplyOrders(file).flatMap((order) => [order.psbBgNo, order.pwbBgNo, order.combinedBgNo]),
     ),
   );
+  const duplicateSoNumbers = getDuplicateValues(
+    activeFiles.flatMap((file) => fileSupplyOrders(file).flatMap((order) => [order.soNo, order.gemSoNo])),
+  );
   files.forEach((file) => {
     const addPair = (
       block: string,
@@ -453,6 +456,19 @@ function getSuspectedAnomalyRows(
     const hasCncWorkflow = hasFilledString(file.cncDate) || hasFilledString(file.cncApprovalDate);
     const fileClosed = hasCompletedMilestone(file.completedMilestones, fileClosedMilestone);
     const fileReceivedDate = file.receivedDate;
+
+    addFutureActualDateAnomalies(file, addIssue);
+
+    if (parseAmount(file.valueCapital) > 0 && parseAmount(file.valueRevenue) > 0) {
+      addIssue(
+        "Value",
+        "File has both Capital and Revenue values filled",
+        "File value side",
+        "Either Capital or Revenue",
+        "Capital and Revenue",
+        "Both filled",
+      );
+    }
 
     if (!hasFilledString(file.division)) {
       addIssue(
@@ -801,6 +817,7 @@ function getSuspectedAnomalyRows(
           file.currentMilestone!,
         );
       }
+      addClosedFileSubflowMilestoneAnomalies(file, addIssue);
     } else if (hasFilledString(file.fileClosureDate)) {
       addIssue(
         "Closure",
@@ -1122,6 +1139,49 @@ function getSuspectedAnomalyRows(
       const expectedStageCount = readPositiveInteger(rawOrder.stageDeliveryCount);
       const bgFieldsFilled = hasAnyBgField(rawOrder);
       const orderBgMarkedYes = isYes(rawOrder.psbApplicable) || bgFieldsFilled;
+
+      [rawOrder.soNo, rawOrder.gemSoNo]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value))
+        .forEach((value) => {
+          if (duplicateSoNumbers.has(value)) {
+            addIssue(
+              "Supply Order",
+              "Duplicate S.O. number or GeM S.O. number across active S.O. records",
+              "S.O. reference",
+              "Unique",
+              "Duplicate value",
+              value,
+              rawContext,
+            );
+          }
+        });
+      if (!hasSoDate && hasLaterOrderWorkflow(rawOrder)) {
+        addIssue(
+          "Supply Order",
+          "Later S.O. workflow exists but S.O. date is blank",
+          "S.O. date",
+          "Filled before later workflow",
+          "Later workflow",
+          getLaterOrderWorkflowEvidence(rawOrder),
+          rawContext,
+        );
+      }
+      if (
+        !hasSoDate &&
+        !hasFilledString(rawOrder.financialSanctionDate) &&
+        hasLaterOrderWorkflow(rawOrder)
+      ) {
+        addIssue(
+          "Financial Sanction",
+          "Later S.O. workflow exists but Financial Sanction date is blank",
+          "Financial Sanction date",
+          "Filled before later workflow",
+          "Later workflow",
+          getLaterOrderWorkflowEvidence(rawOrder),
+          rawContext,
+        );
+      }
 
       if (hasSoDate && !hasFilledString(rawOrder.financialSanctionDate)) {
         addIssue(
@@ -1618,8 +1678,40 @@ function getSuspectedAnomalyRows(
               value,
               rawContext,
             );
-          }
+        }
+      });
+      addPaymentReturnCycleAnomalies({
+        block: "Returned Bills",
+        context: rawContext,
+        billSentDate: rawOrder.billSentForPaymentDate,
+        paymentDate: rawOrder.paymentDate,
+        cycles: rawOrder.billReturnCycles,
+        addPair,
+        addIssue,
+      });
+      addSupplementaryBillAnomalies(rawOrder, rawContext, addPair, addIssue);
+      if (rawOrder.advancePaymentDetail) {
+        addPaymentReturnCycleAnomalies({
+          block: "Advance Payment",
+          context: `${rawContext}:advance`,
+          billSentDate: rawOrder.advancePaymentDetail.billSentForPaymentDate,
+          paymentDate: rawOrder.advancePaymentDetail.paymentDate,
+          cycles: rawOrder.advancePaymentDetail.billReturnCycles,
+          addPair,
+          addIssue,
         });
+      }
+      rawStageRows.forEach((stage, stageIndex) => {
+        addPaymentReturnCycleAnomalies({
+          block: "Stage Payment",
+          context: `${rawContext}:stage:${stageIndex + 1}`,
+          billSentDate: stage.billSentForPaymentDate,
+          paymentDate: stage.paymentDate,
+          cycles: stage.billReturnCycles,
+          addPair,
+          addIssue,
+        });
+      });
     });
 
     effectiveSupplyOrderEntries([file]).forEach(({ order }, index) => {
@@ -2241,6 +2333,120 @@ function addPreControlReceivedDateAnomalies(
   });
 }
 
+function addFutureActualDateAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
+  const today = todayIsoDate();
+  const addFutureDate = (
+    block: string,
+    field: string,
+    date: string | undefined,
+    context = "file",
+  ) => {
+    if (!isIsoDate(date) || date! <= today) return;
+    addIssue(block, `${field} is a future date`, field, `On or before ${today}`, field, date!, context);
+  };
+
+  [
+    ["Demand", "Demand received date", file.receivedDate],
+    ["Scrutiny", "Scrutiny date", file.scrutinyDate],
+    ["Scrutiny", "Scrutiny response date", file.scrutinyResponseDate],
+    ["Scrutiny", "Scrutiny completion date", file.scrutinyCompletionDate],
+    ["High Value", "High value meeting date", file.highValueMeetingDate],
+    ["High Value", "High value minutes date", file.highValueMinutesDate],
+    ["TCEC", "Pre-TCEC date", file.preTcecDate],
+    ["TCEC", "Pre-TCEC minutes date", file.preTcecMinutesDate],
+    ["TCEC", "Post-TCEC date", file.postTcecDate],
+    ["TCEC", "Post-TCEC minutes date", file.postTcecMinutesDate],
+    ["TCEC", "Refloat Post-TCEC date", file.refloatPostTcecDate],
+    ["TCEC", "Refloat Post-TCEC minutes date", file.refloatPostTcecMinutesDate],
+    ["AD", "AD sent date", file.adSentDate],
+    ["AD", "AD vetting date", file.adVettingDate],
+    ["R&QA", "R&QA sent date", file.rqaSentDate],
+    ["R&QA", "R&QA approval date", file.rqaApprovalDate],
+    ["Control", "Demand control date", file.immsDate],
+    ["IFA", "IFA sent date", file.ifaSentDate],
+    ["IFA", "IFA final date", file.ifaFinalDate],
+    ["CFA", "CFA sent date", file.cfaSentDate],
+    ["CFA", "CFA approval date", file.cfaDate],
+    ["CNC", "CNC date", file.cncDate],
+    ["CNC", "CNC approval date", file.cncApprovalDate],
+    ["Cancellation", "Demand cancellation date", file.demandCancelledDate],
+    ["Closure", "File Closure Date", file.fileClosureDate],
+  ].forEach(([block, field, date]) => addFutureDate(block!, field!, date));
+
+  fileSupplyOrders(file).forEach((order, orderIndex) => {
+    const context = `order:${order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`}:${orderIndex}`;
+    addFutureDate("Supply Order", "Financial Sanction date", order.financialSanctionDate, context);
+    addFutureDate("Supply Order", "S.O. date", order.soDate, context);
+    addFutureDate("Delivery", "Material receipt date", order.materialReceiptDate, context);
+    addFutureDate("Job Completion", "Job Completion Date", order.jobCompletionDate, context);
+    addFutureDate("IR", "IR preparation date", order.irPreparationDate, context);
+    addFutureDate("IR", "IR receipt date", order.irReceiptDate, context);
+    addFutureDate("Bill", "Bill preparation date", order.billPreparationDate, context);
+    addFutureDate("Bill", "Bill sent for payment date", order.billSentForPaymentDate, context);
+    addFutureDate("Payment", "Payment date", order.paymentDate, context);
+    addFutureDate("Cancellation", "S.O. cancelled date", order.soCancelledDate, context);
+    addFutureDate("Cancellation", "Shortclosure date", order.shortclosureDate, context);
+    addFutureDate("PSB", "PSB received date", order.psbBgReceivedDate, context);
+    addFutureDate("PSB", "PSB return date", order.psbBgReturnDate, context);
+    addFutureDate("PWB", "PWB received date", order.pwbBgReceivedDate, context);
+    addFutureDate("PWB", "PWB return date", order.pwbBgReturnDate, context);
+    addFutureDate("PSB+PWB", "Combined BG received date", order.combinedBgReceivedDate, context);
+    addFutureDate("PSB+PWB", "Combined BG return date", order.combinedBgReturnDate, context);
+    (order.billReturnCycles ?? []).forEach((cycle, cycleIndex) => {
+      const cycleContext = `${context}:return:${cycleIndex + 1}`;
+      addFutureDate("Returned Bills", "Returned bill date", cycle.returnedDate, cycleContext);
+      addFutureDate("Returned Bills", "Returned bill resubmission date", cycle.resubmittedDate, cycleContext);
+    });
+    order.stageDeliveries?.forEach((stage, stageIndex) => {
+      const stageContext = `${context}:stage:${stageIndex + 1}`;
+      addFutureDate("Stage Delivery", "Stage material receipt date", stage.materialReceiptDate, stageContext);
+      addFutureDate("Stage Delivery", "Stage job completion date", stage.jobCompletionDate, stageContext);
+      addFutureDate("Stage IR", "Stage IR preparation date", stage.irPreparationDate, stageContext);
+      addFutureDate("Stage IR", "Stage IR receipt date", stage.irReceiptDate, stageContext);
+      addFutureDate("Stage Payment", "Stage bill preparation date", stage.billPreparationDate, stageContext);
+      addFutureDate("Stage Payment", "Stage bill sent for payment date", stage.billSentForPaymentDate, stageContext);
+      addFutureDate("Stage Payment", "Stage payment date", stage.paymentDate, stageContext);
+      stage.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${stageContext}:return:${cycleIndex + 1}`;
+        addFutureDate("Stage Payment", "Stage returned bill date", cycle.returnedDate, cycleContext);
+        addFutureDate("Stage Payment", "Stage returned bill resubmission date", cycle.resubmittedDate, cycleContext);
+      });
+    });
+    if (order.advancePaymentDetail) {
+      const advance = order.advancePaymentDetail;
+      const advanceContext = `${context}:advance`;
+      addFutureDate("Advance Payment", "Advance bill preparation date", advance.billPreparationDate, advanceContext);
+      addFutureDate("Advance Payment", "Advance bill sent for payment date", advance.billSentForPaymentDate, advanceContext);
+      addFutureDate("Advance Payment", "Advance payment date", advance.paymentDate, advanceContext);
+      advance.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${advanceContext}:return:${cycleIndex + 1}`;
+        addFutureDate("Advance Payment", "Advance returned bill date", cycle.returnedDate, cycleContext);
+        addFutureDate(
+          "Advance Payment",
+          "Advance returned bill resubmission date",
+          cycle.resubmittedDate,
+          cycleContext,
+        );
+      });
+    }
+    getSupplementaryBills(order).forEach((bill, billIndex) => {
+      const billContext = `${context}:supplementary:${billIndex + 1}`;
+      addFutureDate("Supplementary bill", "Supplementary bill sent date", bill.billSentForPaymentDate, billContext);
+      addFutureDate("Supplementary bill", "Supplementary payment date", bill.paymentDate, billContext);
+      bill.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${billContext}:return:${cycleIndex + 1}`;
+        addFutureDate("Supplementary bill", "Supplementary returned bill date", cycle.returnedDate, cycleContext);
+        addFutureDate(
+          "Supplementary bill",
+          "Supplementary returned bill resubmission date",
+          cycle.resubmittedDate,
+          cycleContext,
+        );
+      });
+    });
+  });
+}
+
 type SequenceMilestoneRule = {
   key: string;
   label: string;
@@ -2795,6 +3001,42 @@ function hasWorkflowAfterDate(order: SupplyOrderDetail, date: string | undefined
   ].some((value) => isIsoDate(value) && value! > date!);
 }
 
+function getLaterOrderWorkflowFields(order: SupplyOrderDetail) {
+  const fields: string[] = [];
+  const addIfFilled = (label: string, value: string | undefined) => {
+    if (hasFilledString(value)) fields.push(label);
+  };
+  addIfFilled("Material receipt date", order.materialReceiptDate);
+  addIfFilled("Job Completion Date", order.jobCompletionDate);
+  addIfFilled("IR preparation date", order.irPreparationDate);
+  addIfFilled("IR receipt date", order.irReceiptDate);
+  addIfFilled("Bill preparation date", order.billPreparationDate);
+  addIfFilled("Bill sent for payment date", order.billSentForPaymentDate);
+  addIfFilled("Payment date", order.paymentDate);
+  addIfFilled("PSB received date", order.psbBgReceivedDate);
+  addIfFilled("PWB received date", order.pwbBgReceivedDate);
+  addIfFilled("PSB+PWB received date", order.combinedBgReceivedDate);
+  if (order.billReturnCycles?.some(hasBillReturnCycleDataLocal)) fields.push("Returned Bills");
+  if (hasAdvancePaymentData(order)) fields.push("Advance payment");
+  if (getSupplementaryBills(order).some(hasSupplementaryBillDataLocal)) {
+    fields.push("Supplementary bill");
+  }
+  if ((order.stageDeliveries ?? []).some(hasStageCompletion)) fields.push("Stage delivery");
+  if ((order.stageDeliveries ?? []).some(hasStagePaymentOrAmountFields)) {
+    fields.push("Stage payment");
+  }
+  return fields;
+}
+
+function hasLaterOrderWorkflow(order: SupplyOrderDetail) {
+  return getLaterOrderWorkflowFields(order).length > 0;
+}
+
+function getLaterOrderWorkflowEvidence(order: SupplyOrderDetail) {
+  const fields = getLaterOrderWorkflowFields(order);
+  return fields.length ? fields.slice(0, 4).join(", ") : "Exists";
+}
+
 function isStageDone(
   stage: Pick<
     SupplyOrderDetail,
@@ -2959,6 +3201,46 @@ function hasFileClosureSupplementaryBillLiability(file: FileRecord) {
   });
 }
 
+function addClosedFileSubflowMilestoneAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
+  (file.supplyOrders ?? []).forEach((order, orderIndex) => {
+    const context = `order:${order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`}:${orderIndex}`;
+    if (hasFilledString(order.currentMilestone)) {
+      addIssue(
+        "Closure",
+        "File closed but S.O. current milestone still exists",
+        "S.O. current milestone",
+        "Blank",
+        "S.O. current milestone",
+        order.currentMilestone!,
+        context,
+      );
+    }
+    order.stageDeliveries?.forEach((stage, stageIndex) => {
+      if (!hasFilledString(stage.currentMilestone)) return;
+      addIssue(
+        "Closure",
+        "File closed but stage current milestone still exists",
+        "Stage current milestone",
+        "Blank",
+        "Stage current milestone",
+        stage.currentMilestone!,
+        `${context}:stage:${stageIndex + 1}`,
+      );
+    });
+    if (hasFilledString(order.advancePaymentDetail?.currentMilestone)) {
+      addIssue(
+        "Closure",
+        "File closed but advance payment current milestone still exists",
+        "Advance payment current milestone",
+        "Blank",
+        "Advance payment current milestone",
+        order.advancePaymentDetail!.currentMilestone!,
+        `${context}:advance`,
+      );
+    }
+  });
+}
+
 function getSupplementaryBills(order: SupplyOrderDetail) {
   return Array.isArray(order.supplementaryBills)
     ? order.supplementaryBills.filter(
@@ -2984,6 +3266,193 @@ function hasSupplementaryBillDataLocal(
       bill.remarks,
     ].some(hasFilledString) || Boolean(bill.billReturnCycles?.some(hasBillReturnCycleDataLocal))
   );
+}
+
+function addSupplementaryBillAnomalies(
+  order: SupplyOrderDetail,
+  orderContext: string,
+  addPair: AddAnomalyPair,
+  addIssue: AddAnomalyIssue,
+) {
+  getSupplementaryBills(order).forEach((bill, index) => {
+    const context = `${orderContext}:supplementary:${index + 1}`;
+    const billAmount = parseAmount(bill.billAmountCapital) + parseAmount(bill.billAmountRevenue);
+    const actualAmount =
+      parseAmount(bill.actualPaymentCapital) + parseAmount(bill.actualPaymentRevenue);
+    if (hasFilledString(bill.billSentForPaymentDate) && billAmount <= 0) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary bill sent date exists but bill amount is blank or zero",
+        "Supplementary bill amount",
+        "Greater than zero",
+        "Supplementary bill sent date",
+        bill.billSentForPaymentDate!,
+        context,
+      );
+    }
+    if (hasFilledString(bill.paymentDate) && !hasFilledString(bill.billSentForPaymentDate)) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary payment date exists but bill sent date is blank",
+        "Supplementary bill sent date",
+        "Filled",
+        "Supplementary payment date",
+        bill.paymentDate!,
+        context,
+      );
+    }
+    if (!hasFilledString(bill.paymentDate) && actualAmount > 0) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary paid amount is filled without payment date",
+        "Supplementary payment date",
+        "Filled",
+        "Supplementary paid amount",
+        formatAmountForAnomaly(actualAmount),
+        context,
+      );
+    }
+    if (hasFilledString(bill.paymentDate) && actualAmount <= 0) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary payment date is filled without actual payment amount",
+        "Supplementary paid amount",
+        "Greater than zero",
+        "Supplementary payment date",
+        bill.paymentDate!,
+        context,
+      );
+    }
+    if (actualAmount > billAmount && billAmount > 0) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary paid amount exceeds supplementary bill amount",
+        "Supplementary paid amount",
+        "Within bill amount",
+        "Supplementary paid amount",
+        formatAmountForAnomaly(actualAmount),
+        context,
+      );
+    }
+    if (hasFilledString(bill.paymentDate) && !hasSelectablePaymentMode(bill.paymentMode)) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary payment mode is blank while payment date exists",
+        "Supplementary payment mode",
+        "Filled",
+        "Supplementary payment date",
+        bill.paymentDate!,
+        context,
+      );
+    }
+    if (
+      !hasFilledString(bill.paymentDate) &&
+      hasSelectablePaymentMode(bill.paymentMode) &&
+      actualAmount > 0
+    ) {
+      addIssue(
+        "Supplementary bill",
+        "Supplementary payment mode is filled while payment date is blank",
+        "Supplementary payment mode",
+        "Blank until payment date",
+        "Supplementary payment mode",
+        bill.paymentMode!,
+        context,
+      );
+    }
+    addPair(
+      "Supplementary bill",
+      "Supplementary bill sent date should not be after payment date",
+      "Supplementary bill sent date",
+      bill.billSentForPaymentDate,
+      "Supplementary payment date",
+      bill.paymentDate,
+      context,
+    );
+    addPaymentReturnCycleAnomalies({
+      block: "Supplementary bill",
+      context,
+      billSentDate: bill.billSentForPaymentDate,
+      paymentDate: bill.paymentDate,
+      cycles: bill.billReturnCycles,
+      addPair,
+      addIssue,
+    });
+  });
+}
+
+function addPaymentReturnCycleAnomalies({
+  block,
+  context,
+  billSentDate,
+  paymentDate,
+  cycles,
+  addPair,
+  addIssue,
+}: {
+  block: string;
+  context: string;
+  billSentDate: string | undefined;
+  paymentDate: string | undefined;
+  cycles: SupplyOrderDetail["billReturnCycles"];
+  addPair: AddAnomalyPair;
+  addIssue: AddAnomalyIssue;
+}) {
+  (cycles ?? []).forEach((cycle, index) => {
+    const cycleContext = `${context}:return:${index + 1}`;
+    if (hasFilledString(cycle.returnedDate) && !hasFilledString(billSentDate)) {
+      addIssue(
+        block,
+        "Returned bill date exists but bill sent date is blank",
+        "Bill sent date",
+        "Filled before return",
+        "Returned bill date",
+        cycle.returnedDate!,
+        cycleContext,
+      );
+    }
+    addPair(
+      block,
+      "Bill sent date should not be after returned bill date",
+      "Bill sent date",
+      billSentDate,
+      "Returned bill date",
+      cycle.returnedDate,
+      cycleContext,
+    );
+    addPair(
+      block,
+      "Returned bill date should not be after resubmission date",
+      "Returned bill date",
+      cycle.returnedDate,
+      "Resubmission date",
+      cycle.resubmittedDate,
+      cycleContext,
+    );
+    if (hasFilledString(cycle.returnedDate) && hasFilledString(paymentDate)) {
+      if (!hasFilledString(cycle.resubmittedDate)) {
+        addIssue(
+          block,
+          "Payment date exists while returned bill has not been resubmitted",
+          "Resubmission date",
+          "Filled before payment",
+          "Payment date",
+          paymentDate!,
+          cycleContext,
+        );
+      } else {
+        addPair(
+          block,
+          "Returned bill resubmission date should not be after payment date",
+          "Resubmission date",
+          cycle.resubmittedDate,
+          "Payment date",
+          paymentDate,
+          cycleContext,
+        );
+      }
+    }
+  });
 }
 
 function hasCompletedBillReturnLocal(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
@@ -3934,7 +4403,7 @@ type MonthWiseDeliveryScheduleAnalyticsRow = {
   grossCount: number;
   netCount: number;
 };
-type ValueAnalyticsRow = { name: string; value: number };
+type ValueAnalyticsRow = { name: string; value: number; capital?: number; revenue?: number };
 type AverageDaysAnalyticsRow = {
   name: string;
   averageDays: number;
@@ -5230,9 +5699,19 @@ async function loadAnalyticsSqlSlice({
     fileRankingValues,
   );
 
-  const demandTotal = `${inrAmountExpression("f.value_capital")} + ${inrAmountExpression("f.value_revenue")}`;
-  const indentorValueResult = await pool.query<{ name: string; value: string | number }>(
-    `select ${indentorNameSql} as name, round(coalesce(sum(${demandTotal}), 0))::integer as value
+  const demandCapital = inrAmountExpression("f.value_capital");
+  const demandRevenue = inrAmountExpression("f.value_revenue");
+  const demandTotal = `${demandCapital} + ${demandRevenue}`;
+  const indentorValueResult = await pool.query<{
+    name: string;
+    capital: string | number;
+    revenue: string | number;
+    value: string | number;
+  }>(
+    `select ${indentorNameSql} as name,
+            round(coalesce(sum(${demandCapital}), 0))::integer as capital,
+            round(coalesce(sum(${demandRevenue}), 0))::integer as revenue,
+            round(coalesce(sum(${demandTotal}), 0))::integer as value
      from files f
      left join divisions d on d.id = f.division_id
      ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
@@ -6074,8 +6553,8 @@ async function loadAnalyticsSqlSlice({
   const valueDivision = dashboardDivisionCondition(valueValues, divisionName);
   if (valueDivision) valueConditions.push(valueDivision);
   const cancelled = isCancelledExpression();
-  const demandCapital = inrAmountExpression("f.value_capital");
-  const demandRevenue = inrAmountExpression("f.value_revenue");
+  const valueDemandCapital = inrAmountExpression("f.value_capital");
+  const valueDemandRevenue = inrAmountExpression("f.value_revenue");
   const committedCapital = committedValueExpression("f.so_value_capital", "so_value_capital");
   const committedRevenue = committedValueExpression("f.so_value_revenue", "so_value_revenue");
   const valueResult = await pool.query<{
@@ -6089,13 +6568,13 @@ async function loadAnalyticsSqlSlice({
   }>(
     `select
        ${divisionNameSql} as name,
-       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${demandCapital} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${valueDemandCapital} else 0 end), 0)
          as intended_capital,
-       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${demandRevenue} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and not ${hasFilledExpression("f.imms")} then ${valueDemandRevenue} else 0 end), 0)
          as intended_revenue,
-       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedCapital} <= 0 then ${demandCapital} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedCapital} <= 0 then ${valueDemandCapital} else 0 end), 0)
          as booked_capital,
-       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedRevenue} <= 0 then ${demandRevenue} else 0 end), 0)
+       coalesce(sum(case when not ${cancelled} and ${hasFilledExpression("f.imms")} and ${committedRevenue} <= 0 then ${valueDemandRevenue} else 0 end), 0)
          as booked_revenue,
        coalesce(sum(${committedCapital}), 0)
          as committed_capital,
@@ -6174,6 +6653,8 @@ async function loadAnalyticsSqlSlice({
     })),
     topIndentorsByValue: indentorValueResult.rows.map((row) => ({
       name: row.name,
+      capital: Number(row.capital ?? 0),
+      revenue: Number(row.revenue ?? 0),
       value: Number(row.value ?? 0),
     })),
     milestoneClearingRanking: milestoneResult.rows

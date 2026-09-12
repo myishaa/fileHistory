@@ -2,9 +2,9 @@ import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-ro
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
-  CircleHelp,
   FileSpreadsheet,
   FileText,
+  Info,
   Lock,
   RotateCcw,
   Save,
@@ -14,9 +14,12 @@ import {
   fetchMasterFirms,
   fetchFilesForYear,
   fetchMerCashOutgo,
+  fetchPreSoCashOutgoPlan,
   fetchReportPreferences,
   saveMerCashOutgo,
+  savePreSoCashOutgoPlan,
   saveReportPreferences,
+  store,
   type Division,
   type DemandProcessingDayRange,
   type FileRecord,
@@ -29,7 +32,7 @@ import {
   useAccessibleDivisions,
   useSettings,
 } from "@/lib/files-store";
-import { DateInput } from "@/components/date-input";
+import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 import {
@@ -179,6 +182,23 @@ type CashOutGoPlanDetailRow = {
   overdue: boolean;
 };
 
+type CashOutGoPlanDetailSectionKey =
+  | "billsSubmitted"
+  | "billsAtHand"
+  | "deliveredBillsPending"
+  | "dpBasedForecast"
+  | "dpExpired";
+
+type CashOutGoPlanExpandedSections = Record<CashOutGoPlanDetailSectionKey, boolean>;
+
+const defaultCashOutGoPlanExpandedSections: CashOutGoPlanExpandedSections = {
+  billsSubmitted: false,
+  billsAtHand: false,
+  deliveredBillsPending: false,
+  dpBasedForecast: false,
+  dpExpired: false,
+};
+
 type CashOutGoPlanPayload = {
   financialYear: string;
   today: string;
@@ -202,6 +222,71 @@ type CashOutGoPlanPayload = {
   dpBasedForecast: CashOutGoPlanDetailRow[];
   dpExpired: CashOutGoPlanDetailRow[];
   monthwisePlan: ExpectedCashOutgoRow[];
+};
+
+type SoPaymentMatrixFieldKey =
+  | "fileUniqueNo"
+  | "demandDescription"
+  | "soNo"
+  | "soDate"
+  | "firmName"
+  | "division"
+  | "fileCategory"
+  | "fileType"
+  | "indentor"
+  | "mode"
+  | "firmType"
+  | "demandInitiationYear"
+  | "demandValue"
+  | "capitalValue"
+  | "revenueValue"
+  | "soValue"
+  | "paymentBasis";
+
+type SoPaymentMatrixColumnOption = {
+  key: SoPaymentMatrixFieldKey;
+  label: string;
+  helper: string;
+};
+
+type SoPaymentMatrixRow = {
+  rowKey: string;
+  fileId: string;
+  file: FileRecord;
+  order: SupplyOrderDetail;
+  orderIndex: number;
+  paymentBasis: string;
+  monthAmounts: Record<string, number>;
+  monthFocusTargets: Record<string, string>;
+  total: number;
+};
+
+type PreSoCashOutgoTab = "stages" | "selectFiles" | "totals" | "monthwise";
+type PreSoMonthwiseGrouping = "month" | "fyMonth" | "stageMonth";
+type PreSoStageOffset = {
+  soOffsetDays: string;
+  paymentOffsetDays: string;
+};
+type PreSoFileDraft = {
+  included: boolean;
+  tentativeSoDate: string;
+  tentativePaymentDate: string;
+};
+type PreSoStageOption = {
+  key: string;
+  label: string;
+};
+type PreSoFileRow = {
+  file: FileRecord;
+  fileYear: string;
+  stageKey: string;
+  stageLabel: string;
+  capital: number;
+  revenue: number;
+  draft: PreSoFileDraft;
+  calculatedSoDate: string;
+  calculatedPaymentDate: string;
+  effectivePaymentDate: string;
 };
 
 type MonthCountRow = { name: string; monthKey: string; count: number };
@@ -317,6 +402,18 @@ function ReportsPage() {
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const canEditMerData =
+    activeUser?.role === "admin" ||
+    activeUser?.role === "sub_admin" ||
+    activeUser?.role === "editor" ||
+    (activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "global");
+  const canEditCashOutGoPlan =
+    activeUser?.role === "admin" ||
+    activeUser?.role === "sub_admin" ||
+    activeUser?.role === "editor" ||
+    (activeUser?.role === "universal_viewer" &&
+      (activeUser.cashOutgoEditScope === "personal" ||
+        activeUser.cashOutgoEditScope === "global"));
   const navigate = useNavigate();
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [reportMode, setReportMode] = useState<ReportMode>("mmgSummary");
@@ -334,6 +431,7 @@ function ReportsPage() {
     supplyOrderDelivery: false,
     monitoring: false,
   });
+  const [reportsSidePanelHooked, setReportsSidePanelHooked] = useState(true);
   const toggleReportGroup = (group: keyof typeof expandedReportGroups) => {
     setExpandedReportGroups((current) => ({
       cashOutgo: false,
@@ -347,6 +445,7 @@ function ReportsPage() {
   );
   const [demandAnalysisFromFieldId, setDemandAnalysisFromFieldId] = useState("file.immsDate");
   const [demandAnalysisToFieldId, setDemandAnalysisToFieldId] = useState("order.soDate");
+  const [demandAnalysisPaymentMode, setDemandAnalysisPaymentMode] = useState("");
   const [demandAnalysisFilters, setDemandAnalysisFilters] = useState<DemandProcessingFilterRow[]>(
     [],
   );
@@ -389,6 +488,26 @@ function ReportsPage() {
   const [cashOutGoPlanSaving, setCashOutGoPlanSaving] = useState(false);
   const [cashOutGoPlanError, setCashOutGoPlanError] = useState<string | undefined>();
   const [cashOutGoPlanIncludePreviousFy, setCashOutGoPlanIncludePreviousFy] = useState(false);
+  const [soPaymentMatrixFields, setSoPaymentMatrixFields] = useState<SoPaymentMatrixFieldKey[]>([
+    "fileUniqueNo",
+    "demandDescription",
+    "soNo",
+    "soDate",
+    "firmName",
+    "division",
+  ]);
+  const [preSoActiveTab, setPreSoActiveTab] = useState<PreSoCashOutgoTab>("stages");
+  const [preSoSelectedStageKeys, setPreSoSelectedStageKeys] = useState<string[]>([]);
+  const [preSoStageOffsets, setPreSoStageOffsets] = useState<Record<string, PreSoStageOffset>>({});
+  const [preSoFileDrafts, setPreSoFileDrafts] = useState<Record<string, PreSoFileDraft>>({});
+  const [preSoMonthwiseGrouping, setPreSoMonthwiseGrouping] =
+    useState<PreSoMonthwiseGrouping>("month");
+  const [preSoPlanLoading, setPreSoPlanLoading] = useState(false);
+  const [preSoPlanSaving, setPreSoPlanSaving] = useState(false);
+  const [preSoPlanError, setPreSoPlanError] = useState<string | undefined>();
+  const [preSoPlanCanSave, setPreSoPlanCanSave] = useState(false);
+  const [preSoPlanCanSaveStageOffsets, setPreSoPlanCanSaveStageOffsets] = useState(false);
+  const [preSoSavedSnapshot, setPreSoSavedSnapshot] = useState("");
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(false);
@@ -408,6 +527,7 @@ function ReportsPage() {
   const [hasLoadedReports, setHasLoadedReports] = useState(false);
   const [reportsError, setReportsError] = useState<string | undefined>();
   const hasLoadedReportsRef = useRef(false);
+  const isPreSoExpectedCashOutgoReport = reportMode === "preSoExpectedCashOutgo";
   useEffect(() => {
     const requestedMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
     if (isReportMode(requestedMode)) {
@@ -587,7 +707,29 @@ function ReportsPage() {
       ? selectedFileYear
       : defaultFileYear;
   useEffect(() => {
+    if (!isPreSoExpectedCashOutgoReport) return;
+    if (settings.selectedYear !== ALL_ACTIVE_FILES_YEAR) {
+      store.updateSessionSelectedYear(ALL_ACTIVE_FILES_YEAR);
+    }
+    if (activeFileYear !== "all") setSelectedFileYear("all");
+    if (fileInitiationFromDate || fileInitiationToDate) {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+    }
+  }, [
+    activeFileYear,
+    fileInitiationFromDate,
+    fileInitiationToDate,
+    isPreSoExpectedCashOutgoReport,
+    settings.selectedYear,
+  ]);
+  useEffect(() => {
     if (typeof window === "undefined" || !fileYearOptions.length) return;
+    if (isPreSoExpectedCashOutgoReport) {
+      setFileYearLocked(true);
+      setSelectedFileYear("all");
+      return;
+    }
     const saved = window.sessionStorage.getItem(fileYearFilterStorageKey);
     if (!saved) {
       setFileYearLocked(false);
@@ -604,7 +746,7 @@ function ReportsPage() {
       setFileYearLocked(false);
       setSelectedFileYear(defaultFileYear);
     }
-  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions]);
+  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions, isPreSoExpectedCashOutgoReport]);
   const updateFileYearSelection = (year: string) => {
     setSelectedFileYear(year);
     if (typeof window !== "undefined") {
@@ -626,6 +768,11 @@ function ReportsPage() {
   };
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (isPreSoExpectedCashOutgoReport) {
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+      return;
+    }
     const saved = window.sessionStorage.getItem(fileInitiationDateRangeStorageKey);
     if (!saved) {
       setFileInitiationFromDate("");
@@ -640,7 +787,7 @@ function ReportsPage() {
       setFileInitiationFromDate("");
       setFileInitiationToDate("");
     }
-  }, [fileInitiationDateRangeStorageKey]);
+  }, [fileInitiationDateRangeStorageKey, isPreSoExpectedCashOutgoReport]);
   const updateFileInitiationDateRange = (patch: Partial<FileInitiationDateRange>) => {
     const nextFromDate = patch.fromDate ?? fileInitiationFromDate;
     const nextToDate = patch.toDate ?? fileInitiationToDate;
@@ -942,6 +1089,168 @@ function ReportsPage() {
   const mmgPreviousFilteredFiles = fileCategoryFilterActive
     ? filterFilesByCategory(mmgPreviousFilteredSourceFiles, selectedFileCategories)
     : mmgPreviousFilteredSourceFiles;
+  const preSoCurrentYearContext =
+    isAllActiveFilesYear(settings.selectedYear) ||
+    isActivePlusCurrentFyClosedYear(settings.selectedYear) ||
+    settings.selectedYear === settings.financialYear;
+  const preSoDefaultStageOffset = useMemo(
+    () => getPreSoDefaultStageOffset(settings),
+    [settings.preSoDefaultPaymentOffsetDays, settings.preSoDefaultSoOffsetDays],
+  );
+  const preSoStageOptions = useMemo(() => getPreSoStageOptions(), []);
+  const preSoEligibleFiles = useMemo(
+    () =>
+      preSoCurrentYearContext
+        ? mmgFilteredFiles.filter((file) => isPreSoExpectedCashOutgoEligibleFile(file))
+        : [],
+    [mmgFilteredFiles, preSoCurrentYearContext],
+  );
+  const preSoRows = useMemo(
+    () =>
+      buildPreSoExpectedCashOutgoRows({
+        files: preSoEligibleFiles,
+        selectedStageKeys: preSoSelectedStageKeys,
+        stageOffsets: preSoStageOffsets,
+        fileDrafts: preSoFileDrafts,
+        today,
+        defaultOffset: preSoDefaultStageOffset,
+      }),
+    [
+      preSoDefaultStageOffset,
+      preSoEligibleFiles,
+      preSoFileDrafts,
+      preSoSelectedStageKeys,
+      preSoStageOffsets,
+      today,
+    ],
+  );
+  const preSoSelectedRows = preSoRows.filter((row) => row.draft.included);
+  const preSoTotals = getPreSoExpectedCashOutgoTotals(preSoSelectedRows);
+  const preSoMonthwiseRows = getPreSoExpectedCashOutgoMonthwiseRows(preSoSelectedRows);
+  const preSoCurrentSnapshot = getPreSoPlanSnapshot(
+    preSoSelectedStageKeys,
+    preSoStageOffsets,
+    preSoFileDrafts,
+    preSoDefaultStageOffset,
+  );
+  const preSoPlanDirty = preSoCurrentSnapshot !== preSoSavedSnapshot;
+  const updatePreSoStageOffset = (
+    stageKey: string,
+    field: keyof PreSoStageOffset,
+    value: string,
+  ) => {
+    setPreSoStageOffsets((current) => ({
+      ...current,
+      [stageKey]: {
+        soOffsetDays: current[stageKey]?.soOffsetDays ?? preSoDefaultStageOffset.soOffsetDays,
+        paymentOffsetDays:
+          current[stageKey]?.paymentOffsetDays ?? preSoDefaultStageOffset.paymentOffsetDays,
+        [field]: value,
+      },
+    }));
+  };
+  const updatePreSoFileDraft = (
+    fileId: string,
+    patch: Partial<PreSoFileDraft>,
+    defaults?: Partial<PreSoFileDraft>,
+  ) => {
+    setPreSoFileDrafts((current) => ({
+      ...current,
+      [fileId]: {
+        included: current[fileId]?.included ?? defaults?.included ?? false,
+        tentativeSoDate: current[fileId]?.tentativeSoDate ?? defaults?.tentativeSoDate ?? "",
+        tentativePaymentDate:
+          current[fileId]?.tentativePaymentDate ?? defaults?.tentativePaymentDate ?? "",
+        ...patch,
+      },
+    }));
+  };
+  useEffect(() => {
+    if (!isPreSoExpectedCashOutgoReport) return;
+    let cancelled = false;
+    setPreSoPlanLoading(true);
+    setPreSoPlanError(undefined);
+    fetchPreSoCashOutgoPlan()
+      .then(({ plan }) => {
+        if (cancelled) return;
+        const loadedStageOffsets = Object.fromEntries(
+          Object.entries(plan.stageOffsets ?? {}).map(([stageKey, offset]) => [
+            stageKey,
+            {
+              soOffsetDays: String(offset.soOffsetDays ?? plan.defaultSoOffsetDays ?? 30),
+              paymentOffsetDays: String(
+                offset.paymentOffsetDays ?? plan.defaultPaymentOffsetDays ?? 30,
+              ),
+            },
+          ]),
+        );
+        const loadedFileDrafts = Object.fromEntries(
+          Object.entries(plan.filePlans ?? {}).map(([fileId, draft]) => [
+            fileId,
+            {
+              included: Boolean(draft.included),
+              tentativeSoDate: draft.tentativeSoDate ?? "",
+              tentativePaymentDate: draft.tentativePaymentDate ?? "",
+            },
+          ]),
+        );
+        const loadedStageKeys = Object.keys(loadedStageOffsets);
+        setPreSoSelectedStageKeys(loadedStageKeys);
+        setPreSoStageOffsets(loadedStageOffsets);
+        setPreSoFileDrafts(loadedFileDrafts);
+        setPreSoPlanCanSave(Boolean(plan.canSave));
+        setPreSoPlanCanSaveStageOffsets(Boolean(plan.canSaveStageOffsets));
+        setPreSoSavedSnapshot(
+          getPreSoPlanSnapshot(
+            loadedStageKeys,
+            loadedStageOffsets,
+            loadedFileDrafts,
+            getPreSoDefaultStageOffset({
+              ...settings,
+              preSoDefaultSoOffsetDays: plan.defaultSoOffsetDays,
+              preSoDefaultPaymentOffsetDays: plan.defaultPaymentOffsetDays,
+            }),
+          ),
+        );
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!cancelled) setPreSoPlanError("Unable to load saved Pre-S.O. plan.");
+      })
+      .finally(() => {
+        if (!cancelled) setPreSoPlanLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPreSoExpectedCashOutgoReport]);
+  const savePreSoPlan = () => {
+    if (!preSoPlanCanSave) return;
+    setPreSoPlanSaving(true);
+    setPreSoPlanError(undefined);
+    savePreSoCashOutgoPlan({
+      stageOffsets: preSoSelectedStageKeys.map((stageKey) => {
+        const offset = preSoStageOffsets[stageKey] ?? preSoDefaultStageOffset;
+        return {
+          stageKey,
+          soOffsetDays: readPreSoOffsetDays(offset.soOffsetDays),
+          paymentOffsetDays: readPreSoOffsetDays(offset.paymentOffsetDays),
+        };
+      }).filter(() => preSoPlanCanSaveStageOffsets),
+      filePlans: preSoRows.map((row) => ({
+        fileId: row.file.id,
+        included: row.draft.included,
+        tentativeSoDate: row.draft.tentativeSoDate,
+        tentativePaymentDate: row.draft.tentativePaymentDate,
+      })),
+    })
+      .then(() => setPreSoSavedSnapshot(preSoCurrentSnapshot))
+      .catch((error) => {
+        console.error(error);
+        setPreSoPlanError("Unable to save Pre-S.O. plan.");
+      })
+      .finally(() => setPreSoPlanSaving(false));
+  };
   const mmgSummaryRows = buildMmgSummaryRows({
     files: mmgFilteredFiles,
     divisions:
@@ -997,7 +1306,7 @@ function ReportsPage() {
     () => filterDemandProcessingRowsByFromDate(demandAnalysisAllRows, activeReportScopeDateRange),
     [activeReportScopeDateRange, demandAnalysisAllRows],
   );
-  const demandAnalysisRows = useMemo(
+  const demandAnalysisFilteredRows = useMemo(
     () =>
       filterDemandProcessingRows(
         demandAnalysisDateScopedRows,
@@ -1012,6 +1321,13 @@ function ReportsPage() {
       demandProcessingFilterFields,
     ],
   );
+  const demandAnalysisRows = useMemo(() => {
+    if (!demandAnalysisPaymentMode) return demandAnalysisFilteredRows;
+    const normalizedMode = demandAnalysisPaymentMode.toLowerCase();
+    return demandAnalysisFilteredRows.filter(
+      (row) => (row.paymentMode ?? "").trim().toLowerCase() === normalizedMode,
+    );
+  }, [demandAnalysisFilteredRows, demandAnalysisPaymentMode]);
   const demandAnalysisUnit = useMemo(
     () => getDemandProcessingAnalysisUnit(demandAnalysisFromFieldId, demandAnalysisToFieldId),
     [demandAnalysisFromFieldId, demandAnalysisToFieldId],
@@ -1098,6 +1414,45 @@ function ReportsPage() {
     revenue: readMerAmount(row.revenue),
     total: readMerAmount(row.capital) + readMerAmount(row.revenue),
   }));
+  const soPaymentMatrixMonthKeys = useMemo(
+    () => getFinancialYearMonthKeys(effectiveFinancialYear),
+    [effectiveFinancialYear],
+  );
+  const soPaymentMatrixRows = useMemo(
+    () =>
+      buildSoPaymentMatrixRows({
+        files: demandAnalysisSourceFiles,
+        monthKeys: soPaymentMatrixMonthKeys,
+        paymentOffsetDays: expectedCashOutgoOffsetDays,
+      }),
+    [demandAnalysisSourceFiles, expectedCashOutgoOffsetDays, soPaymentMatrixMonthKeys],
+  );
+  const paymentCompletedMatrixRows = useMemo(
+    () =>
+      buildPaymentCompletedMatrixRows({
+        files: demandAnalysisSourceFiles,
+        monthKeys: soPaymentMatrixMonthKeys,
+      }),
+    [demandAnalysisSourceFiles, soPaymentMatrixMonthKeys],
+  );
+  const soPaymentMatrixColumns = useMemo(
+    () => getSoPaymentMatrixColumns(soPaymentMatrixFields),
+    [soPaymentMatrixFields],
+  );
+  const toggleSoPaymentMatrixField = (fieldKey: SoPaymentMatrixFieldKey, checked: boolean) => {
+    setSoPaymentMatrixFields((current) => {
+      if (checked) {
+        const selected = new Set([...current, fieldKey]);
+        return soPaymentMatrixFieldOptions
+          .map((option) => option.key)
+          .filter((key) => selected.has(key));
+      }
+      const next = current.filter((key) => key !== fieldKey);
+      return next.length ? next : current;
+    });
+  };
+  const resetSoPaymentMatrixFields = () =>
+    setSoPaymentMatrixFields([...soPaymentMatrixDefaultFields]);
   const updateMerDraftAmount = (monthKey: string, field: "capital" | "revenue", value: string) => {
     setMerDraftRows((rows) =>
       rows.map((row) => (row.monthKey === monthKey ? { ...row, [field]: value } : row)),
@@ -1116,7 +1471,7 @@ function ReportsPage() {
     ? getCashOutGoPlanDirtySnapshot(cashOutGoPlan) !== cashOutGoPlanSavedSnapshot
     : false;
   const saveMerRows = () => {
-    if (!merDataDirty) return;
+    if (!canEditMerData || !merDataDirty) return;
     setMerSaving(true);
     setMerError(undefined);
     saveMerCashOutgo(
@@ -1267,7 +1622,7 @@ function ReportsPage() {
     updateCashOutGoPlanRow(rowKey, "billOffsetOverride", "");
   };
   const persistCashOutGoPlan = () => {
-    if (!cashOutGoPlan || !cashOutGoPlanDirty) return;
+    if (!canEditCashOutGoPlan || !cashOutGoPlan || !cashOutGoPlanDirty) return;
     setCashOutGoPlanSaving(true);
     setCashOutGoPlanError(undefined);
     saveCashOutGoPlan(cashOutGoPlan)
@@ -1418,6 +1773,14 @@ function ReportsPage() {
     }),
     `Includes all ${combinedCashOutgoExportModes.length} Cash Outgo reports.`,
   );
+  const pendingLiabilityDescription = [
+    "Shows unpaid liabilities based on completed delivery/job completion, bill preparation, or bill sent date.",
+    "A liability is pending if payment is blank, or payment was made after the selected date.",
+    "Ageing is counted from the liability start date up to the selected date.",
+    "If the liability start date is after the selected date, it is not counted.",
+    "Historical view uses the latest dates entered in the file.",
+    "Example: if Bill Sent date is 10-Sept and you select 31-Aug, it will not be counted as pending on 31-Aug.",
+  ].join("\n");
   const exportAllCashOutgoReports = (format: "excel" | "pdf") => {
     const tables: ExportTable[] = combinedCashOutgoExportModes.map((mode) =>
       buildCashOutgoExportTable(mode, cashOutgoRowSources, {
@@ -1481,6 +1844,25 @@ function ReportsPage() {
             cashOutgoExportDescription,
             cashOutgoEmptyMessage,
           );
+  const soPaymentMatrixExportDescription = reportExportContextDescription;
+  const exportSoPaymentMatrix = (format: "excel" | "pdf") =>
+    exportSoPaymentMatrixReport(
+      soPaymentMatrixRows,
+      soPaymentMatrixColumns,
+      soPaymentMatrixMonthKeys,
+      selectedReportTitle,
+      soPaymentMatrixExportDescription,
+      format,
+    );
+  const exportPaymentCompletedMatrix = (format: "excel" | "pdf") =>
+    exportSoPaymentMatrixReport(
+      paymentCompletedMatrixRows,
+      soPaymentMatrixColumns,
+      soPaymentMatrixMonthKeys,
+      selectedReportTitle,
+      soPaymentMatrixExportDescription,
+      format,
+    );
   const exportMmgSummaryPdf = () =>
     exportMmgSummary(mmgSummaryRows, selectedReportTitle, "pdf", reportExportContextDescription);
   const exportMmgSummaryExcel = () =>
@@ -1733,6 +2115,58 @@ function ReportsPage() {
       },
     });
   };
+  const openSoPaymentMatrixSearch = (rows: SoPaymentMatrixRow[], monthKey?: string) => {
+    const fileIds = Array.from(new Set(rows.map((row) => row.fileId).filter(Boolean)));
+    if (!fileIds.length) return;
+    const focusTargets = new Map<string, string>();
+    rows.forEach((row) => {
+      const focusTarget =
+        (monthKey ? row.monthFocusTargets[monthKey] : undefined) ??
+        Object.values(row.monthFocusTargets)[0] ??
+        `payment:pending:${row.orderIndex}`;
+      if (focusTarget) focusTargets.set(row.fileId, focusTarget);
+    });
+    navigate({
+      to: "/search",
+      search: {
+        dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        division: activeDivision === "all" ? undefined : activeDivision,
+        fileCategories: activeFileCategoriesParam,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
+        selectedYear: settings.selectedYear,
+        focusSection: "Supply order and payment",
+        focusTarget: rows[0]
+          ? ((monthKey ? rows[0].monthFocusTargets[monthKey] : undefined) ??
+            Object.values(rows[0].monthFocusTargets)[0] ??
+            `payment:pending:${rows[0].orderIndex}`)
+          : undefined,
+        focusTargets: serializeSoPaymentMatrixFocusTargets(focusTargets),
+        drillPath: getReportSearchDrillPath([
+          reportMode === "paymentCompletedMatrix"
+            ? "Month-wise Payment completed Matrix"
+            : "Month-wise Payment due Matrix",
+          monthKey ? formatMonthTitle(monthKey) : undefined,
+        ]),
+      },
+    });
+  };
+  const openPreSoFileInSearch = (row: PreSoFileRow) => {
+    const fileId = row.file.id;
+    if (!fileId) return;
+    navigate({
+      to: "/search",
+      search: {
+        dashboardFilter: `fileIds:${encodeURIComponent(fileId)}`,
+        division: activeDivision === "all" ? undefined : activeDivision,
+        fileCategories: activeFileCategoriesParam,
+        selectedYear: ALL_ACTIVE_FILES_YEAR,
+        focusSection: "Top",
+        focusTarget: "demandDescription",
+        drillPath: getReportSearchDrillPath(),
+      },
+    });
+  };
   const serializeCashOutGoPlanFocusTargets = (rows: CashOutGoPlanDetailRow[]) => {
     return Array.from(
       rows.reduce((targets, row) => {
@@ -1785,7 +2219,9 @@ function ReportsPage() {
   const resetDemandProcessingFilters = () => setDemandAnalysisFilters([]);
   const openDemandProcessingSearch = (mode: "used" | "reverse") => {
     const rows =
-      mode === "reverse" ? demandAnalysisRows.filter((row) => row.gapDays < 0) : demandAnalysisRows;
+      mode === "reverse"
+        ? demandAnalysisRows.filter((row) => row.gapDays < 0)
+        : demandAnalysisRows.filter((row) => row.gapDays >= 0);
     const fileIds = Array.from(new Set(rows.map((row) => row.fileId))).filter(Boolean);
     if (!fileIds.length) return;
     navigate({
@@ -1798,7 +2234,7 @@ function ReportsPage() {
         ...fileInitiationDateQueryParams,
         selectedYear: settings.selectedYear,
         drillPath: getReportSearchDrillPath([
-          mode === "reverse" ? "Reverse / negative gap" : "Used rows",
+          mode === "reverse" ? "Negative results" : "Non-negative used rows",
         ]),
       },
     });
@@ -1899,6 +2335,15 @@ function ReportsPage() {
     );
   };
   const selectReportMode = (mode: ReportMode) => {
+    if (mode === "preSoExpectedCashOutgo") {
+      if (settings.selectedYear !== ALL_ACTIVE_FILES_YEAR) {
+        store.updateSessionSelectedYear(ALL_ACTIVE_FILES_YEAR);
+      }
+      setFileYearLocked(true);
+      setSelectedFileYear("all");
+      setFileInitiationFromDate("");
+      setFileInitiationToDate("");
+    }
     setReportMode(mode);
     navigate({
       to: "/reports",
@@ -1909,8 +2354,29 @@ function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <div
+        className={
+          "grid grid-cols-1 gap-4 " +
+          (reportsSidePanelHooked
+            ? "lg:grid-cols-[260px_minmax(0,1fr)]"
+            : "lg:grid-cols-[48px_minmax(0,1fr)]")
+        }
+      >
+        {reportsSidePanelHooked ? (
         <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+          <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
+            <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+              Reports
+            </div>
+            <button
+              type="button"
+              onClick={() => setReportsSidePanelHooked(false)}
+              className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Unhook side panel"
+            >
+              Unhook
+            </button>
+          </div>
           <div className="space-y-2">
             <CollapsibleReportGroup
               title="Supply order & delivery"
@@ -1927,7 +2393,7 @@ function ReportsPage() {
               footer={
                 <div className="space-y-1.5 border-t border-border p-1.5">
                   <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-                    Export all 17 reports
+                    Export all {combinedCashOutgoExportModes.length} reports
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
@@ -1982,6 +2448,19 @@ function ReportsPage() {
             </div>
           </div>
         </aside>
+        ) : (
+          <aside className="rounded-xl border border-border bg-card p-2 shadow-[var(--shadow-card)]">
+            <button
+              type="button"
+              onClick={() => setReportsSidePanelHooked(true)}
+              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Hook side panel"
+              aria-label="Hook side panel"
+            >
+              <span className="[writing-mode:vertical-rl] rotate-180">Hook panel</span>
+            </button>
+          </aside>
+        )}
         <div className="min-w-0 space-y-4">
           <div className="rounded-md border border-border bg-card p-3 shadow-[var(--shadow-card)]">
             <div className="flex flex-wrap items-end gap-3">
@@ -2011,6 +2490,12 @@ function ReportsPage() {
                 active={fileCategoryFilterActive}
                 onChange={toggleFileCategory}
               />
+              {isPreSoExpectedCashOutgoReport ? (
+                <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">
+                  Report is fixed for: Global filter = All active files; Subfilter = All file
+                  years; Date range is blocked.
+                </div>
+              ) : null}
             </div>
           </div>
           {reportsError ||
@@ -2059,6 +2544,7 @@ function ReportsPage() {
               selectedPresetId={demandAnalysisPresetId}
               fromFieldId={demandAnalysisFromFieldId}
               toFieldId={demandAnalysisToFieldId}
+              paymentMode={demandAnalysisPaymentMode}
               rows={demandAnalysisRows}
               stats={demandAnalysisStats}
               rangeRows={demandProcessingRangeRows}
@@ -2074,6 +2560,12 @@ function ReportsPage() {
                 setDemandAnalysisPresetId("");
                 setDemandAnalysisToFieldId(fieldId);
               }}
+              onResetDateFields={() => {
+                setDemandAnalysisPresetId("");
+                setDemandAnalysisFromFieldId("");
+                setDemandAnalysisToFieldId("");
+              }}
+              onPaymentModeChange={setDemandAnalysisPaymentMode}
               onAddFilter={addDemandProcessingFilter}
               onUpdateFilter={updateDemandProcessingFilter}
               onRemoveFilter={removeDemandProcessingFilter}
@@ -2215,7 +2707,7 @@ function ReportsPage() {
           ) : reportMode === "pendingLiabilityAgeing" ? (
             <MonthlyOperationalReport
               title={selectedReportTitle}
-              description="Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger."
+              description={pendingLiabilityDescription}
               columns={ageingReportColumns}
               rows={pendingLiabilityAgeingRows}
               controls={
@@ -2236,7 +2728,7 @@ function ReportsPage() {
                   selectedReportTitle,
                   getReportExportDescription(
                     reportExportContextDescription,
-                    "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                    pendingLiabilityDescription,
                   ),
                   ageingReportColumns,
                   pendingLiabilityAgeingRows,
@@ -2248,7 +2740,7 @@ function ReportsPage() {
                   selectedReportTitle,
                   getReportExportDescription(
                     reportExportContextDescription,
-                    "Unpaid liabilities grouped by delivery/job completion, bill preparation or bill sent trigger.",
+                    pendingLiabilityDescription,
                   ),
                   ageingReportColumns,
                   pendingLiabilityAgeingRows,
@@ -2264,6 +2756,7 @@ function ReportsPage() {
               loading={merLoading}
               saving={merSaving}
               editing={merEditing}
+              canEdit={canEditMerData}
               dirty={merDataDirty}
               error={merError}
               actions={
@@ -2276,7 +2769,7 @@ function ReportsPage() {
                   onExcel={exportCashOutgoExcel}
                 />
               }
-              onEdit={() => setMerEditing(true)}
+              onEdit={() => canEditMerData && setMerEditing(true)}
               onCancel={resetMerDraftRows}
               onSave={saveMerRows}
               onAmountChange={updateMerDraftAmount}
@@ -2289,6 +2782,7 @@ function ReportsPage() {
               dirty={cashOutGoPlanDirty}
               error={cashOutGoPlanError}
               includePreviousFy={cashOutGoPlanIncludePreviousFy}
+              canEdit={canEditCashOutGoPlan}
               onIncludePreviousFyChange={setCashOutGoPlanIncludePreviousFy}
               onSettingChange={updateCashOutGoPlanSettings}
               onOffsetReset={resetCashOutGoPlanOffset}
@@ -2302,13 +2796,107 @@ function ReportsPage() {
               onDivisionChange={setSelectedDivision}
               onSave={persistCashOutGoPlan}
               saveDisabled={!cashOutGoPlanDirty}
-              onPdf={() =>
+              onPdf={(expandedSections) =>
                 cashOutGoPlan &&
-                exportCashOutGoPlan(cashOutGoPlan, "pdf", reportExportContextDescription)
+                exportCashOutGoPlan(
+                  cashOutGoPlan,
+                  "pdf",
+                  reportExportContextDescription,
+                  expandedSections,
+                )
               }
-              onExcel={() =>
+              onExcel={(expandedSections) =>
                 cashOutGoPlan &&
-                exportCashOutGoPlan(cashOutGoPlan, "excel", reportExportContextDescription)
+                exportCashOutGoPlan(
+                  cashOutGoPlan,
+                  "excel",
+                  reportExportContextDescription,
+                  expandedSections,
+                )
+              }
+            />
+          ) : reportMode === "preSoExpectedCashOutgo" ? (
+            <PreSoExpectedCashOutgoReport
+              activeTab={preSoActiveTab}
+              onTabChange={setPreSoActiveTab}
+              stageOptions={preSoStageOptions}
+              selectedStageKeys={preSoSelectedStageKeys}
+              onSelectedStageKeysChange={setPreSoSelectedStageKeys}
+              stageOffsets={preSoStageOffsets}
+              onStageOffsetChange={updatePreSoStageOffset}
+              rows={preSoRows}
+              selectedRows={preSoSelectedRows}
+              totals={preSoTotals}
+              monthwiseRows={preSoMonthwiseRows}
+              monthwiseGrouping={preSoMonthwiseGrouping}
+              onMonthwiseGroupingChange={setPreSoMonthwiseGrouping}
+              defaultOffset={preSoDefaultStageOffset}
+              loading={preSoPlanLoading}
+              saving={preSoPlanSaving}
+              dirty={preSoPlanDirty}
+              canSave={preSoPlanCanSave}
+              canSaveStageOffsets={preSoPlanCanSaveStageOffsets}
+              error={preSoPlanError}
+              onSave={savePreSoPlan}
+              currentYearContext={preSoCurrentYearContext}
+              globalYearLabel={displayFinancialYearLabel(settings.selectedYear)}
+              onFileDraftChange={updatePreSoFileDraft}
+              onOpenFile={openPreSoFileInSearch}
+            />
+          ) : reportMode === "soPaymentMatrix" ? (
+            <SoPaymentMatrixReport
+              title={selectedReportTitle}
+              titleHelper={reportModeHelperText.soPaymentMatrix}
+              description="Shows pending expected payments month-wise for the current filtered file set."
+              monthAmountHelper={[
+                "Shows expected pending payment amount falling in this month.",
+                "If more than one stage/payment event of the same S.O. falls in the month, the amounts are added.",
+                "Click a non-zero amount to open the contributing file in Search.",
+              ]}
+              rows={soPaymentMatrixRows}
+              selectedFields={soPaymentMatrixFields}
+              fieldOptions={soPaymentMatrixFieldOptions}
+              columns={soPaymentMatrixColumns}
+              monthKeys={soPaymentMatrixMonthKeys}
+              onFieldChange={toggleSoPaymentMatrixField}
+              onResetFields={resetSoPaymentMatrixFields}
+              onOpenRows={openSoPaymentMatrixSearch}
+              actions={
+                <ReportHeaderActions
+                  divisions={divisions}
+                  activeDivision={activeDivision}
+                  onDivisionChange={setSelectedDivision}
+                  onPdf={() => exportSoPaymentMatrix("pdf")}
+                  onExcel={() => exportSoPaymentMatrix("excel")}
+                />
+              }
+            />
+          ) : reportMode === "paymentCompletedMatrix" ? (
+            <SoPaymentMatrixReport
+              title={selectedReportTitle}
+              titleHelper={reportModeHelperText.paymentCompletedMatrix}
+              description="Shows completed payments month-wise for the current filtered file set."
+              monthAmountHelper={[
+                "Shows actual completed payment amount falling in this month.",
+                "If more than one stage/payment event of the same S.O. falls in the month, the amounts are added.",
+                "Click a non-zero amount to open the contributing file in Search.",
+              ]}
+              rows={paymentCompletedMatrixRows}
+              selectedFields={soPaymentMatrixFields}
+              fieldOptions={soPaymentMatrixFieldOptions}
+              columns={soPaymentMatrixColumns}
+              monthKeys={soPaymentMatrixMonthKeys}
+              onFieldChange={toggleSoPaymentMatrixField}
+              onResetFields={resetSoPaymentMatrixFields}
+              onOpenRows={openSoPaymentMatrixSearch}
+              actions={
+                <ReportHeaderActions
+                  divisions={divisions}
+                  activeDivision={activeDivision}
+                  onDivisionChange={setSelectedDivision}
+                  onPdf={() => exportPaymentCompletedMatrix("pdf")}
+                  onExcel={() => exportPaymentCompletedMatrix("excel")}
+                />
               }
             />
           ) : reportMode === "itemsDeliveredBillsPending" ? (
@@ -2671,6 +3259,9 @@ type ReportMode =
   | "firmDatabase"
   | "merData"
   | "cashOutGoPlan"
+  | "preSoExpectedCashOutgo"
+  | "soPaymentMatrix"
+  | "paymentCompletedMatrix"
   | "itemsDeliveredBillsPending"
   | "itemsDeliveredBillsPrepared"
   | "billsSubmitted"
@@ -2725,6 +3316,9 @@ const reportModes = [
   { key: "firmDatabase", label: "Firm Performance" },
   { key: "merData", label: "MER Data" },
   { key: "cashOutGoPlan", label: "Cash Out Go Plan" },
+  { key: "preSoExpectedCashOutgo", label: "Pre-S.O. based expected cash outgo" },
+  { key: "soPaymentMatrix", label: "Month-wise Payment due Matrix" },
+  { key: "paymentCompletedMatrix", label: "Month-wise Payment completed Matrix" },
   {
     key: "itemsDeliveredBillsPending",
     label: "Delivery / D.P. Done, Bill Preparation Pending",
@@ -2796,6 +3390,11 @@ const reportModeHelperText = {
   ],
   demandProcessingAnalysis: [
     "File Year restricts source files first.",
+    "The selected pair is read as From date -> To date; the report calculates days between those two dates.",
+    "Fields that would create an obvious reverse lifecycle pair are hidden from the opposite panel.",
+    "Negative results are valid selected pairs where the To date is earlier than the From date, for example delivery completed before D.P. date. They are excluded from average/median/min/max and shown under Negative results.",
+    "Unified payment means all payment routes are merged into one payment timeline: normal bills, stage bills, advance bills, returned/resubmitted bills, supplementary bills, and returned supplementary bills.",
+    "Example: Unified bill submission/resubmission date -> Unified payment date measures payment delay from whichever bill submission/resubmission event applies to that payment.",
     "Date range, when enabled, filters demand processing by the selected From date.",
   ],
   firmDatabase: [
@@ -2815,11 +3414,79 @@ const reportModeHelperText = {
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
     "Returned and paid supplementary bills are included.",
   ],
+  soPaymentMatrix: [
+    "Shows one row per S.O. with expected pending payment amount placed under the month in which payment is expected.",
+    "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment schedule.",
+    "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
+    "Rows without a derivable expected payment month inside the selected FY are not shown.",
+  ],
+  paymentCompletedMatrix: [
+    "Shows one row per S.O. with completed payment amount placed under the actual payment month.",
+    "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment date.",
+    "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
+    "Rows without a completed payment month inside the selected FY are not shown.",
+  ],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 type HelperText = string | string[];
+const CASH_OUT_GO_RED_ROW_HELPER =
+  "A row turns red when Expected sent/resubmission date is before today and Actual sent date is still blank.";
+const soPaymentMatrixDefaultFields: SoPaymentMatrixFieldKey[] = [
+  "fileUniqueNo",
+  "demandDescription",
+  "soNo",
+  "soDate",
+  "firmName",
+  "division",
+];
+const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
+  {
+    key: "fileUniqueNo",
+    label: "File unique no.",
+    helper: "Shows the file unique/control number for the S.O. row.",
+  },
+  {
+    key: "demandDescription",
+    label: "Demand description",
+    helper: "Shows the demand/item description from the file.",
+  },
+  { key: "soNo", label: "S.O. No.", helper: "Shows S.O. No.; GEM S.O. No. is used if S.O. No. is blank." },
+  { key: "soDate", label: "S.O. date", helper: "Shows the supply order date." },
+  { key: "firmName", label: "Firm name", helper: "Shows the firm name recorded in the S.O." },
+  { key: "division", label: "Division", helper: "Shows the file division." },
+  {
+    key: "fileCategory",
+    label: "File category",
+    helper: "Shows the file category/workflow group such as Goods & Services or Contract.",
+  },
+  { key: "fileType", label: "File type", helper: "Shows the file type such as AMC, MPC, CARS, CAPSI, O&M, etc." },
+  { key: "indentor", label: "Indentor", helper: "Shows the file indentor." },
+  { key: "mode", label: "Mode", helper: "Shows the procurement mode recorded in the file." },
+  { key: "firmType", label: "Firm type", helper: "Shows the firm type recorded in the S.O." },
+  {
+    key: "demandInitiationYear",
+    label: "Demand initiation year",
+    helper: "Shows the financial year in which the file was initiated.",
+  },
+  {
+    key: "demandValue",
+    label: "Demand value",
+    helper: "Shows Capital + Revenue demand value from the file.",
+  },
+  { key: "capitalValue", label: "Capital value", helper: "Shows the file capital demand value." },
+  { key: "revenueValue", label: "Revenue value", helper: "Shows the file revenue demand value." },
+  { key: "soValue", label: "S.O. value", helper: "Shows Capital + Revenue value of the S.O." },
+  {
+    key: "paymentBasis",
+    label: "Payment basis",
+    helper: "Shows whether the amount came from stage payment, bill submission, bill preparation, delivery/job completion, or D.P.",
+  },
+];
 const fileYearSubfilterHelper = [
   "This is a File Initiation Year subfilter applied after the Global filter.",
   "Global filter decides the main file universe: all files, active files, active + current FY closed, or FY Activity.",
+  "Report FY rule: All files / All active files / Active + current FY closed use Current FY from Settings for month columns, MER, and date defaults.",
+  "Report FY rule: A specific FY in Global filter uses that same selected FY for month columns, MER, and date defaults.",
+  "Future-year payments do not change previous-FY actual cash outgo. Previous-FY reports change only if dates/amounts/MER are backdated or edited into that FY.",
   "A specific FY here means files initiated in that FY only; it does not mean activity year.",
   "All file years means no extra initiation-year restriction inside the selected Global filter.",
   "When Global Filter is All files, the no-restriction option is labelled Entire database.",
@@ -2866,7 +3533,13 @@ const firmDatabaseReportMode = reportModes[2];
 const cashOutgoReportGroups: ReadonlyArray<ReportModeSection> = [
   {
     title: "MER",
-    modes: getReportModeOptions(["merData", "cashOutGoPlan"]),
+    modes: getReportModeOptions([
+      "merData",
+      "cashOutGoPlan",
+      "preSoExpectedCashOutgo",
+      "soPaymentMatrix",
+      "paymentCompletedMatrix",
+    ]),
   },
   {
     title: "Billing / payment pending liability",
@@ -2917,7 +3590,8 @@ const cashOutgoReportGroups: ReadonlyArray<ReportModeSection> = [
 const cashOutgoReportModes = cashOutgoReportGroups.flatMap((group) => group.modes);
 const combinedCashOutgoExportModes = cashOutgoReportGroups
   .filter((group) => group.title !== "MER")
-  .flatMap((group) => group.modes.map((mode) => mode.key));
+  .flatMap((group) => group.modes.map((mode) => mode.key))
+  .filter((mode) => mode !== "soPaymentMatrix" && mode !== "paymentCompletedMatrix");
 const supplyOrderDeliveryReportModes = getReportModeOptions([
   "monthlyFileInflow",
   "monthWiseSupplyOrder",
@@ -2997,6 +3671,7 @@ type FirmDatabaseReportPreferences = {
 
 type FirmDatabaseRow = Record<FirmDatabaseColumnKey, string | number> & {
   id: string;
+  divisionNames: string[];
   orderIds: string[];
   clickTargets: Partial<Record<FirmDatabaseColumnKey, string[]>>;
   numeric: Partial<Record<FirmDatabaseColumnKey, number>>;
@@ -3091,7 +3766,7 @@ const firmDatabaseColumns: FirmDatabaseColumn[] = [
   },
   { key: "highValueOrders", label: "High value S.O.", group: "Risk / coverage", align: "right" },
   { key: "divisionCount", label: "Divisions served", group: "Risk / coverage", align: "right" },
-  { key: "divisions", label: "Division names", group: "Risk / coverage" },
+  { key: "divisions", label: "Divisions", group: "Risk / coverage" },
   { key: "fileTypes", label: "File types", group: "Risk / coverage" },
 ];
 
@@ -3128,7 +3803,7 @@ function ReportModeButton({
   const inactiveClass = emphasized
     ? "bg-secondary/40 text-foreground hover:bg-accent"
     : "text-muted-foreground hover:bg-accent hover:text-foreground";
-  const helperText = reportModeHelperText[mode.key];
+  const helperText = getReportModeButtonHelper(mode.key);
   return (
     <div className="flex items-center gap-1">
       <button
@@ -3141,16 +3816,170 @@ function ReportModeButton({
       >
         {mode.label}
       </button>
-      {helperText ? (
-        <FloatingHelper
-          text={helperText}
-          label={`${mode.label} note`}
-          className="size-8 shrink-0"
-          iconClassName="size-3.5"
-        />
-      ) : null}
+      <FloatingHelper
+        text={helperText}
+        label={`${mode.label} note`}
+        className="size-8 shrink-0"
+        iconClassName="size-3"
+      />
     </div>
   );
+}
+
+function getReportModeButtonHelper(mode: ReportMode): HelperText {
+  const custom = reportModeHelperText[mode];
+  const supplementary = supplementaryBillInclusionNotes[mode];
+  const commonFilters =
+    "Uses the current Global filter, File Year subfilter, initiation date range, division, file category, and user access wherever applicable. FY rule: All files / All active files / Active + current FY closed use Current FY from Settings; a specific Global FY uses that same FY. Future-year payments do not change previous-FY actual cash outgo unless data is backdated or edited into that FY.";
+  if (custom && supplementary) return [...flattenHelperText(custom), ...flattenHelperText(supplementary)];
+  if (custom) return custom;
+  if (supplementary) return [commonFilters, ...flattenHelperText(supplementary)];
+  if (mode === "cashOutGoPlan") {
+    return [
+      "Shows month-wise cash outgo planning using MER for past months and software forecast rows for pending payments.",
+      "Editable row dates/offsets depend on the user's Cash Out Go Plan access level.",
+      commonFilters,
+    ];
+  }
+  if (mode === "preSoExpectedCashOutgo") {
+    return [
+      "Plans expected cash outgo for active files where S.O. is not yet placed.",
+      "Report is fixed to All active files and All file years; initiation date range is blocked.",
+    ];
+  }
+  if (mode === "itemsDeliveredBillsPending") {
+    return [
+      "Shows delivered/D.P. done cases where bill preparation is still pending.",
+      "Expected payment is derived from the relevant delivery/job completion/D.P. trigger plus configured offset days.",
+      commonFilters,
+    ];
+  }
+  if (mode === "itemsDeliveredBillsPrepared") {
+    return [
+      "Shows delivered/D.P. done cases where bill is prepared but payment workflow is not completed.",
+      "Date range, when enabled, filters by Bill preparation date.",
+      commonFilters,
+    ];
+  }
+  if (mode === "billsSubmitted") {
+    return [
+      "Shows bills sent/submitted to PCDA where payment is still pending.",
+      "Date range, when enabled, filters by Bill sent/submission date.",
+      commonFilters,
+    ];
+  }
+  if (mode === "expectedCashOutgoFy") {
+    return [
+      "Shows expected cash outgo by D.P. for unpaid S.O.s in the selected FY.",
+      "Rows are placed in month by D.P./revised D.P. plus offset logic.",
+      commonFilters,
+    ];
+  }
+  if (mode === "spentTillDateFy") {
+    return [
+      "Shows actual cash outgo by payment date.",
+      "For past months, MER values can supersede software-entered actuals where MER is entered.",
+      commonFilters,
+    ];
+  }
+  if (mode === "billsPaidInMonth") {
+    return [
+      "Shows bills paid in the selected month.",
+      "Normal and supplementary paid bill rows are included.",
+      commonFilters,
+    ];
+  }
+  if (mode === "cashOutgoForMonth") {
+    return [
+      "Shows expected cash outgo exclusively for the selected month.",
+      "Combines bill-prepared, bill-sent/payment-pending, and D.P.-based expected rows.",
+      commonFilters,
+    ];
+  }
+  if (mode === "expectedExpenditureTillMonth") {
+    return [
+      "Shows expected expenditure up to the selected month.",
+      "Combines actual cash outgo and expected pending expenditure up to that month.",
+      commonFilters,
+    ];
+  }
+  if (mode === "currentMonthLiability") {
+    return [
+      "Shows cumulative unpaid liability up to the selected month.",
+      "Rows are included when payment remains pending as on that month context.",
+      commonFilters,
+    ];
+  }
+  if (isReturnedBillReportMode(mode)) {
+    return [
+      "Tracks returned bill rows by the selected returned-bill status.",
+      "Date range, when enabled, filters by the returned-bill event relevant to this report.",
+      commonFilters,
+    ];
+  }
+  if (
+    mode === "supplementaryBillsSubmitted" ||
+    mode === "supplementaryPendingReturnedBills" ||
+    mode === "supplementaryReturnedBillsResubmitted" ||
+    mode === "supplementaryReturnedBillsPaid"
+  ) {
+    return [
+      "Tracks supplementary bill rows by the selected supplementary-bill status.",
+      "Date range, when enabled, filters by the relevant supplementary-bill event date.",
+      commonFilters,
+    ];
+  }
+  if (mode === "monthlyFileInflow") {
+    return ["Shows month-wise file inflow based on demand/file initiation dates.", commonFilters];
+  }
+  if (mode === "monthWiseSupplyOrder") {
+    return ["Shows month-wise S.O. placement counts/values by S.O. date.", commonFilters];
+  }
+  if (mode === "monthWiseDeliverySchedule") {
+    return ["Shows month-wise delivery schedule by D.P./revised D.P. dates.", commonFilters];
+  }
+  if (mode === "monthWiseCompletedDeliveries") {
+    return [
+      "Shows month-wise completed deliveries/job completions.",
+      "Uses material receipt date where delivery/inspection applies and job completion date where applicable.",
+      commonFilters,
+    ];
+  }
+  if (mode === "monthWiseBgExpiry") {
+    return ["Shows month-wise BG expiry based on BG validity dates.", commonFilters];
+  }
+  if (mode === "preBidMeetings") {
+    return ["Shows pre-bid meeting schedule/status by applicable pre-bid meeting dates.", commonFilters];
+  }
+  if (mode === "bgReceiptDelay") {
+    return [
+      "Shows BG receipt delay using the selected delay-day thresholds.",
+      "Delay is calculated only where BG is applicable and receipt is due/pending.",
+      commonFilters,
+    ];
+  }
+  if (mode === "warrantyBgMismatch") {
+    return [
+      "Shows warranty/BG validity mismatch cases using the selected buffer days.",
+      "Uses recorded warranty/BG validity dates for comparison.",
+      commonFilters,
+    ];
+  }
+  if (mode === "delayStatus") {
+    return [
+      "Shows files currently stuck beyond the selected delay threshold at their current stage.",
+      "Milestones already cleared before the delay limit are not counted as current delay.",
+      commonFilters,
+    ];
+  }
+  if (mode === "pendingLiabilityAgeing") {
+    return [
+      "Shows unpaid liabilities grouped by ageing bucket as on the selected date.",
+      "Ageing starts from delivery/job completion, bill preparation, or bill sent trigger as applicable.",
+      commonFilters,
+    ];
+  }
+  return commonFilters;
 }
 
 function CollapsibleReportGroup({
@@ -3348,7 +4177,7 @@ function isHistoricalDateRangeReport(mode: ReportMode) {
 }
 
 function isFileYearFilterDisabledReport(mode: ReportMode) {
-  return mode === "merData" || mode === "cashOutGoPlan";
+  return mode === "merData" || mode === "cashOutGoPlan" || mode === "preSoExpectedCashOutgo";
 }
 
 function isFileCategoryFilterDisabledReport(mode: ReportMode) {
@@ -3490,6 +4319,10 @@ function getEightReportTitle(
   const monthLabel = formatMonthTitle(context.monthKey);
   const fyLabel = displayFinancialYearLabel(context.financialYear);
   if (mode === "merData") return `MER Data for FY ${fyLabel}`;
+  if (mode === "soPaymentMatrix") return `Month-wise Payment due Matrix for FY ${fyLabel}`;
+  if (mode === "paymentCompletedMatrix") {
+    return `Month-wise Payment completed Matrix for FY ${fyLabel}`;
+  }
   if (mode === "itemsDeliveredBillsPending") {
     return `Delivery / D.P. Done, Bill Preparation Pending as on ${asOnDate}`;
   }
@@ -3597,6 +4430,8 @@ function getCashOutgoReportLogic(
 }
 
 function getCashOutgoTitleHelper(mode: ReportMode): HelperText | undefined {
+  if (mode === "soPaymentMatrix") return reportModeHelperText.soPaymentMatrix;
+  if (mode === "paymentCompletedMatrix") return reportModeHelperText.paymentCompletedMatrix;
   if (mode === "supplementaryBillsPaid") return reportModeHelperText.supplementaryBillsPaid;
   return supplementaryBillInclusionNotes[mode];
 }
@@ -4041,7 +4876,6 @@ function getMonthlyReportConfig(
         "- Month-wise Pre-Bid Meeting schedule.",
         "- Dates before today: Completed.",
         "- Dates today or later: Due.",
-        "- Blank applicable dates: Suspected Anomaly.",
       ].join("\n"),
       columns,
       rows,
@@ -4052,11 +4886,11 @@ function getMonthlyReportConfig(
     return {
       description: [
         "- Counts applicable BG rows not received after configured days.",
-        "- PSB: uses S.O. date.",
+        "- PSB and PSB+PWB: use S.O. date.",
         "- AMC/MPC/O&M warranty BGs: use S.O. date.",
-        "- Physical delivery PWB/PSB+PWB: uses Material Receipt Date.",
-        "- Goods & Services IR No with stages: starts after all stages are job-completed.",
-        "- Final stage basis: latest stage Job Completion Date.",
+        "- PWB only: uses Material Receipt Date / Job Completion Date as applicable.",
+        "- Goods & Services IR No with staged delivery and no staged payment: starts after all stages are job-completed, using latest stage Job Completion Date.",
+        "- Goods & Services IR No with staged payment: starts from the first completed payable stage, using earliest stage Job Completion Date.",
       ].join("\n"),
       columns: [
         { key: "label", label: "Delay", align: "left" },
@@ -4299,13 +5133,107 @@ function readNumericCell(value: number | string | undefined) {
 type DemandProcessingStats = {
   count: number;
   unitCount: number;
+  fileCount: number;
   average: number;
   median: number;
   min: number;
   max: number;
   negative: number;
+  negativeFileCount: number;
 };
 type DemandProcessingAnalysisUnit = "demand" | "order" | "stage" | "advance";
+const hiddenDemandProcessingDateFieldIds = new Set([
+  "order.billPreparationDate",
+  "order.billSentForPaymentDate",
+  "order.paymentDate",
+  "stage.billPreparationDate",
+  "stage.billSentForPaymentDate",
+  "stage.paymentDate",
+  "advance.billPreparationDate",
+  "advance.billSentForPaymentDate",
+  "advance.paymentDate",
+]);
+const demandProcessingStageFieldScopes = new Set(["stage"]);
+const demandProcessingAdvanceFieldScopes = new Set(["advance"]);
+const demandProcessingReverseFieldPairs = new Set(
+  [
+    ["file.ifaFinalDate", "file.ifaSentDate"],
+    ["file.cfaDate", "file.cfaSentDate"],
+    ["file.cncApprovalDate", "file.cncDate"],
+    ["file.preTcecMinutesDate", "file.preTcecDate"],
+    ["file.postTcecMinutesDate", "file.postTcecDate"],
+    ["file.refloatPostTcecMinutesDate", "file.refloatPostTcecDate"],
+    ["order.irReceiptDate", "order.irPreparationDate"],
+    ["order.psbBgReturnDate", "order.psbBgReceivedDate"],
+    ["order.pwbBgReturnDate", "order.pwbBgReceivedDate"],
+    ["order.combinedBgReturnDate", "order.combinedBgReceivedDate"],
+    ["payment.unifiedPaymentDate", "payment.unifiedSubmissionDate"],
+    ["payment.unifiedPaymentDate", "payment.unifiedReturnDate"],
+  ].map(([from, to]) => `${from}→${to}`),
+);
+const demandProcessingFieldOrderRank = new Map<string, number>(
+  [
+    ["file.receivedDate", 10],
+    ["file.scrutinyDate", 20],
+    ["file.scrutinyResponseDate", 30],
+    ["file.scrutinyCompletionDate", 40],
+    ["file.immsDate", 50],
+    ["file.highValueMeetingDate", 60],
+    ["file.highValueMinutesDate", 70],
+    ["file.adSentDate", 80],
+    ["file.adVettingDate", 90],
+    ["file.rqaSentDate", 100],
+    ["file.rqaApprovalDate", 110],
+    ["file.ifaSentDate", 120],
+    ["file.ifaFinalDate", 130],
+    ["file.cfaSentDate", 140],
+    ["file.cfaDate", 150],
+    ["file.gemUndertakingDate", 160],
+    ["file.rfpVettingInitiationDate", 170],
+    ["file.rfpVettingApprovalDate", 180],
+    ["file.bidDate", 190],
+    ["file.bidOpeningDate", 200],
+    ["file.refloatBiddingDate", 210],
+    ["file.refloatBidOpeningDate", 220],
+    ["file.preTcecDate", 230],
+    ["file.preTcecMinutesDate", 240],
+    ["file.postTcecDate", 250],
+    ["file.postTcecMinutesDate", 260],
+    ["file.refloatPostTcecDate", 270],
+    ["file.refloatPostTcecMinutesDate", 280],
+    ["file.cncDate", 290],
+    ["file.cncApprovalDate", 300],
+    ["order.financialSanctionDate", 310],
+    ["order.soDate", 320],
+    ["order.dpDate", 330],
+    ["order.revisedDp", 340],
+    ["stage.deliveryPeriodStartDate", 350],
+    ["stage.dpDate", 360],
+    ["stage.revisedDp", 370],
+    ["order.materialReceiptDate", 380],
+    ["stage.materialReceiptDate", 380],
+    ["order.jobCompletionDate", 390],
+    ["stage.jobCompletionDate", 390],
+    ["order.irPreparationDate", 400],
+    ["stage.irPreparationDate", 400],
+    ["order.irReceiptDate", 410],
+    ["stage.irReceiptDate", 410],
+    ["order.psbBgReceivedDate", 420],
+    ["order.pwbBgReceivedDate", 420],
+    ["order.combinedBgReceivedDate", 420],
+    ["order.psbBgValidityDate", 430],
+    ["order.pwbBgValidityDate", 430],
+    ["order.combinedBgValidityDate", 430],
+    ["payment.unifiedSubmissionDate", 440],
+    ["payment.unifiedReturnDate", 450],
+    ["payment.unifiedPaymentDate", 460],
+    ["order.psbBgReturnDate", 470],
+    ["order.pwbBgReturnDate", 470],
+    ["order.combinedBgReturnDate", 470],
+    ["order.soCancelledDate", 480],
+    ["file.demandCancelledDate", 490],
+  ],
+);
 type DemandProcessingRangeRow = {
   id: string;
   label: string;
@@ -4345,6 +5273,7 @@ type DemandProcessingFilterField = {
   getValue: (context: DemandProcessingRowContext) => string | number | undefined;
 };
 type DemandProcessingRowContext = {
+  row: DemandProcessingAnalysisRow;
   file: FileRecord;
   order?: SupplyOrderDetail;
   stage?: StageDeliveryDetail;
@@ -4580,6 +5509,15 @@ function getDemandProcessingExtraFilterFields({
       type: "yesNo",
       getValue: ({ order }) => order?.ld,
     },
+    {
+      id: "payment.unifiedPaymentMode",
+      label: "Unified payment mode",
+      group: "Bill / Payment",
+      type: "select",
+      options: ["Online", "Offline"],
+      getValue: ({ row, order, stage }) =>
+        row.paymentMode || stage?.paymentMode || order?.paymentMode,
+    },
   ];
 }
 
@@ -4685,7 +5623,7 @@ function getDemandProcessingRowContext(
   const order = row.orderIndex === undefined ? undefined : file.supplyOrders?.[row.orderIndex];
   const stage =
     row.stageIndex === undefined || !order ? undefined : order.stageDeliveries?.[row.stageIndex];
-  return { file, order, stage };
+  return { row, file, order, stage };
 }
 
 function isDemandProcessingFilterMatch(
@@ -4755,6 +5693,7 @@ function DemandProcessingAnalysisReport({
   selectedPresetId,
   fromFieldId,
   toFieldId,
+  paymentMode,
   rows,
   stats,
   rangeRows,
@@ -4765,6 +5704,8 @@ function DemandProcessingAnalysisReport({
   onPresetChange,
   onFromFieldChange,
   onToFieldChange,
+  onResetDateFields,
+  onPaymentModeChange,
   onAddFilter,
   onUpdateFilter,
   onRemoveFilter,
@@ -4778,6 +5719,7 @@ function DemandProcessingAnalysisReport({
   selectedPresetId: string;
   fromFieldId: string;
   toFieldId: string;
+  paymentMode: string;
   rows: DemandProcessingAnalysisRow[];
   stats: DemandProcessingStats;
   rangeRows: DemandProcessingRangeRow[];
@@ -4788,6 +5730,8 @@ function DemandProcessingAnalysisReport({
   onPresetChange: (presetId: string) => void;
   onFromFieldChange: (fieldId: string) => void;
   onToFieldChange: (fieldId: string) => void;
+  onResetDateFields: () => void;
+  onPaymentModeChange: (paymentMode: string) => void;
   onAddFilter: () => void;
   onUpdateFilter: (id: string, patch: Partial<Omit<DemandProcessingFilterRow, "id">>) => void;
   onRemoveFilter: (id: string) => void;
@@ -4798,6 +5742,24 @@ function DemandProcessingAnalysisReport({
 }) {
   const fromField = getDemandProcessingField(fromFieldId);
   const toField = getDemandProcessingField(toFieldId);
+  useEffect(() => {
+    if (
+      isDemandProcessingFieldCompatible({
+        candidateFieldId: toFieldId,
+        selectedOtherFieldId: fromFieldId,
+        side: "to",
+      })
+    ) {
+      return;
+    }
+    const replacementToFieldId = getFirstCompatibleDemandProcessingFieldId({
+      selectedOtherFieldId: fromFieldId,
+      side: "to",
+    });
+    if (replacementToFieldId && replacementToFieldId !== toFieldId) {
+      onToFieldChange(replacementToFieldId);
+    }
+  }, [fromFieldId, onToFieldChange, toFieldId]);
   return (
     <div className="rounded-md border border-border bg-card shadow-[var(--shadow-card)]">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
@@ -4810,8 +5772,8 @@ function DemandProcessingAnalysisReport({
         <div className="flex flex-wrap items-center gap-2">{actions}</div>
       </div>
       <div className="space-y-4 p-4">
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[260px_minmax(0,1fr)_minmax(0,1fr)]">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[320px_minmax(0,1fr)_minmax(0,1fr)_190px]">
+          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
             <span>Preset</span>
             <select
               value={selectedPresetId}
@@ -4821,33 +5783,84 @@ function DemandProcessingAnalysisReport({
               <option value="">Custom selection</option>
               {presets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
-                  {preset.name}
+                  {getDemandProcessingPresetPairLabel(preset)}
                 </option>
               ))}
             </select>
-          </label>
+            <button
+              type="button"
+              onClick={onResetDateFields}
+              className="h-8 rounded-md border border-border bg-secondary/40 px-2.5 text-xs font-medium text-foreground transition hover:bg-secondary"
+            >
+              Reset From/To fields
+            </button>
+          </div>
           <DemandDateFieldSelector
             label="From date"
             value={fromFieldId}
+            otherValue={toFieldId}
+            side="from"
             onChange={onFromFieldChange}
+            onReset={() => onFromFieldChange("")}
           />
-          <DemandDateFieldSelector label="To date" value={toFieldId} onChange={onToFieldChange} />
+          <DemandDateFieldSelector
+            label="To date"
+            value={toFieldId}
+            otherValue={fromFieldId}
+            side="to"
+            onChange={onToFieldChange}
+            onReset={() => onToFieldChange("")}
+          />
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              Payment mode
+              <FloatingHelper
+                text={[
+                  "Segregates unified payment analysis by Online or Offline payment mode.",
+                  "Any includes both modes and rows where mode is blank.",
+                  "Online/Offline works best with unified payment date fields because those merge normal, stage, advance, returned, and supplementary bill flows.",
+                ]}
+                label="Demand processing payment mode help"
+                className="size-5 border-0 bg-transparent shadow-none"
+                iconClassName="size-3"
+              />
+            </span>
+            <select
+              value={paymentMode}
+              onChange={(event) => onPaymentModeChange(event.target.value)}
+              className="h-10 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+            >
+              <option value="">Any</option>
+              <option value="Online">Online</option>
+              <option value="Offline">Offline</option>
+            </select>
+          </label>
         </div>
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
           <DemandMetric
-            label={getAnalysisUnitCountLabel(analysisUnit)}
-            value={stats.unitCount}
+            label="File count"
+            value={stats.fileCount}
             onClick={onOpenUsed}
+            helperText={[
+              `${getAnalysisUnitCountLabel(analysisUnit)} may be higher when one file has multiple matching rows.`,
+              "The clicker opens files in Search, so this tile shows unique file count.",
+            ]}
           />
           <DemandMetric label="Average days" value={formatGapNumber(stats.average)} />
           <DemandMetric label="Median days" value={formatGapNumber(stats.median)} />
           <DemandMetric label="Minimum" value={formatGapNumber(stats.min)} />
           <DemandMetric label="Maximum" value={formatGapNumber(stats.max)} />
           <DemandMetric
-            label="Reverse dates"
-            value={stats.negative}
-            onClick={stats.negative ? onOpenReverse : undefined}
+            label="Negative results"
+            value={stats.negativeFileCount}
+            onClick={stats.negativeFileCount ? onOpenReverse : undefined}
+            helperText={[
+              "These are rows where the selected To date is earlier than the selected From date.",
+              "They can happen even for logically correct pairs, for example delivery completed before D.P. date.",
+              "Negative results are excluded from average, median, minimum, and maximum days.",
+              "This tile shows unique file count because the clicker opens matching files in Search.",
+            ]}
           />
         </div>
 
@@ -4879,24 +5892,85 @@ function DemandProcessingAnalysisReport({
 function DemandDateFieldSelector({
   label,
   value,
+  otherValue,
+  side,
   onChange,
+  onReset,
 }: {
   label: string;
   value: string;
+  otherValue: string;
+  side: "from" | "to";
   onChange: (fieldId: string) => void;
+  onReset: () => void;
 }) {
-  const groups = getDemandProcessingFieldGroups();
+  const allGroups = getDemandProcessingFieldGroups().map((group) => ({
+    ...group,
+    fields: group.fields.filter((field) => !hiddenDemandProcessingDateFieldIds.has(field.id)),
+  }));
+  const groups = allGroups
+    .map((group) => ({
+      ...group,
+      fields: group.fields.filter(
+        (field) =>
+          isDemandProcessingFieldCompatible({
+            candidateFieldId: field.id,
+            selectedOtherFieldId: otherValue,
+            side,
+          }),
+      ),
+    }))
+    .filter((group) => group.fields.length);
+  const visibleFieldCount = groups.reduce((sum, group) => sum + group.fields.length, 0);
+  const allFieldCount = allGroups.reduce((sum, group) => sum + group.fields.length, 0);
+  const hiddenByCompatibilityCount = Math.max(0, allFieldCount - visibleFieldCount);
   const selectedField = getDemandProcessingField(value);
   return (
     <div className="rounded-md border border-border bg-background">
       <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
-        {label}: <span className="text-foreground">{selectedField?.label ?? "Select date"}</span>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            {label}:{" "}
+            <span className="text-foreground">{selectedField?.label ?? "Select date"}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={!value}
+            title={`Reset ${label}`}
+            aria-label={`Reset ${label}`}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/40 text-muted-foreground transition hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <RotateCcw className="size-3.5" />
+          </button>
+        </div>
+        {hiddenByCompatibilityCount ? (
+          <div className="mt-1 text-[11px] font-normal text-amber-700">
+            {hiddenByCompatibilityCount} incompatible reverse/ambiguous field
+            {hiddenByCompatibilityCount === 1 ? "" : "s"} hidden.
+          </div>
+        ) : null}
       </div>
       <div className="max-h-72 overflow-y-auto p-2">
         {groups.map((group) => (
           <details key={`${label}:${group.title}`} className="group rounded-md">
             <summary className="cursor-pointer rounded px-2 py-1.5 text-sm font-bold uppercase tracking-wide text-muted-foreground hover:bg-accent hover:text-foreground">
-              {group.title}
+              <span className="inline-flex items-center gap-1.5">
+                {group.title}
+                {group.title === "Bill / Payment" ? (
+                  <FloatingHelper
+                    text={[
+                      "Unified payment combines all payment routes into one timeline instead of showing separate normal, stage, advance, returned, and supplementary bill date fields.",
+                      "Unified bill submission/resubmission means the applicable bill submission date, or the resubmission date after return, whichever is the active event for that payment flow.",
+                      "Example: if a normal bill was returned and later resubmitted, unified submission uses the resubmission event for measuring resubmission -> payment delay.",
+                      "Supplementary bills are included even though they do not have a bill preparation date.",
+                    ]}
+                    label="Unified payment fields help"
+                    className="size-5 border-0 bg-transparent shadow-none normal-case"
+                    iconClassName="size-3"
+                  />
+                ) : null}
+              </span>
             </summary>
             <div className="space-y-1 pb-2 pl-2">
               {group.fields.map((field) => (
@@ -4920,6 +5994,77 @@ function DemandDateFieldSelector({
       </div>
     </div>
   );
+}
+
+function getDemandProcessingPresetPairLabel(preset: { fromFieldId: string; toFieldId: string }) {
+  const fromLabel = getDemandProcessingField(preset.fromFieldId)?.label ?? "From date";
+  const toLabel = getDemandProcessingField(preset.toFieldId)?.label ?? "To date";
+  return `${fromLabel} -> ${toLabel}`;
+}
+
+function isDemandProcessingFieldCompatible({
+  candidateFieldId,
+  selectedOtherFieldId,
+  side,
+}: {
+  candidateFieldId: string;
+  selectedOtherFieldId: string;
+  side: "from" | "to";
+}) {
+  if (!selectedOtherFieldId) return true;
+  const candidate = getDemandProcessingField(candidateFieldId);
+  const other = getDemandProcessingField(selectedOtherFieldId);
+  if (!candidate || !other) return true;
+  const fromFieldId = side === "from" ? candidateFieldId : selectedOtherFieldId;
+  const toFieldId = side === "from" ? selectedOtherFieldId : candidateFieldId;
+  if (demandProcessingReverseFieldPairs.has(`${fromFieldId}→${toFieldId}`)) return false;
+  const fromRank = demandProcessingFieldOrderRank.get(fromFieldId);
+  const toRank = demandProcessingFieldOrderRank.get(toFieldId);
+  if (fromRank !== undefined && toRank !== undefined && fromRank > toRank) return false;
+
+  const candidateKind = getDemandProcessingFieldKind(candidateFieldId);
+  const otherKind = getDemandProcessingFieldKind(selectedOtherFieldId);
+  if (
+    (candidateKind === "unified" && (otherKind === "stage" || otherKind === "advance")) ||
+    (otherKind === "unified" && (candidateKind === "stage" || candidateKind === "advance"))
+  ) {
+    return false;
+  }
+  if (
+    (candidateKind === "stage" && otherKind === "advance") ||
+    (candidateKind === "advance" && otherKind === "stage")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function getFirstCompatibleDemandProcessingFieldId({
+  selectedOtherFieldId,
+  side,
+}: {
+  selectedOtherFieldId: string;
+  side: "from" | "to";
+}) {
+  return getDemandProcessingFieldGroups()
+    .flatMap((group) => group.fields)
+    .filter((field) => !hiddenDemandProcessingDateFieldIds.has(field.id))
+    .find((field) =>
+      isDemandProcessingFieldCompatible({
+        candidateFieldId: field.id,
+        selectedOtherFieldId,
+        side,
+      }),
+    )?.id;
+}
+
+function getDemandProcessingFieldKind(fieldId: string) {
+  const field = getDemandProcessingField(fieldId);
+  if (!field) return "unknown";
+  if (fieldId.startsWith("payment.unified")) return "unified";
+  if (demandProcessingStageFieldScopes.has(field.scope)) return "stage";
+  if (demandProcessingAdvanceFieldScopes.has(field.scope)) return "advance";
+  return "file-so";
 }
 
 function DemandProcessingFilterBuilder({
@@ -5208,11 +6353,36 @@ function DemandMetric({
   label,
   value,
   onClick,
+  helperText,
 }: {
   label: string;
   value: ReactNode;
   onClick?: () => void;
+  helperText?: HelperText;
 }) {
+  if (helperText) {
+    return (
+      <div className="rounded-md border border-border bg-secondary/20 px-3 py-2 text-left">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span>{label}</span>
+          <FloatingHelper
+            text={helperText}
+            label={`${label} help`}
+            className="size-5 border-0 bg-transparent shadow-none"
+            iconClassName="size-3"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={!onClick}
+          className="mt-1 block text-left text-lg font-semibold tabular-nums text-foreground disabled:cursor-default disabled:opacity-100"
+        >
+          {value}
+        </button>
+      </div>
+    );
+  }
   const content = (
     <>
       <div className="text-xs text-muted-foreground">{label}</div>
@@ -5238,20 +6408,50 @@ function getDemandProcessingStats(
   analysisUnit: DemandProcessingAnalysisUnit,
 ): DemandProcessingStats {
   if (!rows.length) {
-    return { count: 0, unitCount: 0, average: 0, median: 0, min: 0, max: 0, negative: 0 };
+    return {
+      count: 0,
+      unitCount: 0,
+      fileCount: 0,
+      average: 0,
+      median: 0,
+      min: 0,
+      max: 0,
+      negative: 0,
+      negativeFileCount: 0,
+    };
   }
-  const gaps = rows.map((row) => row.gapDays).sort((a, b) => a - b);
+  const negativeRows = rows.filter((row) => row.gapDays < 0);
+  const negative = negativeRows.length;
+  const negativeFileCount = new Set(negativeRows.map((row) => row.fileId)).size;
+  const analysisRows = rows.filter((row) => row.gapDays >= 0);
+  if (!analysisRows.length) {
+    return {
+      count: 0,
+      unitCount: 0,
+      fileCount: 0,
+      average: 0,
+      median: 0,
+      min: 0,
+      max: 0,
+      negative,
+      negativeFileCount,
+    };
+  }
+  const gaps = analysisRows.map((row) => row.gapDays).sort((a, b) => a - b);
   const sum = gaps.reduce((total, gap) => total + gap, 0);
   const middle = Math.floor(gaps.length / 2);
   const median = gaps.length % 2 === 0 ? (gaps[middle - 1] + gaps[middle]) / 2 : gaps[middle];
   return {
-    count: rows.length,
-    unitCount: new Set(rows.map((row) => getDemandProcessingUnitKey(row, analysisUnit))).size,
-    average: sum / rows.length,
+    count: analysisRows.length,
+    unitCount: new Set(analysisRows.map((row) => getDemandProcessingUnitKey(row, analysisUnit)))
+      .size,
+    fileCount: new Set(analysisRows.map((row) => row.fileId)).size,
+    average: sum / analysisRows.length,
     median,
     min: gaps[0],
     max: gaps[gaps.length - 1],
-    negative: rows.filter((row) => row.gapDays < 0).length,
+    negative,
+    negativeFileCount,
   };
 }
 
@@ -5623,7 +6823,7 @@ function HistoricalDateRangeControls({
                   label="Date range help"
                   side="top"
                   className="size-5 border-0 bg-transparent shadow-none"
-                  iconClassName="size-3.5"
+                  iconClassName="size-3"
                 />
               ) : null}
             </label>
@@ -5644,7 +6844,7 @@ function HistoricalDateRangeControls({
               label="Date range help"
               side="top"
               className="size-5 border-0 bg-transparent shadow-none"
-              iconClassName="size-3.5"
+              iconClassName="size-3"
             />
           ) : null}
         </span>
@@ -5788,7 +6988,7 @@ function CashOutgoOffsetDaysControl({
         <FloatingHelper
           text="Default is 10 days. Use reset to restore the default days."
           className="size-5 border-0 bg-transparent shadow-none"
-          iconClassName="size-3.5"
+          iconClassName="size-3"
         />
       </span>
       <span className="flex items-center gap-1.5">
@@ -5812,6 +7012,17 @@ function CashOutgoOffsetDaysControl({
         >
           {unlocked ? <Unlock className="size-4" /> : <Lock className="size-4" />}
         </button>
+        <FloatingHelper
+          text={[
+            "Lock/Unlock controls whether this days field can be edited.",
+            "This is saved in this browser for the current logged-in user; it is not a global software setting.",
+            "Locked uses the current browser-saved/default value.",
+            "Unlocked allows temporary editing before saving or resetting.",
+          ]}
+          label="Lock or unlock days help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
         <button
           type="button"
           onClick={onSave}
@@ -5822,6 +7033,12 @@ function CashOutgoOffsetDaysControl({
         >
           <Save className="size-4" />
         </button>
+        <FloatingHelper
+          text="Save stores the currently entered days value in this browser for the current logged-in user."
+          label="Save days help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
         <button
           type="button"
           onClick={onReset}
@@ -5832,6 +7049,12 @@ function CashOutgoOffsetDaysControl({
         >
           <RotateCcw className="size-4" />
         </button>
+        <FloatingHelper
+          text="Reset clears the custom browser-saved value and restores this control to its software default."
+          label="Reset days help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
       </span>
     </div>
   );
@@ -5884,6 +7107,17 @@ function BgReceiptDelayControls({
           {unlocked ? <Unlock className="size-3.5" /> : <Lock className="size-3.5" />}
           {unlocked ? "Unlocked" : "Locked"}
         </button>
+        <FloatingHelper
+          text={[
+            "Locked thresholds cannot be edited.",
+            "These thresholds are saved in this browser for the current logged-in user; they are not global software settings.",
+            "Unlock to change, add, remove, or reset BG receipt delay thresholds.",
+            "Reset restores the default 10/30/60 day thresholds for this browser/user.",
+          ]}
+          label="BG receipt delay threshold lock help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {displayDays.map((day, index) => (
@@ -5980,6 +7214,17 @@ function WarrantyBgBufferControls({
           {unlocked ? <Unlock className="size-3.5" /> : <Lock className="size-3.5" />}
           {unlocked ? "Unlocked" : "Locked"}
         </button>
+        <FloatingHelper
+          text={[
+            "Locked buffer cannot be edited.",
+            "This buffer is saved in this browser for the current logged-in user; it is not a global software setting.",
+            "Unlock to change the warranty BG buffer.",
+            "Reset restores the default 60-day buffer for this browser/user.",
+          ]}
+          label="Warranty BG buffer lock help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
       </div>
       <label
         className={filterLabelClass(
@@ -5990,9 +7235,9 @@ function WarrantyBgBufferControls({
         <span className="inline-flex items-center gap-1.5">
           Buffer days
           <FloatingHelper
-            text="Default is 60 days. Use reset to restore the default buffer."
+            text="Default is 60 days. Use reset to restore the default browser/user value."
             className="size-5 border-0 bg-transparent shadow-none"
-            iconClassName="size-3.5"
+            iconClassName="size-3"
           />
         </span>
         <input
@@ -6017,6 +7262,12 @@ function WarrantyBgBufferControls({
         <RotateCcw className="size-3.5" />
         Reset
       </button>
+      <FloatingHelper
+        text="Reset restores the warranty BG buffer to the default 60 days in this browser for the current logged-in user."
+        label="Reset warranty BG buffer help"
+        className="ml-2 inline-flex size-8 border-0 bg-transparent shadow-none"
+        iconClassName="size-3"
+      />
     </div>
   );
 }
@@ -6448,7 +7699,7 @@ function FileInitiationDateRangeFilter({
           label="Initiation date range help"
           side="top"
           className="size-5 border-0 bg-transparent shadow-none"
-          iconClassName="size-3.5"
+          iconClassName="size-3"
         />
       </span>
       <div className="flex items-center gap-1.5">
@@ -6526,7 +7777,7 @@ function FileYearFilter({
             label="File year subfilter help"
             side="top"
             className="size-5 border-0 bg-transparent shadow-none"
-            iconClassName="size-3.5"
+            iconClassName="size-3"
           />
         </span>
         <select
@@ -6568,6 +7819,16 @@ function FileYearFilter({
       >
         {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
       </button>
+      <FloatingHelper
+        text={[
+          "This lock is session based; it is kept only for the current browser session/tab.",
+          "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it or the session resets.",
+          "Unlock allows the File Year subfilter to follow changes again.",
+        ]}
+        label="File year lock help"
+        className="size-8 border-0 bg-transparent shadow-none"
+        iconClassName="size-3"
+      />
     </div>
   );
 }
@@ -6604,6 +7865,7 @@ function FirmDatabaseReport({
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<(typeof firmDatabasePageSizeOptions)[number]>(25);
+  const [divisionPopupRow, setDivisionPopupRow] = useState<FirmDatabaseRow | undefined>();
   const selectedColumns = firmDatabaseColumns.filter((column) =>
     visibleColumns.includes(column.key),
   );
@@ -6871,7 +8133,15 @@ function FirmDatabaseReport({
                             (column.align === "right" ? "text-right tabular-nums" : "text-left")
                           }
                         >
-                          {clickable ? (
+                          {column.key === "divisions" ? (
+                            <button
+                              type="button"
+                              onClick={() => setDivisionPopupRow(row)}
+                              className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                            >
+                              View
+                            </button>
+                          ) : clickable ? (
                             <button
                               type="button"
                               onClick={() => onOpenFiles(clickTarget)}
@@ -6918,6 +8188,49 @@ function FirmDatabaseReport({
           onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
         />
       </div>
+      {divisionPopupRow ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold">Divisions served</h3>
+                <p className="mt-1 text-xs text-muted-foreground">{divisionPopupRow.firmName}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDivisionPopupRow(undefined)}
+                className="rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-accent"
+              >
+                Close
+              </button>
+            </div>
+            {divisionPopupRow.divisionNames.length ? (
+              <div className="max-h-80 overflow-y-auto rounded-md border border-border">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
+                      <th className="w-16 px-3 py-2 text-right">S. No.</th>
+                      <th className="px-3 py-2">Division</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {divisionPopupRow.divisionNames.map((division, divisionIndex) => (
+                      <tr key={division} className="border-b border-border/60 last:border-0">
+                        <td className="px-3 py-2 text-right tabular-nums">{divisionIndex + 1}</td>
+                        <td className="px-3 py-2">{division}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                No division linked.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -7282,6 +8595,7 @@ function MerDataReport({
   loading,
   saving,
   editing,
+  canEdit,
   dirty,
   error,
   actions,
@@ -7296,6 +8610,7 @@ function MerDataReport({
   loading: boolean;
   saving: boolean;
   editing: boolean;
+  canEdit: boolean;
   dirty: boolean;
   error?: string;
   actions?: ReactNode;
@@ -7327,7 +8642,7 @@ function MerDataReport({
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
           {actions}
-          {editing ? (
+          {editing && canEdit ? (
             <>
               <button
                 type="button"
@@ -7346,7 +8661,7 @@ function MerDataReport({
                 {saving ? "Saving..." : "Save"}
               </button>
             </>
-          ) : (
+          ) : canEdit ? (
             <button
               type="button"
               onClick={onEdit}
@@ -7355,7 +8670,7 @@ function MerDataReport({
             >
               Edit
             </button>
-          )}
+          ) : null}
         </div>
       </div>
       {error ? (
@@ -7386,7 +8701,7 @@ function MerDataReport({
                   <tr key={row.monthKey} className="border-b border-border/70 last:border-0">
                     <td className="px-3 py-2 font-medium">{row.month}</td>
                     <td className="px-3 py-2 text-right">
-                      {editing ? (
+                      {editing && canEdit ? (
                         <MerAmountInput
                           value={row.capital}
                           onChange={(value) => onAmountChange(row.monthKey, "capital", value)}
@@ -7396,7 +8711,7 @@ function MerDataReport({
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {editing ? (
+                      {editing && canEdit ? (
                         <MerAmountInput
                           value={row.revenue}
                           onChange={(value) => onAmountChange(row.monthKey, "revenue", value)}
@@ -7489,6 +8804,12 @@ function CashOutGoPlanOffsetControl({
         >
           <RotateCcw className="size-4" />
         </button>
+        <FloatingHelper
+          text={`Reset restores ${label} to the default ${defaultDays} days. Cash Out Go Plan offsets are saved to the database only when you use Save settings/Save plan, according to your access level.`}
+          label={`${label} reset help`}
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
       </span>
     </div>
   );
@@ -7501,6 +8822,7 @@ function CashOutGoPlanReport({
   dirty,
   error,
   includePreviousFy,
+  canEdit,
   onIncludePreviousFyChange,
   onSettingChange,
   onOffsetReset,
@@ -7523,6 +8845,7 @@ function CashOutGoPlanReport({
   dirty: boolean;
   error?: string;
   includePreviousFy: boolean;
+  canEdit: boolean;
   onIncludePreviousFyChange: (value: boolean) => void;
   onSettingChange: (
     field: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays",
@@ -7543,9 +8866,11 @@ function CashOutGoPlanReport({
   onDivisionChange: (division: string) => void;
   onSave: () => void;
   saveDisabled: boolean;
-  onPdf: () => void;
-  onExcel: () => void;
+  onPdf: (expandedSections: CashOutGoPlanExpandedSections) => void;
+  onExcel: (expandedSections: CashOutGoPlanExpandedSections) => void;
 }) {
+  const [expandedDetailSections, setExpandedDetailSections] =
+    useState<CashOutGoPlanExpandedSections>(defaultCashOutGoPlanExpandedSections);
   const totals = getExpectedCashOutgoTotals(plan?.monthwisePlan ?? []);
   const capitalPercent = plan
     ? getCashOutGoAllocationPercent(totals.capital, plan.allocation.capital)
@@ -7561,15 +8886,39 @@ function CashOutGoPlanReport({
       <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold">Cash Out Go Plan</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold">Cash Out Go Plan</h2>
+              <FloatingHelper
+                text={[
+                  "Admin, Sub-admin and Editor can save the official/global Cash Out Go Plan.",
+                  "Universal Viewer type 1 - View only: can vary filters/view results but cannot save Cash Out Go Plan or MER.",
+                  "Universal Viewer type 2 - Personal Cash Out Go only: can save Cash Out Go Plan offsets and row dates for that own account only.",
+                  "Universal Viewer type 3 - Global Cash Out Go + MER: can save the official/global Cash Out Go Plan and MER for the software.",
+                  "Division users/viewers can view permitted data but cannot save Cash Out Go Plan changes.",
+                ]}
+                label="Cash Out Go Plan access rules"
+                className="size-7"
+                iconClassName="size-3"
+              />
+            </div>
             <ReportDescription description="Global FY cash-outgo plan using MER for past months and gross forecast values for pending bills." />
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <button type="button" className="btn-ghost h-9 px-3" onClick={onPdf} disabled={!plan}>
+            <button
+              type="button"
+              className="btn-ghost h-9 px-3"
+              onClick={() => onPdf(expandedDetailSections)}
+              disabled={!plan}
+            >
               <FileText className="size-4" />
               PDF
             </button>
-            <button type="button" className="btn-ghost h-9 px-3" onClick={onExcel} disabled={!plan}>
+            <button
+              type="button"
+              className="btn-ghost h-9 px-3"
+              onClick={() => onExcel(expandedDetailSections)}
+              disabled={!plan}
+            >
               <FileSpreadsheet className="size-4" />
               Excel
             </button>
@@ -7597,7 +8946,7 @@ function CashOutGoPlanReport({
             defaultDays={DEFAULT_BILL_SUBMISSION_OFFSET_DAYS}
             customDays={plan?.settings.handSubmissionOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomHandSubmissionOffsetDays)}
-            disabled={!plan}
+            disabled={!plan || !canEdit}
             active={handSubmissionOffsetActive}
             helperText={[
               "Used for Bills at Hand rows.",
@@ -7613,7 +8962,7 @@ function CashOutGoPlanReport({
             defaultDays={DEFAULT_BILL_PAYMENT_OFFSET_DAYS}
             customDays={plan?.settings.billOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomBillOffsetDays)}
-            disabled={!plan}
+            disabled={!plan || !canEdit}
             active={billPaymentOffsetActive}
             helperText={[
               "Used to calculate Expected payment after a bill is sent/resubmitted.",
@@ -7630,7 +8979,7 @@ function CashOutGoPlanReport({
             defaultDays={DEFAULT_DP_OFFSET_DAYS}
             customDays={plan?.settings.dpOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomDpOffsetDays)}
-            disabled={!plan}
+            disabled={!plan || !canEdit}
             active={dpOffsetActive}
             helperText={[
               "Used for D.P.-based expected sent/resubmission dates.",
@@ -7642,6 +8991,7 @@ function CashOutGoPlanReport({
             onCustomDaysChange={(value) => onSettingChange("dpOffsetDays", value)}
             onReset={() => onOffsetReset("dpOffsetDays")}
           />
+          {canEdit ? (
           <div className="flex items-end gap-1">
             <button
               type="button"
@@ -7657,13 +9007,14 @@ function CashOutGoPlanReport({
               text={[
                 "This save is not browser-session only.",
                 "It saves Cash Out Go Plan settings and row overrides to the backend.",
-                "Offset settings are saved for the current logged-in user.",
+                "The saved scope depends on access: Admin/Sub-admin/Editor and Universal Viewer type 3 save the official/global plan; Universal Viewer type 2 saves only that viewer's personal plan.",
               ]}
               label="Save settings help"
               className="size-8"
-              iconClassName="size-3.5"
+              iconClassName="size-3"
             />
           </div>
+          ) : null}
           <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium">
             <input
               type="checkbox"
@@ -7671,6 +9022,11 @@ function CashOutGoPlanReport({
               onChange={(event) => onIncludePreviousFyChange(event.target.checked)}
             />
             Include previous FY submitted bills
+            <PreviousFySubmittedBillsHelper
+              label="Previous FY submitted bills help"
+              className="size-6 border-0 bg-transparent shadow-none"
+              iconClassName="size-3"
+            />
           </label>
         </div>
 
@@ -7713,40 +9069,65 @@ function CashOutGoPlanReport({
             helperText={[
               "Shows bills already sent/submitted to PCDA where payment is still expected.",
               "Expected payment date is calculated from sent/submission date plus payment offset days unless manually overridden.",
+              CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.billsSubmitted}
+            open={expandedDetailSections.billsSubmitted}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({ ...current, billsSubmitted: open }))
+            }
             onRowChange={onRowChange}
             onExpectedSentDateReset={onExpectedSentDateReset}
             onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
+            editable={canEdit}
             saving={saving}
             saveDisabled={saveDisabled}
           />
           <CashOutGoDetailTable
             title="Bills at Hand"
-            helperText="Expected sent/resubmission is calculated from the base date plus Bill submission Offset Days. Edit the date for a row if a specific submission/resubmission date is expected."
+            helperText={[
+              "Expected sent/resubmission is calculated from the base date plus Bill submission Offset Days. Edit the date for a row if a specific submission/resubmission date is expected.",
+              CASH_OUT_GO_RED_ROW_HELPER,
+            ]}
             rows={plan.billsAtHand}
+            open={expandedDetailSections.billsAtHand}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({ ...current, billsAtHand: open }))
+            }
             onRowChange={onRowChange}
             onExpectedSentDateReset={onExpectedSentDateReset}
             onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
+            editable={canEdit}
             saving={saving}
             saveDisabled={saveDisabled}
           />
           <CashOutGoDetailTable
             title="Items Delivered and Bills Yet to Be Prepared"
-            helperText="Expected sent/resubmission is calculated as base date plus D.P. offset days. Base date is Material Receipt Date when delivery/inspection applies; otherwise it is Job Completion Date for non-contract IR No files, or Revised D.P./D.P. date plus one day for files like MPC, AMC etc. Rows turn red after the expected date passes and the bill is still not sent/submitted."
+            helperText={[
+              "Expected sent/resubmission is calculated as base date plus D.P. offset days. Base date is Material Receipt Date when delivery/inspection applies; otherwise it is Job Completion Date for non-contract IR No files, or Revised D.P./D.P. date plus one day for files like MPC, AMC etc.",
+              CASH_OUT_GO_RED_ROW_HELPER,
+            ]}
             rows={plan.deliveredBillsPending}
+            open={expandedDetailSections.deliveredBillsPending}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({
+                ...current,
+                deliveredBillsPending: open,
+              }))
+            }
             onRowChange={onRowChange}
             onExpectedSentDateReset={onExpectedSentDateReset}
             onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
+            editable={canEdit}
             saving={saving}
             saveDisabled={saveDisabled}
           />
@@ -7757,27 +9138,42 @@ function CashOutGoPlanReport({
               "Expected sent/resubmission is calculated from D.P. plus one day and D.P. offset days.",
               "D.P. dates after 31 March of the selected FY are excluded.",
               "If expected payment goes beyond 31 March of the selected FY, the row remains visible but counts as zero in the plan.",
+              CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.dpBasedForecast ?? []}
+            open={expandedDetailSections.dpBasedForecast}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({ ...current, dpBasedForecast: open }))
+            }
             onRowChange={onRowChange}
             onExpectedSentDateReset={onExpectedSentDateReset}
             onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
+            editable={canEdit}
             saving={saving}
             saveDisabled={saveDisabled}
             dpOnly
           />
           <CashOutGoDetailTable
             title="D.P. Expired"
+            helperText={[
+              "Shows D.P. expired cases included for expected payment planning.",
+              CASH_OUT_GO_RED_ROW_HELPER,
+            ]}
             rows={plan.dpExpired ?? []}
+            open={expandedDetailSections.dpExpired}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({ ...current, dpExpired: open }))
+            }
             onRowChange={onRowChange}
             onExpectedSentDateReset={onExpectedSentDateReset}
             onBillOffsetOverrideReset={onBillOffsetOverrideReset}
             onOpenFile={onOpenSourceFile}
             onOpenRowsSearch={onOpenRowsSearch}
             onSave={onSave}
+            editable={canEdit}
             saving={saving}
             saveDisabled={saveDisabled}
             expectedPaymentEditable
@@ -7797,6 +9193,1264 @@ function CashOutGoPlanReport({
       ) : null}
     </div>
   );
+}
+
+function PreSoExpectedCashOutgoReport({
+  activeTab,
+  onTabChange,
+  stageOptions,
+  selectedStageKeys,
+  onSelectedStageKeysChange,
+  stageOffsets,
+  onStageOffsetChange,
+  rows,
+  selectedRows,
+  totals,
+  monthwiseRows,
+  monthwiseGrouping,
+  onMonthwiseGroupingChange,
+  defaultOffset,
+  loading,
+  saving,
+  dirty,
+  canSave,
+  canSaveStageOffsets,
+  error,
+  onSave,
+  currentYearContext,
+  globalYearLabel,
+  onFileDraftChange,
+  onOpenFile,
+}: {
+  activeTab: PreSoCashOutgoTab;
+  onTabChange: (tab: PreSoCashOutgoTab) => void;
+  stageOptions: PreSoStageOption[];
+  selectedStageKeys: string[];
+  onSelectedStageKeysChange: (keys: string[]) => void;
+  stageOffsets: Record<string, PreSoStageOffset>;
+  onStageOffsetChange: (stageKey: string, field: keyof PreSoStageOffset, value: string) => void;
+  rows: PreSoFileRow[];
+  selectedRows: PreSoFileRow[];
+  totals: { capital: number; revenue: number; total: number };
+  monthwiseRows: Array<{ monthKey: string; capital: number; revenue: number; total: number; count: number }>;
+  monthwiseGrouping: PreSoMonthwiseGrouping;
+  onMonthwiseGroupingChange: (grouping: PreSoMonthwiseGrouping) => void;
+  defaultOffset: PreSoStageOffset;
+  loading: boolean;
+  saving: boolean;
+  dirty: boolean;
+  canSave: boolean;
+  canSaveStageOffsets: boolean;
+  error?: string;
+  onSave: () => void;
+  currentYearContext: boolean;
+  globalYearLabel: string;
+  onFileDraftChange: (
+    fileId: string,
+    patch: Partial<PreSoFileDraft>,
+    defaults?: Partial<PreSoFileDraft>,
+  ) => void;
+  onOpenFile: (row: PreSoFileRow) => void;
+}) {
+  const selectedStageSet = new Set(selectedStageKeys);
+  const selectedStageOptions = stageOptions.filter((stage) => selectedStageSet.has(stage.key));
+  const groupedRowsByYear = getPreSoRowsGroupedByYearAndStage(rows, selectedStageOptions);
+  const selectedStageTotals = selectedStageOptions
+    .map((stage) => {
+      const stageRows = selectedRows.filter((row) => row.stageKey === stage.key);
+      const total = getPreSoExpectedCashOutgoTotals(stageRows);
+      return {
+        stage,
+        count: stageRows.length,
+        ...total,
+      };
+    })
+    .filter((row) => row.count > 0);
+  const selectedYearTotals = getPreSoSelectedYearTotals(selectedRows);
+  const groupedMonthwiseRows = getPreSoGroupedMonthwiseRows(selectedRows, monthwiseGrouping);
+  const toggleStage = (stageKey: string, checked: boolean) => {
+    onSelectedStageKeysChange(
+      checked
+        ? stageOptions
+            .map((stage) => stage.key)
+            .filter((key) => key === stageKey || selectedStageSet.has(key))
+        : selectedStageKeys.filter((key) => key !== stageKey),
+    );
+  };
+  const setRowsIncluded = (targetRows: PreSoFileRow[], included: boolean) => {
+    targetRows.forEach((row) =>
+      onFileDraftChange(
+        row.file.id,
+        { included },
+        {
+          tentativeSoDate: row.calculatedSoDate,
+          tentativePaymentDate: row.calculatedPaymentDate,
+        },
+      ),
+    );
+  };
+  const tabClass = (tab: PreSoCashOutgoTab) =>
+    "rounded-md border px-3 py-2 text-xs font-semibold transition " +
+    (activeTab === tab
+      ? "border-primary bg-primary text-primary-foreground"
+      : "border-border bg-background hover:bg-accent");
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold">Pre-S.O. based expected cash outgo</h2>
+            <ReportDescription
+              description={
+                "Planning report for demands where S.O. is not yet placed.\n" +
+                "Only checked files contribute to the totals and monthwise cash outgo.\n" +
+                "Use Save plan to lock the checked files and tentative dates for future use."
+              }
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="rounded-md border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
+              Global filter: {globalYearLabel || "-"}
+            </div>
+            {canSave ? (
+              <span className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={onSave}
+                  disabled={saving || loading || !dirty}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  <Save className="size-3.5" />
+                  {saving ? "Saving..." : dirty ? "Save plan" : "Saved"}
+                </button>
+                <FloatingHelper
+                  text="Save plan stores selected Pre-S.O. files, tentative dates, and stage offset settings in the database according to the user's permitted scope."
+                  label="Pre-S.O. save plan help"
+                  className="size-8 border-0 bg-transparent shadow-none"
+                  iconClassName="size-3"
+                />
+              </span>
+            ) : null}
+          </div>
+        </div>
+        {error ? (
+          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+        {loading ? (
+          <div className="mb-4 rounded-md border border-border bg-secondary/20 px-3 py-2 text-sm text-muted-foreground">
+            Loading saved Pre-S.O. plan...
+          </div>
+        ) : null}
+        {!currentYearContext ? (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This report is meant for active/current FY contexts only. Change the Global FY filter to
+            current FY / All active files / Active + current FY closed to use it.
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={tabClass("stages")} onClick={() => onTabChange("stages")}>
+            Stages
+          </button>
+          <button
+            type="button"
+            className={tabClass("selectFiles")}
+            onClick={() => onTabChange("selectFiles")}
+          >
+            Select Files
+          </button>
+          <button type="button" className={tabClass("totals")} onClick={() => onTabChange("totals")}>
+            Total Capital / Revenue
+          </button>
+          <button
+            type="button"
+            className={tabClass("monthwise")}
+            onClick={() => onTabChange("monthwise")}
+          >
+            Monthwise Cash Outgo
+          </button>
+        </div>
+      </div>
+
+      {activeTab === "stages" ? (
+        <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+          <h3 className="mb-3 text-sm font-semibold">Stages</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Select one or more Status-4 stages. Stage-wise default offset days are used to calculate
+            tentative S.O. and payment dates unless manually entered against a file.
+          </p>
+          {!canSaveStageOffsets ? (
+            <div className="mb-4 rounded-md border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
+              Stage offset defaults are controlled globally by Admin/Sub-admin. You can still save
+              file selection and tentative dates where permitted.
+            </div>
+          ) : null}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {stageOptions.map((stage) => {
+              const selected = selectedStageSet.has(stage.key);
+              const offset = stageOffsets[stage.key] ?? {
+                soOffsetDays: defaultOffset.soOffsetDays,
+                paymentOffsetDays: defaultOffset.paymentOffsetDays,
+              };
+              return (
+                <div
+                  key={stage.key}
+                  className={
+                    "rounded-md border p-3 " +
+                    (selected ? "border-primary bg-primary/5" : "border-border bg-background")
+                  }
+                >
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(event) => toggleStage(stage.key, event.target.checked)}
+                    />
+                    {stage.label}
+                  </label>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label className="text-xs text-muted-foreground">
+                      S.O. offset days
+                      <input
+                        type="number"
+                        min="0"
+                        value={offset.soOffsetDays}
+                        disabled={!canSaveStageOffsets}
+                        onChange={(event) =>
+                          onStageOffsetChange(stage.key, "soOffsetDays", event.target.value)
+                        }
+                        className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="text-xs text-muted-foreground">
+                      Payment offset days
+                      <input
+                        type="number"
+                        min="0"
+                        value={offset.paymentOffsetDays}
+                        disabled={!canSaveStageOffsets}
+                        onChange={(event) =>
+                          onStageOffsetChange(stage.key, "paymentOffsetDays", event.target.value)
+                        }
+                        className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!canSaveStageOffsets}
+                    onClick={() => {
+                      onStageOffsetChange(stage.key, "soOffsetDays", defaultOffset.soOffsetDays);
+                      onStageOffsetChange(
+                        stage.key,
+                        "paymentOffsetDays",
+                        defaultOffset.paymentOffsetDays,
+                      );
+                    }}
+                    className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  >
+                    Reset offset days
+                  </button>
+                  <FloatingHelper
+                    text="Reset restores this stage to the current default S.O. and payment offset days. Changes are saved to the database only when Save plan is used."
+                    label="Pre-S.O. stage offset reset help"
+                    className="ml-2 inline-flex size-7 border-0 bg-transparent shadow-none"
+                    iconClassName="size-3"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "selectFiles" ? (
+        <div className="space-y-4">
+          {!selectedStageOptions.length ? (
+            <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground shadow-[var(--shadow-card)]">
+              Select stages first.
+            </div>
+          ) : (
+            groupedRowsByYear.map((yearGroup) => (
+              <details
+                key={yearGroup.fileYear}
+                open
+                className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]"
+              >
+                <summary className="cursor-pointer text-sm font-semibold">
+                  {yearGroup.fileYear} ({yearGroup.count} files,{" "}
+                  {formatPreSoSelectFilesCurrency(yearGroup.total.total)})
+                </summary>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRowsIncluded(yearGroup.rows, true)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                  >
+                    Select all in FY
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRowsIncluded(yearGroup.rows, false)}
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                  >
+                    Clear FY
+                  </button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {yearGroup.stageGroups.map((stageGroup) => (
+                    <details
+                      key={`${yearGroup.fileYear}:${stageGroup.stage.key}`}
+                      open
+                      className="rounded-lg border border-border bg-background p-4"
+                    >
+                      <summary className="cursor-pointer text-sm font-semibold">
+                        {stageGroup.stage.label} ({stageGroup.count} files,{" "}
+                        {formatPreSoSelectFilesCurrency(stageGroup.total.total)})
+                      </summary>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRowsIncluded(stageGroup.rows, true)}
+                          className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                        >
+                          Select all in stage
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRowsIncluded(stageGroup.rows, false)}
+                          className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                        >
+                          Clear stage
+                        </button>
+                      </div>
+                      <div className="mt-4 overflow-x-auto rounded-md border border-border">
+                        <table className="w-full min-w-[1080px] text-sm">
+                          <thead className="bg-secondary text-xs text-muted-foreground">
+                            <tr>
+                              <th className="px-3 py-2 text-left font-medium">S. No.</th>
+                              <th className="px-3 py-2 text-left font-medium">Use</th>
+                              <th className="px-3 py-2 text-left font-medium">File</th>
+                              <th className="px-3 py-2 text-left font-medium">Demand description</th>
+                              <th className="px-3 py-2 text-left font-medium">Division</th>
+                              <th className="px-3 py-2 text-left font-medium">Mode</th>
+                              <th className="px-3 py-2 text-right font-medium">Capital</th>
+                              <th className="px-3 py-2 text-right font-medium">Revenue</th>
+                              <th className="px-3 py-2 text-left font-medium">
+                                Latest milestone date
+                              </th>
+                              <th className="px-3 py-2 text-left font-medium">
+                                <span className="inline-flex items-center gap-1.5">
+                                  Tentative S.O.
+                                  <InfoCircleHelper
+                                    label="Tentative S.O. help"
+                                    text={[
+                                      "Auto date = today plus S.O. offset days for the file's current Pre-S.O. stage.",
+                                      "Example: if today is 12-09-2026 and S.O. offset is 30 days, tentative S.O. date becomes 12-10-2026.",
+                                      "Latest milestone date is shown for reference only; it is not currently used as the calculation base.",
+                                      "If you manually enter a date, that date is used for this file and is saved when Save plan is clicked.",
+                                    ]}
+                                  />
+                                </span>
+                              </th>
+                              <th className="px-3 py-2 text-left font-medium">
+                                <span className="inline-flex items-center gap-1.5">
+                                  Tentative payment
+                                  <InfoCircleHelper
+                                    label="Tentative payment help"
+                                    text={[
+                                      "Auto date = tentative S.O. date plus payment offset days for the file's current Pre-S.O. stage.",
+                                      "If Tentative S.O. is manually changed, tentative payment follows that changed S.O. date unless payment date is also manually edited.",
+                                      "If you manually enter a payment date, that date is used for this file and is saved when Save plan is clicked.",
+                                    ]}
+                                  />
+                                </span>
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stageGroup.rows.map((row, rowIndex) => (
+                                <tr key={row.file.id} className="border-t border-border">
+                                  <td className="px-3 py-2 tabular-nums">{rowIndex + 1}</td>
+                                  <td className="px-3 py-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={row.draft.included}
+                                      onChange={(event) =>
+                                        onFileDraftChange(
+                                          row.file.id,
+                                          { included: event.target.checked },
+                                          {
+                                            tentativeSoDate: row.calculatedSoDate,
+                                            tentativePaymentDate: row.calculatedPaymentDate,
+                                          },
+                                        )
+                                      }
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2 font-medium">
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenFile(row)}
+                                      className="text-left font-semibold text-primary underline-offset-2 hover:underline"
+                                    >
+                                      {getPreSoFileRef(row.file)}
+                                    </button>
+                                  </td>
+                                  <td className="px-3 py-2">{row.file.demandDescription || "-"}</td>
+                                  <td className="px-3 py-2">{row.file.division || "-"}</td>
+                                  <td className="px-3 py-2">{row.file.mode || "-"}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">
+                                    {formatPreSoSelectFilesCurrency(row.capital)}
+                                  </td>
+                                  <td className="px-3 py-2 text-right tabular-nums">
+                                    {formatPreSoSelectFilesCurrency(row.revenue)}
+                                  </td>
+                                  <td className="px-3 py-2 tabular-nums">
+                                    {formatPreSoLatestMilestoneDate(row.file)}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <input
+                                      type="date"
+                                      value={row.draft.tentativeSoDate || row.calculatedSoDate}
+                                      disabled={!row.draft.included}
+                                      onChange={(event) =>
+                                        onFileDraftChange(row.file.id, {
+                                          tentativeSoDate: event.target.value,
+                                        })
+                                      }
+                                      className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                                    />
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <input
+                                      type="date"
+                                      value={row.draft.tentativePaymentDate || row.calculatedPaymentDate}
+                                      disabled={!row.draft.included}
+                                      onChange={(event) =>
+                                        onFileDraftChange(row.file.id, {
+                                          tentativePaymentDate: event.target.value,
+                                        })
+                                      }
+                                      className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                                    />
+                                  </td>
+                                </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              </details>
+            ))
+          )}
+        </div>
+      ) : null}
+
+      {activeTab === "totals" ? (
+        <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+          <h3 className="mb-4 text-sm font-semibold">Selected file totals</h3>
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
+              <div className="text-xs text-muted-foreground">Selected files</div>
+              <div className="text-sm font-semibold tabular-nums">{selectedRows.length}</div>
+            </div>
+            <SummaryTile label="Capital" value={totals.capital} />
+            <SummaryTile label="Revenue" value={totals.revenue} />
+            <SummaryTile label="Total" value={totals.total} />
+          </div>
+          <h4 className="mb-3 mt-6 text-sm font-semibold">Stage-wise selected totals</h4>
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[620px] text-sm">
+              <thead className="bg-secondary text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Stage</th>
+                  <th className="px-3 py-2 text-right font-medium">Files</th>
+                  <th className="px-3 py-2 text-right font-medium">Capital</th>
+                  <th className="px-3 py-2 text-right font-medium">Revenue</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedStageTotals.length ? (
+                  selectedStageTotals.map((row) => (
+                    <tr key={row.stage.key} className="border-t border-border">
+                      <td className="px-3 py-2">{row.stage.label}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{row.count}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.capital)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.revenue)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.total)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                      No files selected yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <h4 className="mb-3 mt-6 text-sm font-semibold">FY-wise selected totals</h4>
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[620px] text-sm">
+              <thead className="bg-secondary text-xs text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">FY</th>
+                  <th className="px-3 py-2 text-right font-medium">Files</th>
+                  <th className="px-3 py-2 text-right font-medium">Capital</th>
+                  <th className="px-3 py-2 text-right font-medium">Revenue</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedYearTotals.length ? (
+                  selectedYearTotals.map((row) => (
+                    <tr key={row.fileYear} className="border-t border-border">
+                      <td className="px-3 py-2">{row.fileYear}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{row.count}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.capital)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.revenue)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.total)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                      No files selected yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "monthwise" ? (
+        <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">Monthwise cash outgo</h3>
+            <label className="text-xs font-medium text-muted-foreground">
+              Group by
+              <select
+                value={monthwiseGrouping}
+                onChange={(event) =>
+                  onMonthwiseGroupingChange(event.target.value as PreSoMonthwiseGrouping)
+                }
+                className="ml-2 h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+              >
+                <option value="month">Month only</option>
+                <option value="fyMonth">FY → Month</option>
+                <option value="stageMonth">Stage → Month</option>
+              </select>
+            </label>
+          </div>
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[620px] text-sm">
+              <thead className="bg-secondary text-xs text-muted-foreground">
+                <tr>
+                  {monthwiseGrouping === "month" ? null : (
+                    <th className="px-3 py-2 text-left font-medium">
+                      {monthwiseGrouping === "fyMonth" ? "FY" : "Stage"}
+                    </th>
+                  )}
+                  <th className="px-3 py-2 text-left font-medium">Month</th>
+                  <th className="px-3 py-2 text-right font-medium">Files</th>
+                  <th className="px-3 py-2 text-right font-medium">Capital</th>
+                  <th className="px-3 py-2 text-right font-medium">Revenue</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(monthwiseGrouping === "month" ? monthwiseRows : groupedMonthwiseRows).length ? (
+                  (monthwiseGrouping === "month" ? monthwiseRows : groupedMonthwiseRows).map((row) => (
+                    <tr
+                      key={
+                        "groupLabel" in row
+                          ? `${row.groupKey}:${row.monthKey}`
+                          : row.monthKey
+                      }
+                      className="border-t border-border"
+                    >
+                      {"groupLabel" in row ? (
+                        <td className="px-3 py-2">{row.groupLabel}</td>
+                      ) : null}
+                      <td className="px-3 py-2">{formatMonthKeyLabel(row.monthKey)}</td>
+                      <td className="px-3 py-2 text-right">{row.count}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.capital)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.revenue)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {formatCurrency(row.total)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td
+                      colSpan={monthwiseGrouping === "month" ? 5 : 6}
+                      className="px-3 py-6 text-center text-muted-foreground"
+                    >
+                      No selected files with tentative payment dates.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SoPaymentMatrixReport({
+  title,
+  titleHelper,
+  description,
+  monthAmountHelper,
+  rows,
+  selectedFields,
+  fieldOptions,
+  columns,
+  monthKeys,
+  actions,
+  onFieldChange,
+  onResetFields,
+  onOpenRows,
+}: {
+  title: string;
+  titleHelper?: HelperText;
+  description: string;
+  monthAmountHelper: HelperText;
+  rows: SoPaymentMatrixRow[];
+  selectedFields: SoPaymentMatrixFieldKey[];
+  fieldOptions: SoPaymentMatrixColumnOption[];
+  columns: SoPaymentMatrixColumnOption[];
+  monthKeys: string[];
+  actions?: ReactNode;
+  onFieldChange: (fieldKey: SoPaymentMatrixFieldKey, checked: boolean) => void;
+  onResetFields: () => void;
+  onOpenRows: (rows: SoPaymentMatrixRow[], monthKey?: string) => void;
+}) {
+  const [fieldsDropdownOpen, setFieldsDropdownOpen] = useState(false);
+  const monthTotals = monthKeys.map((monthKey) => ({
+    monthKey,
+    amount: rows.reduce((sum, row) => sum + (row.monthAmounts[monthKey] ?? 0), 0),
+  }));
+  const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
+  const selectedFieldLabels = fieldOptions
+    .filter((option) => selectedFields.includes(option.key))
+    .map((option) => option.label);
+  return (
+    <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-bold">{title}</h2>
+            {titleHelper ? <FloatingHelper text={titleHelper} /> : null}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {description}
+          </p>
+        </div>
+        {actions}
+      </div>
+
+      <div className="mb-4 rounded-lg border border-border bg-secondary/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Select file fields
+            <FloatingHelper
+              text={[
+                "Select one or more file/S.O. fields to show on the left side of the matrix.",
+                "Apr-Mar month columns are fixed and always show expected pending payment amount.",
+                "Changing these fields does not change report filtering or payment calculation.",
+              ]}
+              label="S.O. payment matrix field selector help"
+              className="size-5"
+            />
+          </div>
+          <div className="flex min-w-[280px] flex-1 flex-wrap items-center justify-end gap-2">
+            <div className="relative min-w-[260px] max-w-xl flex-1">
+              <button
+                type="button"
+                onClick={() => setFieldsDropdownOpen((open) => !open)}
+                className="flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-left text-sm text-foreground shadow-sm hover:bg-accent/40"
+                aria-expanded={fieldsDropdownOpen}
+              >
+                <span className="min-w-0 truncate">
+                  {selectedFieldLabels.length
+                    ? `${selectedFieldLabels.length} fields selected`
+                    : "Select file fields"}
+                </span>
+                <ChevronDown
+                  className={
+                    "size-4 shrink-0 text-muted-foreground transition-transform " +
+                    (fieldsDropdownOpen ? "rotate-180" : "")
+                  }
+                  aria-hidden="true"
+                />
+              </button>
+              {fieldsDropdownOpen ? (
+                <div className="absolute right-0 z-50 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-border bg-popover p-2 text-sm text-popover-foreground shadow-lg">
+                  <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Select file fields
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onResetFields}
+                      className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    {fieldOptions.map((option) => (
+                      <label
+                        key={option.key}
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-accent"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedFields.includes(option.key)}
+                          onChange={(event) => onFieldChange(option.key, event.target.checked)}
+                          className="size-4"
+                        />
+                        <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                        <FloatingHelper
+                          text={option.helper}
+                          label={`${option.label} help`}
+                          className="size-5 shrink-0"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={onResetFields}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              Reset fields
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full min-w-[1180px] border-collapse text-sm">
+          <thead className="bg-secondary text-xs text-muted-foreground">
+            <tr>
+              {columns.map((column) => (
+                <th key={column.key} className="px-3 py-2 text-left font-medium">
+                  {column.label}
+                </th>
+              ))}
+              {monthKeys.map((monthKey) => (
+                <th key={monthKey} className="px-3 py-2 text-right font-medium">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {formatSoPaymentMatrixMonthLabel(monthKey)}
+                    <FloatingHelper
+                      text={monthAmountHelper}
+                      label={`${formatSoPaymentMatrixMonthLabel(monthKey)} column help`}
+                      className="size-5"
+                    />
+                  </span>
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right font-medium">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? (
+              rows.map((row) => (
+                <tr key={row.rowKey} className="border-t border-border">
+                  {columns.map((column) => (
+                    <td key={column.key} className="px-3 py-2 align-top">
+                      {getSoPaymentMatrixFieldValue(row, column.key)}
+                    </td>
+                  ))}
+                  {monthKeys.map((monthKey) => {
+                    const amount = row.monthAmounts[monthKey] ?? 0;
+                    return (
+                      <td key={monthKey} className="px-3 py-2 text-right tabular-nums">
+                        {amount ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenRows([row], monthKey)}
+                            className="font-semibold text-primary underline-offset-2 hover:underline"
+                          >
+                            {formatCurrency(amount)}
+                          </button>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                    <button
+                      type="button"
+                      onClick={() => onOpenRows([row])}
+                      className="text-primary underline-offset-2 hover:underline"
+                    >
+                      {formatCurrency(row.total)}
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td
+                  colSpan={columns.length + monthKeys.length + 1}
+                  className="px-3 py-8 text-center text-muted-foreground"
+                >
+                  No S.O. payment rows found for the current filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+          {rows.length ? (
+            <tfoot className="border-t border-border bg-muted/30 font-semibold">
+              <tr>
+                <td colSpan={columns.length} className="px-3 py-2">
+                  Total
+                </td>
+                {monthTotals.map((total) => (
+                  <td key={total.monthKey} className="px-3 py-2 text-right tabular-nums">
+                    {total.amount ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenRows(
+                            rows.filter((row) => (row.monthAmounts[total.monthKey] ?? 0) > 0),
+                            total.monthKey,
+                          )
+                        }
+                        className="text-primary underline-offset-2 hover:underline"
+                      >
+                        {formatCurrency(total.amount)}
+                      </button>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                ))}
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {formatCurrency(grandTotal)}
+                </td>
+              </tr>
+            </tfoot>
+          ) : null}
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function getPreSoStageOptions(): PreSoStageOption[] {
+  const supplyOrderIndex = milestoneDefinitions.findIndex((milestone) => milestone.key === "supplyOrder");
+  const preSoMilestones =
+    supplyOrderIndex >= 0 ? milestoneDefinitions.slice(0, supplyOrderIndex) : milestoneDefinitions;
+  const requiredBgMilestones = milestoneDefinitions.filter(
+    (milestone) => milestone.key === "psb" || milestone.key === "psbPwb",
+  );
+  return [
+    { key: "workflowNotStarted", label: "Workflow Not Started" },
+    ...preSoMilestones.map((milestone) => ({ key: milestone.key, label: milestone.label })),
+    { key: "financialSanction", label: "Financial Sanction" },
+    ...requiredBgMilestones.map((milestone) => ({ key: milestone.key, label: milestone.label })),
+  ];
+}
+
+function getPreSoDefaultStageOffset(settings: {
+  preSoDefaultSoOffsetDays?: number;
+  preSoDefaultPaymentOffsetDays?: number;
+}): PreSoStageOffset {
+  return {
+    soOffsetDays: String(
+      Number.isFinite(settings.preSoDefaultSoOffsetDays)
+        ? settings.preSoDefaultSoOffsetDays
+        : 30,
+    ),
+    paymentOffsetDays: String(
+      Number.isFinite(settings.preSoDefaultPaymentOffsetDays)
+        ? settings.preSoDefaultPaymentOffsetDays
+        : 30,
+    ),
+  };
+}
+
+function getPreSoPlanSnapshot(
+  selectedStageKeys: string[],
+  stageOffsets: Record<string, PreSoStageOffset>,
+  fileDrafts: Record<string, PreSoFileDraft>,
+  defaultOffset: PreSoStageOffset,
+) {
+  return JSON.stringify({
+    selectedStageKeys: [...selectedStageKeys].sort(),
+    stageOffsets: Object.fromEntries(
+      [...selectedStageKeys].sort().map((stageKey) => {
+        const offset = stageOffsets[stageKey] ?? defaultOffset;
+        return [
+          stageKey,
+          {
+            soOffsetDays: readPreSoOffsetDays(offset.soOffsetDays),
+            paymentOffsetDays: readPreSoOffsetDays(offset.paymentOffsetDays),
+          },
+        ];
+      }),
+    ),
+    fileDrafts: Object.fromEntries(
+      Object.entries(fileDrafts)
+        .filter(
+          ([, draft]) =>
+            draft.included || Boolean(draft.tentativeSoDate) || Boolean(draft.tentativePaymentDate),
+        )
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([fileId, draft]) => [
+          fileId,
+          {
+            included: Boolean(draft.included),
+            tentativeSoDate: draft.tentativeSoDate || "",
+            tentativePaymentDate: draft.tentativePaymentDate || "",
+          },
+        ]),
+    ),
+  });
+}
+
+function isPreSoExpectedCashOutgoEligibleFile(file: FileRecord) {
+  if (isCancelledFile(file) || isFileClosed(file)) return false;
+  return !(file.supplyOrders ?? []).some(
+    (order) => !isYes(order.soCancelled) && (hasFilledString(order.soDate) || hasFilledString(order.soNo)),
+  );
+}
+
+function getPreSoFileStage(file: FileRecord): PreSoStageOption {
+  const orderStage = getPreSoOrderDrivenStage(file);
+  if (orderStage) return orderStage;
+  if (normalizeMilestoneName(file.currentMilestone) === "financialsanction") {
+    return { key: "financialSanction", label: "Financial Sanction" };
+  }
+  const milestone = getActiveDelayMilestone(file);
+  if (milestone) return { key: milestone.key, label: milestone.label };
+  return { key: "workflowNotStarted", label: "Workflow Not Started" };
+}
+
+function getPreSoOrderDrivenStage(file: FileRecord): PreSoStageOption | undefined {
+  const financialSanctionActive = expectedSupplyOrders(file).some(
+    (order) =>
+      !isYes(order.soCancelled) &&
+      !isYes(order.shortclosure) &&
+      !hasFilledString(order.financialSanctionDate) &&
+      !hasFilledString(order.soDate) &&
+      !hasFilledString(order.soNo) &&
+      normalizeMilestoneName(order.currentMilestone) === "financialsanction",
+  );
+  return financialSanctionActive ? { key: "financialSanction", label: "Financial Sanction" } : undefined;
+}
+
+function getPreSoFileYear(file: FileRecord) {
+  if (hasFilledString(file.year)) return file.year!;
+  const startYear = getFinancialYearStartFromDate(file.date);
+  return startYear === undefined ? "FY not set" : `${startYear}-${String(startYear + 1).slice(-2)}`;
+}
+
+function getFinancialYearStartFromDate(date: string | undefined) {
+  const time = parseLocalDateTime(date ?? "");
+  if (time === undefined) return undefined;
+  const parsed = new Date(time);
+  const year = parsed.getFullYear();
+  return parsed.getMonth() >= 3 ? year : year - 1;
+}
+
+function sortPreSoFileYearLabels(a: string, b: string) {
+  const aStart = readFinancialYearStart(a);
+  const bStart = readFinancialYearStart(b);
+  if (aStart !== undefined && bStart !== undefined) return bStart - aStart;
+  if (aStart !== undefined) return -1;
+  if (bStart !== undefined) return 1;
+  return a.localeCompare(b);
+}
+
+function getPreSoRowsGroupedByYearAndStage(
+  rows: PreSoFileRow[],
+  selectedStageOptions: PreSoStageOption[],
+) {
+  const stageOrder = new Map(selectedStageOptions.map((stage, index) => [stage.key, index]));
+  const yearMap = new Map<string, PreSoFileRow[]>();
+  rows.forEach((row) => {
+    const yearRows = yearMap.get(row.fileYear) ?? [];
+    yearRows.push(row);
+    yearMap.set(row.fileYear, yearRows);
+  });
+  return Array.from(yearMap.entries())
+    .sort(([a], [b]) => sortPreSoFileYearLabels(a, b))
+    .map(([fileYear, yearRows]) => {
+      const stageMap = new Map<string, PreSoFileRow[]>();
+      yearRows.forEach((row) => {
+        const stageRows = stageMap.get(row.stageKey) ?? [];
+        stageRows.push(row);
+        stageMap.set(row.stageKey, stageRows);
+      });
+      const stageGroups = Array.from(stageMap.entries())
+        .map(([stageKey, stageRows]) => ({
+          stage: {
+            key: stageKey,
+            label: stageRows[0]?.stageLabel ?? stageKey,
+          },
+          rows: stageRows,
+          count: stageRows.length,
+          total: getPreSoExpectedCashOutgoTotals(stageRows),
+        }))
+        .sort(
+          (a, b) =>
+            (stageOrder.get(a.stage.key) ?? Number.MAX_SAFE_INTEGER) -
+            (stageOrder.get(b.stage.key) ?? Number.MAX_SAFE_INTEGER),
+        );
+      return {
+        fileYear,
+        rows: yearRows,
+        stageGroups,
+        count: yearRows.length,
+        total: getPreSoExpectedCashOutgoTotals(yearRows),
+      };
+    });
+}
+
+function buildPreSoExpectedCashOutgoRows({
+  files,
+  selectedStageKeys,
+  stageOffsets,
+  fileDrafts,
+  today,
+  defaultOffset,
+}: {
+  files: FileRecord[];
+  selectedStageKeys: string[];
+  stageOffsets: Record<string, PreSoStageOffset>;
+  fileDrafts: Record<string, PreSoFileDraft>;
+  today: string;
+  defaultOffset: PreSoStageOffset;
+}): PreSoFileRow[] {
+  const selectedStages = new Set(selectedStageKeys);
+  if (!selectedStages.size) return [];
+  return files
+    .map((file) => {
+      const stage = getPreSoFileStage(file);
+      if (!selectedStages.has(stage.key)) return undefined;
+      const offset = stageOffsets[stage.key] ?? defaultOffset;
+      const soOffsetDays = readPreSoOffsetDays(offset.soOffsetDays);
+      const paymentOffsetDays = readPreSoOffsetDays(offset.paymentOffsetDays);
+      const calculatedSoDate = addDays(today, soOffsetDays) ?? today;
+      const calculatedPaymentDate = addDays(calculatedSoDate, paymentOffsetDays) ?? calculatedSoDate;
+      const draft = fileDrafts[file.id] ?? {
+        included: false,
+        tentativeSoDate: "",
+        tentativePaymentDate: "",
+      };
+      const effectivePaymentDate = draft.tentativePaymentDate || calculatedPaymentDate;
+      return {
+        file,
+        fileYear: getPreSoFileYear(file),
+        stageKey: stage.key,
+        stageLabel: stage.label,
+        capital: getInrAmount(file.valueCapital, file) ?? 0,
+        revenue: getInrAmount(file.valueRevenue, file) ?? 0,
+        draft,
+        calculatedSoDate,
+        calculatedPaymentDate,
+        effectivePaymentDate,
+      };
+    })
+    .filter((row): row is PreSoFileRow => Boolean(row))
+    .sort((a, b) => a.stageLabel.localeCompare(b.stageLabel) || getPreSoFileRef(a.file).localeCompare(getPreSoFileRef(b.file)));
+}
+
+function readPreSoOffsetDays(value: string) {
+  const parsed = Number.parseInt(value || "0", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
+function getPreSoExpectedCashOutgoTotals(rows: PreSoFileRow[]) {
+  return rows.reduce(
+    (total, row) => ({
+      capital: total.capital + row.capital,
+      revenue: total.revenue + row.revenue,
+      total: total.total + row.capital + row.revenue,
+    }),
+    { capital: 0, revenue: 0, total: 0 },
+  );
+}
+
+function getPreSoSelectedYearTotals(rows: PreSoFileRow[]) {
+  const yearMap = new Map<
+    string,
+    { fileYear: string; count: number; capital: number; revenue: number; total: number }
+  >();
+  rows.forEach((row) => {
+    const current = yearMap.get(row.fileYear) ?? {
+      fileYear: row.fileYear,
+      count: 0,
+      capital: 0,
+      revenue: 0,
+      total: 0,
+    };
+    current.count += 1;
+    current.capital += row.capital;
+    current.revenue += row.revenue;
+    current.total += row.capital + row.revenue;
+    yearMap.set(row.fileYear, current);
+  });
+  return Array.from(yearMap.values()).sort((a, b) => sortPreSoFileYearLabels(a.fileYear, b.fileYear));
+}
+
+function getPreSoExpectedCashOutgoMonthwiseRows(rows: PreSoFileRow[]) {
+  const monthMap = new Map<string, { monthKey: string; capital: number; revenue: number; total: number; count: number }>();
+  rows.forEach((row) => {
+    const monthKey = row.effectivePaymentDate.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return;
+    const current = monthMap.get(monthKey) ?? {
+      monthKey,
+      capital: 0,
+      revenue: 0,
+      total: 0,
+      count: 0,
+    };
+    current.capital += row.capital;
+    current.revenue += row.revenue;
+    current.total += row.capital + row.revenue;
+    current.count += 1;
+    monthMap.set(monthKey, current);
+  });
+  return Array.from(monthMap.values()).sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+}
+
+function getPreSoGroupedMonthwiseRows(rows: PreSoFileRow[], grouping: PreSoMonthwiseGrouping) {
+  if (grouping === "month") return [];
+  const grouped = new Map<
+    string,
+    {
+      groupKey: string;
+      groupLabel: string;
+      monthKey: string;
+      capital: number;
+      revenue: number;
+      total: number;
+      count: number;
+    }
+  >();
+  rows.forEach((row) => {
+    const monthKey = row.effectivePaymentDate.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) return;
+    const groupKey = grouping === "fyMonth" ? row.fileYear : row.stageKey;
+    const groupLabel = grouping === "fyMonth" ? row.fileYear : row.stageLabel;
+    const key = `${groupKey}:${monthKey}`;
+    const current = grouped.get(key) ?? {
+      groupKey,
+      groupLabel,
+      monthKey,
+      capital: 0,
+      revenue: 0,
+      total: 0,
+      count: 0,
+    };
+    current.capital += row.capital;
+    current.revenue += row.revenue;
+    current.total += row.capital + row.revenue;
+    current.count += 1;
+    grouped.set(key, current);
+  });
+  return Array.from(grouped.values()).sort((a, b) => {
+    if (grouping === "fyMonth") {
+      const yearSort = sortPreSoFileYearLabels(a.groupLabel, b.groupLabel);
+      if (yearSort !== 0) return yearSort;
+    } else {
+      const stageSort = a.groupLabel.localeCompare(b.groupLabel);
+      if (stageSort !== 0) return stageSort;
+    }
+    return a.monthKey.localeCompare(b.monthKey);
+  });
+}
+
+function formatMonthKeyLabel(monthKey: string) {
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return monthKey;
+  const [, year, monthText] = match;
+  const monthIndex = Number(monthText) - 1;
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  return monthNames[monthIndex] ? `${monthNames[monthIndex]}-${year}` : monthKey;
+}
+
+function getPreSoFileRef(file: FileRecord) {
+  return file.uniqueCode || file.imms || file.fileNo || file.title || file.id;
+}
+
+function formatPreSoSelectFilesCurrency(value: number) {
+  return `${formatThousandsAndLakhs(value / 100_000, 2)} L`;
+}
+
+function formatPreSoLatestMilestoneDate(file: FileRecord) {
+  const latestDate = getPreSoLatestMilestoneDate(file);
+  return latestDate ? formatIsoDateForDisplay(latestDate) : "-";
+}
+
+function getPreSoLatestMilestoneDate(file: FileRecord) {
+  const dates: string[] = [];
+  const addDate = (value: unknown) => {
+    if (typeof value === "string" && hasDate(value)) dates.push(value);
+  };
+
+  milestoneDefinitions.forEach((milestone) => {
+    if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return;
+    if ("reviewed" in milestone) addDate(file[milestone.reviewed as keyof FileRecord]);
+    if ("current" in milestone) addDate(file[milestone.current as keyof FileRecord]);
+  });
+
+  expectedSupplyOrders(file).forEach((order) => {
+    addDate(order.financialSanctionDate);
+    addDate(order.advancePaymentDetail?.paymentDate);
+  });
+
+  return dates.sort((a, b) => b.localeCompare(a))[0];
 }
 
 function SummaryTile({ label, value, note }: { label: string; value: number; note?: string }) {
@@ -8048,10 +10702,12 @@ function exportCashOutGoPlan(
   plan: CashOutGoPlanPayload,
   format: "excel" | "pdf",
   description?: string,
+  expandedSections: CashOutGoPlanExpandedSections = defaultCashOutGoPlanExpandedSections,
 ) {
   const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(plan.settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(plan.settings);
+  const expandedDetailTables = getCashOutGoPlanExpandedDetailExportTables(plan, expandedSections);
   void downloadBackendExport({
     format,
     title: "Cash Out Go Plan",
@@ -8088,6 +10744,7 @@ function exportCashOutGoPlan(
           cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
         ),
       },
+      ...expandedDetailTables,
       {
         title: "Monthwise Revised Cash Out Go Plan",
         headers: cashOutgoColumns.map((column) => column.label),
@@ -8111,6 +10768,72 @@ function exportCashOutGoPlan(
       },
     ],
   });
+}
+
+const cashOutGoPlanDetailExportColumns = [
+  "File",
+  "Description",
+  "Firm",
+  "Source",
+  "Base date",
+  "Expected sent/resubmission",
+  "Payment Offset",
+  "Expected payment",
+  "Capital",
+  "Revenue",
+  "Total",
+];
+
+function getCashOutGoPlanExpandedDetailExportTables(
+  plan: CashOutGoPlanPayload,
+  expandedSections: CashOutGoPlanExpandedSections,
+): ExportTable[] {
+  const sections: Array<{
+    key: CashOutGoPlanDetailSectionKey;
+    title: string;
+    rows: CashOutGoPlanDetailRow[];
+  }> = [
+    { key: "billsSubmitted", title: "Bills Submitted to PCDA", rows: plan.billsSubmitted },
+    { key: "billsAtHand", title: "Bills at Hand", rows: plan.billsAtHand },
+    {
+      key: "deliveredBillsPending",
+      title: "Items Delivered and Bills Yet to Be Prepared",
+      rows: plan.deliveredBillsPending,
+    },
+    { key: "dpBasedForecast", title: "Items Based on D.P.", rows: plan.dpBasedForecast ?? [] },
+    { key: "dpExpired", title: "D.P. Expired", rows: plan.dpExpired ?? [] },
+  ];
+
+  return sections
+    .filter((section) => expandedSections[section.key])
+    .map((section) => ({
+      title: section.title,
+      headers: cashOutGoPlanDetailExportColumns,
+      rows: section.rows.map(getCashOutGoPlanDetailExportRow),
+    }));
+}
+
+function getCashOutGoPlanDetailExportRow(row: CashOutGoPlanDetailRow) {
+  const sentOrExpectedDate = row.actualSentDate
+    ? `Actual sent: ${row.actualSentDate}`
+    : row.expectedSentDate || "";
+  const paymentOffset = row.billOffsetOverride
+    ? `${row.billOffsetOverride} days (override)`
+    : `${row.billOffsetDays} days`;
+
+  return [
+    row.fileRef,
+    row.description,
+    row.firm,
+    row.amountSource,
+    row.baseDate,
+    sentOrExpectedDate,
+    paymentOffset,
+    row.expectedPaymentDate,
+    formatCurrency(row.capital),
+    formatCurrency(row.revenue),
+    formatCurrency(row.total),
+  ];
 }
 
 function CashOutGoMonthTable({
@@ -8171,14 +10894,19 @@ function CashOutGoDetailTable({
   onOpenFile,
   onOpenRowsSearch,
   onSave,
+  editable = true,
   saving = false,
   saveDisabled = false,
   expectedPaymentEditable = false,
   dpOnly = false,
+  open,
+  onOpenChange,
 }: {
   title: string;
-  helperText?: string;
+  helperText?: HelperText;
   rows: CashOutGoPlanDetailRow[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onRowChange: (
     rowKey: string,
     field: "expectedSentDate" | "billOffsetOverride" | "manualExpectedPaymentDate",
@@ -8189,6 +10917,7 @@ function CashOutGoDetailTable({
   onOpenFile?: (row: CashOutGoPlanDetailRow) => void;
   onOpenRowsSearch?: (rows: CashOutGoPlanDetailRow[]) => void;
   onSave?: () => void;
+  editable?: boolean;
   saving?: boolean;
   saveDisabled?: boolean;
   expectedPaymentEditable?: boolean;
@@ -8197,7 +10926,11 @@ function CashOutGoDetailTable({
   const totals = getCashOutGoSectionTotals(rows);
   const columnCount = 11;
   return (
-    <details className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
+    <details
+      open={open}
+      onToggle={(event) => onOpenChange(event.currentTarget.open)}
+      className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]"
+    >
       <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3">
         <span className="flex min-w-0 items-center gap-2">
           {onOpenRowsSearch && rows.length ? (
@@ -8243,7 +10976,7 @@ function CashOutGoDetailTable({
                       "Changing this date also changes Expected payment because payment is calculated after bill sent/resubmission.",
                     ]}
                     className="size-5 border-0 bg-transparent shadow-none"
-                    iconClassName="size-3.5"
+                    iconClassName="size-3"
                   />
                 </span>
               </th>
@@ -8260,7 +10993,7 @@ function CashOutGoDetailTable({
                       "It changes Expected payment only; it should not change Expected sent/resubmission.",
                     ]}
                     className="size-5 border-0 bg-transparent shadow-none"
-                    iconClassName="size-3.5"
+                    iconClassName="size-3"
                   />
                 </span>
               </th>
@@ -8274,7 +11007,7 @@ function CashOutGoDetailTable({
                       "If a manual Expected payment date is entered, that row field is highlighted red.",
                     ]}
                     className="size-5 border-0 bg-transparent shadow-none"
-                    iconClassName="size-3.5"
+                    iconClassName="size-3"
                   />
                 </span>
               </th>
@@ -8328,9 +11061,9 @@ function CashOutGoDetailTable({
                             Boolean(row.expectedSentDateOverride),
                             "h-8 rounded-md border border-input bg-background px-2 text-sm",
                           )}
-                          disabled={dpOnly}
+                          disabled={dpOnly || !editable}
                         />
-                        {!dpOnly && onSave ? (
+                        {!dpOnly && onSave && editable ? (
                           <span className="flex items-center gap-1">
                             <button
                               type="button"
@@ -8340,6 +11073,12 @@ function CashOutGoDetailTable({
                             >
                               {saving ? "Saving..." : "Save"}
                             </button>
+                            <FloatingHelper
+                              text="Save stores this row override in the database. The saved scope depends on access: official/global for permitted roles, or personal-only for Universal Viewer type 2."
+                              label="Save row override help"
+                              className="size-7 border-0 bg-transparent shadow-none"
+                              iconClassName="size-3"
+                            />
                             <button
                               type="button"
                               onClick={() => onExpectedSentDateReset?.(row.rowKey)}
@@ -8350,6 +11089,12 @@ function CashOutGoDetailTable({
                             >
                               <RotateCcw className="size-3.5" />
                             </button>
+                            <FloatingHelper
+                              text="Reset clears the database-saved manual expected sent/resubmission override and returns to the software-calculated date."
+                              label="Reset expected sent override help"
+                              className="size-7 border-0 bg-transparent shadow-none"
+                              iconClassName="size-3"
+                            />
                           </span>
                         ) : null}
                       </div>
@@ -8372,6 +11117,7 @@ function CashOutGoDetailTable({
                             Boolean(row.billOffsetOverride),
                             "h-8 w-24 rounded-md border border-input bg-background px-2 text-sm",
                           )}
+                          disabled={!editable}
                         />
                         <span
                           className={
@@ -8383,7 +11129,7 @@ function CashOutGoDetailTable({
                             ? `Override ${row.billOffsetOverride} days`
                             : `Using default ${row.billOffsetDays} days`}
                         </span>
-                        {onSave ? (
+                        {onSave && editable ? (
                           <span className="flex items-center gap-1">
                             <button
                               type="button"
@@ -8393,6 +11139,12 @@ function CashOutGoDetailTable({
                             >
                               {saving ? "Saving..." : "Save"}
                             </button>
+                            <FloatingHelper
+                              text="Save stores this row-specific payment offset override in the database. The saved scope depends on your Cash Out Go Plan access level."
+                              label="Save payment offset override help"
+                              className="size-7 border-0 bg-transparent shadow-none"
+                              iconClassName="size-3"
+                            />
                             <button
                               type="button"
                               onClick={() => onBillOffsetOverrideReset?.(row.rowKey)}
@@ -8403,6 +11155,12 @@ function CashOutGoDetailTable({
                             >
                               <RotateCcw className="size-3.5" />
                             </button>
+                            <FloatingHelper
+                              text="Reset clears this database-saved row-specific payment offset and returns to the applicable global/default offset."
+                              label="Reset payment offset override help"
+                              className="size-7 border-0 bg-transparent shadow-none"
+                              iconClassName="size-3"
+                            />
                           </span>
                         ) : null}
                       </div>
@@ -8421,8 +11179,9 @@ function CashOutGoDetailTable({
                             Boolean(row.manualExpectedPaymentDate),
                             "h-8 rounded-md border border-input bg-background px-2 text-sm",
                           )}
+                          disabled={!editable}
                         />
-                        {onSave ? (
+                        {onSave && editable ? (
                           <button
                             type="button"
                             onClick={onSave}
@@ -8470,7 +11229,7 @@ function FloatingHelper({
   label = "More information",
   side = "right",
   className = "",
-  iconClassName = "size-4",
+  iconClassName = "size-3",
 }: {
   text: HelperText;
   label?: string;
@@ -8487,11 +11246,11 @@ function FloatingHelper({
             aria-label={label}
             onClick={(event) => event.preventDefault()}
             className={
-              "inline-flex size-7 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+              "inline-flex size-7 items-center justify-center text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
               className
             }
           >
-            <CircleHelp className={iconClassName} />
+            <Info className={iconClassName} />
           </button>
         </TooltipTrigger>
         <TooltipContent side={side} align="center" className="max-w-xs leading-relaxed">
@@ -8503,6 +11262,161 @@ function FloatingHelper({
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  );
+}
+
+function InfoCircleHelper({
+  text,
+  label = "More information",
+}: {
+  text: HelperText;
+  label?: string;
+}) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            onClick={(event) => event.preventDefault()}
+            className="inline-flex size-5 items-center justify-center text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Info className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" className="max-w-sm leading-relaxed">
+          <ul className="list-disc space-y-1 pl-4 text-xs">
+            {flattenHelperText(text).map((item, index) => (
+              <li key={`${item}-${index}`}>{item}</li>
+            ))}
+          </ul>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function PreviousFySubmittedBillsHelper({
+  label = "Previous FY submitted bills help",
+  className = "",
+  iconClassName = "size-3",
+}: {
+  label?: string;
+  className?: string;
+  iconClassName?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rows = [
+    {
+      filter: "All files",
+      unchecked: "All accessible database files can enter the file pool, but submitted bills are counted only if submission/resubmission date is inside the selected FY.",
+      checked: "Submitted/resubmitted bills from previous FYs are also included if payment is pending.",
+      effect: "Broadest file pool; checkbox still controls previous-FY submitted pending bills.",
+    },
+    {
+      filter: "All active files",
+      unchecked: "File pool is broad, but earlier-FY submitted bills stay excluded from submitted-bill section.",
+      checked: "All earlier-FY submitted pending bills from active accessible files are included.",
+      effect: "This checkbox can still be required even with All active files.",
+    },
+    {
+      filter: "Active + current FY closed",
+      unchecked: "Active files plus current-FY closed files can enter the file pool, but submitted bills are counted only if submission/resubmission date is inside the selected FY.",
+      checked: "Previous-FY submitted pending bills are also included from that active/current-FY-closed file pool.",
+      effect: "Useful when current planning includes active files and current-FY closed files, but some pending bills were submitted in previous FYs.",
+    },
+    {
+      filter: "Selected FY, e.g. 2026-27",
+      unchecked: "Submitted bills only if submission/resubmission date is inside 2026-27.",
+      checked: "Also includes submitted/resubmitted bills before 2026-27 if payment is pending.",
+      effect: "Useful for pending bills submitted in previous FYs.",
+    },
+    {
+      filter: "User access / permitted files",
+      unchecked: "Only accessible files are considered; submitted bills are restricted to selected FY.",
+      checked: "Earlier-FY submitted pending bills are included only within accessible files.",
+      effect: "It never brings back files outside the user's permitted access.",
+    },
+  ];
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={(event) => {
+          event.preventDefault();
+          setOpen(true);
+        }}
+        className={
+          "inline-flex size-7 items-center justify-center text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+          className
+        }
+      >
+        <Info className={iconClassName} />
+      </button>
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/35 p-4 backdrop-blur-[1px]"
+          role="dialog"
+          aria-modal="true"
+          aria-label={label}
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="max-h-[82vh] w-[min(94vw,980px)] overflow-auto rounded-xl border border-sky-100 bg-[#f4f9ff] p-4 text-xs leading-relaxed text-foreground shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-foreground">
+                  Include previous FY submitted bills
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  Behavior is two-layered: Global Filter first decides the file pool; this checkbox then decides whether earlier-FY submitted pending bills from that pool are included.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-sky-100 bg-white/70">
+              <table className="min-w-[860px] border-collapse text-left">
+                <thead>
+                  <tr className="border-b border-sky-100 bg-sky-50 text-foreground">
+                    <th className="px-2 py-2 font-semibold">Global filter situation</th>
+                    <th className="px-2 py-2 font-semibold">Unchecked</th>
+                    <th className="px-2 py-2 font-semibold">Checked</th>
+                    <th className="px-2 py-2 font-semibold">Important effect</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.filter} className="border-b border-sky-100/80 last:border-0">
+                      <td className="px-2 py-2 align-top font-medium text-foreground">
+                        {row.filter}
+                      </td>
+                      <td className="px-2 py-2 align-top text-muted-foreground">
+                        {row.unchecked}
+                      </td>
+                      <td className="px-2 py-2 align-top text-muted-foreground">{row.checked}</td>
+                      <td className="px-2 py-2 align-top text-muted-foreground">{row.effect}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 rounded-md border border-sky-100 bg-white/70 px-3 py-2 text-muted-foreground">
+              Example: selected FY is 2026-27. A bill submitted on 25-Mar-2026 with payment pending is included only when this checkbox is checked, provided the file also passes current filters.
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -8920,7 +11834,7 @@ function DelayStatusReport({
               <FloatingHelper
                 text="Default is 5 days. Use reset to restore the default threshold."
                 className="size-5 border-0 bg-transparent shadow-none"
-                iconClassName="size-3.5"
+                iconClassName="size-3"
               />
             </span>
             <span className="flex items-center gap-1.5">
@@ -8943,6 +11857,12 @@ function DelayStatusReport({
               >
                 <RotateCcw className="size-4" />
               </button>
+              <FloatingHelper
+                text="Reset restores Delay Status threshold to the default 5 days for the current screen/session only; it is not saved as a global software setting."
+                label="Reset delay status days help"
+                className="size-8 border-0 bg-transparent shadow-none"
+                iconClassName="size-3"
+              />
             </span>
           </label>
           <label
@@ -9365,6 +12285,7 @@ function buildFirmDatabaseRows({
 
     return {
       id: firm.id,
+      divisionNames: divisions,
       orderIds: placedEntries.map((entry) => entry.orderKey),
       clickTargets,
       numeric,
@@ -9615,19 +12536,39 @@ function exportFirmDatabaseReport(
   description?: string,
 ) {
   const columns = firmDatabaseColumns.filter((column) => visibleColumns.includes(column.key));
+  const includeDivisionReferences = columns.some((column) => column.key === "divisions");
+  const divisionReferenceRows = rows.map((row, index) => [
+    index + 1,
+    String(row.firmName ?? ""),
+    row.divisionNames.length ? row.divisionNames.join(", ") : "-",
+  ]);
   void downloadBackendExport({
     format,
     title,
     description,
     tables: [
       {
-        headers: columns.map((column) => column.label),
+        title,
+        headers: columns.map((column) =>
+          column.key === "divisions" ? "Division ref. No." : column.label,
+        ),
         rows: rows.map((row, index) =>
-          columns.map((column) =>
-            String(column.key === "serial" ? index + 1 : (row[column.key] ?? "")),
-          ),
+          columns.map((column) => {
+            if (column.key === "serial") return String(index + 1);
+            if (column.key === "divisions") return String(index + 1);
+            return String(row[column.key] ?? "");
+          }),
         ),
       },
+      ...(includeDivisionReferences
+        ? [
+            {
+              title: "Division reference list",
+              headers: ["S. No.", "Firm name", "Division list"],
+              rows: divisionReferenceRows,
+            },
+          ]
+        : []),
     ],
   });
 }
@@ -10267,6 +13208,342 @@ function filterRowsByMonthRange(
   endMonthKey: string,
 ) {
   return rows.filter((row) => row.monthKey >= startMonthKey && row.monthKey <= endMonthKey);
+}
+
+function getSoPaymentMatrixColumns(selectedFields: SoPaymentMatrixFieldKey[]) {
+  const selected = new Set(selectedFields.length ? selectedFields : soPaymentMatrixDefaultFields);
+  return soPaymentMatrixFieldOptions.filter((option) => selected.has(option.key));
+}
+
+function buildSoPaymentMatrixRows({
+  files,
+  monthKeys,
+  paymentOffsetDays,
+}: {
+  files: FileRecord[];
+  monthKeys: string[];
+  paymentOffsetDays: number;
+}): SoPaymentMatrixRow[] {
+  const allowedMonths = new Set(monthKeys);
+  const rows: SoPaymentMatrixRow[] = [];
+  files.forEach((file) => {
+    if (isCancelledFile(file)) return;
+    filePaymentOrders(file).forEach((order, orderIndex) => {
+      if (!isPaymentOrderActive(file, order) || isYes(order.soCancelled)) return;
+      const row = createEmptySoPaymentMatrixRow(file, order, orderIndex);
+      if (isYes(order.stagePayment) && order.stageDeliveries?.length) {
+        order.stageDeliveries.forEach((stage, stageIndex) => {
+          if (hasFilledString(stage.paymentDate)) return;
+          const entry = getStagePaymentMatrixEntry(file, order, stage, stageIndex, paymentOffsetDays);
+          if (!entry || !allowedMonths.has(entry.monthKey) || entry.amount <= 0) return;
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+        });
+      } else if (!hasFilledString(order.paymentDate)) {
+        const entry = getOrderPaymentMatrixEntry(file, order, orderIndex, paymentOffsetDays);
+        if (entry && allowedMonths.has(entry.monthKey) && entry.amount > 0) {
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+        }
+      }
+      if (row.total > 0) rows.push(row);
+    });
+  });
+  return sortSoPaymentMatrixRows(rows);
+}
+
+function buildPaymentCompletedMatrixRows({
+  files,
+  monthKeys,
+}: {
+  files: FileRecord[];
+  monthKeys: string[];
+}): SoPaymentMatrixRow[] {
+  const allowedMonths = new Set(monthKeys);
+  const rows: SoPaymentMatrixRow[] = [];
+  files.forEach((file) => {
+    if (isCancelledFile(file)) return;
+    filePaymentOrders(file).forEach((order, orderIndex) => {
+      if (!isPaymentOrderActive(file, order) || isYes(order.soCancelled)) return;
+      const row = createEmptySoPaymentMatrixRow(file, order, orderIndex);
+      if (isYes(order.stagePayment) && order.stageDeliveries?.length) {
+        order.stageDeliveries.forEach((stage, stageIndex) => {
+          const entry = getCompletedStagePaymentMatrixEntry(file, stage, stageIndex);
+          if (!entry || !allowedMonths.has(entry.monthKey) || entry.amount <= 0) return;
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+        });
+      } else {
+        const entry = getCompletedOrderPaymentMatrixEntry(file, order, orderIndex);
+        if (entry && allowedMonths.has(entry.monthKey) && entry.amount > 0) {
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+        }
+      }
+      if (row.total > 0) rows.push(row);
+    });
+  });
+  return sortSoPaymentMatrixRows(rows);
+}
+
+function sortSoPaymentMatrixRows(rows: SoPaymentMatrixRow[]) {
+  return rows.sort(
+    (a, b) =>
+      (a.file.division ?? "").localeCompare(b.file.division ?? "") ||
+      getSoPaymentMatrixFieldValue(a, "fileUniqueNo").localeCompare(
+        getSoPaymentMatrixFieldValue(b, "fileUniqueNo"),
+      ) ||
+      getSoPaymentMatrixFieldValue(a, "soDate").localeCompare(
+        getSoPaymentMatrixFieldValue(b, "soDate"),
+      ),
+  );
+}
+
+function createEmptySoPaymentMatrixRow(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  orderIndex: number,
+): SoPaymentMatrixRow {
+  const soRef = getSupplyOrderRef(order) || `S.O. ${orderIndex + 1}`;
+  return {
+    rowKey: `${file.id}:${orderIndex}:${soRef}`,
+    fileId: file.id,
+    file,
+    order,
+    orderIndex,
+    paymentBasis: "",
+    monthAmounts: {},
+    monthFocusTargets: {},
+    total: 0,
+  };
+}
+
+function addSoPaymentMatrixAmount(
+  row: SoPaymentMatrixRow,
+  monthKey: string,
+  amount: number,
+  focusTarget: string,
+  basis: string,
+) {
+  row.monthAmounts[monthKey] = (row.monthAmounts[monthKey] ?? 0) + amount;
+  row.monthFocusTargets[monthKey] = row.monthFocusTargets[monthKey] ?? focusTarget;
+  row.total += amount;
+  if (!row.paymentBasis) {
+    row.paymentBasis = basis;
+  } else if (!row.paymentBasis.split(" + ").includes(basis)) {
+    row.paymentBasis = `${row.paymentBasis} + ${basis}`;
+  }
+}
+
+function getStagePaymentMatrixEntry(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  stage: StageDeliveryDetail,
+  stageIndex: number,
+  paymentOffsetDays: number,
+) {
+  const dateInfo = getExpectedPaymentDateInfo(file, stage, paymentOffsetDays);
+  if (!dateInfo.date) return undefined;
+  const capital = getInrAmount(stage.stageAmountCapital, file) ?? 0;
+  const revenue = getInrAmount(stage.stageAmountRevenue, file) ?? 0;
+  return {
+    monthKey: dateInfo.date.slice(0, 7),
+    amount: Math.round(capital + revenue),
+    basis: `Stage payment - ${dateInfo.basis}`,
+    focusTarget: `stagepayment:pending:${stageIndex}`,
+  };
+}
+
+function getOrderPaymentMatrixEntry(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  orderIndex: number,
+  paymentOffsetDays: number,
+) {
+  const dateInfo = getExpectedPaymentDateInfo(file, order, paymentOffsetDays);
+  if (!dateInfo.date) return undefined;
+  const capital = getInrAmount(getPlannedCashOutgoCapital(order), file) ?? 0;
+  const revenue = getInrAmount(getPlannedCashOutgoRevenue(order), file) ?? 0;
+  return {
+    monthKey: dateInfo.date.slice(0, 7),
+    amount: Math.round(capital + revenue),
+    basis: dateInfo.basis,
+    focusTarget: `payment:pending:${orderIndex}`,
+  };
+}
+
+function getCompletedStagePaymentMatrixEntry(
+  file: FileRecord,
+  stage: StageDeliveryDetail,
+  stageIndex: number,
+) {
+  if (!hasFilledString(stage.paymentDate)) return undefined;
+  const capital = getInrAmount(stage.actualPaymentCapital || stage.stageAmountCapital, file) ?? 0;
+  const revenue = getInrAmount(stage.actualPaymentRevenue || stage.stageAmountRevenue, file) ?? 0;
+  return {
+    monthKey: stage.paymentDate!.slice(0, 7),
+    amount: Math.round(capital + revenue),
+    basis: "Completed stage payment",
+    focusTarget: `stagepayment:completed:${stageIndex}`,
+  };
+}
+
+function getCompletedOrderPaymentMatrixEntry(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  orderIndex: number,
+) {
+  if (!hasFilledString(order.paymentDate)) return undefined;
+  const capital = getInrAmount(getActualPaymentCapital(order) || getPlannedCashOutgoCapital(order), file) ?? 0;
+  const revenue = getInrAmount(getActualPaymentRevenue(order) || getPlannedCashOutgoRevenue(order), file) ?? 0;
+  return {
+    monthKey: order.paymentDate!.slice(0, 7),
+    amount: Math.round(capital + revenue),
+    basis: "Completed payment",
+    focusTarget: `payment:completed:${orderIndex}`,
+  };
+}
+
+function getExpectedPaymentDateInfo(
+  file: FileRecord,
+  row: SupplyOrderDetail | StageDeliveryDetail,
+  paymentOffsetDays: number,
+) {
+  if (hasFilledString(row.billSentForPaymentDate)) {
+    return {
+      date: addDays(row.billSentForPaymentDate, paymentOffsetDays),
+      basis: "Bill sent",
+    };
+  }
+  if (hasFilledString(row.billPreparationDate)) {
+    return {
+      date: addDays(row.billPreparationDate, paymentOffsetDays),
+      basis: "Bill prepared",
+    };
+  }
+  const receiptDate =
+    "materialReceiptDate" in row && isDeliveryInspectionApplicable(file)
+      ? row.materialReceiptDate
+      : getNonInspectionPaymentDueDate(file, row as SupplyOrderDetail);
+  if (hasFilledString(receiptDate)) {
+    return {
+      date: addDays(receiptDate, paymentOffsetDays),
+      basis: isDeliveryInspectionApplicable(file) ? "Material receipt" : "Job completion",
+    };
+  }
+  const dpDate = getDeliveryPeriodDate(row as SupplyOrderDetail);
+  if (hasFilledString(dpDate)) {
+    return {
+      date: addDays(dpDate, paymentOffsetDays + 1),
+      basis: "D.P.",
+    };
+  }
+  return { date: undefined, basis: "No expected date" };
+}
+
+function getSoPaymentMatrixFieldValue(row: SoPaymentMatrixRow, fieldKey: SoPaymentMatrixFieldKey) {
+  const file = row.file;
+  const order = row.order;
+  if (fieldKey === "fileUniqueNo") return getPreSoFileRef(file);
+  if (fieldKey === "demandDescription") return file.demandDescription || "-";
+  if (fieldKey === "soNo") return getSupplyOrderRef(order) || "-";
+  if (fieldKey === "soDate") return formatDateDisplay(order.soDate);
+  if (fieldKey === "firmName") return order.firm || "-";
+  if (fieldKey === "division") return file.division || "-";
+  if (fieldKey === "fileCategory") return isContractFileType(file) ? "Contract" : "Goods & Services";
+  if (fieldKey === "fileType") return file.fileType || "-";
+  if (fieldKey === "indentor") return file.indentor || "-";
+  if (fieldKey === "mode") return file.mode || "-";
+  if (fieldKey === "firmType") return order.firmType || "-";
+  if (fieldKey === "demandInitiationYear") return file.year || "-";
+  if (fieldKey === "demandValue") {
+    const capital = getInrAmount(file.valueCapital, file) ?? 0;
+    const revenue = getInrAmount(file.valueRevenue, file) ?? 0;
+    return formatCurrency(capital + revenue);
+  }
+  if (fieldKey === "capitalValue") return formatCurrency(getInrAmount(file.valueCapital, file) ?? 0);
+  if (fieldKey === "revenueValue") return formatCurrency(getInrAmount(file.valueRevenue, file) ?? 0);
+  if (fieldKey === "soValue") {
+    const capital = getInrAmount(order.soValueCapital, file) ?? 0;
+    const revenue = getInrAmount(order.soValueRevenue, file) ?? 0;
+    return formatCurrency(capital + revenue);
+  }
+  if (fieldKey === "paymentBasis") return row.paymentBasis || "-";
+  return "-";
+}
+
+function getSoPaymentMatrixExportFieldValue(
+  row: SoPaymentMatrixRow,
+  fieldKey: SoPaymentMatrixFieldKey,
+) {
+  const file = row.file;
+  const order = row.order;
+  if (fieldKey === "demandValue") {
+    return (getInrAmount(file.valueCapital, file) ?? 0) + (getInrAmount(file.valueRevenue, file) ?? 0);
+  }
+  if (fieldKey === "capitalValue") return getInrAmount(file.valueCapital, file) ?? 0;
+  if (fieldKey === "revenueValue") return getInrAmount(file.valueRevenue, file) ?? 0;
+  if (fieldKey === "soValue") {
+    return (getInrAmount(order.soValueCapital, file) ?? 0) + (getInrAmount(order.soValueRevenue, file) ?? 0);
+  }
+  return getSoPaymentMatrixFieldValue(row, fieldKey);
+}
+
+function getSupplyOrderRef(order: SupplyOrderDetail) {
+  return order.soNo || order.gemSoNo || "";
+}
+
+function formatSoPaymentMatrixMonthLabel(monthKey: string) {
+  const month = parseLocalMonth(monthKey);
+  if (!month) return monthKey;
+  return month.toLocaleString("en-IN", { month: "short" });
+}
+
+function serializeSoPaymentMatrixFocusTargets(focusTargets: Map<string, string>) {
+  const encoded = Array.from(focusTargets.entries())
+    .map(([fileId, focusTarget]) => `${encodeURIComponent(fileId)}:${encodeURIComponent(focusTarget)}`)
+    .join(",");
+  return encoded || undefined;
+}
+
+function exportSoPaymentMatrixReport(
+  rows: SoPaymentMatrixRow[],
+  columns: SoPaymentMatrixColumnOption[],
+  monthKeys: string[],
+  title: string,
+  description: string,
+  format: "excel" | "pdf",
+) {
+  const monthTotals = monthKeys.map((monthKey) =>
+    rows.reduce((sum, row) => sum + (row.monthAmounts[monthKey] ?? 0), 0),
+  );
+  void downloadBackendExport({
+    format,
+    title,
+    description,
+    tables: [
+      {
+        headers: [
+          ...columns.map((column) => column.label),
+          ...monthKeys.map(formatSoPaymentMatrixMonthLabel),
+          "Total",
+        ],
+        rows: rows.length
+          ? [
+              ...rows.map((row) => [
+                ...columns.map((column) => getSoPaymentMatrixExportFieldValue(row, column.key)),
+                ...monthKeys.map((monthKey) => {
+                  const amount = row.monthAmounts[monthKey] ?? 0;
+                  return amount || "";
+                }),
+                row.total,
+              ]),
+              [
+                ...columns.map((_, index) => (index === 0 ? "Total" : "")),
+                ...monthTotals.map((amount) => amount || ""),
+                rows.reduce((sum, row) => sum + row.total, 0),
+              ],
+            ]
+          : [["No S.O. payment rows found for the current filters."]],
+      },
+    ],
+  });
 }
 
 function getMonthRangeForCashOutgoRows(rows: ExpectedCashOutgoRow[]) {
@@ -11054,7 +14331,7 @@ function getReturnedBillDelayRows(
         indentor: file.indentor ?? "",
         description: getDescriptionWithUniqueCode(file),
         milestoneKey: billReturnedDelayMilestoneKey,
-        milestone: "Bill returned for correction",
+        milestone: "Returned Bills",
         stageStartDate,
         daysInStage,
         lastFilledDate: getLastFilledDateValue(file) ?? "",
@@ -11477,6 +14754,7 @@ function getDelayStatusDisplayValue(row: DelayStatusRow, key: DelayStatusColumnK
   if (key === "serial") return String(index + 1);
   if (key === "action") return "";
   if (key === "daysInStage") return String(row.daysInStage);
+  if (key === "milestone") return getWorkflowDisplayLabel(row.milestone);
   return row[key];
 }
 
@@ -11780,7 +15058,7 @@ const delayMilestoneOptions = [
     key: milestone.key,
     label: milestone.label,
   })),
-  { key: billReturnedDelayMilestoneKey, label: "Bill returned for correction" },
+  { key: billReturnedDelayMilestoneKey, label: "Returned Bills" },
   {
     key: supplementaryBillReturnedDelayMilestoneKey,
     label: "Supplementary bill returned for correction",
@@ -11793,22 +15071,22 @@ function getStatusSummaryTableGroups(files: FileRecord[]): StatusSummaryTableGro
   [
     ...getStatusSummaryRows(files),
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Total",
       count: countReturnedBillOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Pending",
       count: countReturnedBillPendingOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Completed",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Returned paid",
       count: countReturnedBillPaidOrders(files),
     },
@@ -12018,22 +15296,22 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
   ];
   const billReturnRows = [
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Total",
       count: countReturnedBillOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Pending",
       count: countReturnedBillPendingOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Completed",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
-      milestone: "Bill returned for correction",
+      milestone: "Returned Bills",
       stage: "Returned paid",
       count: countReturnedBillPaidOrders(files),
     },
@@ -12320,6 +15598,12 @@ function normalizeMilestoneName(value: string | undefined) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function getWorkflowDisplayLabel(value: string | undefined) {
+  return normalizeMilestoneName(value) === "billreturnedforcorrection"
+    ? "Returned Bills"
+    : (value ?? "");
 }
 
 function normalizeCompletedMilestones(value: string[] | undefined) {
