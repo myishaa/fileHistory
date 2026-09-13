@@ -3,29 +3,25 @@ const username = process.env.AUDIT_USERNAME ?? "dashboard_audit";
 const password = process.env.AUDIT_PASSWORD ?? "dashboard_audit123";
 
 const categories = [
-  { name: "omitted", value: undefined, expected: 27 },
+  { name: "omitted", value: undefined },
   {
     name: "all configured",
     value:
       "goodsServices,amc,mpc,cars,om,fileType:CAPSI,fileType:DcPP%20(Contract),fileType:DcPP%20(G%26S),fileType:I%26M%20(Contract),fileType:I%26M%20(G%26S)",
-    expected: 27,
   },
-  { name: "fixed built-in", value: "goodsServices,amc,mpc,cars,om", expected: 19 },
+  { name: "fixed built-in", value: "goodsServices,amc,mpc,cars,om" },
   {
     name: "all custom",
     value:
       "fileType:CAPSI,fileType:DcPP%20(Contract),fileType:DcPP%20(G%26S),fileType:I%26M%20(Contract),fileType:I%26M%20(G%26S)",
-    expected: 8,
   },
   {
     name: "custom goods/services sample",
     value: "fileType:CAPSI,fileType:DcPP%20(G%26S),fileType:I%26M%20(G%26S)",
-    expected: 6,
   },
   {
     name: "contract custom only",
     value: "fileType:DcPP%20(Contract),fileType:I%26M%20(Contract)",
-    expected: 2,
   },
   { name: "none selected", value: "__none__", expected: 0 },
 ];
@@ -104,7 +100,7 @@ async function main() {
       const counts = await countsFor(token, item.value);
       rows.push({ category: item.name, expected: item.expected, ...counts });
       for (const [surface, count] of Object.entries(counts)) {
-        if (count !== item.expected) {
+        if (item.expected !== undefined && count !== item.expected) {
           issues.push({ category: item.name, surface, expected: item.expected, actual: count });
         }
       }

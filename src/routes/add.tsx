@@ -1567,13 +1567,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
 
     let cancelled = false;
-    const fallbackUniqueCode = () =>
-      generateUniqueCode(
-        uniqueCodeFinancialYear,
-        selectedDivisionName,
-        divisionsRef.current,
-        filesRef.current,
-      );
     fetchNextUniqueCode({
       financialYear: uniqueCodeFinancialYear,
       division: selectedDivisionName,
@@ -1581,13 +1574,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     })
       .then(({ uniqueCode }) => {
         if (!cancelled) {
-          setServerUniqueCode(uniqueCode || fallbackUniqueCode());
+          setServerUniqueCode(uniqueCode || "");
         }
       })
       .catch((error) => {
         if (cancelled) return;
         console.error(error);
-        setServerUniqueCode(fallbackUniqueCode());
+        setServerUniqueCode("");
       });
     return () => {
       cancelled = true;
@@ -5025,6 +5018,8 @@ function SupplyOrdersBlock({
         </div>
       ) : null}
 
+      {activeSubview === "supplyOrder" ? <StageDeliveryAutofillHelper /> : null}
+
       {activeSubviewFields.length ||
       activeSubviewMilestones.length ||
       activeSubview === "firmRating" ||
@@ -5717,7 +5712,11 @@ function SupplyOrdersBlock({
                     <div className="grid grid-cols-1 gap-4">
                       {fieldsToRender.map((field) => {
                         const key = field.key as SupplyOrderKey;
-                        const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(key, order);
+                        const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(
+                          key,
+                          order,
+                          form,
+                        );
                         const cancellationControlLocked =
                           lockFilledFields && isCancellationSupplyOrderField(key);
                         const fieldDisabled =
@@ -5793,6 +5792,7 @@ function SupplyOrdersBlock({
                                 }}
                                 options={options}
                                 disabled={fieldDisabled}
+                                data-testid={`add-field-supplyOrder-${index}-${key}`}
                                 className={inputCls + disabledCls(fieldDisabled)}
                                 inputRef={(element) => {
                                   orderFieldRefs.current[`${index}:${key}`] = element;
@@ -11494,11 +11494,15 @@ function autoFillStageDeliveries(
   const soDate = parseLocalDate(order.soDate ?? "");
   if (!stageCount || !soDate) return { order, changed: false };
 
-  const capitalAmounts = getProportionalStageAmounts(order.soValueCapital, stageCount);
-  const revenueAmounts = getProportionalStageAmounts(order.soValueRevenue, stageCount);
   const useCapital = hasNonZeroAmount(order.soValueCapital);
   const useRevenue = !useCapital && hasNonZeroAmount(order.soValueRevenue);
   const baseStages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
+  const capitalAmounts = useCapital
+    ? getRedistributedStageAmounts(order.soValueCapital, baseStages, "capital")
+    : [];
+  const revenueAmounts = useRevenue
+    ? getRedistributedStageAmounts(order.soValueRevenue, baseStages, "revenue")
+    : [];
   let previousEndDate: string | undefined;
   const stages = baseStages.map((stage, index) => {
     if (hasPaidStagePayment(stage)) {
@@ -11514,17 +11518,13 @@ function autoFillStageDeliveries(
         deliveryPeriodStartDate: effectiveStartDate,
         dpDate: stage.dpDate || suggestedEndDate || "",
         stageAmountCapital:
-          useCapital &&
-          capitalAmounts[index] !== undefined &&
-          !hasFilledValue(stage.stageAmountCapital)
+          useCapital && capitalAmounts[index] !== undefined
             ? capitalAmounts[index]
             : useRevenue
               ? ""
               : stage.stageAmountCapital,
         stageAmountRevenue:
-          useRevenue &&
-          revenueAmounts[index] !== undefined &&
-          !hasFilledValue(stage.stageAmountRevenue)
+          useRevenue && revenueAmounts[index] !== undefined
             ? revenueAmounts[index]
             : useCapital
               ? ""
@@ -11578,6 +11578,52 @@ function addCalendarMonthsClamped(date: Date, months: number) {
     date: new Date(targetYear, targetMonth, targetDay),
     clamped: targetDay !== date.getDate(),
   };
+}
+
+function getRedistributedStageAmounts(
+  value: string | undefined,
+  stages: StageDeliveryDetail[],
+  valueType: "capital" | "revenue",
+) {
+  const totalAmount = parseMoneyAmount(value);
+  if (totalAmount === undefined || totalAmount === 0 || !stages.length) return [];
+  const stageAmountKey = valueType === "capital" ? "stageAmountCapital" : "stageAmountRevenue";
+  const actualPaymentKey =
+    valueType === "capital" ? "actualPaymentCapital" : "actualPaymentRevenue";
+  const paidTotal = stages.reduce((total, stage) => {
+    if (!hasPaidStagePayment(stage)) return total;
+    return (
+      total +
+      (parseMoneyAmount(stage[stageAmountKey]) ??
+        parseMoneyAmount(stage[actualPaymentKey]) ??
+        0)
+    );
+  }, 0);
+  const unpaidStageIndexes = stages.flatMap((stage, index) =>
+    hasPaidStagePayment(stage) ? [] : [index],
+  );
+  if (!unpaidStageIndexes.length) return [];
+
+  const currentTotal = stages.reduce(
+    (total, stage) => total + (parseMoneyAmount(stage[stageAmountKey]) ?? 0),
+    0,
+  );
+  const hasBlankUnpaidStage = unpaidStageIndexes.some(
+    (index) => !hasFilledValue(stages[index]?.[stageAmountKey]),
+  );
+  const totalMismatch = Math.round(currentTotal) !== Math.round(totalAmount);
+  if (!hasBlankUnpaidStage && !totalMismatch) return [];
+
+  const remainingAmount = Math.max(0, totalAmount - paidTotal);
+  const redistributed = getProportionalStageAmounts(
+    String(Math.round(remainingAmount)),
+    unpaidStageIndexes.length,
+  );
+  const amounts: string[] = [];
+  unpaidStageIndexes.forEach((stageIndex, redistributionIndex) => {
+    amounts[stageIndex] = redistributed[redistributionIndex] ?? "";
+  });
+  return amounts;
 }
 
 function getProportionalStageAmounts(value: string | undefined, stageCount: number) {
@@ -11899,8 +11945,12 @@ function shouldShowSupplyOrderField(key: SupplyOrderKey, order: SupplyOrderDetai
   return true;
 }
 
-function isSupplyOrderFieldSequentiallyLocked(key: SupplyOrderKey, order: SupplyOrderDetail) {
-  return isSupplyOrderFieldMissingPrerequisite(key, order, new Set());
+function isSupplyOrderFieldSequentiallyLocked(
+  key: SupplyOrderKey,
+  order: SupplyOrderDetail,
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+) {
+  return isSupplyOrderFieldMissingPrerequisite(key, order, form, new Set());
 }
 
 function isCancellationSupplyOrderField(key: SupplyOrderKey) {
@@ -11915,16 +11965,33 @@ function isCancellationSupplyOrderField(key: SupplyOrderKey) {
 function isSupplyOrderFieldMissingPrerequisite(
   key: SupplyOrderKey,
   order: SupplyOrderDetail,
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
   visited: Set<SupplyOrderKey>,
 ) {
   if (visited.has(key)) return false;
   visited.add(key);
-  const prerequisites = supplyOrderFieldPrerequisites[key] ?? [];
+  const prerequisites = getSupplyOrderFieldPrerequisites(key, form);
   return prerequisites.some(
     (prerequisite) =>
       !hasCompletedSupplyOrderPrerequisite(order, prerequisite) ||
-      isSupplyOrderFieldMissingPrerequisite(prerequisite, order, visited),
+      isSupplyOrderFieldMissingPrerequisite(prerequisite, order, form, visited),
   );
+}
+
+function getSupplyOrderFieldPrerequisites(
+  key: SupplyOrderKey,
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+) {
+  const prerequisites = supplyOrderFieldPrerequisites[key] ?? [];
+  if (
+    isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup) &&
+    prerequisites.includes("materialReceiptDate")
+  ) {
+    return prerequisites.map((prerequisite) =>
+      prerequisite === "materialReceiptDate" ? "jobCompletionDate" : prerequisite,
+    );
+  }
+  return prerequisites;
 }
 
 function hasCompletedSupplyOrderPrerequisite(
@@ -12443,6 +12510,109 @@ function DynamicField({
         />
       )}
     </Field>
+  );
+}
+
+function StageDeliveryAutofillHelper() {
+  return (
+    <details className="rounded-md border border-sky-200 bg-sky-50/70 text-sm text-sky-950">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 font-semibold marker:hidden">
+        <span className="inline-flex size-5 items-center justify-center rounded-full bg-sky-200 text-xs font-bold text-sky-950">
+          i
+        </span>
+        Stage delivery, D.P. and amount auto-fill rules
+      </summary>
+      <div className="space-y-4 border-t border-sky-200 px-4 py-3">
+        <div className="overflow-x-auto rounded-md border border-sky-200 bg-background">
+          <table className="min-w-full border-collapse text-left text-xs">
+            <thead className="bg-sky-100 text-sky-950">
+              <tr>
+                <th className="border border-sky-200 px-3 py-2 font-semibold">Situation</th>
+                <th className="border border-sky-200 px-3 py-2 font-semibold">
+                  Software behaviour
+                </th>
+                <th className="border border-sky-200 px-3 py-2 font-semibold">Example</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Stage D.P. creation</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  If Stage Delivery is Yes and S.O. date is filled, blank stage D.P. dates are
+                  generated automatically. Delivery-1 starts from S.O. date. Next stages start from
+                  the day after previous stage D.P./revised D.P.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  If S.O. date is 01-Apr, Delivery-1 starts 01-Apr. Delivery-2 starts after
+                  Delivery-1 D.P.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Stage duration</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  MPC uses 1-month stage duration. Other file types, including Goods & Services,
+                  AMC, CARS, CAPSI and O&M, use 3-month duration unless the user edits dates
+                  manually.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  MPC stage from 01-Apr ends around 30-Apr. G&S/AMC/CARS/O&M/CAPSI stage from
+                  01-Apr ends around 30-Jun.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Paid stage</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  A stage is frozen when payment date or actual payment amount is filled. Its D.P.,
+                  stage amount and payment details are protected unless unfrozen with password.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  If Delivery-1 is paid for 50, increasing stages will not change Delivery-1 amount.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Increasing stage count</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  Paid stages stay fixed. Remaining S.O. balance is split equally among unpaid
+                  stages. The user may manually edit unpaid stage details later.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  S.O. 100, Delivery-1 paid 40, stage count changed to 4: remaining 60 is split as
+                  20, 20, 20 across unpaid stages.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Manual unpaid amounts</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  If unpaid stage amounts are manually edited and their total matches the S.O. value,
+                  save preserves them. If any unpaid amount is blank or total does not match, the
+                  unpaid balance is rebalanced equally.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  S.O. 100 with paid 40: unpaid manual 25, 35 is preserved. Blank or wrong total is
+                  rebalanced.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">D.P. extension</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  Revised D.P. extends that stage only. The software does not equally stretch all
+                  stage durations. Existing later stage dates remain as entered; blank later dates
+                  may use the revised/previous D.P. as the next start reference.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  If Delivery-1 revised D.P. is extended, Delivery-2 is not automatically stretched
+                  if its D.P. is already filled.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-sky-900">
+          These are auto-fill safeguards only. Users can still manually correct unpaid stage dates
+          and amounts before final save/update.
+        </p>
+      </div>
+    </details>
   );
 }
 

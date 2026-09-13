@@ -100,9 +100,18 @@ function base(code: string, patch: Record<string, unknown> = {}) {
     psb: "No",
     ir: "No",
     rfpVetting: "No",
+    tenderLive: "Yes",
+    bidNumber: `${code}-BID`,
+    bidDate: "2026-07-02",
+    bidOpeningDate: "2026-07-03",
+    bidOpened: "YES",
+    biddingStageOver: "Yes",
+    refloat: "No",
+    refloatPreBidMeeting: "No",
+    rst: "No",
     demandCancelled: "No",
     currentMilestone: "Financial Sanction",
-    completedMilestones: ["Scrutiny", "Controlling", "CFA"],
+    completedMilestones: ["Scrutiny", "Controlling", "CFA", "Bidding"],
     noOfSo: "1",
     supplyOrders: [],
     ...patch,
@@ -150,7 +159,7 @@ function scenarios(): Scenario[] {
         {
           name: "PWB applicable before receipt",
           payload: withOrders(
-            base(pwbCode, { bg: "Yes", ir: "No" }),
+            base(pwbCode, { bg: "Yes", ir: "Yes" }),
             [
               so({
                 bgCoverageType: "PWB",
@@ -167,7 +176,7 @@ function scenarios(): Scenario[] {
         {
           name: "PWB and payment pending after receipt",
           payload: withOrders(
-            base(pwbCode, { bg: "Yes", ir: "No" }),
+            base(pwbCode, { bg: "Yes", ir: "Yes" }),
             [
               so({
                 bgCoverageType: "PWB",
@@ -178,15 +187,15 @@ function scenarios(): Scenario[] {
             ],
           ),
           checks: (file, context) => [
-            check("PWB pending after material receipt", statusCount(context, "PWB", "Pending") === 1),
-            check("PWB pending clicker matches", matches(file, "statusSummary:PWB:Pending")),
+            check("PWB pending after material receipt", statusCount(context, "PWB", "Pending") === 1, statusCount(context, "PWB", "Pending")),
+            check("PWB pending clicker matches", matches(file, "statusSummary:PWB:Pending"), statusCount(context, "PWB", "Pending")),
             check("Payment pending after material receipt", statusCount(context, "Payment", "Pending") === 1),
           ],
         },
         {
           name: "PWB received and payment paid",
           payload: withOrders(
-            base(pwbCode, { bg: "Yes", ir: "No" }),
+            base(pwbCode, { bg: "Yes", ir: "Yes" }),
             [
               so({
                 bgCoverageType: "PWB",
@@ -241,6 +250,7 @@ function scenarios(): Scenario[] {
                 combinedBgAmount: "1000",
                 combinedBgReceivedDate: "2026-07-06",
                 combinedBgValidityDate: "2026-07-15",
+                warrantyPeriodDate: "2026-06-01",
               },
             ],
           ),
@@ -252,7 +262,7 @@ function scenarios(): Scenario[] {
           ],
         },
         {
-          name: "Combined BG return due after payment and expired validity",
+          name: "Combined BG expired without warranty is not return-due",
           payload: withOrders(
             base(combinedCode, { bg: "Yes", ir: "No" }),
             [
@@ -262,7 +272,7 @@ function scenarios(): Scenario[] {
                 combinedBgAmount: "1000",
                 combinedBgReceivedDate: "2026-07-06",
                 combinedBgValidityDate: "2026-07-15",
-                materialReceiptDate: "2026-07-20",
+                jobCompletionDate: "2026-07-20",
                 billPreparationDate: "2026-07-22",
                 billSentForPaymentDate: "2026-07-23",
                 paymentDate: "2026-07-30",
@@ -281,8 +291,16 @@ function scenarios(): Scenario[] {
             ],
           ),
           checks: (file, context) => [
-            check("PSB+PWB to be returned count", statusCount(context, "PSB+PWB", "To be returned") === 1),
-            check("PSB+PWB return clicker matches", matches(file, "statusSummary:PSB%2BPWB:To%20be%20returned")),
+            check(
+              "PSB+PWB to be returned stays 0 without retained warranty",
+              statusCount(context, "PSB+PWB", "To be returned") === 0,
+              statusCount(context, "PSB+PWB", "To be returned"),
+            ),
+            check(
+              "PSB+PWB return clicker stays empty",
+              !matches(file, "statusSummary:PSB%2BPWB:To%20be%20returned"),
+              statusCount(context, "PSB+PWB", "To be returned"),
+            ),
           ],
         },
       ],
@@ -304,8 +322,8 @@ function scenarios(): Scenario[] {
             ],
           ),
           checks: (file, context) => [
-            check("Payment pending from expired D.P.", statusCount(context, "Payment", "Pending") === 1),
-            check("Payment pending clicker matches", matches(file, "statusSummary:Payment:Pending")),
+            check("Payment not pending before bill/job completion", statusCount(context, "Payment", "Pending") === 0, statusCount(context, "Payment", "Pending")),
+            check("Payment pending clicker stays empty", !matches(file, "statusSummary:Payment:Pending"), statusCount(context, "Payment", "Pending")),
             check("Delivery not counted for AMC", statusCount(context, "Delivery", "Pending") === 0),
             check("D.P. expired count", statusCount(context, "Delivery Period", "Expired") === 1),
           ],
@@ -319,7 +337,7 @@ function scenarios(): Scenario[] {
         {
           name: "Two staged deliveries, one paid and one pending payment",
           payload: withOrders(
-            base(stageCode, { bg: "No", ir: "No" }),
+            base(stageCode, { bg: "No", ir: "Yes" }),
             [
               so({
                 soValueCapital: "20000",
@@ -353,7 +371,7 @@ function scenarios(): Scenario[] {
             ],
           ),
           checks: (file, context) => [
-            check("Two delivery stages completed", statusCount(context, "Delivery", "Completed") === 2),
+            check("Two delivery stages completed", statusCount(context, "Delivery", "Completed") === 2, statusCount(context, "Delivery", "Completed")),
             check("Payment completed one stage", statusCount(context, "Payment", "Completed") === 1),
             check("Payment pending second stage", statusCount(context, "Payment", "Pending") === 1),
             check("Bill sent pending clicker matches staged row", matches(file, "statusSummary:Bill%20sent%20for%20payment:Pending")),
@@ -394,7 +412,7 @@ function scenarios(): Scenario[] {
           checks: (file, context) => [
             check("Advance pending count", statusCount(context, "Advance Payment", "Pending") === 1),
             check("Advance pending clicker matches", matches(file, "advancePending")),
-            check("Finance advance capital planned", n(context.dashboard.financeTotals.advanceCapital) === 5000, context.dashboard.financeTotals.advanceCapital),
+            check("Finance advance capital waits for payment", n(context.dashboard.financeTotals.advanceCapital) === 0, context.dashboard.financeTotals.advanceCapital),
           ],
         },
         {

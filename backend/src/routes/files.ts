@@ -3473,9 +3473,7 @@ function completedOrderMilestoneSql(orderAlias: string, normalizedMilestone: str
         from jsonb_array_elements(coalesce(${orderAlias}.stage_deliveries, '[]'::jsonb)) as stage_row(stage)
         where ${hasTextSql("stage_row.stage ->> 'billSentForPaymentDate'")}
           and not ${openBillReturnSql("stage_row.stage -> 'billReturnCycles'")}
-      )
-      or (${hasTextSql(`${orderAlias}.advance_payment_detail ->> 'billSentForPaymentDate'`)}
-        and not ${openBillReturnSql(`${orderAlias}.advance_payment_detail -> 'billReturnCycles'`)}))`;
+      ))`;
   }
   if (normalizeMilestoneName(normalizedMilestone) === "financialsanction") {
     return hasTextSql(`${orderAlias}.financial_sanction_date`);
@@ -4188,6 +4186,15 @@ function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: s
   )`;
 }
 
+function expectedSupplyOrderRowMissingSql() {
+  return `not ${isCancelledFileSql()}
+    and coalesce(f.no_of_so, 0) > (
+      select count(*)::integer
+      from supply_orders so_expected
+      where so_expected.file_id = f.id
+    )`;
+}
+
 function supplyOrderDrivenCurrentMilestoneSql(milestone: string, values: unknown[]) {
   const normalized = addSqlValue(values, normalizeMilestoneName(milestone));
   const condition = supplyOrderDrivenCurrentMilestoneConditionSql(normalized);
@@ -4663,17 +4670,17 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     case "billPreparation":
       return `case
         when ${isYesSql("f.ir")} then ${effectiveOrderDateSql("ir_receipt_date", "irReceiptDate")}
-        when ${contractFileType} and ${effectiveDpDate} is not null then (${effectiveDpDate} + interval '1 day')::date
-        when ${goodsServicesIrNo} then ${jobCompletionDate}
+        when ${nonDeliveryFileType} then ${jobCompletionDate}
         else null
       end`;
     case "billSentForPayment":
       return effectiveOrderDateSql("bill_preparation_date", "billPreparationDate");
     case "payment":
       return `case
+        when ${isYesSql("f.ir")} then coalesce(${materialReceiptDate}, ${billSentForPaymentDate})
+        when ${isYesSql("so.shortclosure")} then ${jobCompletionDate}
         when ${contractFileType} and ${effectiveDpDate} is not null then (${effectiveDpDate} + interval '1 day')::date
         when ${goodsServicesIrNo} and ${jobCompletionDoneForDelay} then ${jobCompletionDate}
-        when ${isYesSql("f.ir")} then coalesce(${materialReceiptDate}, ${billSentForPaymentDate})
         else ${billSentForPaymentDate}
       end`;
   }
@@ -4899,6 +4906,13 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
   const milestoneKey = rawMilestoneKey || "all";
   if (!Number.isFinite(thresholdDays) || thresholdDays < 0) return "false";
   const thresholdPlaceholder = addSqlValue(values, thresholdDays);
+  const financialSanctionStartDate = orderDelayStartSql("financialSanction");
+  const financialSanctionFileClause =
+    milestoneKey === "all" || milestoneKey === "financialSanction"
+      ? `(${financialSanctionPendingSql()}
+        and ${financialSanctionStartDate} is not null
+        and (current_date - (${financialSanctionStartDate})::date) > ${thresholdPlaceholder}::integer)`
+      : "false";
   const workflowNotStartedClause =
     milestoneKey === "all" || milestoneKey === "workflowNotStarted"
       ? `(${workflowNotStartedSql()} and (current_date - coalesce(f.received_date, f.created_at::date)) > ${thresholdPlaceholder}::integer)`
@@ -4929,8 +4943,8 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
     thresholdPlaceholder,
   );
   return clauses.length
-    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${clauses.join(" or ")}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`
-    : `((${workflowNotStartedClause}) or (${biddingClause}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`;
+    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${financialSanctionFileClause}) or (${clauses.join(" or ")}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`
+    : `((${workflowNotStartedClause}) or (${biddingClause}) or (${financialSanctionFileClause}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause})`;
 }
 
 function decodeStatusFilterPart(value: string | undefined) {
@@ -5129,7 +5143,7 @@ function statusSummaryFilterSql(filter: string) {
   if (stage === "Live") {
     if (milestone.key === "bidding")
       return `${base} and ${applies} and ${isYesSql("f.tender_live")}`;
-    if (milestone.key === "supplyOrder") return `${base} and ${statusDeliveryDueOrderSql()}`;
+    if (milestone.key === "supplyOrder") return `${base} and ${liveSupplyOrderSql()}`;
   }
   if (stage === "Placed" && milestone.key === "supplyOrder") {
     return `${base} and ${supplyOrderDrivenCompletedMilestoneConditionSql("supplyorder")}`;
@@ -6149,7 +6163,7 @@ function deliveryPeriodBucketSql(kind: "valid" | "expired" | "extended") {
     or (not (${deliveryInspectionApplicableSql()}) and not ${stageJobCompletionDoneSql()}))`;
 
   return `not ${isCancelledFileSql()} and ${supplyOrderExists(
-    `${hasTextSql("so.so_date")} and not ${isYesSql("so.shortclosure")} and (
+    `${hasTextSql("so.so_date")} and not ${isYesSql("so.so_cancelled")} and not ${isYesSql("so.shortclosure")} and (
       (
         not (${stageRowsExist})
         and
@@ -6423,9 +6437,7 @@ function isCancellationDashboardFilter(filter: string) {
   return (
     filter === "miscDemandCancelled" ||
     filter === "miscSoCancelled" ||
-    filter === "miscShortclosedSo" ||
-    filter.startsWith("supplyOrderMonth:") ||
-    filter.startsWith("supplyOrderYear:")
+    filter === "miscShortclosedSo"
   );
 }
 
@@ -6454,7 +6466,7 @@ function shouldAllowInactiveDashboardFilter(filter: string) {
 }
 
 function shouldBypassActiveStatusYearDashboardFilter(filter: string) {
-  return isCancellationDashboardFilter(filter) && filter !== "miscDemandCancelled";
+  return false;
 }
 
 function shouldAllowDemandCancelledDashboardFilter(filter: string) {
@@ -6683,7 +6695,9 @@ function dashboardFilterSql(
     const fromPlaceholder = addSqlValue(values, `${monthKey}-01`);
     const toPlaceholder = addSqlValue(values, getMonthEndDateFromMonthKey(monthKey));
     return supplyOrderExists(
-      `${hasTextSql("so.so_date")}
+      `not ${isYesSql("so.so_cancelled")}
+       and not ${isYesSql("so.shortclosure")}
+       and ${hasTextSql("so.so_date")}
        and so.so_date >= ${fromPlaceholder}::date
        and so.so_date <= ${toPlaceholder}::date`,
     );
@@ -7550,6 +7564,10 @@ function status4MetricSql(milestoneName: string, metric: Status4MetricKey, value
     return `not ${isCancelledFileSql()} and ${isYesSql("f.refloat")} and ${isYesSql("f.tcec")} and ${isYesSql("f.bidding_stage_over")} and not ${hasTextSql("f.refloat_post_tcec_minutes_date")}`;
   }
   if (isBgStatusKey(milestoneName)) return bgToBeReceivedSql(milestoneName);
+  if (normalized === "supplyorder") {
+    return `(${supplyOrderDrivenCurrentMilestoneSql(milestoneName, values)}
+      or ${expectedSupplyOrderRowMissingSql()})`;
+  }
   if (isSupplyOrderDrivenMilestoneName(milestoneName)) {
     return supplyOrderDrivenCurrentMilestoneSql(milestoneName, values);
   }
@@ -9085,7 +9103,7 @@ filesRouter.get(
     const result = await pool.query<{ max_serial: string | null }>(
       `select max(nullif(regexp_replace(substr(unique_code, $2), '\\D', '', 'g'), '')::integer)::text as max_serial
        from files
-       where unique_code like $1 and archived_at is null`,
+       where unique_code like $1`,
       [`${prefix}%`, prefix.length + 1],
     );
     const nextSerial = Number(result.rows[0]?.max_serial ?? 0) + 1;

@@ -4614,6 +4614,8 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
       isOrderActiveForMilestone(file, order, normalized) &&
       (normalized === "financialsanction"
         ? hasFilledString(order.financialSanctionDate)
+        : isDateCompletedPaymentMilestoneOrder(order, normalized)
+          ? true
         : normalized === "billsentforpayment"
           ? !hasOpenBillReturn(order) && hasFilledString(order.billSentForPaymentDate)
           : normalized === "billreturnedforcorrection"
@@ -4622,6 +4624,19 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
                 (item) => normalizeMilestoneName(item) === normalized,
               )),
   );
+}
+
+function isDateCompletedPaymentMilestoneOrder(
+  order: SupplyOrderDetail,
+  normalizedMilestone: string,
+) {
+  if (normalizedMilestone === "irpreparation") return hasFilledString(order.irPreparationDate);
+  if (normalizedMilestone === "irreceipt") return hasFilledString(order.irReceiptDate);
+  if (normalizedMilestone === "billpreparation") return hasFilledString(order.billPreparationDate);
+  if (normalizedMilestone === "billsentforpayment") {
+    return !hasOpenBillReturn(order) && hasFilledString(order.billSentForPaymentDate);
+  }
+  return false;
 }
 
 function hasCompletedBillSentForPaymentOrder(file: FileRecord) {

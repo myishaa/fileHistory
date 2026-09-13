@@ -115,6 +115,12 @@ function searchPath(pass, target) {
   }
   if (target.analyticsType) params.set("analyticsType", target.analyticsType);
   if (target.analyticsNames?.length) params.set("analyticsNames", JSON.stringify(target.analyticsNames));
+  if (target.analyticsType && !target.demandCancelledPresenceFilter) {
+    params.set("demandCancelledPresenceFilter", "exclude");
+  }
+  if (target.demandCancelledPresenceFilter) {
+    params.set("demandCancelledPresenceFilter", target.demandCancelledPresenceFilter);
+  }
   if (target.includeModes?.length) params.set("includeModes", target.includeModes.join(","));
   const division = target.division ?? pass.division;
   if (division && division !== "all") params.set("divisionFilter", division);

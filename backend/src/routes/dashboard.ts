@@ -1487,6 +1487,26 @@ function getSuspectedAnomalyRows(
           stage.dpDate,
           stageContext,
         );
+        const previousStage = rawStageRows[stageIndex - 1];
+        if (stageIndex > 0 && previousStage) {
+          const previousStageEndDate = previousStage.revisedDp || previousStage.dpDate;
+          const currentStageStartDate = stage.deliveryPeriodStartDate;
+          if (
+            isIsoDate(previousStageEndDate) &&
+            isIsoDate(currentStageStartDate) &&
+            currentStageStartDate! <= previousStageEndDate!
+          ) {
+            addIssue(
+              "Stage Delivery",
+              "Stage delivery periods overlap; acceptable if stages run in parallel. Accept this anomaly for this file if intentional.",
+              `Stage ${stageIndex + 1} start date`,
+              `After Stage ${stageIndex} D.P./Revised D.P.`,
+              `Stage ${stageIndex + 1} period`,
+              `${currentStageStartDate} starts before/within previous stage ending ${previousStageEndDate}`,
+              stageContext,
+            );
+          }
+        }
         if (isStageDone(stage) && isStageCurrent(stage)) {
           addIssue(
             "Stage Delivery",
@@ -1498,7 +1518,6 @@ function getSuspectedAnomalyRows(
             stageContext,
           );
         }
-        const previousStage = rawStageRows[stageIndex - 1];
         if (
           stageIndex > 0 &&
           hasStageCompletion(stage) &&

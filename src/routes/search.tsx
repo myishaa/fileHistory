@@ -98,6 +98,9 @@ export const Route = createFileRoute("/search")({
       fileCategories?: string;
       analyticsType?: "firm" | "indentor";
       analyticsNames?: string;
+      demandCancelledPresenceFilter?: IncludeExcludeFilter;
+      soCancelledPresenceFilter?: IncludeExcludeFilter;
+      shortclosedSoPresenceFilter?: IncludeExcludeFilter;
       focusSection?: string;
       focusMilestone?: string;
       focusTarget?: string;
@@ -125,6 +128,21 @@ export const Route = createFileRoute("/search")({
       validated.analyticsType = search.analyticsType;
     }
     if (typeof search.analyticsNames === "string") validated.analyticsNames = search.analyticsNames;
+    if (typeof search.demandCancelledPresenceFilter === "string") {
+      validated.demandCancelledPresenceFilter = parseIncludeExcludeFilter(
+        search.demandCancelledPresenceFilter,
+      );
+    }
+    if (typeof search.soCancelledPresenceFilter === "string") {
+      validated.soCancelledPresenceFilter = parseIncludeExcludeFilter(
+        search.soCancelledPresenceFilter,
+      );
+    }
+    if (typeof search.shortclosedSoPresenceFilter === "string") {
+      validated.shortclosedSoPresenceFilter = parseIncludeExcludeFilter(
+        search.shortclosedSoPresenceFilter,
+      );
+    }
     if (typeof search.focusSection === "string") validated.focusSection = search.focusSection;
     if (typeof search.focusMilestone === "string") validated.focusMilestone = search.focusMilestone;
     if (typeof search.focusTarget === "string") validated.focusTarget = search.focusTarget;
@@ -514,6 +532,11 @@ const defaultMilestones = [
 ];
 const fileClosedMilestone = "File Closed";
 type IncludeExcludeFilter = "none" | "include" | "exclude";
+
+function parseIncludeExcludeFilter(value: string | undefined): IncludeExcludeFilter {
+  return value === "include" || value === "exclude" ? value : "none";
+}
+
 function parseSearchListParam(value: string | undefined) {
   if (!value) return [];
   return value
@@ -1426,6 +1449,15 @@ function SearchPage() {
     setSoValueThresholdFilter(search.soValueThresholdFilter ?? "all");
   }, [search.soValueThresholdFilter]);
   useEffect(() => {
+    setDemandCancelledPresenceFilter(search.demandCancelledPresenceFilter ?? "none");
+  }, [search.demandCancelledPresenceFilter]);
+  useEffect(() => {
+    setSoCancelledPresenceFilter(search.soCancelledPresenceFilter ?? "none");
+  }, [search.soCancelledPresenceFilter]);
+  useEffect(() => {
+    setShortclosedSoPresenceFilter(search.shortclosedSoPresenceFilter ?? "none");
+  }, [search.shortclosedSoPresenceFilter]);
+  useEffect(() => {
     setModeFilters((current) => normalizeSingleOnlyMultiExcludeFilters(current));
   }, [modeFilters]);
   useEffect(() => {
@@ -1538,11 +1570,11 @@ function SearchPage() {
     useState<IncludeExcludeFilter>("none");
   const [rstFilter, setRstFilter] = useState(false);
   const [demandCancelledPresenceFilter, setDemandCancelledPresenceFilter] =
-    useState<IncludeExcludeFilter>("none");
+    useState<IncludeExcludeFilter>(search.demandCancelledPresenceFilter ?? "none");
   const [soCancelledPresenceFilter, setSoCancelledPresenceFilter] =
-    useState<IncludeExcludeFilter>("none");
+    useState<IncludeExcludeFilter>(search.soCancelledPresenceFilter ?? "none");
   const [shortclosedSoPresenceFilter, setShortclosedSoPresenceFilter] =
-    useState<IncludeExcludeFilter>("none");
+    useState<IncludeExcludeFilter>(search.shortclosedSoPresenceFilter ?? "none");
   const [freeText, setFreeText] = useState("");
   const [freeDate, setFreeDate] = useState("");
   const [sortColumnKey, setSortColumnKey] = useState("none");

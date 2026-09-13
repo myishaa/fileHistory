@@ -130,6 +130,7 @@ async function openStage(page: Page, orderIndex: number, stageIndex: number) {
 async function fillFileDetails(page: Page, code: string, scenario: AddScenario) {
   await page.getByTestId("add-section-file-details").click();
   await page.getByTestId("add-field-division").fill("ACC");
+  await expect(page.getByTestId("add-field-uniqueCode")).not.toHaveValue("");
   await page.getByTestId("add-field-indentor").fill("Playwright Operator");
   await page.getByTestId("add-field-demandDescription").fill(`${code} field-by-field QA`);
   await page.getByTestId("add-field-valueCapitalSelected").check();
@@ -159,10 +160,30 @@ async function fillScrutiny(page: Page, code: string) {
 }
 
 async function fillFileLevelMilestones(page: Page) {
+  await page.getByTestId("add-section-approval-block").click();
+  await fillDate(page, "add-field-cfaSentDate", "2026-07-05");
+  await fillDate(page, "add-field-cfaDate", "2026-07-06");
+
+  if (await scenarioNeedsBidding(page)) {
+    await page.getByTestId("add-section-bidding-details").click();
+    await page.getByTestId("add-field-bidNumber").fill("BID-PLAYWRIGHT");
+    await fillDate(page, "add-field-bidDate", "2026-07-07");
+    await fillDate(page, "add-field-bidOpeningDate", "2026-07-08");
+    await clickRadio(page, "add-field-bidOpened", "Yes");
+    await clickRadio(page, "add-field-biddingStageOver", "Yes");
+  }
+
   await page.getByTestId("add-section-milestones").click();
   await page.getByLabel("Mark Scrutiny as completed").check();
   await page.getByLabel("Mark Controlling as completed").check();
-  await page.getByLabel("Mark CFA as current").check();
+  await page.getByLabel("Mark CFA as completed").check();
+  if (await page.getByLabel("Mark Bidding as completed").isVisible().catch(() => false)) {
+    await page.getByLabel("Mark Bidding as completed").check();
+  }
+}
+
+async function scenarioNeedsBidding(page: Page) {
+  return page.getByTestId("add-section-bidding-details").isVisible().catch(() => false);
 }
 
 async function fillSupplyOrderBase(page: Page, code: string, scenario: AddScenario, index: number) {
@@ -238,9 +259,11 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
   } else {
     await openStage(page, 0, 0);
     await page.getByTestId("add-field-supplyOrder-0-stage-0-stageAmountCapital").fill("4000");
+    await fillDate(page, "add-field-supplyOrder-0-stage-0-deliveryPeriodStartDate", "2026-07-15");
     await fillDate(page, "add-field-supplyOrder-0-stage-0-dpDate", "2026-08-01");
     await openStage(page, 0, 1);
     await page.getByTestId("add-field-supplyOrder-0-stage-1-stageAmountCapital").fill("6000");
+    await fillDate(page, "add-field-supplyOrder-0-stage-1-deliveryPeriodStartDate", "2026-08-02");
     await fillDate(page, "add-field-supplyOrder-0-stage-1-dpDate", "2026-09-01");
   }
 
@@ -248,10 +271,20 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
     await page.getByTestId("add-so-tab-delivery").click();
     await openSupplyOrder(page);
     if (scenario.stageDelivery) {
-      await openStage(page, 0, 0);
-      await fillDate(page, "add-field-supplyOrder-0-stage-0-materialReceiptDate", "2026-07-20");
+      for (const stageIndex of [0, 1]) {
+        await openStage(page, 0, stageIndex);
+        await fillDate(
+          page,
+          `add-field-supplyOrder-0-stage-${stageIndex}-${scenario.ir === "Yes" ? "materialReceiptDate" : "jobCompletionDate"}`,
+          stageIndex === 0 ? "2026-07-20" : "2026-07-25",
+        );
+      }
     } else {
-      await fillDate(page, "add-field-supplyOrder-0-materialReceiptDate", "2026-07-20");
+      await fillDate(
+        page,
+        `add-field-supplyOrder-0-${scenario.ir === "Yes" ? "materialReceiptDate" : "jobCompletionDate"}`,
+        "2026-07-20",
+      );
       if (scenario.ir === "Yes") {
         await fillDate(page, "add-field-supplyOrder-0-irPreparationDate", "2026-07-21");
         await fillDate(page, "add-field-supplyOrder-0-irReceiptDate", "2026-07-22");
@@ -343,7 +376,7 @@ test.describe("Add File field-by-field workflows", () => {
       codes.push(code);
       await test.step(`Add ${code}`, async () => {
         await page.goto("/add");
-        await expect(page.getByRole("heading", { name: "Add a new file" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "File details" })).toBeVisible();
         await fillFileDetails(page, code, scenario);
         await fillScrutiny(page, code);
         await fillFileLevelMilestones(page);
@@ -364,7 +397,7 @@ test.describe("Add File field-by-field workflows", () => {
     await page.goto("/search");
     await expect(page.getByRole("heading", { name: "Search Files" })).toBeVisible();
     await page.getByPlaceholder("Free search").fill(QA_PREFIX);
-    await expect(page.getByText("50 records")).toBeVisible();
+    await expect(page.getByText(`${FILE_COUNT} records`)).toBeVisible();
     await expect(page.getByText(codes[codes.length - 1]).first()).toBeVisible();
 
     const excelDownload = page.waitForEvent("download");

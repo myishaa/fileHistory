@@ -15049,7 +15049,10 @@ const delayMilestoneOptions = [
   { key: "workflowNotStarted", label: "Workflow Not Started" },
   { key: biddingDelayMilestoneKey, label: biddingDelayMilestoneLabel },
   ...milestoneDefinitions
-    .filter((milestone) => !orderDelayMilestoneKeys.has(milestone.key))
+    .filter(
+      (milestone) =>
+        milestone.key !== biddingDelayMilestoneKey && !orderDelayMilestoneKeys.has(milestone.key),
+    )
     .map((milestone) => ({
       key: milestone.key,
       label: milestone.label,

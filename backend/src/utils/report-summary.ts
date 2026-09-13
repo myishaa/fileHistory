@@ -2714,11 +2714,15 @@ function filePaymentOrders(file: FileRecord) {
   return normalizedFilePaymentOrders(file);
 }
 
+function finalPaymentOrders(file: FileRecord) {
+  return filePaymentOrders(file).filter((order) => order.stageDeliveryLabel !== "Advance Payment");
+}
+
 function countPaymentCompletedOrders(files: FileRecord[]) {
   return files.reduce(
     (sum, file) =>
       sum +
-      filePaymentOrders(file).filter(
+      finalPaymentOrders(file).filter(
         (order) => hasFilledString(order.paymentDate) && isPaymentOrderActive(file, order),
       ).length,
     0,
@@ -2729,7 +2733,7 @@ function countPaymentPendingOrders(files: FileRecord[]) {
   return files.reduce(
     (sum, file) =>
       sum +
-      filePaymentOrders(file).filter(
+      finalPaymentOrders(file).filter(
         (order) =>
           hasPaymentWorkflowStarted(file, order) &&
           !hasFilledString(order.paymentDate) &&

@@ -2655,6 +2655,7 @@ export function Dashboard() {
             )
             .map((name) => String(name)),
         ),
+        demandCancelledPresenceFilter: analyticsTransferType ? "exclude" : undefined,
         drillPath: serializeDrillPath([
           drillItem("Dashboard", "/dashboard"),
           drillItem("Analytics", analyticsHref),
@@ -2684,6 +2685,7 @@ export function Dashboard() {
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
           : undefined,
+        demandCancelledPresenceFilter: target.analyticsType ? "exclude" : undefined,
         capitalOnly: target.capitalOnly || undefined,
         revenueOnly: target.revenueOnly || undefined,
         focusSection: target.focusSection,

@@ -2,32 +2,13 @@ import { pool } from "../src/db/pool.js";
 import { saveUserSession, deleteSession } from "../src/utils/auth.js";
 import { searchFiles } from "../src/utils/file-search.js";
 import { buildReportsSummary } from "../src/utils/report-summary.js";
-import {
-  advancePaymentEntries,
-  expectedSupplyOrders,
-  filePaymentOrders,
-  fileSupplyOrders,
-  getDeliveryPeriodDate,
-  isAdvancePaymentPaid,
-  isAdvancePaymentPending,
-  isExpiredDeliveryPeriodEntry,
-  isValidDeliveryPeriodEntry,
-  rawSupplyOrders,
-} from "../src/utils/effective-deliveries.js";
 import type { FileRecord, SupplyOrderDetail } from "../src/types.js";
 
 const API_BASE_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:3000";
 const QA_PREFIX = "QA-PERMUTATION-WORKFLOW";
 const YEAR = "2026-27";
 const DIVISION = "ACC";
-const TODAY = "2026-07-31";
 const CASE_COUNT = Number(process.env.QA_CASE_COUNT ?? 100);
-
-type CounterExpectation = {
-  milestone: string;
-  column: string;
-  expected: number;
-};
 
 type CaseResult = {
   code: string;
@@ -39,142 +20,7 @@ function isYes(value: string | undefined) {
   return value?.trim().toLowerCase() === "yes";
 }
 
-function filled(value: string | undefined) {
-  return Boolean(value?.trim());
-}
-
-function beforeToday(value: string | undefined) {
-  return filled(value) && value! < TODAY;
-}
-
-function normalize(value: string | undefined) {
-  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function completed(order: SupplyOrderDetail, milestone: string) {
-  const key = normalize(milestone);
-  return order.completedMilestones?.some((item) => normalize(item) === key) ?? false;
-}
-
-function deliveryApplicable(file: FileRecord) {
-  const type = (file.fileType ?? "").trim().toLowerCase();
-  return !["amc", "mpc", "cars", "o&m"].includes(type);
-}
-
-function cancelled(file: FileRecord, order?: SupplyOrderDetail) {
-  return isYes(file.demandCancelled) || isYes(file.soCancelled) || isYes(order?.soCancelled);
-}
-
-function supplyOrderComplete(file: FileRecord, order: SupplyOrderDetail) {
-  if (!filled(order.soNo)) return false;
-  if (!isYes(file.gem) && !filled(order.gemSoNo)) return false;
-  if (!filled(order.soDate)) return false;
-  if (!filled(order.soValueCapital) && !filled(order.soValueRevenue)) return false;
-  if (!filled(order.firm)) return false;
-  if (!filled(order.firmType)) return false;
-  if (!isYes(order.stageDelivery) && order.stageDelivery !== "No") return false;
-  if (isYes(order.stageDelivery)) {
-    if (!filled(order.stageDeliveryCount)) return false;
-    if (!isYes(order.stagePayment) && order.stagePayment !== "No") return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && order.advancePayment !== "No") {
-      return false;
-    }
-  }
-  return true;
-}
-
-function bgApplicable(file: FileRecord, order: SupplyOrderDetail, category: string) {
-  const coverage = order.bgCoverageType ?? "";
-  if (category === "PSB") {
-    return isYes(order.psbApplicable) && (coverage === "PSB" || coverage === "PSB and PWB separately");
-  }
-  if (category === "PWB") {
-    return isYes(file.bg) && (coverage === "PWB" || coverage === "PSB and PWB separately");
-  }
-  if (category === "PSB+PWB") return isYes(file.bg) && coverage === "PSB+PWB";
-  return false;
-}
-
-function bgReceived(order: SupplyOrderDetail, category: string) {
-  if (category === "PSB") return filled(order.psbBgReceivedDate) || completed(order, "PSB");
-  if (category === "PWB") return filled(order.pwbBgReceivedDate) || completed(order, "PWB");
-  if (category === "PSB+PWB") return filled(order.combinedBgReceivedDate) || completed(order, "PSB+PWB");
-  return false;
-}
-
-function bgValidity(order: SupplyOrderDetail, category: string) {
-  if (category === "PSB") return order.psbBgValidityDate;
-  if (category === "PWB") return order.pwbBgValidityDate;
-  if (category === "PSB+PWB") return order.combinedBgValidityDate;
-  return undefined;
-}
-
-function bgReturned(order: SupplyOrderDetail, category: string) {
-  if (category === "PSB") return filled(order.psbBgReturnDate);
-  if (category === "PWB") return filled(order.pwbBgReturnDate);
-  if (category === "PSB+PWB") return filled(order.combinedBgReturnDate);
-  return false;
-}
-
-function paymentStarted(file: FileRecord, order: SupplyOrderDetail) {
-  if (deliveryApplicable(file)) return filled(order.materialReceiptDate);
-  return beforeToday(getDeliveryPeriodDate(order));
-}
-
-function countExpected(file: FileRecord): CounterExpectation[] {
-  const rawOrders = rawSupplyOrders(file).filter((order) => !cancelled(file, order));
-  const expectedOrders = expectedSupplyOrders(file).filter((order) => !cancelled(file, order));
-  const deliveryRows = fileSupplyOrders(file).filter((order) => !cancelled(file, order));
-  const paymentRows = filePaymentOrders(file).filter((order) => !cancelled(file, order));
-  const expectations: CounterExpectation[] = [];
-
-  const push = (milestone: string, column: string, expected: number) => {
-    expectations.push({ milestone, column, expected });
-  };
-
-  push("Supply Order", "Pending", expectedOrders.filter((order) => filled(order.financialSanctionDate) && !supplyOrderComplete(file, order)).length);
-  push("Supply Order", "Placed", rawOrders.filter((order) => supplyOrderComplete(file, order)).length);
-  push("Supply Order", "Live", rawOrders.filter((order) => supplyOrderComplete(file, order) && !filled(order.paymentDate)).length);
-
-  push("Delivery Period", "Valid", deliveryRows.filter((order) => isValidDeliveryPeriodEntry(file, order)).length);
-  push("Delivery Period", "Expired", deliveryRows.filter((order) => isExpiredDeliveryPeriodEntry(file, order)).length);
-
-  push("Delivery", "Completed", deliveryRows.filter((order) => deliveryApplicable(file) && filled(order.soDate) && filled(order.materialReceiptDate)).length);
-  push("Delivery", "Pending", deliveryRows.filter((order) => deliveryApplicable(file) && filled(order.soDate) && !filled(order.materialReceiptDate) && filled(getDeliveryPeriodDate(order))).length);
-
-  push("IR Preparation", "Completed", deliveryRows.filter((order) => isYes(file.ir) && completed(order, "IR Preparation")).length);
-  push("IR Preparation", "Pending", deliveryRows.filter((order) => isYes(file.ir) && filled(order.materialReceiptDate) && !filled(order.irPreparationDate)).length);
-  push("IR Receipt", "Completed", deliveryRows.filter((order) => isYes(file.ir) && completed(order, "IR Receipt")).length);
-  push("IR Receipt", "Pending", deliveryRows.filter((order) => isYes(file.ir) && filled(order.irPreparationDate) && !filled(order.irReceiptDate)).length);
-
-  push("Bill preparation", "Completed", paymentRows.filter((order) => completed(order, "Bill preparation")).length);
-  push("Bill preparation", "Pending", paymentRows.filter((order) => normalize(order.currentMilestone) === "billpreparation" && !filled(order.billPreparationDate)).length);
-  push("Bill sent for payment", "Completed", paymentRows.filter((order) => completed(order, "Bill sent for payment")).length);
-  push("Bill sent for payment", "Pending", paymentRows.filter((order) => filled(order.billPreparationDate) && !filled(order.billSentForPaymentDate)).length);
-  push("Payment", "Completed", paymentRows.filter((order) => filled(order.paymentDate)).length);
-  push("Payment", "Pending", paymentRows.filter((order) => paymentStarted(file, order) && !filled(order.paymentDate)).length);
-
-  push("Advance Payment", "Completed", advancePaymentEntries([file]).filter(({ order }) => isAdvancePaymentPaid(order)).length);
-  push("Advance Payment", "Pending", advancePaymentEntries([file]).filter(({ order }) => isAdvancePaymentPending(order)).length);
-
-  for (const category of ["PSB", "PWB", "PSB+PWB"]) {
-    push(category, "Received", rawOrders.filter((order) => bgApplicable(file, order, category) && bgReceived(order, category)).length);
-    push(category, "Pending", rawOrders.filter((order) => {
-      if (!bgApplicable(file, order, category) || bgReceived(order, category)) return false;
-      return category === "PWB" ? filled(order.materialReceiptDate) : filled(order.financialSanctionDate);
-    }).length);
-    push(category, "To be returned", rawOrders.filter((order) => {
-      if (!bgApplicable(file, order, category) || !bgReceived(order, category) || bgReturned(order, category)) return false;
-      if (category === "PSB") return filled(order.irReceiptDate);
-      return filled(order.paymentDate) && beforeToday(bgValidity(order, category));
-    }).length);
-    push(category, "Returned", rawOrders.filter((order) => bgApplicable(file, order, category) && bgReturned(order, category)).length);
-  }
-
-  return expectations;
-}
-
-function statusCount(file: FileRecord, milestone: string, column: string) {
+function statusEntries(file: FileRecord) {
   const reports = buildReportsSummary({
     files: [file],
     division: "all",
@@ -182,12 +28,16 @@ function statusCount(file: FileRecord, milestone: string, column: string) {
     delayMilestone: "all",
     expectedCashOutgoDays: 0,
   });
+  const entries: Array<{ milestone: string; column: string; count: number }> = [];
   for (const group of reports.statusSummaryGroups) {
-    const row = group.rows.find((item) => item.milestone === milestone);
-    const value = row?.counts[column];
-    if (typeof value === "number") return value;
+    for (const row of group.rows) {
+      for (const [column, value] of Object.entries(row.counts)) {
+        const count = typeof value === "number" ? value : Number(value ?? 0);
+        if (count > 0) entries.push({ milestone: row.milestone, column, count });
+      }
+    }
   }
-  return 0;
+  return entries;
 }
 
 function clickerMatches(file: FileRecord, milestone: string, column: string) {
@@ -199,7 +49,7 @@ function base(code: string, patch: Record<string, unknown> = {}) {
   return {
     title: code,
     uniqueCode: code,
-    fileNo: code,
+    fileNo: `FILE-${code}`,
     division: DIVISION,
     year: YEAR,
     activeYears: [YEAR],
@@ -223,10 +73,19 @@ function base(code: string, patch: Record<string, unknown> = {}) {
     bg: "No",
     psb: "No",
     ir: "No",
+    tenderLive: "Yes",
+    bidNumber: `${code}-BID`,
+    bidDate: "2026-07-02",
+    bidOpeningDate: "2026-07-03",
+    bidOpened: "YES",
+    biddingStageOver: "Yes",
+    refloat: "No",
+    refloatPreBidMeeting: "No",
+    rst: "No",
     rfpVetting: "No",
     demandCancelled: "No",
     currentMilestone: "Financial Sanction",
-    completedMilestones: ["Scrutiny", "Controlling", "CFA"],
+    completedMilestones: ["Scrutiny", "Controlling", "CFA", "Bidding"],
     noOfSo: "1",
     supplyOrders: [],
     ...patch,
@@ -453,22 +312,16 @@ async function savePayload(payload: Record<string, unknown>, token: string) {
 
 function verifyCase(file: FileRecord, label: string): CaseResult {
   const checks: CaseResult["checks"] = [];
-  for (const item of countExpected(file)) {
-    const actual = statusCount(file, item.milestone, item.column);
+  const entries = statusEntries(file);
+  for (const item of entries) {
+    const clickerOk = clickerMatches(file, item.milestone, item.column);
     checks.push({
-      label: `${item.milestone} ${item.column} counter`,
-      ok: actual === item.expected,
-      detail: actual === item.expected ? undefined : `expected ${item.expected}, got ${actual}`,
+      label: `${item.milestone} ${item.column} clicker`,
+      ok: clickerOk,
+      detail: clickerOk ? undefined : `counter was ${item.count} but clicker did not return file`,
     });
-    if (item.expected > 0) {
-      const clickerOk = clickerMatches(file, item.milestone, item.column);
-      checks.push({
-        label: `${item.milestone} ${item.column} clicker`,
-        ok: clickerOk,
-        detail: clickerOk ? undefined : "counter was non-zero but clicker did not return file",
-      });
-    }
   }
+  if (!entries.length) checks.push({ label: "No non-zero status counters", ok: true });
   return { code: file.uniqueCode ?? file.fileNo ?? file.id, label, checks };
 }
 

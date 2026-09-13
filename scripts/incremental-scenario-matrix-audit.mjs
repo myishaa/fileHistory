@@ -135,7 +135,7 @@ function baseFile(code, overrides = {}) {
     scrutinyResponseDate: "",
     scrutinyCompletionDate: "",
     immsDate: "",
-    fileNo: code,
+    fileNo: `FILE-${code}`,
     indentor: "Incremental Auditor",
     demandDescription: `${code} scenario matrix audit`,
     valueCapital: "10000",
@@ -248,9 +248,10 @@ function placeOrder(file, code) {
     gemSoNo: `${code}-GEM-1`,
     soDate: "2026-07-10",
     soValueCapital: "10000",
+    dpDate: "2026-12-15",
     firm: `${code} Firm`,
     firmType: "MSE",
-    completedMilestones: ["Financial Sanction", "Supply Order"],
+    completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period"],
   });
 }
 
@@ -401,11 +402,13 @@ function scenarioBg(code, coverage, expectations) {
           pwbBgNo: coverage.includes("PWB") && coverage !== "PSB+PWB" ? `${code}-PWB` : "",
           pwbBgAmount: coverage.includes("PWB") && coverage !== "PSB+PWB" ? "1000" : "",
           pwbBgReceivedDate: coverage.includes("PWB") && coverage !== "PSB+PWB" ? "2026-07-12" : "",
-          pwbBgValidityDate: coverage.includes("PWB") && coverage !== "PSB+PWB" ? "2027-12-31" : "",
+          pwbBgValidityDate: coverage.includes("PWB") && coverage !== "PSB+PWB" ? "2028-02-29" : "",
           combinedBgNo: coverage === "PSB+PWB" ? `${code}-COMBINED` : "",
           combinedBgAmount: coverage === "PSB+PWB" ? "1000" : "",
           combinedBgReceivedDate: coverage === "PSB+PWB" ? "2026-07-12" : "",
-          combinedBgValidityDate: coverage === "PSB+PWB" ? "2027-12-31" : "",
+          combinedBgValidityDate: coverage === "PSB+PWB" ? "2026-07-31" : "",
+          warrantyPeriodDate:
+            coverage === "PSB+PWB" ? "2026-06-01" : coverage.includes("PWB") ? "2027-12-31" : "",
           completedMilestones: [...file.supplyOrders[0].completedMilestones, ...expectations.completed],
         }),
       expectations: expectations.received,
@@ -418,7 +421,7 @@ function scenarioBg(code, coverage, expectations) {
               updateOrder(
                 file,
                 coverage === "PSB+PWB"
-                  ? { combinedBgReturnDate: "2026-07-20" }
+                  ? { combinedBgReturnDate: "2026-08-05" }
                   : { psbBgReturnDate: "2026-07-20" },
               ),
             expectations: [coverage === "PSB+PWB" ? expect.psbPwbReturned : expect.psbReturned],
@@ -500,12 +503,15 @@ function scenarioTcecCncRefloat(code) {
       name: "TCEC and refloat dates",
       apply: (file) => ({
         ...completeBasicTimeline(file, code),
-        preBidMeetingDate: "2026-07-09",
+        preBidMeetingDate: "2026-07-07",
         preTcecDate: "2026-07-10",
         preTcecMinutesDate: "2026-07-11",
         preTcecCommitteeNo: "QA-COMMITTEE",
-        refloatPreBidMeetingDate: "2026-07-12",
-        refloatBiddingDate: "2026-07-13",
+        postTcecDate: "2026-07-15",
+        postTcecMinutesDate: "2026-07-16",
+        postTcecCommitteeNumber: "QA-POST-COMMITTEE",
+        refloatBiddingDate: "2026-07-12",
+        refloatPreBidMeetingDate: "2026-07-13",
         refloatBidOpeningDate: "2026-07-14",
         refloatPostTcecDate: "2026-07-15",
         refloatPostTcecMinutesDate: "2026-07-16",
@@ -513,7 +519,7 @@ function scenarioTcecCncRefloat(code) {
       }),
       expectations: [expect.preTcec, expect.tcecFyReviewed, expect.refloatPreBid, expect.refloatPostTcec],
     },
-    { name: "CNC approved", apply: (file) => ({ ...file, cncDate: "2026-07-16", cncApprovalDate: "2026-07-17" }), expectations: [expect.cncReviewed, expect.cncApproved] },
+    { name: "CNC approved", apply: (file) => ({ ...file, cncDate: "2026-07-17", cncApprovalDate: "2026-07-18" }), expectations: [expect.cncReviewed, expect.cncApproved] },
   ];
 }
 

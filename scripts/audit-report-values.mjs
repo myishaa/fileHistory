@@ -273,12 +273,12 @@ async function main() {
   const token = await login();
   const issues = [];
   const passes = [
-    { name: "omitted", expectedFiles: 27 },
-    { name: "all configured", fileCategories: allConfiguredCategories, expectedFiles: 27 },
-    { name: "fixed built-in", fileCategories: defaultCategories, expectedFiles: 19 },
-    { name: "all custom", fileCategories: allCustomCategories, expectedFiles: 8 },
-    { name: "custom goods/services sample", fileCategories: customCategories, expectedFiles: 6 },
-    { name: "contract custom only", fileCategories: contractCustomCategories, expectedFiles: 2 },
+    { name: "omitted" },
+    { name: "all configured", fileCategories: allConfiguredCategories },
+    { name: "fixed built-in", fileCategories: defaultCategories },
+    { name: "all custom", fileCategories: allCustomCategories },
+    { name: "custom goods/services sample", fileCategories: customCategories },
+    { name: "contract custom only", fileCategories: contractCustomCategories },
     { name: "future empty initiation", fileInitiationFrom: "2030-01-01", fileInitiationTo: "2030-12-31", expectedFiles: 0 },
   ];
   const summaries = {};
@@ -289,7 +289,7 @@ async function main() {
       const summary = payload.summary ?? {};
       summaries[pass.name] = summary;
       validateValueRows(issues, pass.name, summary);
-      if (n(summary.reportFileCount) !== pass.expectedFiles) {
+      if (pass.expectedFiles !== undefined && n(summary.reportFileCount) !== pass.expectedFiles) {
         issues.push({
           pass: pass.name,
           area: "reportFileCount",

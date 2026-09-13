@@ -72,7 +72,7 @@ function MmgLivePage() {
   const load = () => {
     setLoading(true);
     setError(undefined);
-    fetch(`${API_BASE_URL}/api/live/mmg`)
+    fetch(`${API_BASE_URL}/api/live/mmg`, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) throw new Error(`MMG live request failed: ${response.status}`);
         return (await response.json()) as MmgLiveResponse;
