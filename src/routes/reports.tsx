@@ -79,6 +79,7 @@ import {
 import {
   buildMmgSummaryRows,
   normalizeMmgSummaryFields,
+  type MmgSummarySourceOverrides,
   type MmgSummaryRow,
 } from "@/lib/mmg-summary";
 import {
@@ -157,7 +158,524 @@ type ReportsSummaryPayload = {
   warrantyBgMismatchRows: WarrantyBgMismatchRow[];
   delayRows: DelayStatusRow[];
   delaySummary: ReturnType<typeof getDelayStatusSummary>;
+  delayMilestoneOptions?: Array<{ key: string; label: string }>;
 };
+
+type DashboardSummaryPayload = {
+  dashboardFileCount: number;
+  modeCounts: Array<{ name: string; count: number }>;
+  topSummaryStats: Array<{
+    label: string;
+    value: Array<{ label: string; value: number | string; searchFilter?: string }>;
+  }>;
+  fileTypeStats?: {
+    value: Array<{ label: string; value: number | string; searchFilter?: string }>;
+  };
+  firmTypeStats?: {
+    value: Array<{ label: string; value: number | string; searchFilter?: string }>;
+  };
+  statusFlow: Array<Record<string, number | string | boolean | undefined>>;
+  miscellaneousCounts?: Record<string, number | string | undefined>;
+  financeTotals?: Record<string, number | undefined>;
+  financePercents?: Record<string, number | undefined>;
+};
+
+function buildMmgSourceOverridesFromDashboard(
+  summary: DashboardSummaryPayload | undefined,
+): MmgSummarySourceOverrides {
+  if (!summary) return {};
+  const overrides: MmgSummarySourceOverrides = {};
+  const set = (key: string, value: number | string | undefined, dashboardFilter?: string) => {
+    if (value === undefined || value === null || value === "") return;
+    overrides[key] = { value: String(value), dashboardFilter };
+  };
+  const setMoney = (key: string, value: number | undefined) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    set(key, formatThousandsAndLakhs(value / 100_000, 2));
+  };
+  const setMoneyWithPercent = (
+    key: string,
+    value: number | undefined,
+    percent: number | undefined,
+  ) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    const money = formatThousandsAndLakhs(value / 100_000, 2);
+    set(key, typeof percent === "number" ? `${money} / ${percent.toFixed(1)}%` : money);
+  };
+  const status = (key: string) => summary.statusFlow.find((row) => row.key === key);
+  const numberFrom = (row: Record<string, unknown> | undefined, key: string) => {
+    const value = row?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  };
+  const snapshotValue = (label: string) => {
+    for (const stat of summary.topSummaryStats) {
+      const entry = stat.value.find((item) => item.label.toLowerCase() === label.toLowerCase());
+      if (entry) return entry;
+    }
+    return undefined;
+  };
+  const fileTypeValue = (label: string) =>
+    summary.fileTypeStats?.value.find((item) => item.label.toLowerCase() === label.toLowerCase());
+  const modeValue = (mode: string) =>
+    summary.modeCounts.find((item) => item.name.toUpperCase() === mode.toUpperCase());
+
+  set("totalDemands", summary.dashboardFileCount);
+  set("nonTcecDemands", snapshotValue("Non TCEC")?.value, "attribute:tcec:no");
+  set("tcecDemands", snapshotValue("TCEC")?.value, "attribute:tcec:yes");
+  ["obm", "pbm", "lpc", "sbm", "lbm"].forEach((key) => {
+    const mode = key.toUpperCase();
+    set(key, modeValue(mode)?.count, `mode:${mode}`);
+  });
+  [
+    ["goodsServices", "Goods & Services"],
+    ["amc", "AMC"],
+    ["mpc", "MPC"],
+    ["cars", "CARS"],
+    ["om", "O&M"],
+  ].forEach(([key, label]) =>
+    set(key, fileTypeValue(label)?.value, `fileType:${encodeURIComponent(label)}`),
+  );
+  summary.modeCounts.forEach((row) => {
+    const mode = row.name.trim().toUpperCase();
+    if (mode) set(getMmgModeSourceKey(mode), row.count, `mode:${mode}`);
+  });
+  summary.fileTypeStats?.value.forEach((entry) => {
+    const label = entry.label.trim();
+    if (label) {
+      set(
+        getMmgFileTypeSourceKey(label),
+        entry.value,
+        entry.searchFilter ?? `fileType:${encodeURIComponent(label)}`,
+      );
+    }
+  });
+  summary.firmTypeStats?.value.forEach((entry) => {
+    const label = entry.label.trim();
+    if (label) {
+      set(
+        getMmgFirmTypeSourceKey(label),
+        entry.value,
+        entry.searchFilter ?? `firmType:${encodeURIComponent(label)}`,
+      );
+    }
+  });
+
+  const scrutiny = status("scrutiny");
+  set("scrutinyCompleted", numberFrom(scrutiny, "cleared"), "milestoneCleared:scrutiny");
+  set("scrutinyToBeDone", numberFrom(scrutiny, "active"), "milestoneActive:scrutiny");
+  const highValue = status("highValue");
+  set("highValueDemands", numberFrom(highValue, "total"), "milestoneTotal:highValue");
+  set("highValueReviewCompleted", numberFrom(highValue, "cleared"), "milestoneCleared:highValue");
+  const tcec = status("tcec");
+  set("tcecCompleted", numberFrom(tcec, "cleared"), "milestoneCleared:tcec");
+  set("tcecFilesWithMmgForMeeting", numberFrom(tcec, "active"), "milestoneActive:tcec");
+  const ad = status("ad");
+  set("adVettingDemands", numberFrom(ad, "total"), "milestoneTotal:ad");
+  set("adVettingCompleted", numberFrom(ad, "cleared"), "milestoneCleared:ad");
+  set("adVettingRemaining", numberFrom(ad, "pending"), "milestonePending:ad");
+  const rqa = status("rqa");
+  set("rqaDemands", numberFrom(rqa, "total"), "milestoneTotal:rqa");
+  set("rqaVettingDone", numberFrom(rqa, "cleared"), "milestoneCleared:rqa");
+  set("rqaVettingRemaining", numberFrom(rqa, "pending"), "milestonePending:rqa");
+  const control = status("control");
+  set("controllingDone", numberFrom(control, "cleared"), "milestoneCleared:control");
+  set("controllingRemaining", numberFrom(control, "pending"), "milestonePending:control");
+  const ifa = status("ifa");
+  set("filesWithIfa", numberFrom(ifa, "active"), "milestoneActive:ifa");
+  set("ifaApprovalDone", numberFrom(ifa, "cleared"), "milestoneCleared:ifa");
+  const cfa = status("cfa");
+  set("cfaApprovalDone", numberFrom(cfa, "cleared"), "milestoneCleared:cfa");
+  set("cfaApprovalRemaining", numberFrom(cfa, "pending"), "milestonePending:cfa");
+  const bidding = status("bidding");
+  set("liveBids", numberFrom(bidding, "liveBids"), "liveBids");
+  set("bidsOverdueToOpen", numberFrom(bidding, "overdueBids"), "bidOverdue");
+  const preBidMeeting = status("preBidMeeting");
+  set("preBidMeetingDue", numberFrom(preBidMeeting, "preBidDue"), "preBidMeeting:due");
+  set(
+    "preBidMeetingCompleted",
+    numberFrom(preBidMeeting, "preBidCompleted"),
+    "preBidMeeting:completed",
+  );
+  set(
+    "refloatPreBidMeetingDue",
+    numberFrom(preBidMeeting, "refloatPreBidDue"),
+    "refloatPreBidMeeting:due",
+  );
+  set(
+    "refloatPreBidMeetingCompleted",
+    numberFrom(preBidMeeting, "refloatPreBidCompleted"),
+    "refloatPreBidMeeting:completed",
+  );
+  const postTcec = status("postTcec");
+  set("postTcecEvaluationInProgress", numberFrom(postTcec, "active"), "milestoneActive:postTcec");
+  set("postTcecCompleted", numberFrom(postTcec, "cleared"), "milestoneCleared:postTcec");
+  const cnc = status("cnc");
+  set("cncInProgress", numberFrom(cnc, "active"), "milestoneActive:cnc");
+  set("cncCompleted", numberFrom(cnc, "cleared"), "milestoneCleared:cnc");
+  const financialSanction = status("financialSanction");
+  set(
+    "financialSanctionCompleted",
+    numberFrom(financialSanction, "financialSanctionCompleted") ??
+      numberFrom(financialSanction, "cleared"),
+    "manualMilestoneCompleted:Financial Sanction",
+  );
+  set(
+    "financialSanctionPending",
+    numberFrom(financialSanction, "financialSanctionPending") ??
+      numberFrom(financialSanction, "pending"),
+    "manualMilestoneCurrent:Financial Sanction",
+  );
+  const supplyOrder = status("supplyOrder");
+  set("soTotal", numberFrom(supplyOrder, "cleared"), "milestoneCleared:supplyOrder");
+  set("soPlaced", numberFrom(supplyOrder, "cleared"), "milestoneCleared:supplyOrder");
+  set("soPending", numberFrom(supplyOrder, "pending"), "milestonePending:supplyOrder");
+  set("soLive", numberFrom(supplyOrder, "liveSupplyOrders"), "liveSupplyOrders");
+  const deliveryPeriod = status("deliveryPeriod");
+  set("deliveryPeriodValid", numberFrom(deliveryPeriod, "valid"), "deliveryPeriodValid");
+  set("deliveryPeriodExpired", numberFrom(deliveryPeriod, "expired"), "deliveryPeriodExpired");
+  set("deliveryPeriodExtended", numberFrom(deliveryPeriod, "extended"), "deliveryPeriodExtended");
+  const ir = status("ir");
+  set("irPreparationPending", numberFrom(ir, "irPreparationPending"), "irPreparationPending");
+  set("irReceiptPending", numberFrom(ir, "irReceiptPending"), "irReceiptPending");
+  set("irCompleted", numberFrom(ir, "irCompleted"), "irCompleted");
+  const payment = status("payment");
+  set("billSentForPaymentPending", numberFrom(payment, "paymentInProcess"), "paymentInProcess");
+  set("paymentPending", numberFrom(payment, "pending"), "paymentDue");
+  set("paymentCompleted", numberFrom(payment, "cleared"), "milestoneCleared:payment");
+  set(
+    "billsReturnedForCorrection",
+    numberFrom(payment, "billsReturnedForCorrection"),
+    "billReturn:any",
+  );
+  set("billsPendingCorrection", numberFrom(payment, "returnedBillsPending"), "billReturn:pending");
+  set(
+    "billsResubmittedAfterCorrection",
+    numberFrom(payment, "returnedBillsResubmitted"),
+    "billReturn:resubmitted",
+  );
+  set("returnedBillPaid", numberFrom(payment, "returnedBillsPaid"), "billReturn:paid");
+  set("advancePaid", numberFrom(payment, "advancePaid"), "advancePaid");
+  set("advancePending", numberFrom(payment, "advancePending"), "advancePending");
+  set(
+    "supplementaryBillsSubmittedPaymentPending",
+    numberFrom(payment, "supplementarySubmitted"),
+    "supplementaryBill:submitted",
+  );
+  set(
+    "supplementaryBillReturnedForCorrection",
+    numberFrom(payment, "supplementaryReturnedForCorrection"),
+    "supplementaryBill:any",
+  );
+  set(
+    "pendingReturnedSupplementaryBills",
+    numberFrom(payment, "supplementaryReturnedPending"),
+    "supplementaryBill:returned",
+  );
+  set(
+    "returnedSupplementaryBillsResubmitted",
+    numberFrom(payment, "supplementaryReturnedResubmitted"),
+    "supplementaryBill:resubmitted",
+  );
+  set(
+    "supplementaryBillsPaid",
+    numberFrom(payment, "supplementaryNormalPaid"),
+    "supplementaryBill:paid",
+  );
+  set(
+    "returnedSupplementaryBillsPaid",
+    numberFrom(payment, "supplementaryReturnedPaid"),
+    "supplementaryBill:returnPaid",
+  );
+  set(
+    "supplementaryBillsPending",
+    numberFrom(payment, "supplementaryPending"),
+    "supplementaryBill:pending",
+  );
+
+  set(
+    "multipleSupplyOrders",
+    summary.miscellaneousCounts?.multipleSupplyOrders,
+    "miscMultipleSupplyOrders",
+  );
+  set("ld", summary.miscellaneousCounts?.ld, "miscLd");
+  set("soCancelled", summary.miscellaneousCounts?.soCancelled, "miscSoCancelled");
+  set("shortclosedSo", summary.miscellaneousCounts?.shortclosedSo, "miscShortclosedSo");
+  set("cancelledDemands", summary.miscellaneousCounts?.demandCancelled, "miscDemandCancelled");
+  setMoney("allocatedCapital", summary.financeTotals?.allocatedCapital);
+  setMoney("allocatedRevenue", summary.financeTotals?.allocatedRevenue);
+  setMoneyWithPercent(
+    "intendedCapital",
+    summary.financeTotals?.projectedCapital,
+    summary.financePercents?.capitalProjected,
+  );
+  setMoneyWithPercent(
+    "intendedRevenue",
+    summary.financeTotals?.projectedRevenue,
+    summary.financePercents?.revenueProjected,
+  );
+  setMoneyWithPercent(
+    "bookedCapital",
+    summary.financeTotals?.bookedCapital,
+    summary.financePercents?.capitalBooked,
+  );
+  setMoneyWithPercent(
+    "bookedRevenue",
+    summary.financeTotals?.bookedRevenue,
+    summary.financePercents?.revenueBooked,
+  );
+  setMoneyWithPercent(
+    "committedCapital",
+    summary.financeTotals?.spentCapital,
+    summary.financePercents?.capitalSpent,
+  );
+  setMoneyWithPercent(
+    "committedRevenue",
+    summary.financeTotals?.spentRevenue,
+    summary.financePercents?.revenueSpent,
+  );
+  setMoney("actualPaymentCapital", summary.financeTotals?.paidCapital);
+  setMoney("actualPaymentRevenue", summary.financeTotals?.paidRevenue);
+  setMoney(
+    "totalPaymentsMadeThisYear",
+    (summary.financeTotals?.paidCapital ?? 0) + (summary.financeTotals?.paidRevenue ?? 0),
+  );
+  setMoney("advancePaymentCapital", summary.financeTotals?.advanceCapital);
+  setMoney("advancePaymentRevenue", summary.financeTotals?.advanceRevenue);
+
+  const setBgSource = (prefix: "psb" | "pwb" | "psbPwb", statusKey: string) => {
+    const row = status(statusKey);
+    set(`${prefix}Pending`, numberFrom(row, "pending"), `milestonePending:${statusKey}`);
+    set(`${prefix}Received`, numberFrom(row, "cleared"), `milestoneCleared:${statusKey}`);
+    set(`${prefix}Expired`, numberFrom(row, "bgExpired"), `bgExpired:${statusKey}`);
+    set(`${prefix}ToBeReturned`, numberFrom(row, "bgToBeReturned"), `bgToBeReturned:${statusKey}`);
+    set(`${prefix}Returned`, numberFrom(row, "bgReturned"), `bgReturned:${statusKey}`);
+  };
+  setBgSource("psb", "psb");
+  setBgSource("pwb", "pwb");
+  setBgSource("psbPwb", "psbPwb");
+
+  return overrides;
+}
+
+function getMmgModeSourceKey(mode: string) {
+  const normalized = mode.trim().toUpperCase();
+  const defaultKeys: Record<string, string> = {
+    OBM: "obm",
+    PBM: "pbm",
+    LPC: "lpc",
+    SBM: "sbm",
+    LBM: "lbm",
+  };
+  return defaultKeys[normalized] ?? `mode:${encodeURIComponent(normalized)}`;
+}
+
+function getMmgFileTypeSourceKey(fileType: string) {
+  const normalized = fileType.trim();
+  const defaultKeys: Record<string, string> = {
+    "goods & services": "goodsServices",
+    amc: "amc",
+    mpc: "mpc",
+    cars: "cars",
+    "o&m": "om",
+  };
+  return defaultKeys[normalized.toLowerCase()] ?? `fileType:${encodeURIComponent(normalized)}`;
+}
+
+function getMmgFirmTypeSourceKey(firmType: string) {
+  return `firmType:${encodeURIComponent(firmType.trim().toLowerCase())}`;
+}
+
+const mmgSummarySourceDescriptions: Record<string, string> = {
+  allocatedCapital: "Source: Finance allocated capital.",
+  allocatedRevenue: "Source: Finance allocated revenue.",
+  intendedCapital: "Source: Finance intended/projected capital, with Finance percentage.",
+  intendedRevenue: "Source: Finance intended/projected revenue, with Finance percentage.",
+  bookedCapital: "Source: Finance booked capital, with Finance percentage.",
+  bookedRevenue: "Source: Finance booked revenue, with Finance percentage.",
+  committedCapital: "Source: Finance committed/S.O. capital, with Finance percentage.",
+  committedRevenue: "Source: Finance committed/S.O. revenue, with Finance percentage.",
+  actualPaymentCapital: "Source: Finance actual paid capital.",
+  actualPaymentRevenue: "Source: Finance actual paid revenue.",
+  totalPaymentsMadeThisYear: "Source: Finance actual paid capital + actual paid revenue.",
+  advancePaymentCapital: "Source: Finance advance payment capital.",
+  advancePaymentRevenue: "Source: Finance advance payment revenue.",
+  totalExpectedPaymentRemainingThisYear:
+    "Source: Cash Out Go Plan, calculated as Monthwise Revised Cash Out Go Plan minus Expenditure till date.",
+  totalDemands: "Source: Dashboard selected file count.",
+  nonTcecDemands: "Source: Snapshot Non TCEC counter.",
+  tcecDemands: "Source: Snapshot TCEC counter.",
+  obm: "Source: Snapshot Mode counter for OBM.",
+  pbm: "Source: Snapshot Mode counter for PBM.",
+  lpc: "Source: Snapshot Mode counter for LPC.",
+  sbm: "Source: Snapshot Mode counter for SBM.",
+  lbm: "Source: Snapshot Mode counter for LBM.",
+  goodsServices: "Source: Snapshot File Type counter for Goods & Services.",
+  amc: "Source: Snapshot File Type counter for AMC.",
+  mpc: "Source: Snapshot File Type counter for MPC.",
+  cars: "Source: Snapshot File Type counter for CARS.",
+  om: "Source: Snapshot File Type counter for O&M.",
+  scrutinyCompleted: "Source: Status-1 Scrutiny completed.",
+  filesWithUsersAfterScrutiny:
+    "Source: MMG Summary calculation for files where Scrutiny Date is filled but Scrutiny Completion Date is blank.",
+  scrutinyToBeDone: "Source: Status-1 Scrutiny in process.",
+  highValueDemands: "Source: Status-1 High Value total.",
+  highValueReviewCompleted: "Source: Status-1 High Value completed.",
+  tcecCompleted: "Source: Status-1 Pre-TCEC completed.",
+  tcecFilesWithMmgForMeeting: "Source: Status-1 Pre-TCEC in process.",
+  adVettingDemands: "Source: Status-1 AD total.",
+  adVettingCompleted: "Source: Status-1 AD completed.",
+  adVettingRemaining: "Source: Status-1 AD pending.",
+  rqaDemands: "Source: Status-1 R&QA total.",
+  rqaVettingDone: "Source: Status-1 R&QA completed.",
+  rqaVettingRemaining: "Source: Status-1 R&QA pending.",
+  controllingDone: "Source: Status-1 Controlling completed.",
+  controllingRemaining: "Source: Status-1 Controlling pending.",
+  filesWithIfa: "Source: Status-1 IFA in process.",
+  ifaApprovalDone: "Source: Status-1 IFA completed.",
+  cfaApprovalDone: "Source: Status-1 CFA completed.",
+  cfaApprovalRemaining: "Source: Status-1 CFA pending.",
+  liveBids: "Source: Status-1 Bidding live.",
+  bidsToBeOpened: "Source: MMG Summary calculation for bids due to be opened.",
+  bidsOverdueToOpen: "Source: Status-1 Bidding opening overdue.",
+  preBidMeetingDue: "Source: Status-1 Pre-Bid Meeting due.",
+  preBidMeetingCompleted: "Source: Status-1 Pre-Bid Meeting completed.",
+  refloatPreBidMeetingDue: "Source: Status-1 Refloat Pre-Bid Meeting due.",
+  refloatPreBidMeetingCompleted: "Source: Status-1 Refloat Pre-Bid Meeting completed.",
+  postTcecEvaluationInProgress: "Source: Status-1 Post-TCEC in process.",
+  postTcecCompleted: "Source: Status-1 Post-TCEC completed.",
+  cncInProgress: "Source: Status-1 CNC in process.",
+  cncCompleted: "Source: Status-1 CNC completed.",
+  financialSanctionCompleted: "Source: Status-1 Financial Sanction completed.",
+  financialSanctionPending: "Source: Status-1 Financial Sanction pending.",
+  soTotal: "Source: Status-1 S.O. placed.",
+  soPlaced: "Source: Status-1 S.O. placed.",
+  soPending: "Source: Status-1 S.O. pending.",
+  soLive: "Source: Status-1 S.O. live.",
+  deliveriesDueThisMonth:
+    "Source: MMG Summary calculation for delivery-inspection cases with D.P. in the current month and material receipt pending.",
+  deliveriesCompletedThisMonth:
+    "Source: MMG Summary calculation for deliveries/job completions completed in the current month.",
+  deliveryCompleted: "Source: MMG Summary calculation for completed delivery/job completion rows.",
+  deliveryPending:
+    "Source: MMG Summary calculation for active S.O. rows where delivery/job completion is pending.",
+  deliveryOverdue:
+    "Source: MMG Summary calculation for delivery-inspection rows where D.P. has expired and material receipt is pending.",
+  deliveryPeriodValid: "Source: Status-1 Delivery Period valid.",
+  deliveryPeriodExpired: "Source: Status-1 Delivery Period expired.",
+  deliveryPeriodExtended: "Source: Status-1 Delivery Period extended.",
+  irPreparationPending: "Source: Status-1 IR Preparation pending.",
+  irReceiptPending: "Source: Status-1 IR Receipt pending.",
+  irCompleted: "Source: Status-1 IR completed.",
+  totalIrSentToUser: "Source: MMG Summary calculation for rows having IR Preparation Date.",
+  totalIrReceived: "Source: MMG Summary calculation for rows having IR Receipt Date.",
+  billPreparationPending:
+    "Source: MMG Summary calculation for rows where billing workflow has started and Bill Preparation Date is blank.",
+  billPreparationCompleted:
+    "Source: MMG Summary calculation for rows having Bill Preparation Date.",
+  billSentForPaymentPending: "Source: Status-1 Payment in process.",
+  billSentForPaymentCompleted:
+    "Source: MMG Summary calculation for rows having Bill Sent for Payment Date.",
+  paymentPending: "Source: Status-1 Payment pending.",
+  totalPendingPaymentStagesCases:
+    "Source: MMG Summary calculation for all pending payment stage/case rows.",
+  paymentCompleted: "Source: Status-1 Payment completed.",
+  totalPaymentDueThisMonth:
+    "Source: MMG Summary calculation for unpaid rows whose payment due basis date falls in the current month.",
+  billsSentForCurrentMonthDeliveries:
+    "Source: MMG Summary calculation for rows whose payment due basis date falls in the current month and Bill Sent for Payment Date is filled.",
+  paymentDueFromPreviousMonths:
+    "Source: MMG Summary calculation for unpaid rows whose payment due basis date is before the current month.",
+  billsSentForPreviousMonthsDeliveries:
+    "Source: MMG Summary calculation for rows whose payment due basis date is before the current month and Bill Sent for Payment Date falls in the current month.",
+  totalBillsSentThisMonth:
+    "Source: MMG Summary calculation for non-cancelled rows whose Bill Sent for Payment Date falls in the current month.",
+  billsReturnedForCorrection: "Source: Status-1 Bills returned for correction.",
+  billsPendingCorrection: "Source: Status-1 Return pending.",
+  billsResubmittedAfterCorrection: "Source: Status-1 Returned bills resubmitted.",
+  returnedBillPaid: "Source: Status-1 Returned bill paid.",
+  supplementaryBillsSubmittedPaymentPending: "Source: Status-1 Supplementary submitted total.",
+  supplementaryBillsPending: "Source: Status-1 Supplementary pending.",
+  supplementaryBillsPaid: "Source: Status-1 Normal supplementary paid.",
+  supplementaryBillReturnedForCorrection: "Source: Status-1 Supplementary returned total.",
+  pendingReturnedSupplementaryBills: "Source: Status-1 Supplementary return pending.",
+  returnedSupplementaryBillsResubmitted: "Source: Status-1 Supplementary resubmitted total.",
+  returnedSupplementaryBillsPaid: "Source: Status-1 Supplementary returned paid.",
+  advancePaid: "Source: Status-1 Advance paid.",
+  advancePending: "Source: Status-1 Advance pending.",
+  advancePaymentCount: "Source: MMG Summary calculation for advance payment rows.",
+  liveFilesThisYear: "Source: MMG Summary calculation for non-cancelled files not closed.",
+  closedFilesThisYear: "Source: MMG Summary calculation for non-cancelled files marked closed.",
+  liveFilesPreviousYears:
+    "Source: MMG Summary calculation for live files in the current visible filter context.",
+  cancelledDemands: "Source: Status-1/Snapshot cancelled demand counter.",
+  soCancelled: "Source: Status-1/Snapshot cancelled S.O. counter.",
+  shortclosedSo: "Source: Status-1/Snapshot shortclosed S.O. counter.",
+  deliveriesOverdue:
+    "Source: MMG Summary calculation for overdue delivery-inspection rows with material receipt pending.",
+  paymentsOverdue:
+    "Source: MMG Summary calculation for files having overdue payment rows from previous months.",
+  multipleSupplyOrders: "Source: Status-1 Files with Multiple S.O. counter.",
+  ld: "Source: Status-1 LD counter.",
+  dpExtension: "Source: MMG Summary calculation for active S.O. rows marked D.P. extension.",
+  dpExtensionCount:
+    "Source: MMG Summary calculation by summing D.P. Extension Count from active S.O. rows.",
+  revisedDp: "Source: MMG Summary calculation for active S.O. rows having Revised D.P.",
+  totalSoValuePlacedThisFy:
+    "Source: MMG Summary calculation by summing active S.O. values where S.O. Date falls in the selected FY.",
+  totalUnpaidSoValue:
+    "Source: MMG Summary calculation by summing unpaid non-cancelled S.O. value in the visible MMG file context.",
+  filesClosedPercentage:
+    "Source: MMG Summary calculation: closed non-cancelled files divided by total non-cancelled files in the visible context.",
+  psbPending: "Source: Status-1 PSB pending.",
+  psbReceived: "Source: Status-1 PSB received.",
+  psbExpired: "Source: Status-1 PSB expired.",
+  psbToBeReturned: "Source: Status-1 PSB to be returned.",
+  psbReturned: "Source: Status-1 PSB returned.",
+  pwbPending: "Source: Status-1 PWB pending.",
+  pwbReceived: "Source: Status-1 PWB received.",
+  pwbExpired: "Source: Status-1 PWB expired.",
+  pwbToBeReturned: "Source: Status-1 PWB to be returned.",
+  pwbReturned: "Source: Status-1 PWB returned.",
+  psbPwbPending: "Source: Status-1 PSB+PWB pending.",
+  psbPwbReceived: "Source: Status-1 PSB+PWB received.",
+  psbPwbExpired: "Source: Status-1 PSB+PWB expired.",
+  psbPwbToBeReturned: "Source: Status-1 PSB+PWB to be returned.",
+  psbPwbReturned: "Source: Status-1 PSB+PWB returned.",
+};
+
+function getMmgSummaryRowHelper(row: MmgSummaryRow): HelperText {
+  const source = mmgSummarySourceDescriptions[row.key];
+  if (source) {
+    return [
+      source,
+      row.dashboardFilter
+        ? `Clicker uses source dashboard filter: ${row.dashboardFilter}.`
+        : "Value is fetched from the source dashboard total.",
+    ];
+  }
+  if (row.key.startsWith("mode:")) {
+    return ["Source: Snapshot/Mode counter for this configured mode."];
+  }
+  if (row.key.startsWith("fileType:")) {
+    return ["Source: Snapshot/File Type counter for this configured file type."];
+  }
+  if (row.key.startsWith("firmType:")) {
+    return ["Source: Snapshot/Firm Type counter for this configured firm type."];
+  }
+  return [
+    "Calculated inside MMG Summary.",
+    "No exact Status/Snapshot/Finance source counter is frozen for this field yet.",
+  ];
+}
+
+function isMmgSummaryRowPendingReview(row: MmgSummaryRow) {
+  return (
+    !mmgSummarySourceDescriptions[row.key] &&
+    !row.key.startsWith("mode:") &&
+    !row.key.startsWith("fileType:") &&
+    !row.key.startsWith("firmType:")
+  );
+}
 
 type CashOutGoPlanDetailRow = {
   rowKey: string;
@@ -342,6 +860,18 @@ async function fetchReportsSummary(query: string, signal: AbortSignal) {
   return (await response.json()) as { summary: ReportsSummaryPayload };
 }
 
+async function fetchDashboardSummary(query: string, signal: AbortSignal) {
+  const response = await fetch(`${API_BASE_URL}/api/dashboard/summary?${query}`, {
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+    throw new Error(body?.error ?? `Dashboard summary request failed: ${response.status}`);
+  }
+  return (await response.json()) as { summary: DashboardSummaryPayload };
+}
+
 async function fetchCashOutGoPlan(
   financialYear: string,
   includePreviousFySubmitted: boolean,
@@ -516,6 +1046,9 @@ function ReportsPage() {
   const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
   const [fileInitiationToDate, setFileInitiationToDate] = useState("");
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
+  const [mmgDashboardSummary, setMmgDashboardSummary] = useState<
+    DashboardSummaryPayload | undefined
+  >();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
   const [mmgPreviousFiles, setMmgPreviousFiles] = useState<FileRecord[]>([]);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
@@ -692,18 +1225,24 @@ function ReportsPage() {
     () => Array.from(new Set(settings.financialYears ?? [])).filter(Boolean),
     [settings.financialYears],
   );
+  const availableFileYearOptions = useMemo(() => {
+    const globalYearStart = readFinancialYearStart(settings.selectedYear);
+    if (globalYearStart === undefined) return fileYearOptions;
+    return fileYearOptions.filter((year) => {
+      const yearStart = readFinancialYearStart(year);
+      return yearStart === undefined || yearStart <= globalYearStart;
+    });
+  }, [fileYearOptions, settings.selectedYear]);
   const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
   const fileInitiationDateRangeStorageKey = `recordkeeper:file-initiation-date-range:${
     activeUser?.id ?? "anonymous"
   }`;
-  const defaultFileYear = fileYearOptions.includes(settings.financialYear)
-    ? settings.financialYear
-    : (fileYearOptions[0] ?? "all");
+  const defaultFileYear = "all";
   const fileYearAllOptionLabel = isAllFilesYear(settings.selectedYear)
     ? "Entire database"
     : "All file years";
   const activeFileYear =
-    selectedFileYear === "all" || fileYearOptions.includes(selectedFileYear)
+    selectedFileYear === "all" || availableFileYearOptions.includes(selectedFileYear)
       ? selectedFileYear
       : defaultFileYear;
   useEffect(() => {
@@ -724,7 +1263,7 @@ function ReportsPage() {
     settings.selectedYear,
   ]);
   useEffect(() => {
-    if (typeof window === "undefined" || !fileYearOptions.length) return;
+    if (typeof window === "undefined" || !availableFileYearOptions.length) return;
     if (isPreSoExpectedCashOutgoReport) {
       setFileYearLocked(true);
       setSelectedFileYear("all");
@@ -741,12 +1280,19 @@ function ReportsPage() {
       const locked = parsed?.locked === true;
       const year = typeof parsed?.year === "string" ? parsed.year : defaultFileYear;
       setFileYearLocked(locked);
-      setSelectedFileYear(year === "all" || fileYearOptions.includes(year) ? year : defaultFileYear);
+      setSelectedFileYear(
+        year === "all" || availableFileYearOptions.includes(year) ? year : defaultFileYear,
+      );
     } catch {
       setFileYearLocked(false);
       setSelectedFileYear(defaultFileYear);
     }
-  }, [defaultFileYear, fileYearFilterStorageKey, fileYearOptions, isPreSoExpectedCashOutgoReport]);
+  }, [
+    availableFileYearOptions,
+    defaultFileYear,
+    fileYearFilterStorageKey,
+    isPreSoExpectedCashOutgoReport,
+  ]);
   const updateFileYearSelection = (year: string) => {
     setSelectedFileYear(year);
     if (typeof window !== "undefined") {
@@ -815,7 +1361,7 @@ function ReportsPage() {
     fileMatchesInitiationDateRange(file, activeFileInitiationDateRange);
   const fileYearFilterDisabled = isFileYearFilterDisabledReport(reportMode);
   const fileCategoryFilterDisabled = isFileCategoryFilterDisabledReport(reportMode);
-  const fileYearFilterActive = !fileYearFilterDisabled && activeFileYear !== defaultFileYear;
+  const fileYearFilterActive = !fileYearFilterDisabled && activeFileYear !== "all";
   const fileInitiationDateFilterActive =
     !fileYearFilterDisabled && Boolean(activeFileInitiationDateRange);
   const fileCategoryFilterActive =
@@ -936,6 +1482,18 @@ function ReportsPage() {
   }, [reportsQuery]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    fetchDashboardSummary(reportsQuery, controller.signal)
+      .then((payload) => setMmgDashboardSummary(payload.summary))
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error(error);
+        setMmgDashboardSummary(undefined);
+      });
+    return () => controller.abort();
+  }, [reportsQuery]);
+
+  useEffect(() => {
     let active = true;
     setMmgLoading(true);
     setMmgError(undefined);
@@ -1017,13 +1575,13 @@ function ReportsPage() {
     setReportScopeToDate(formatLocalDate(new Date()));
   }, [effectiveFinancialYear]);
   useEffect(() => {
-    if (reportMode !== "cashOutGoPlan") return;
+    if (reportMode !== "cashOutGoPlan" && reportMode !== "mmgSummary") return;
     const controller = new AbortController();
     setCashOutGoPlanLoading(true);
     setCashOutGoPlanError(undefined);
     fetchCashOutGoPlan(
       effectiveFinancialYear,
-      cashOutGoPlanIncludePreviousFy,
+      reportMode === "cashOutGoPlan" ? cashOutGoPlanIncludePreviousFy : false,
       activeDivisionId,
       controller.signal,
     )
@@ -1251,6 +1809,16 @@ function ReportsPage() {
       })
       .finally(() => setPreSoPlanSaving(false));
   };
+  const mmgSourceOverrides = useMemo(() => {
+    const overrides = buildMmgSourceOverridesFromDashboard(mmgDashboardSummary);
+    const remainingExpectedPayment = getCashOutGoPlanExpectedPaymentRemaining(cashOutGoPlan);
+    if (remainingExpectedPayment !== undefined) {
+      overrides.totalExpectedPaymentRemainingThisYear = {
+        value: formatThousandsAndLakhs(remainingExpectedPayment / 100_000, 2),
+      };
+    }
+    return overrides;
+  }, [cashOutGoPlan, mmgDashboardSummary]);
   const mmgSummaryRows = buildMmgSummaryRows({
     files: mmgFilteredFiles,
     divisions:
@@ -1266,6 +1834,7 @@ function ReportsPage() {
     modes: settings.modes,
     fileTypes: settings.fileTypes,
     firmTypes: settings.firmTypes,
+    sourceOverrides: mmgSourceOverrides,
   });
   const demandProcessingPresets = getDemandProcessingPresets(settings.demandProcessingPresets);
   const selectedDemandPreset = demandProcessingPresets.find(
@@ -1281,7 +1850,7 @@ function ReportsPage() {
     selectedDemandPreset?.toFieldId,
   ]);
   const demandAnalysisSourceFiles = useMemo(
-    () => mmgFilteredFiles.filter((file) => !isCancelledFile(file)),
+    () => mmgFilteredFiles.filter((file) => !isYes(file.demandCancelled)),
     [mmgFilteredFiles],
   );
   const demandProcessingFilterFields = useMemo(
@@ -1400,6 +1969,7 @@ function ReportsPage() {
   ]);
   const expectedExpenditureTillMonthRows = combineRowsThroughMonthAsSingleMonth(
     selectedCashOutgoMonth,
+    fyRange.startMonthKey,
     [
       spentTillDateFyRows,
       expectedCashOutgoBillPreparationRows,
@@ -1933,6 +2503,7 @@ function ReportsPage() {
     : undefined;
   const reportScopeDateRangeControls = optionalReportScopeDateFilterActive
     ? {
+        label: reportMode === "firmDatabase" ? "S.O. Date range" : undefined,
         fromDate: reportScopeFromDate,
         toDate: reportScopeToDate,
         onFromDateChange: setReportScopeFromDate,
@@ -2275,12 +2846,13 @@ function ReportsPage() {
   const openMmgSummaryFiles = (row: MmgSummaryRow) => {
     const fileIds = row.fileIds ?? [];
     const uniqueFileIds = Array.from(new Set(fileIds.filter(Boolean)));
-    if (!uniqueFileIds.length) return;
+    if (!uniqueFileIds.length && !row.dashboardFilter) return;
     const sourceFocus = getMmgSummarySourceFocus(row.key);
     navigate({
       to: "/search",
       search: {
-        dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
+        dashboardFilter:
+          row.dashboardFilter ?? `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
         division: activeDivision === "all" ? undefined : activeDivision,
         selectedYear: settings.selectedYear,
         fileCategories: activeFileCategoriesParam,
@@ -2466,7 +3038,7 @@ function ReportsPage() {
             <div className="flex flex-wrap items-end gap-3">
               <FileYearFilter
                 value={activeFileYear}
-                options={fileYearOptions}
+                options={availableFileYearOptions}
                 locked={fileYearLocked}
                 disabled={fileYearFilterDisabled}
                 active={fileYearFilterActive}
@@ -3101,6 +3673,7 @@ function ReportsPage() {
             <ExpectedCashOutgoReport
               rows={selectedCashOutgoRows}
               title={reportTitle}
+              titleHelper={getCashOutgoTitleHelper(reportMode)}
               description={reportLogic}
               actions={
                 <ReportHeaderActions
@@ -3126,6 +3699,7 @@ function ReportsPage() {
             <ExpectedCashOutgoReport
               rows={supplementaryBillSentForPaymentRows}
               title={reportTitle}
+              titleHelper={reportModeHelperText.supplementaryBillsSubmitted}
               description={billingPaymentReportDescription || reportLogic}
               actions={
                 <ReportHeaderActions
@@ -3347,7 +3921,7 @@ const reportModes = [
   { key: "currentMonthLiability", label: "Cumulative Liability Up to Month" },
   { key: "monthlyFileInflow", label: "Monthly file inflow" },
   { key: "monthWiseSupplyOrder", label: "Month-wise Supply Order" },
-  { key: "monthWiseDeliverySchedule", label: "Month-wise Delivery Schedule" },
+  { key: "monthWiseDeliverySchedule", label: "Month-wise Delivery / Contract Period Schedule" },
   {
     key: "monthWiseCompletedDeliveries",
     label: "Month-wise completed deliveries / Job Completion",
@@ -3363,19 +3937,33 @@ type ReportModeOption = (typeof reportModes)[number];
 type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {
   itemsDeliveredBillsPrepared: [
+    "Shows delivered/D.P. done cases where bill is prepared but payment workflow is not completed.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
     "Includes returned supplementary bills pending correction/resubmission.",
+    "Date range, when enabled, filters by Bill preparation date.",
   ],
-  billsSubmitted: ["Includes supplementary bills sent/resubmitted to PCDA and unpaid."],
+  billsSubmitted: [
+    "Shows bills sent/submitted to PCDA where payment is still pending.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
+    "Includes supplementary bills sent/resubmitted to PCDA and unpaid.",
+    "Date range, when enabled, filters by Bill sent/submission date.",
+  ],
   spentTillDateFy: [
     "Includes paid supplementary bills by payment date.",
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
-    "For past months, entered MER values still override app-entered actuals.",
+    "MER data not considered.",
   ],
   billsPaidInMonth: [
     "Includes paid supplementary bills through Actual Cash Outgo by payment date.",
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
   ],
   currentMonthLiability: [
+    "Shows cumulative unpaid liability up to the selected month.",
+    "It combines Delivery/D.P. done bill-preparation pending, Bill Prepared, and Bills Submitted payment-pending rows through the selected month.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
     "Includes supplementary bills that are submitted/resubmitted and unpaid.",
   ],
   cashOutgoForMonth: ["Includes supplementary bills expected to be paid."],
@@ -3385,11 +3973,14 @@ const supplementaryBillInclusionNotes = {
 } satisfies Partial<Record<ReportMode, HelperText>>;
 const reportModeHelperText = {
   mmgSummary: [
-    "File Year restricts source files first.",
+    "File Initiation Year restricts source files first.",
     "Date range, when enabled, filters the summary by Demand received date.",
   ],
   demandProcessingAnalysis: [
-    "File Year restricts source files first.",
+    "File Initiation Year restricts source files first.",
+    "Cancelled Demand is excluded. Closed Files are included as per the Global Filter and File Initiation Year.",
+    "Cancelled S.O. rows are excluded from S.O./stage/advance/payment analysis, while file-level processing history up to CFA remains available.",
+    "Shortclosed S.O. rows contribute where the selected actual dates are filled.",
     "The selected pair is read as From date -> To date; the report calculates days between those two dates.",
     "Fields that would create an obvious reverse lifecycle pair are hidden from the opposite panel.",
     "Negative results are valid selected pairs where the To date is earlier than the From date, for example delivery completed before D.P. date. They are excluded from average/median/min/max and shown under Negative results.",
@@ -3398,31 +3989,77 @@ const reportModeHelperText = {
     "Date range, when enabled, filters demand processing by the selected From date.",
   ],
   firmDatabase: [
-    "File Year restricts source files first.",
+    "File Initiation Year restricts source files first.",
+    "Cancelled Demand is excluded. Closed Files, shortclosed S.O., and cancelled-S.O. files are included as per the Global Filter and File Initiation Year.",
+    "Total S.O. includes placed cancelled S.O. rows for history; active/value/BG/rating/delay fields use non-cancelled S.O. rows.",
+    "Average Delay Days is calculated for delayed completed S.O.s using original D.P. as the baseline.",
     "Without date range, values come from S.O.s inside those selected files.",
     "Date range, when enabled, further filters firm performance by S.O. date.",
   ],
   merData: [
+    "MER is manually entered month-wise FY cash-outgo data.",
     "MER corresponds to Global Filter F.Y.",
     "For Active files, MER uses the official Current FY.",
     "For Active + Current FY closed, MER uses the official Current FY.",
     "For a specific FY, MER uses that selected FY.",
-    "File Year subfilter is not applied to this report.",
+    "File Initiation Year subfilter is not applied to this report.",
+    "Where MER is blank and software actual-payment fallback is used, Cancelled Demand and cancelled S.O. rows are excluded.",
   ],
   supplementaryBillsPaid: [
     "Paid supplementary bills are counted by supplementary Payment Date.",
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows.",
+    "Included: Shortclosed/no-further-action S.O. rows where supplementary payment is actually completed.",
     "Returned and paid supplementary bills are included.",
+  ],
+  supplementaryBillsSubmitted: [
+    "Shows supplementary bills submitted/resubmitted where payment is pending.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+  ],
+  supplementaryPendingReturnedBills: [
+    "Shows returned supplementary bills pending correction/resubmission.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+  ],
+  supplementaryReturnedBillsResubmitted: [
+    "Shows returned supplementary bills resubmitted where payment is still pending.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+  ],
+  supplementaryReturnedBillsPaid: [
+    "Shows returned supplementary bills that are paid.",
+    "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows.",
+    "Included: Shortclosed/no-further-action S.O. rows where supplementary payment is actually completed.",
+  ],
+  pendingReturnedBills: [
+    "Shows returned bills pending correction/resubmission.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+  ],
+  returnedBillsResubmitted: [
+    "Shows returned bills resubmitted where payment is still pending.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+  ],
+  returnedBillsPaid: [
+    "Shows returned bills that are paid.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows.",
+    "Included: Shortclosed/no-further-action S.O. rows where payment is actually completed.",
   ],
   soPaymentMatrix: [
     "Shows one row per S.O. with expected pending payment amount placed under the month in which payment is expected.",
     "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment schedule.",
+    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Other S.O. rows in the same file continue normally.",
     "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
     "Rows without a derivable expected payment month inside the selected FY are not shown.",
   ],
   paymentCompletedMatrix: [
     "Shows one row per S.O. with completed payment amount placed under the actual payment month.",
     "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment date.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows.",
+    "Shortclosed/no-further-action S.O. rows are included when payment is actually completed.",
+    "Other S.O. rows in the same file continue normally.",
     "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
     "Rows without a completed payment month inside the selected FY are not shown.",
   ],
@@ -3482,21 +4119,23 @@ const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   },
 ];
 const fileYearSubfilterHelper = [
-  "This is a File Initiation Year subfilter applied after the Global filter.",
-  "Global filter decides the main file universe: all files, active files, active + current FY closed, or FY Activity.",
-  "Report FY rule: All files / All active files / Active + current FY closed use Current FY from Settings for month columns, MER, and date defaults.",
-  "Report FY rule: A specific FY in Global filter uses that same selected FY for month columns, MER, and date defaults.",
-  "Future-year payments do not change previous-FY actual cash outgo. Previous-FY reports change only if dates/amounts/MER are backdated or edited into that FY.",
-  "A specific FY here means files initiated in that FY only; it does not mean activity year.",
-  "All file years means no extra initiation-year restriction inside the selected Global filter.",
+  "Subfilter is applied after the Global Filter.",
+  "Global Filter decides the main report scope.",
+  "File Initiation Year narrows that scope by the year in which files were started.",
+  "For month columns, MER, and date defaults, All files / All active files / Active + current FY closed use the Current FY from Settings.",
+  "A specific FY in Global Filter uses that same FY for month columns, MER, and date defaults.",
+  "Future-year payments do not change previous-FY actual cash outgo unless dates or MER are edited into that previous FY.",
+  "A specific FY here means files started in that FY only.",
+  "All file years means no extra initiation-year restriction inside the selected Global Filter.",
   "When Global Filter is All files, the no-restriction option is labelled Entire database.",
-  "Global All files + Entire database shows every accessible database file; Global All files + a specific FY shows every accessible file initiated in that FY.",
-  "Example: Global FY Activity 2026-27 + File Year 2025-26 shows files initiated in 2025-26 that remained active/continued in 2026-27.",
-  "After you change File Year, that choice stays for the current tab session.",
-  "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it.",
+  "All files + Entire database shows every accessible database file.",
+  "All files + a specific File Initiation Year shows every accessible file started in that FY.",
+  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows files started in 2025-26 within the 2026-27 context.",
+  "After you change File Initiation Year, that choice stays for the current tab session.",
+  "Lock keeps this File Initiation Year selection fixed on Dashboard and Reports until you unlock it.",
 ];
 const fileInitiationDateRangeHelper = [
-  "Further narrows the File Year Subfilter using exact file initiation date.",
+  "Further narrows the File Initiation Year subfilter using exact file initiation date.",
   "Leave both dates blank when no initiation date restriction is required.",
 ];
 type ReportModeSection = {
@@ -3609,7 +4248,7 @@ const monitoringReportModes = getReportModeOptions([
 const fileClosedMilestone = "File Closed";
 const delayStatusPageSizeOptions = [25, 50, 100] as const;
 const biddingDelayMilestoneKey = "bidding";
-const biddingDelayMilestoneLabel = "Bidding Delay";
+const biddingDelayMilestoneLabel = "Bidding";
 const billReturnedDelayMilestoneKey = "billReturnedForCorrection";
 const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 const biddingDelayBreakupOptions = [
@@ -3830,20 +4469,23 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   const custom = reportModeHelperText[mode];
   const supplementary = supplementaryBillInclusionNotes[mode];
   const commonFilters =
-    "Uses the current Global filter, File Year subfilter, initiation date range, division, file category, and user access wherever applicable. FY rule: All files / All active files / Active + current FY closed use Current FY from Settings; a specific Global FY uses that same FY. Future-year payments do not change previous-FY actual cash outgo unless data is backdated or edited into that FY.";
+    "Uses the current Global Filter, File Initiation Year subfilter, date range, division, file category, and user access wherever applicable.";
   if (custom && supplementary) return [...flattenHelperText(custom), ...flattenHelperText(supplementary)];
   if (custom) return custom;
   if (supplementary) return [commonFilters, ...flattenHelperText(supplementary)];
   if (mode === "cashOutGoPlan") {
     return [
       "Shows month-wise cash outgo planning using MER for past months and software forecast rows for pending payments.",
+      "Cancelled Demand and cancelled S.O. rows are excluded from software-calculated actual/forecast rows.",
+      "Shortclosed S.O. rows are included where real billing/delivery/payment action exists; shortclosed/no-further-action rows are excluded from pure future D.P. forecast.",
       "Editable row dates/offsets depend on the user's Cash Out Go Plan access level.",
       commonFilters,
     ];
   }
   if (mode === "preSoExpectedCashOutgo") {
     return [
-      "Plans expected cash outgo for active files where S.O. is not yet placed.",
+      "Plans expected cash outgo for active files where no active/non-cancelled S.O. has been placed.",
+      "Cancelled Demand, Closed Files, and files already having active S.O. history are excluded.",
       "Report is fixed to All active files and All file years; initiation date range is blocked.",
     ];
   }
@@ -3851,6 +4493,8 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows delivered/D.P. done cases where bill preparation is still pending.",
       "Expected payment is derived from the relevant delivery/job completion/D.P. trigger plus configured offset days.",
+      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+      "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
       commonFilters,
     ];
   }
@@ -3872,20 +4516,22 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows expected cash outgo by D.P. for unpaid S.O.s in the selected FY.",
       "Rows are placed in month by D.P./revised D.P. plus offset logic.",
+      "When Global Filter is a specific FY, only expected due rows inside that FY are counted.",
       commonFilters,
     ];
   }
   if (mode === "spentTillDateFy") {
     return [
       "Shows actual cash outgo by payment date.",
-      "For past months, MER values can supersede software-entered actuals where MER is entered.",
+      "MER data not considered.",
+      "When Global Filter is a specific FY, only payment dates inside that FY are counted.",
       commonFilters,
     ];
   }
   if (mode === "billsPaidInMonth") {
     return [
       "Shows bills paid in the selected month.",
-      "Normal and supplementary paid bill rows are included.",
+      "Normal, supplementary, and applicable advance paid rows are included.",
       commonFilters,
     ];
   }
@@ -3930,31 +4576,61 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     ];
   }
   if (mode === "monthlyFileInflow") {
-    return ["Shows month-wise file inflow based on demand/file initiation dates.", commonFilters];
+    return [
+      "Shows month-wise file inflow based on demand/file initiation dates.",
+      "When Global Filter is a specific FY, only file initiation/received dates inside that FY are counted.",
+      "Excluded: Cancelled Demand. Included: Closed Files, cancelled S.O., and shortclosed S.O.",
+      commonFilters,
+    ];
   }
   if (mode === "monthWiseSupplyOrder") {
-    return ["Shows month-wise S.O. placement counts/values by S.O. date.", commonFilters];
+    return [
+      "Shows month-wise S.O. placement counts by S.O. date.",
+      "When Global Filter is a specific FY, only S.O. dates inside that FY are counted. File Initiation Year can still narrow source files.",
+      "Excluded: Cancelled Demand. Included: Closed Files, cancelled S.O., and shortclosed S.O.",
+      commonFilters,
+    ];
   }
   if (mode === "monthWiseDeliverySchedule") {
-    return ["Shows month-wise delivery schedule by D.P./revised D.P. dates.", commonFilters];
+    return [
+      "Shows month-wise delivery / contract period schedule by D.P./revised D.P./contract-period dates.",
+      "When Global Filter is a specific FY, only D.P./contract-period dates inside that FY are counted. File Initiation Year can still narrow source files.",
+      "Pending excludes rows where material delivery or job completion is already done.",
+      "Excluded: Cancelled Demand and cancelled S.O. Shortclosed/no-further-action S.O. is excluded when no delivery/job completion is recorded.",
+      "Included: Closed Files as per the Global Filter and File Initiation Year; contract and IR=No cases are included as contract-period/job-completion schedule.",
+      commonFilters,
+    ];
   }
   if (mode === "monthWiseCompletedDeliveries") {
     return [
       "Shows month-wise completed deliveries/job completions.",
-      "Uses material receipt date where delivery/inspection applies and job completion date where applicable.",
+      "When Global Filter is a specific FY, only material receipt/job completion dates inside that FY are counted. File Initiation Year can still narrow source files.",
+      "Month is based on actual material receipt date or job completion date.",
+      "Excluded: Cancelled Demand and cancelled S.O. Included: Closed Files and shortclosed S.O. where delivery/job completion is recorded.",
       commonFilters,
     ];
   }
   if (mode === "monthWiseBgExpiry") {
-    return ["Shows month-wise BG expiry based on BG validity dates.", commonFilters];
+    return [
+      "Shows month-wise BG expiry based on BG validity dates.",
+      "When Global Filter is a specific FY, only BG validity dates inside that FY are counted. File Initiation Year can still narrow source files.",
+      "Excluded: Cancelled Demand. Included: Closed Files and S.O. rows, including cancelled/shortclosed S.O. rows, where BG is received and not returned.",
+      commonFilters,
+    ];
   }
   if (mode === "preBidMeetings") {
-    return ["Shows pre-bid meeting schedule/status by applicable pre-bid meeting dates.", commonFilters];
+    return [
+      "Shows pre-bid meeting schedule/status by applicable pre-bid meeting dates.",
+      "When Global Filter is a specific FY, only pre-bid meeting dates inside that FY are counted.",
+      "Excluded: Cancelled Demand. S.O. cancellation/shortclosure does not affect this file-processing report.",
+      commonFilters,
+    ];
   }
   if (mode === "bgReceiptDelay") {
     return [
       "Shows BG receipt delay using the selected delay-day thresholds.",
       "Delay is calculated only where BG is applicable and receipt is due/pending.",
+      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
       commonFilters,
     ];
   }
@@ -3962,13 +4638,16 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows warranty/BG validity mismatch cases using the selected buffer days.",
       "Uses recorded warranty/BG validity dates for comparison.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows are included where warranty/BG obligations still exist.",
       commonFilters,
     ];
   }
   if (mode === "delayStatus") {
     return [
-      "Shows files currently stuck beyond the selected delay threshold at their current stage.",
+      "Shows files or S.O./stage cases currently stuck beyond the selected delay threshold at their current stage.",
+      "For S.O./stage milestones such as IR Preparation, one file may contribute more than one delayed case; Search clickers open unique files.",
       "Milestones already cleared before the delay limit are not counted as current delay.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed/no-further-action rows are excluded from pending future action.",
       commonFilters,
     ];
   }
@@ -3976,6 +4655,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows unpaid liabilities grouped by ageing bucket as on the selected date.",
       "Ageing starts from delivery/job completion, bill preparation, or bill sent trigger as applicable.",
+      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows. Other S.O. rows in the same file continue normally.",
       commonFilters,
     ];
   }
@@ -4218,11 +4898,14 @@ function isPendingBillingCashOutgoMode(mode: CashOutgoFilterMode) {
 
 function isReturnedBillReportMode(
   mode: ReportMode,
-): mode is Extract<ReturnedBillCashOutgoMode, ReportMode> {
+): mode is Extract<CashOutgoFilterMode, ReportMode> {
   return (
     mode === "pendingReturnedBills" ||
     mode === "returnedBillsResubmitted" ||
-    mode === "returnedBillsPaid"
+    mode === "returnedBillsPaid" ||
+    mode === "supplementaryPendingReturnedBills" ||
+    mode === "supplementaryReturnedBillsResubmitted" ||
+    mode === "supplementaryReturnedBillsPaid"
   );
 }
 
@@ -4362,7 +5045,8 @@ function getEightReportTitle(
   if (mode === "monthlyFileInflow") return "Monthly file inflow";
   if (mode === "firmDatabase") return "Firm Performance";
   if (mode === "monthWiseSupplyOrder") return "Month-wise Supply Order";
-  if (mode === "monthWiseDeliverySchedule") return "Month-wise Delivery Schedule";
+  if (mode === "monthWiseDeliverySchedule")
+    return "Month-wise Delivery / Contract Period Schedule";
   if (mode === "monthWiseCompletedDeliveries") {
     return "Month-wise completed deliveries / Job Completion";
   }
@@ -4432,7 +5116,7 @@ function getCashOutgoReportLogic(
 function getCashOutgoTitleHelper(mode: ReportMode): HelperText | undefined {
   if (mode === "soPaymentMatrix") return reportModeHelperText.soPaymentMatrix;
   if (mode === "paymentCompletedMatrix") return reportModeHelperText.paymentCompletedMatrix;
-  if (mode === "supplementaryBillsPaid") return reportModeHelperText.supplementaryBillsPaid;
+  if (mode in reportModeHelperText) return reportModeHelperText[mode];
   return supplementaryBillInclusionNotes[mode];
 }
 
@@ -4470,8 +5154,8 @@ function getReportsExportContextDescription({
   asOnDate: string;
 }) {
   return [
-    `Global filter: ${displayFinancialYearLabel(globalYear)}`,
-    `File Year Subfilter: ${formatFileYearSubfilterExportLabel(
+    `Global Filter: ${displayFinancialYearLabel(globalYear)}`,
+    `File Initiation Year subfilter: ${formatFileYearSubfilterExportLabel(
       globalYear,
       fileYear,
       fileYearFilterDisabled,
@@ -4523,8 +5207,8 @@ function getReportsCombinedCashOutgoExportContextDescription({
   asOnDate: string;
 }) {
   return [
-    `Global filter: ${displayFinancialYearLabel(globalYear)}`,
-    `File Year Subfilter: ${formatFileYearSubfilterExportLabel(
+    `Global Filter: ${displayFinancialYearLabel(globalYear)}`,
+    `File Initiation Year subfilter: ${formatFileYearSubfilterExportLabel(
       globalYear,
       fileYear,
       fileYearFilterDisabled,
@@ -4719,7 +5403,7 @@ function getMonthlyReportConfig(
       monthLabelColumn,
       {
         key: "grossCount",
-        label: "D.P. expiring",
+        label: "D.P./Contract period scheduled",
         align: "right",
         getFilter: (row) => `deliverySchedule:gross:${row.monthKey}`,
         getTotalFilter: (_rows, context) =>
@@ -4731,7 +5415,7 @@ function getMonthlyReportConfig(
       },
       {
         key: "netCount",
-        label: "Net pending",
+        label: "D.P./Contract period pending",
         align: "right",
         getFilter: (row) => `deliverySchedule:net:${row.monthKey}`,
         getTotalFilter: (_rows, context) =>
@@ -4874,6 +5558,7 @@ function getMonthlyReportConfig(
     return {
       description: [
         "- Month-wise Pre-Bid Meeting schedule.",
+        "- When Global Filter is a specific FY, only Pre-Bid meeting dates inside that FY are counted. File Initiation Year can still narrow source files.",
         "- Dates before today: Completed.",
         "- Dates today or later: Due.",
       ].join("\n"),
@@ -6713,6 +7398,7 @@ function ExpectedCashOutgoReport({
 }
 
 type HistoricalDateRangeControlsProps = {
+  label?: string;
   fromDate: string;
   toDate: string;
   onFromDateChange: (value: string) => void;
@@ -6788,6 +7474,7 @@ function AsOnDateControl({
 }
 
 function HistoricalDateRangeControls({
+  label = "Date range",
   fromDate,
   toDate,
   onFromDateChange,
@@ -6816,11 +7503,11 @@ function HistoricalDateRangeControls({
                 onChange={(event) => onDateRangeEnabledChange(event.target.checked)}
                 className="size-3.5 rounded border-input"
               />
-              Date range
+              {label}
               {helperText ? (
                 <FloatingHelper
                   text={helperText}
-                  label="Date range help"
+                  label={`${label} help`}
                   side="top"
                   className="size-5 border-0 bg-transparent shadow-none"
                   iconClassName="size-3"
@@ -7756,9 +8443,10 @@ function FileYearFilter({
   onChange: (year: string) => void;
   onLockToggle: () => void;
 }) {
+  const disabledValue = "__not_applied__";
   const helperText = disabled
     ? [
-        "File Year is not used for this report.",
+        "File Initiation Year is not used for this report.",
         "This report uses the effective FY from the Global Filter.",
       ]
     : fileYearSubfilterHelper;
@@ -7771,17 +8459,17 @@ function FileYearFilter({
         )}
       >
         <span className="inline-flex items-center gap-1">
-          File year
+          File Initiation Year
           <FloatingHelper
             text={helperText}
-            label="File year subfilter help"
+            label="File initiation year subfilter help"
             side="top"
             className="size-5 border-0 bg-transparent shadow-none"
             iconClassName="size-3"
           />
         </span>
         <select
-          value={value}
+          value={disabled ? disabledValue : value}
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
           className={filterControlClass(
@@ -7789,12 +8477,18 @@ function FileYearFilter({
             "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground",
           )}
         >
-          <option value="all">{allOptionLabel}</option>
-          {options.map((year) => (
-            <option key={year} value={year}>
-              {year}
-            </option>
-          ))}
+          {disabled ? (
+            <option value={disabledValue}>Not applied</option>
+          ) : (
+            <>
+              <option value="all">{allOptionLabel}</option>
+              {options.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </>
+          )}
         </select>
       </label>
       <button
@@ -7804,17 +8498,17 @@ function FileYearFilter({
         className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
         title={
           disabled
-            ? "File year is not used for this report"
+            ? "File initiation year is not used for this report"
             : locked
-              ? "Unlock file year"
-              : "Lock file year"
+              ? "Unlock file initiation year"
+              : "Lock file initiation year"
         }
         aria-label={
           disabled
-            ? "File year is not used for this report"
+            ? "File initiation year is not used for this report"
             : locked
-              ? "Unlock file year"
-              : "Lock file year"
+              ? "Unlock file initiation year"
+              : "Lock file initiation year"
         }
       >
         {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
@@ -7822,10 +8516,10 @@ function FileYearFilter({
       <FloatingHelper
         text={[
           "This lock is session based; it is kept only for the current browser session/tab.",
-          "Lock keeps this File Year selection fixed on Dashboard and Reports until you unlock it or the session resets.",
-          "Unlock allows the File Year subfilter to follow changes again.",
+          "Lock keeps this File Initiation Year selection fixed on Dashboard and Reports until you unlock it or the session resets.",
+          "Unlock allows the File Initiation Year subfilter to follow changes again.",
         ]}
-        label="File year lock help"
+        label="File initiation year lock help"
         className="size-8 border-0 bg-transparent shadow-none"
         iconClassName="size-3"
       />
@@ -8083,6 +8777,7 @@ function FirmDatabaseReport({
           setPageSize(nextPageSize);
           setPage(1);
         }}
+        onPageChange={setPage}
         onPrevious={() => setPage((current) => Math.max(1, current - 1))}
         onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
       />
@@ -8184,6 +8879,7 @@ function FirmDatabaseReport({
             setPageSize(nextPageSize);
             setPage(1);
           }}
+          onPageChange={setPage}
           onPrevious={() => setPage((current) => Math.max(1, current - 1))}
           onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
         />
@@ -8243,6 +8939,7 @@ function FirmDatabasePaginationControls({
   safePage,
   totalPages,
   onPageSizeChange,
+  onPageChange,
   onPrevious,
   onNext,
 }: {
@@ -8253,9 +8950,12 @@ function FirmDatabasePaginationControls({
   safePage: number;
   totalPages: number;
   onPageSizeChange: (pageSize: (typeof firmDatabasePageSizeOptions)[number]) => void;
+  onPageChange: (page: number) => void;
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const pageNumbers = getPaginationPages(safePage, totalPages);
+
   return (
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
       <div>
@@ -8279,6 +8979,14 @@ function FirmDatabasePaginationControls({
         <div className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-card">
           <button
             type="button"
+            onClick={() => onPageChange(1)}
+            disabled={safePage <= 1}
+            className="border-r border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
+          >
+            First
+          </button>
+          <button
+            type="button"
             onClick={onPrevious}
             disabled={safePage <= 1}
             className="px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
@@ -8290,6 +8998,21 @@ function FirmDatabasePaginationControls({
             <span className="mx-1">of</span>
             <span className="font-medium text-foreground">{totalPages}</span>
           </div>
+          {pageNumbers.map((pageNumber) => (
+            <button
+              key={pageNumber}
+              type="button"
+              onClick={() => onPageChange(pageNumber)}
+              className={
+                "border-r border-border px-2.5 text-xs font-medium " +
+                (pageNumber === safePage
+                  ? "bg-primary text-primary-foreground"
+                  : "text-foreground hover:bg-accent")
+              }
+            >
+              {pageNumber}
+            </button>
+          ))}
           <button
             type="button"
             onClick={onNext}
@@ -8297,6 +9020,14 @@ function FirmDatabasePaginationControls({
             className="px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
           >
             Next
+          </button>
+          <button
+            type="button"
+            onClick={() => onPageChange(totalPages)}
+            disabled={safePage >= totalPages}
+            className="border-l border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
+          >
+            Last
           </button>
         </div>
       </div>
@@ -8547,10 +9278,25 @@ function MmgSummaryReport({
             {rows.length ? (
               rows.map((row) => {
                 const fileIds = row.fileIds ?? [];
-                const clickable = fileIds.length > 0 && Number(row.value) > 0;
+                const clickable =
+                  (fileIds.length > 0 || Boolean(row.dashboardFilter)) && Number(row.value) > 0;
+                const pendingReview = isMmgSummaryRowPendingReview(row);
                 return (
                   <tr key={row.key} className="border-b border-border/70 last:border-0">
-                    <td className="px-3 py-2 font-medium">{row.label}</td>
+                    <td className="px-3 py-2 font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={pendingReview ? "text-destructive" : undefined}>
+                          {row.label}
+                        </span>
+                        <FloatingHelper
+                          text={getMmgSummaryRowHelper(row)}
+                          label={`${row.label} MMG Summary help`}
+                          side="right"
+                          className="size-5"
+                          iconClassName="size-3"
+                        />
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {clickable ? (
                         <button
@@ -9310,7 +10056,7 @@ function PreSoExpectedCashOutgoReport({
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <div className="rounded-md border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
-              Global filter: {globalYearLabel || "-"}
+              Global Filter: {globalYearLabel || "-"}
             </div>
             {canSave ? (
               <span className="inline-flex items-center gap-1">
@@ -10573,6 +11319,13 @@ function getCashOutGoSummarySections(plan: CashOutGoPlanPayload) {
   ];
 }
 
+function getCashOutGoPlanExpectedPaymentRemaining(plan: CashOutGoPlanPayload | undefined) {
+  if (!plan) return undefined;
+  const expenditure = getExpectedCashOutgoTotals(plan.expenditureTillDate);
+  const monthwise = getExpectedCashOutgoTotals(plan.monthwisePlan);
+  return monthwise.total - expenditure.total;
+}
+
 function recalculateCashOutGoPlan(
   plan: CashOutGoPlanPayload,
   options: { preserveExpectedSentDate?: boolean } = {},
@@ -11253,7 +12006,11 @@ function FloatingHelper({
             <Info className={iconClassName} />
           </button>
         </TooltipTrigger>
-        <TooltipContent side={side} align="center" className="max-w-xs leading-relaxed">
+        <TooltipContent
+          side={side}
+          align="center"
+          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] leading-relaxed"
+        >
           <ul className="list-disc space-y-1 pl-4">
             {flattenHelperText(text).map((item, index) => (
               <li key={`${item}-${index}`}>{item}</li>
@@ -11285,7 +12042,11 @@ function InfoCircleHelper({
             <Info className="size-3" />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="top" align="center" className="max-w-sm leading-relaxed">
+        <TooltipContent
+          side="top"
+          align="center"
+          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] leading-relaxed"
+        >
           <ul className="list-disc space-y-1 pl-4 text-xs">
             {flattenHelperText(text).map((item, index) => (
               <li key={`${item}-${index}`}>{item}</li>
@@ -11818,8 +12579,9 @@ function DelayStatusReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">
-            Live/current delays only: files stuck in their current milestone or S.O. stage for more
-            than {thresholdDays} days. Already-cleared historical delays are excluded.
+            Live/current delays only: files or S.O./stage cases stuck in their current milestone or
+            S.O. stage for more than {thresholdDays} days. Already-cleared historical delays are
+            excluded.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -12089,6 +12851,14 @@ function DelayStatusReport({
           <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
+              onClick={() => setPage(1)}
+              disabled={safePage === 1}
+              className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+            >
+              First
+            </button>
+            <button
+              type="button"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={safePage === 1}
               className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -12118,6 +12888,14 @@ function DelayStatusReport({
             >
               Next
             </button>
+            <button
+              type="button"
+              onClick={() => setPage(totalPages)}
+              disabled={safePage === totalPages}
+              className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+            >
+              Last
+            </button>
           </div>
         </div>
       ) : null}
@@ -12125,11 +12903,13 @@ function DelayStatusReport({
   );
 }
 
-function getPaginationPages(currentPage: number, totalPages: number) {
-  const firstPage = Math.max(1, currentPage - 2);
-  const lastPage = Math.min(totalPages, firstPage + 4);
-  const startPage = Math.max(1, lastPage - 4);
-  return Array.from({ length: lastPage - startPage + 1 }, (_, index) => startPage + index);
+function getPaginationPages(currentPage: number, totalPages: number, maxVisible = 5) {
+  const visible = Math.max(1, Math.min(maxVisible, totalPages));
+  const half = Math.floor(visible / 2);
+  let startPage = Math.max(1, currentPage - half);
+  const endPage = Math.min(totalPages, startPage + visible - 1);
+  startPage = Math.max(1, endPage - visible + 1);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
 function exportDelayStatusToExcel(rows: DelayStatusRow[], title: string, description?: string) {
@@ -12168,12 +12948,13 @@ function buildFirmDatabaseRows({
       })),
     );
     const firmRawEntries = rawEntries.filter(({ order }) => doesOrderBelongToFirm(order, firm));
-    const activeRawEntries = firmRawEntries.filter(
-      ({ file, order }) => !isSupplyOrderCancelled(file, order),
-    );
-    const placedEntries = activeRawEntries.filter(({ file, order }) =>
+    const historicalPlacedEntries = firmRawEntries.filter(({ file, order }) =>
       isSupplyOrderTabComplete(file, order),
     );
+    const activeRawEntries = historicalPlacedEntries.filter(
+      ({ file, order }) => !isSupplyOrderCancelled(file, order),
+    );
+    const placedEntries = activeRawEntries;
     const completedEntries = placedEntries.filter(({ file, order }) =>
       isFirmSupplyOrderComplete(file, order),
     );
@@ -12210,19 +12991,19 @@ function buildFirmDatabaseRows({
         String(b.order.soDate ?? "").localeCompare(String(a.order.soDate ?? "")),
       )[0]?.score;
     const divisions = Array.from(
-      new Set(placedEntries.map(({ file }) => file.division).filter(hasFilledString)),
+      new Set(historicalPlacedEntries.map(({ file }) => file.division).filter(hasFilledString)),
     ).sort();
     const fileTypes = Array.from(
-      new Set(placedEntries.map(({ file }) => file.fileType).filter(hasFilledString)),
+      new Set(historicalPlacedEntries.map(({ file }) => file.fileType).filter(hasFilledString)),
     ).sort();
     const bgStats = getFirmBgStats(placedEntries);
     const bgTargets = getFirmBgTargets(placedEntries);
     const clickTargets: FirmDatabaseRow["clickTargets"] = {
-      totalSupplyOrders: getUniqueEntryFileIds(placedEntries),
+      totalSupplyOrders: getUniqueEntryFileIds(historicalPlacedEntries),
       runningSupplyOrders: getUniqueEntryFileIds(runningEntries),
       completedSupplyOrders: getUniqueEntryFileIds(completedEntries),
       cancelledSupplyOrders: getUniqueEntryFileIds(
-        firmRawEntries.filter(({ file, order }) => isSupplyOrderCancelled(file, order)),
+        historicalPlacedEntries.filter(({ file, order }) => isSupplyOrderCancelled(file, order)),
       ),
       stageDeliveryOrders: getUniqueEntryFileIds(
         placedEntries.filter(({ order }) => isYes(order.stageDelivery)),
@@ -12247,14 +13028,14 @@ function buildFirmDatabaseRows({
       highValueOrders: getUniqueEntryFileIds(
         placedEntries.filter(({ file }) => isYes(file.highValue)),
       ),
-      divisionCount: getUniqueEntryFileIds(placedEntries),
+      divisionCount: getUniqueEntryFileIds(historicalPlacedEntries),
     };
 
     const numeric: FirmDatabaseRow["numeric"] = {
-      totalSupplyOrders: placedEntries.length,
+      totalSupplyOrders: historicalPlacedEntries.length,
       runningSupplyOrders: runningEntries.length,
       completedSupplyOrders: completedEntries.length,
-      cancelledSupplyOrders: firmRawEntries.length - activeRawEntries.length,
+      cancelledSupplyOrders: historicalPlacedEntries.length - activeRawEntries.length,
       stageDeliveryOrders: placedEntries.filter(({ order }) => isYes(order.stageDelivery)).length,
       capitalValue,
       revenueValue,
@@ -12372,7 +13153,7 @@ function getFirmOrderDelayResult(file: FileRecord, order: SupplyOrderDetail) {
     ? fileSupplyOrders({ ...file, supplyOrders: [order] })
     : [order];
   const stageResults = stages.map((stage) => {
-    const dpDate = getDeliveryPeriodDate(stage);
+    const dpDate = stage.dpDate;
     const completionDate = isDeliveryInspectionApplicable(file)
       ? stage.materialReceiptDate
       : stage.jobCompletionDate;
@@ -12937,10 +13718,10 @@ function getExpectedCashOutgoByDpRows(files: FileRecord[], offsetDays = 0): Expe
   const totals = new Map<string, ExpectedCashOutgoRow>();
 
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
+    if (isYes(file.demandCancelled)) return;
     fileSupplyOrders(file).forEach((order) => {
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
-      if (!hasFilledString(deliveryPeriodDate) || isYes(order.soCancelled)) return;
+      if (!hasFilledString(deliveryPeriodDate) || !isPaymentOrderActive(file, order)) return;
       if (hasFilledString(order.materialReceiptDate)) return;
       if (hasFilledString(order.paymentDate)) return;
       const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays + 1);
@@ -12960,8 +13741,9 @@ function getExpectedCashOutgoByReceiptRows(
   const totals = new Map<string, ExpectedCashOutgoRow>();
 
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
+    if (isYes(file.demandCancelled)) return;
     fileSupplyOrders(file).forEach((order) => {
+      if (!isPaymentOrderActive(file, order)) return;
       const reportDate = getReceiptPendingBillReportDate(file, order);
       if (!hasFilledString(reportDate)) return;
       if (hasFilledString(order.paymentDate)) return;
@@ -13227,9 +14009,9 @@ function buildSoPaymentMatrixRows({
   const allowedMonths = new Set(monthKeys);
   const rows: SoPaymentMatrixRow[] = [];
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
+    if (isYes(file.demandCancelled)) return;
     filePaymentOrders(file).forEach((order, orderIndex) => {
-      if (!isPaymentOrderActive(file, order) || isYes(order.soCancelled)) return;
+      if (isSupplyOrderCancelled(file, order)) return;
       const row = createEmptySoPaymentMatrixRow(file, order, orderIndex);
       if (isYes(order.stagePayment) && order.stageDeliveries?.length) {
         order.stageDeliveries.forEach((stage, stageIndex) => {
@@ -13260,9 +14042,9 @@ function buildPaymentCompletedMatrixRows({
   const allowedMonths = new Set(monthKeys);
   const rows: SoPaymentMatrixRow[] = [];
   files.forEach((file) => {
-    if (isCancelledFile(file)) return;
+    if (isYes(file.demandCancelled)) return;
     filePaymentOrders(file).forEach((order, orderIndex) => {
-      if (!isPaymentOrderActive(file, order) || isYes(order.soCancelled)) return;
+      if (!isPaymentOrderActive(file, order)) return;
       const row = createEmptySoPaymentMatrixRow(file, order, orderIndex);
       if (isYes(order.stagePayment) && order.stageDeliveries?.length) {
         order.stageDeliveries.forEach((stage, stageIndex) => {
@@ -13605,10 +14387,13 @@ function combineRowsAsSingleMonth(monthKey: string, rowGroups: ExpectedCashOutgo
 
 function combineRowsThroughMonthAsSingleMonth(
   monthKey: string,
+  startMonthKey: string,
   rowGroups: ExpectedCashOutgoRow[][],
 ) {
   const totals = rowGroups
-    .flatMap((rows) => rows.filter((row) => row.monthKey <= monthKey))
+    .flatMap((rows) =>
+      rows.filter((row) => row.monthKey >= startMonthKey && row.monthKey <= monthKey),
+    )
     .reduce(
       (sum, row) => ({
         capital: sum.capital + row.capital,
@@ -15390,14 +16175,33 @@ function getMilestoneStatusRows(
     return [
       base("Completed", countPaymentCompletedOrders(processFiles)),
       base("Pending", countPaymentPendingOrders(processFiles)),
-      base("At previous stage", countAtPreviousStageFiles(processFiles, milestone)),
+    ];
+  }
+
+  if (
+    milestone.key === "irPreparation" ||
+    milestone.key === "irReceipt" ||
+    milestone.key === "billPreparation" ||
+    milestone.key === "billSentForPayment"
+  ) {
+    const normalized = normalizeMilestoneName(milestone.key);
+    return [
+      base("Completed", countCompletedOrderDrivenMilestoneStatuses(processFiles, normalized)),
+      base("Pending", countCurrentOrderDrivenMilestoneStatuses(processFiles, normalized)),
     ];
   }
 
   if (milestone.key === "refloatBidding") {
+    const refloatBiddingInProgressFiles = processFiles.filter(isRefloatBiddingInProgressFile);
     return [
-      base(milestone.totalLabel ?? "Total", processFiles.length),
-      base("In process", processFiles.filter((file) => !isYes(file.biddingStageOver)).length),
+      base("Live", refloatBiddingInProgressFiles.filter(isFileTenderLive).length),
+      base(
+        "In process",
+        refloatBiddingInProgressFiles.filter(
+          (file) => !isFileTenderLive(file) && !isRefloatBidOverdue(file),
+        ).length,
+      ),
+      base("Opening overdue", refloatBiddingInProgressFiles.filter(isRefloatBidOverdue).length),
       base("Completed", clearedFiles.length),
     ];
   }
@@ -16021,7 +16825,15 @@ function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
-  return !isYes(file.demandCancelled) && !isYes(order.soCancelled);
+  return (
+    !isYes(file.demandCancelled) &&
+    !isYes(order.soCancelled) &&
+    !isShortclosureNoFurtherAction(order)
+  );
+}
+
+function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
+  return isYes(order.shortclosure) && isYes(order.noFurtherAction);
 }
 
 function isOrderActiveForMilestone(
@@ -16388,10 +17200,23 @@ function isFileTenderLive(file: FileRecord) {
   return isYes(file.tenderLive);
 }
 
+function isRefloatBiddingInProgressFile(file: FileRecord) {
+  return (
+    isBiddingApplicableForFile(file) &&
+    isYes(file.refloat) &&
+    hasFilledString(file.refloatBiddingDate) &&
+    !isYes(file.biddingStageOver)
+  );
+}
+
 function getEffectiveBidOpeningDate(file: FileRecord) {
   return isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)
     ? file.refloatBidOpeningDate
     : file.bidOpeningDate;
+}
+
+function isRefloatBidOverdue(file: FileRecord) {
+  return isNo(file.bidOpened) && isDateBeforeToday(file.refloatBidOpeningDate);
 }
 
 function isBidOverdue(file: FileRecord) {

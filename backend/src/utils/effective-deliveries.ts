@@ -543,7 +543,9 @@ function isBgCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: 
   const normalized = normalizeMilestoneName(category);
   if (
     !isBgCategoryApplicable(file, order, normalized) ||
-    !isFinancialSanctionCompletedOrder(order) ||
+    (normalized === "pwb"
+      ? !isPwbDueForWorkflow(file, order)
+      : !isFinancialSanctionCompletedOrder(order)) ||
     hasBillingTrackingStarted(order)
   ) {
     return false;
@@ -559,8 +561,14 @@ function isBgCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail, ca
   ) {
     return false;
   }
-  if (normalized === "pwb" && !hasFilledString(order.materialReceiptDate)) return false;
+  if (normalized === "pwb" && !isPwbDueForWorkflow(file, order)) return false;
   return !isBgReceivedOrder(order, normalized);
+}
+
+function isPwbDueForWorkflow(file: FileRecord, order: SupplyOrderDetail) {
+  return isJobCompletionWorkflow(file)
+    ? hasFilledString(order.jobCompletionDate)
+    : hasFilledString(order.materialReceiptDate);
 }
 
 function isIrPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {

@@ -36,6 +36,17 @@ import { asyncHandler, HttpError } from "../utils/http.js";
 export const dashboardRouter = Router();
 
 let anomalyGovernanceSchemaReady: Promise<void> | undefined;
+let supplyOrderNoFurtherActionSchemaReady: Promise<void> | undefined;
+
+function ensureSupplyOrderNoFurtherActionSchema() {
+  supplyOrderNoFurtherActionSchemaReady ??= pool
+    .query(
+      `alter table supply_orders
+         add column if not exists no_further_action text not null default 'No'`,
+    )
+    .then(() => undefined);
+  return supplyOrderNoFurtherActionSchemaReady;
+}
 
 function hasAnomalyAdminAccess(user: { role: string }) {
   return user.role === "admin" || user.role === "sub_admin";
@@ -469,6 +480,65 @@ function getSuspectedAnomalyRows(
         "Both filled",
       );
     }
+    if (parseAmount(file.valueCapital) <= 0 && parseAmount(file.valueRevenue) <= 0) {
+      addIssue(
+        "Value",
+        "File has no Capital or Revenue value",
+        "File value",
+        "Capital or Revenue value greater than zero",
+        "File value",
+        "Blank/zero",
+      );
+    }
+    if (!hasFilledString(file.receivedDate)) {
+      addIssue(
+        "Data Completeness",
+        "File has no Demand received date",
+        "Demand received date",
+        "Filled",
+        "Demand received date",
+        "Blank",
+      );
+    }
+    if (!hasFilledString(file.fileType)) {
+      addIssue(
+        "Data Completeness",
+        "File has no File Type",
+        "File Type",
+        "Filled",
+        "File Type",
+        "Blank",
+      );
+    }
+    if (!hasFilledString(file.mode)) {
+      addIssue(
+        "Data Completeness",
+        "File has no Mode",
+        "Mode",
+        "Filled",
+        "Mode",
+        "Blank",
+      );
+    }
+    if (!hasFilledString(file.currency)) {
+      addIssue(
+        "Value",
+        "File has no Currency",
+        "Currency",
+        "Filled",
+        "Currency",
+        "Blank",
+      );
+    } else if (!isInrCurrency(file.currency) && parseAmount(file.exchangeRate) <= 0) {
+      addIssue(
+        "Value",
+        "Foreign currency file has no Exchange rate",
+        "Exchange rate",
+        "Greater than zero",
+        "Currency",
+        file.currency!,
+      );
+    }
 
     if (!hasFilledString(file.division)) {
       addIssue(
@@ -514,7 +584,7 @@ function getSuspectedAnomalyRows(
       .map((value) => value?.trim())
       .filter((value): value is string => Boolean(value))
       .forEach((value) => {
-        if (duplicateFileRefs.has(value.trim())) {
+        if (duplicateFileRefs.has(normalizeDuplicateValue(value))) {
           addIssue(
             "Data Completeness",
             "Duplicate file number or unique code across active files",
@@ -597,6 +667,16 @@ function getSuspectedAnomalyRows(
           "Yes",
         );
       }
+      if (isYes(file.tenderLive) && (isYes(file.bidOpened) || isYes(file.biddingStageOver))) {
+        addIssue(
+          "Bidding",
+          "Tender Live is Yes even though Bid opened or Bidding Stage Over is Yes",
+          "Tender Live",
+          "No after bid opening/bidding completion",
+          "Found",
+          "Tender Live Yes",
+        );
+      }
       if (isNo(file.biddingStageOver) && (hasCncWorkflow || hasSupplyOrderWorkflow)) {
         addIssue(
           "Bidding",
@@ -605,6 +685,72 @@ function getSuspectedAnomalyRows(
           "Yes",
           "Later workflow",
           "CNC/S.O. exists",
+        );
+      }
+    }
+    if (isYes(file.ad)) {
+      if (!hasFilledString(file.adSentDate)) {
+        addIssue(
+          "AD",
+          "AD is Yes but AD sent date is blank",
+          "AD sent date",
+          "Filled",
+          "AD",
+          "Yes",
+        );
+      }
+      if (!hasFilledString(file.adVettingDate)) {
+        addIssue(
+          "AD",
+          "AD is Yes but AD vetting date is blank",
+          "AD vetting date",
+          "Filled",
+          "AD",
+          "Yes",
+        );
+      }
+    }
+    if (isYes(file.rqa)) {
+      if (!hasFilledString(file.rqaSentDate)) {
+        addIssue(
+          "R&QA",
+          "R&QA is Yes but R&QA sent date is blank",
+          "R&QA sent date",
+          "Filled",
+          "R&QA",
+          "Yes",
+        );
+      }
+      if (!hasFilledString(file.rqaApprovalDate)) {
+        addIssue(
+          "R&QA",
+          "R&QA is Yes but R&QA approval date is blank",
+          "R&QA approval date",
+          "Filled",
+          "R&QA",
+          "Yes",
+        );
+      }
+    }
+    if (isYes(file.ifa)) {
+      if (!hasFilledString(file.ifaSentDate)) {
+        addIssue(
+          "IFA",
+          "IFA is Yes but IFA sent date is blank",
+          "IFA sent date",
+          "Filled",
+          "IFA",
+          "Yes",
+        );
+      }
+      if (!hasFilledString(file.ifaFinalDate)) {
+        addIssue(
+          "IFA",
+          "IFA is Yes but IFA final date is blank",
+          "IFA final date",
+          "Filled",
+          "IFA",
+          "Yes",
         );
       }
     }
@@ -817,6 +963,7 @@ function getSuspectedAnomalyRows(
           file.currentMilestone!,
         );
       }
+      addFileClosureChronologyAnomalies(file, addPair);
       addClosedFileSubflowMilestoneAnomalies(file, addIssue);
     } else if (hasFilledString(file.fileClosureDate)) {
       addIssue(
@@ -838,8 +985,23 @@ function getSuspectedAnomalyRows(
         file.currentMilestone!,
       );
     }
+    if (
+      hasFilledString(file.currentMilestone) &&
+      hasCompletedMilestone(file.completedMilestones, file.currentMilestone!)
+    ) {
+      addIssue(
+        "Milestones",
+        "Current milestone is also marked completed",
+        "Current milestone",
+        "Not already completed",
+        "Current milestone",
+        file.currentMilestone!,
+      );
+    }
 
     addPreControlReceivedDateAnomalies(file, fileReceivedDate, addPair);
+    addScrutinyControlCompletenessAnomalies(file, addIssue);
+    addTcecCompletenessAnomalies(file, addIssue);
 
     addPair(
       "Scrutiny",
@@ -1144,7 +1306,7 @@ function getSuspectedAnomalyRows(
         .map((value) => value?.trim())
         .filter((value): value is string => Boolean(value))
         .forEach((value) => {
-          if (duplicateSoNumbers.has(value)) {
+          if (duplicateSoNumbers.has(normalizeDuplicateValue(value))) {
             addIssue(
               "Supply Order",
               "Duplicate S.O. number or GeM S.O. number across active S.O. records",
@@ -1595,6 +1757,17 @@ function getSuspectedAnomalyRows(
           rawContext,
         );
       }
+      if (isYes(rawOrder.advancePayment) && getOrderValue(rawOrder.advancePaymentDetail ?? {}) <= 0) {
+        addIssue(
+          "Advance Payment",
+          "Advance Payment is Yes but advance amount is blank",
+          "Advance amount",
+          "Greater than zero",
+          "Advance amount",
+          "Blank/zero",
+          rawContext,
+        );
+      }
       if (
         isYes(rawOrder.advancePayment) &&
         hasAdvancePaymentDone(rawOrder) &&
@@ -1687,7 +1860,7 @@ function getSuspectedAnomalyRows(
         .map((value) => value?.trim())
         .filter((value): value is string => Boolean(value))
         .forEach((value) => {
-          if (duplicateBgNumbers.has(value)) {
+          if (duplicateBgNumbers.has(normalizeDuplicateValue(value))) {
             addIssue(
               "Bank Guarantee",
               "Duplicate BG number across active files",
@@ -1699,6 +1872,14 @@ function getSuspectedAnomalyRows(
             );
         }
       });
+      addPendingReturnedBillWorkflowAnomaly(
+        rawOrder,
+        "Returned Bills",
+        rawContext,
+        rawOrder.paymentDate,
+        rawOrder.billReturnCycles,
+        addIssue,
+      );
       addPaymentReturnCycleAnomalies({
         block: "Returned Bills",
         context: rawContext,
@@ -1710,6 +1891,14 @@ function getSuspectedAnomalyRows(
       });
       addSupplementaryBillAnomalies(rawOrder, rawContext, addPair, addIssue);
       if (rawOrder.advancePaymentDetail) {
+        addPendingReturnedBillWorkflowAnomaly(
+          rawOrder,
+          "Advance Payment",
+          `${rawContext}:advance`,
+          rawOrder.advancePaymentDetail.paymentDate,
+          rawOrder.advancePaymentDetail.billReturnCycles,
+          addIssue,
+        );
         addPaymentReturnCycleAnomalies({
           block: "Advance Payment",
           context: `${rawContext}:advance`,
@@ -1721,6 +1910,14 @@ function getSuspectedAnomalyRows(
         });
       }
       rawStageRows.forEach((stage, stageIndex) => {
+        addPendingReturnedBillWorkflowAnomaly(
+          rawOrder,
+          "Stage Payment",
+          `${rawContext}:stage:${stageIndex + 1}`,
+          stage.paymentDate,
+          stage.billReturnCycles,
+          addIssue,
+        );
         addPaymentReturnCycleAnomalies({
           block: "Stage Payment",
           context: `${rawContext}:stage:${stageIndex + 1}`,
@@ -1818,6 +2015,21 @@ function getSuspectedAnomalyRows(
           "Bill preparation date filled",
           "Found",
           "Bill sent for payment date filled",
+          context,
+        );
+      }
+      if (
+        hasBillAmount(order) &&
+        !hasFilledString(order.billNo) &&
+        !hasFilledString(order.billSentForPaymentDate)
+      ) {
+        addIssue(
+          "Bill",
+          "Bill amount is filled but Bill No. and Bill sent for payment date are blank",
+          "Expected",
+          "Bill No. or Bill sent for payment date filled",
+          "Found",
+          "Bill amount filled without bill reference/submission",
           context,
         );
       }
@@ -2352,6 +2564,192 @@ function addPreControlReceivedDateAnomalies(
   });
 }
 
+function addScrutinyControlCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
+  if (
+    (hasFilledString(file.scrutinyResponseDate) || hasFilledString(file.scrutinyCompletionDate)) &&
+    !hasFilledString(file.scrutinyDate)
+  ) {
+    addIssue(
+      "Scrutiny",
+      "Scrutiny response/completion exists but scrutiny date is blank",
+      "Scrutiny date",
+      "Filled",
+      "Later scrutiny date",
+      "Filled",
+    );
+  }
+  if (hasFilledString(file.scrutinyResponseDate) && !hasFilledString(file.scrutinyCompletionDate)) {
+    addIssue(
+      "Scrutiny",
+      "Scrutiny response exists but scrutiny completion date is blank",
+      "Scrutiny completion date",
+      "Filled",
+      "Scrutiny response date",
+      file.scrutinyResponseDate!,
+    );
+  }
+  if (
+    (hasFilledString(file.imms) || hasFilledString(file.immsDate)) &&
+    !hasFilledString(file.scrutinyCompletionDate)
+  ) {
+    addIssue(
+      "Control",
+      "Control details exist but scrutiny completion date is blank",
+      "Scrutiny completion date",
+      "Filled before control",
+      "Control details",
+      "Filled",
+    );
+  }
+  if (hasFilledString(file.imms) && !hasFilledString(file.immsDate)) {
+    addIssue(
+      "Control",
+      "Control number exists but Control date is blank",
+      "Control date",
+      "Filled",
+      "Control number",
+      file.imms!,
+    );
+  }
+  if (hasFilledString(file.immsDate) && !hasFilledString(file.imms)) {
+    addIssue(
+      "Control",
+      "Control date exists but Control number is blank",
+      "Control number",
+      "Filled",
+      "Control date",
+      file.immsDate!,
+    );
+  }
+}
+
+function addTcecCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
+  if (!isYes(file.tcec)) return;
+  if (hasFilledString(file.preTcecMinutesDate) && !hasFilledString(file.preTcecDate)) {
+    addIssue(
+      "TCEC",
+      "Pre-TCEC minutes date exists but Pre-TCEC date is blank",
+      "Pre-TCEC date",
+      "Filled",
+      "Pre-TCEC minutes date",
+      file.preTcecMinutesDate!,
+    );
+  }
+  if (
+    (hasFilledString(file.postTcecDate) ||
+      hasFilledString(file.postTcecMinutesDate) ||
+      hasFilledString(file.cncDate) ||
+      hasFilledString(file.cncApprovalDate)) &&
+    !hasFilledString(file.preTcecMinutesDate)
+  ) {
+    addIssue(
+      "TCEC",
+      "Post-TCEC/CNC workflow exists but Pre-TCEC minutes date is blank",
+      "Pre-TCEC minutes date",
+      "Filled",
+      "Later TCEC/CNC workflow",
+      "Filled",
+    );
+  }
+  if (hasFilledString(file.postTcecMinutesDate) && !hasFilledString(file.postTcecDate)) {
+    addIssue(
+      "TCEC",
+      "Post-TCEC minutes date exists but Post-TCEC date is blank",
+      "Post-TCEC date",
+      "Filled",
+      "Post-TCEC minutes date",
+      file.postTcecMinutesDate!,
+    );
+  }
+  if (
+    isBiddingApplicableForFile(file) &&
+    (hasFilledString(file.postTcecDate) || hasFilledString(file.postTcecMinutesDate)) &&
+    !isYes(file.biddingStageOver)
+  ) {
+    addIssue(
+      "TCEC",
+      "Post-TCEC details exist but Bidding Stage Over is not Yes",
+      "Bidding Stage Over",
+      "Yes",
+      "Post-TCEC details",
+      "Filled",
+    );
+  }
+  if (
+    hasFilledString(file.refloatPostTcecMinutesDate) &&
+    !hasFilledString(file.refloatPostTcecDate)
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC minutes date exists but Refloat Post-TCEC date is blank",
+      "Refloat Post-TCEC date",
+      "Filled",
+      "Refloat Post-TCEC minutes date",
+      file.refloatPostTcecMinutesDate!,
+    );
+  }
+  if (
+    !isYes(file.refloat) &&
+    (hasFilledString(file.refloatPostTcecDate) ||
+      hasFilledString(file.refloatPostTcecMinutesDate) ||
+      hasFilledString(file.refloatPostTcecCommitteeNo))
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC details exist while Refloat is No",
+      "Refloat",
+      "Yes",
+      "Refloat Post-TCEC details",
+      "Filled",
+    );
+  }
+  if (
+    isYes(file.refloat) &&
+    (hasFilledString(file.refloatPostTcecDate) ||
+      hasFilledString(file.refloatPostTcecMinutesDate)) &&
+    !hasFilledString(file.postTcecMinutesDate)
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC exists but original Post-TCEC minutes date is blank",
+      "Post-TCEC minutes date",
+      "Filled",
+      "Refloat Post-TCEC workflow",
+      "Filled",
+    );
+  }
+  if (
+    isYes(file.refloat) &&
+    (hasFilledString(file.refloatPostTcecDate) ||
+      hasFilledString(file.refloatPostTcecMinutesDate)) &&
+    (!hasFilledString(file.refloatBiddingDate) || !hasFilledString(file.refloatBidOpeningDate))
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC exists but refloat bidding/opening date is blank",
+      "Refloat bidding/opening dates",
+      "Filled",
+      "Refloat Post-TCEC workflow",
+      "Filled",
+    );
+  }
+  if (
+    isYes(file.refloat) &&
+    (hasFilledString(file.refloatPostTcecDate) ||
+      hasFilledString(file.refloatPostTcecMinutesDate)) &&
+    !isYes(file.biddingStageOver)
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC details exist but Bidding Stage Over is not Yes",
+      "Bidding Stage Over",
+      "Yes",
+      "Refloat Post-TCEC details",
+      "Filled",
+    );
+  }
+}
+
 function addFutureActualDateAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
   const today = todayIsoDate();
   const addFutureDate = (
@@ -2592,6 +2990,7 @@ const sequenceMilestoneRules: SequenceMilestoneRule[] = [
       { label: "Refloat bidding date", value: (file) => file.refloatBiddingDate },
       { label: "Refloat bid opening date", value: (file) => file.refloatBidOpeningDate },
     ],
+    evidence: (file) => isYes(file.biddingStageOver),
   },
   {
     key: "refloatposttcec",
@@ -2700,6 +3099,7 @@ function isSequenceMilestoneApplicable(file: FileRecord, rule: SequenceMilestone
 }
 
 function hasSequenceMilestoneEvidence(file: FileRecord, rule: SequenceMilestoneRule) {
+  if (rule.key === "refloatbidding") return rule.evidence?.(file) === true;
   if (rule.evidence?.(file)) return true;
   const current = normalizeMilestoneName(file.currentMilestone ?? "");
   if (current === rule.key) return true;
@@ -2877,6 +3277,10 @@ function hasPaymentAmount(
   return hasFilledString(order.actualPaymentCapital) || hasFilledString(order.actualPaymentRevenue);
 }
 
+function hasBillAmount(order: Pick<SupplyOrderDetail, "billAmountCapital" | "billAmountRevenue">) {
+  return hasFilledString(order.billAmountCapital) || hasFilledString(order.billAmountRevenue);
+}
+
 function fileSupplyOrders(file: FileRecord) {
   return file.supplyOrders?.length ? file.supplyOrders : [file as SupplyOrderDetail];
 }
@@ -2884,7 +3288,7 @@ function fileSupplyOrders(file: FileRecord) {
 function getDuplicateValues(values: Array<string | undefined>) {
   const counts = new Map<string, number>();
   values
-    .map((value) => value?.trim())
+    .map(normalizeDuplicateValue)
     .filter((value): value is string => Boolean(value))
     .forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1));
   return new Set(
@@ -2892,6 +3296,10 @@ function getDuplicateValues(values: Array<string | undefined>) {
       .filter(([, count]) => count > 1)
       .map(([value]) => value),
   );
+}
+
+function normalizeDuplicateValue(value: string | undefined) {
+  return value?.trim().toUpperCase() ?? "";
 }
 
 function hasCompletedMilestone(milestones: string[] | undefined, target: string) {
@@ -2911,6 +3319,11 @@ function parseAmount(value: string | undefined) {
   if (!hasFilledString(value)) return 0;
   const parsed = Number(String(value).replace(/,/g, "").trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isInrCurrency(value: string | undefined) {
+  const normalized = (value ?? "").trim().toUpperCase();
+  return !normalized || normalized === "INR";
 }
 
 type AmountFields = {
@@ -3162,7 +3575,12 @@ function hasBgReturnPendingForAnyCategory(order: SupplyOrderDetail) {
 
 function hasFileClosurePaymentLiability(file: FileRecord) {
   return effectiveSupplyOrderEntries([file]).some(({ order }) => {
-    if (isYes(order.soCancelled) || hasFilledString(order.paymentDate)) return false;
+    if (
+      isYes(order.soCancelled) ||
+      isShortclosureNoFurtherAction(order) ||
+      hasFilledString(order.paymentDate)
+    )
+      return false;
     if (!isYes(order.shortclosure)) return true;
     return (
       hasPaymentDetailApartFromMode(order) ||
@@ -3184,7 +3602,7 @@ function hasFileClosureDeliveryLiability(file: FileRecord) {
 
 function hasFileClosureAdvancePaymentLiability(file: FileRecord) {
   return fileSupplyOrders(file).some((order) => {
-    if (isYes(order.soCancelled)) return false;
+    if (isYes(order.soCancelled) || isShortclosureNoFurtherAction(order)) return false;
     if (!isYes(order.advancePayment)) return false;
     return !isAdvancePaymentWorkflowComplete(order);
   });
@@ -3192,7 +3610,12 @@ function hasFileClosureAdvancePaymentLiability(file: FileRecord) {
 
 function hasFileClosureStagePaymentLiability(file: FileRecord) {
   return fileSupplyOrders(file).some((order) => {
-    if (isYes(order.soCancelled) || !isYes(order.stagePayment)) return false;
+    if (
+      isYes(order.soCancelled) ||
+      isShortclosureNoFurtherAction(order) ||
+      !isYes(order.stagePayment)
+    )
+      return false;
     return (order.stageDeliveries ?? []).some(
       (stage) =>
         (hasStagePaymentOrAmountFields(stage) || getOrderValue(stage) > 0) &&
@@ -3203,7 +3626,7 @@ function hasFileClosureStagePaymentLiability(file: FileRecord) {
 
 function hasFileClosureReturnedBillLiability(file: FileRecord) {
   return effectiveSupplyOrderEntries([file]).some(({ order }) => {
-    if (isYes(order.soCancelled)) return false;
+    if (isYes(order.soCancelled) || isShortclosureNoFurtherAction(order)) return false;
     return (
       hasOpenBillReturn(order) ||
       (hasCompletedBillReturnLocal(order) && !hasFilledString(order.paymentDate))
@@ -3213,10 +3636,111 @@ function hasFileClosureReturnedBillLiability(file: FileRecord) {
 
 function hasFileClosureSupplementaryBillLiability(file: FileRecord) {
   return fileSupplyOrders(file).some((order) => {
-    if (isYes(order.soCancelled)) return false;
+    if (isYes(order.soCancelled) || isShortclosureNoFurtherAction(order)) return false;
     return getSupplementaryBills(order).some(
       (bill) => hasSupplementaryBillDataLocal(bill) && !hasFilledString(bill.paymentDate),
     );
+  });
+}
+
+function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
+  return isYes(order.shortclosure) && isYes(order.noFurtherAction);
+}
+
+function addFileClosureChronologyAnomalies(file: FileRecord, addPair: AddAnomalyPair) {
+  const closureDate = file.fileClosureDate;
+  if (!isIsoDate(closureDate)) return;
+
+  const addClosureCheck = (
+    label: string,
+    date: string | undefined,
+    context = "file",
+  ) => {
+    addPair(
+      "Closure",
+      `${label} should not be after File Closure Date`,
+      label,
+      date,
+      "File Closure Date",
+      closureDate,
+      context,
+    );
+  };
+
+  fileSupplyOrders(file).forEach((order, orderIndex) => {
+    const context = `order:${order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`}:${orderIndex}`;
+    addClosureCheck("S.O. date", order.soDate, context);
+    addClosureCheck("Material receipt date", order.materialReceiptDate, context);
+    addClosureCheck("Job Completion Date", order.jobCompletionDate, context);
+    addClosureCheck("IR preparation date", order.irPreparationDate, context);
+    addClosureCheck("IR receipt date", order.irReceiptDate, context);
+    addClosureCheck("Bill preparation date", order.billPreparationDate, context);
+    addClosureCheck("Bill sent for payment date", order.billSentForPaymentDate, context);
+    addClosureCheck("Payment date", order.paymentDate, context);
+    addClosureCheck("PSB received date", order.psbBgReceivedDate, context);
+    addClosureCheck("PSB return date", order.psbBgReturnDate, context);
+    addClosureCheck("PWB received date", order.pwbBgReceivedDate, context);
+    addClosureCheck("PWB return date", order.pwbBgReturnDate, context);
+    addClosureCheck("PSB+PWB received date", order.combinedBgReceivedDate, context);
+    addClosureCheck("PSB+PWB return date", order.combinedBgReturnDate, context);
+
+    order.billReturnCycles?.forEach((cycle, cycleIndex) => {
+      const cycleContext = `${context}:return:${cycleIndex + 1}`;
+      addClosureCheck("Returned bill date", cycle.returnedDate, cycleContext);
+      addClosureCheck("Returned bill resubmission date", cycle.resubmittedDate, cycleContext);
+    });
+
+    order.stageDeliveries?.forEach((stage, stageIndex) => {
+      const stageContext = `${context}:stage:${stageIndex + 1}`;
+      addClosureCheck("Stage material receipt date", stage.materialReceiptDate, stageContext);
+      addClosureCheck("Stage job completion date", stage.jobCompletionDate, stageContext);
+      addClosureCheck("Stage IR preparation date", stage.irPreparationDate, stageContext);
+      addClosureCheck("Stage IR receipt date", stage.irReceiptDate, stageContext);
+      addClosureCheck("Stage bill preparation date", stage.billPreparationDate, stageContext);
+      addClosureCheck("Stage bill sent for payment date", stage.billSentForPaymentDate, stageContext);
+      addClosureCheck("Stage payment date", stage.paymentDate, stageContext);
+      stage.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${stageContext}:return:${cycleIndex + 1}`;
+        addClosureCheck("Stage returned bill date", cycle.returnedDate, cycleContext);
+        addClosureCheck("Stage returned bill resubmission date", cycle.resubmittedDate, cycleContext);
+      });
+    });
+
+    if (order.advancePaymentDetail) {
+      const advance = order.advancePaymentDetail;
+      const advanceContext = `${context}:advance`;
+      addClosureCheck("Advance bill preparation date", advance.billPreparationDate, advanceContext);
+      addClosureCheck(
+        "Advance bill sent for payment date",
+        advance.billSentForPaymentDate,
+        advanceContext,
+      );
+      addClosureCheck("Advance payment date", advance.paymentDate, advanceContext);
+      advance.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${advanceContext}:return:${cycleIndex + 1}`;
+        addClosureCheck("Advance returned bill date", cycle.returnedDate, cycleContext);
+        addClosureCheck(
+          "Advance returned bill resubmission date",
+          cycle.resubmittedDate,
+          cycleContext,
+        );
+      });
+    }
+
+    getSupplementaryBills(order).forEach((bill, billIndex) => {
+      const billContext = `${context}:supplementary:${billIndex + 1}`;
+      addClosureCheck("Supplementary bill sent date", bill.billSentForPaymentDate, billContext);
+      addClosureCheck("Supplementary payment date", bill.paymentDate, billContext);
+      bill.billReturnCycles?.forEach((cycle, cycleIndex) => {
+        const cycleContext = `${billContext}:return:${cycleIndex + 1}`;
+        addClosureCheck("Supplementary returned bill date", cycle.returnedDate, cycleContext);
+        addClosureCheck(
+          "Supplementary returned bill resubmission date",
+          cycle.resubmittedDate,
+          cycleContext,
+        );
+      });
+    });
   });
 }
 
@@ -3287,6 +3811,60 @@ function hasSupplementaryBillDataLocal(
   );
 }
 
+function hasPendingSupplementaryBillWorkflow(
+  bill: NonNullable<SupplyOrderDetail["supplementaryBills"]>[number],
+) {
+  return (
+    hasSupplementaryBillDataLocal(bill) &&
+    !hasFilledString(bill.paymentDate) &&
+    (hasFilledString(bill.billSentForPaymentDate) ||
+      Boolean(bill.billReturnCycles?.some(hasBillReturnCycleDataLocal)))
+  );
+}
+
+function hasPendingReturnedBillWorkflow(
+  paymentDate: string | undefined,
+  cycles: SupplyOrderDetail["billReturnCycles"],
+) {
+  return (
+    !hasFilledString(paymentDate) &&
+    Boolean(cycles?.some((cycle) => hasFilledString(cycle.returnedDate)))
+  );
+}
+
+function addPendingReturnedBillWorkflowAnomaly(
+  order: SupplyOrderDetail,
+  block: string,
+  context: string,
+  paymentDate: string | undefined,
+  cycles: SupplyOrderDetail["billReturnCycles"],
+  addIssue: AddAnomalyIssue,
+) {
+  if (!hasPendingReturnedBillWorkflow(paymentDate, cycles)) return;
+  if (isYes(order.soCancelled)) {
+    addIssue(
+      block,
+      "Cancelled S.O. has pending returned bill workflow",
+      "Returned bill workflow",
+      "Closed or cleared after S.O. cancellation",
+      "Pending returned bill",
+      "Exists",
+      context,
+    );
+  }
+  if (isShortclosureNoFurtherAction(order)) {
+    addIssue(
+      block,
+      "Shortclosed/no-further-action S.O. has pending returned bill workflow",
+      "Returned bill workflow",
+      "Closed or cleared when no further action is marked",
+      "Pending returned bill",
+      "Exists",
+      context,
+    );
+  }
+}
+
 function addSupplementaryBillAnomalies(
   order: SupplyOrderDetail,
   orderContext: string,
@@ -3298,6 +3876,30 @@ function addSupplementaryBillAnomalies(
     const billAmount = parseAmount(bill.billAmountCapital) + parseAmount(bill.billAmountRevenue);
     const actualAmount =
       parseAmount(bill.actualPaymentCapital) + parseAmount(bill.actualPaymentRevenue);
+    if (hasPendingSupplementaryBillWorkflow(bill)) {
+      if (isYes(order.soCancelled)) {
+        addIssue(
+          "Supplementary bill",
+          "Cancelled S.O. has pending supplementary bill workflow",
+          "Supplementary bill workflow",
+          "Closed or cleared after S.O. cancellation",
+          "Pending supplementary bill",
+          "Exists",
+          context,
+        );
+      }
+      if (isShortclosureNoFurtherAction(order)) {
+        addIssue(
+          "Supplementary bill",
+          "Shortclosed/no-further-action S.O. has pending supplementary bill workflow",
+          "Supplementary bill workflow",
+          "Closed or cleared when no further action is marked",
+          "Pending supplementary bill",
+          "Exists",
+          context,
+        );
+      }
+    }
     if (hasFilledString(bill.billSentForPaymentDate) && billAmount <= 0) {
       addIssue(
         "Supplementary bill",
@@ -3557,17 +4159,6 @@ function addWarrantyBufferAnomalies(
         requiredDate,
         `${kind} return date`,
         returnDate!,
-        context,
-      );
-    }
-    if (!hasFilledString(returnDate) && isIsoDate(requiredDate) && requiredDate < todayIsoDate()) {
-      addIssue(
-        "Warranty / BG mismatch",
-        `${kind} return date missing after Warranty Period + 60 days`,
-        `${kind} return date`,
-        "Filled",
-        "Warranty Period + 60 days",
-        requiredDate,
         context,
       );
     }
@@ -3861,6 +4452,57 @@ async function loadDivisions(user: ReturnType<typeof requireAuth>, financialYear
   );
 }
 
+async function loadFinancialYears() {
+  return getCached("financial-years:dashboard", cacheTtl.settingsMs, async () => {
+    const result = await pool.query<{ label: string }>(
+      "select label from financial_years order by label desc",
+    );
+    return result.rows.map((row) => row.label).filter(Boolean);
+  });
+}
+
+async function loadAllYearAllocationTotals({
+  user,
+  divisionIds,
+  financialYears,
+}: {
+  user: ReturnType<typeof requireAuth>;
+  divisionIds: string[];
+  financialYears: string[];
+}) {
+  if (!divisionIds.length || !financialYears.length) {
+    return { allocatedCapital: 0, allocatedRevenue: 0 };
+  }
+  const values: unknown[] = [divisionIds, financialYears];
+  const conditions = ["d.id = any($1::uuid[])", "years.financial_year = any($2::text[])"];
+  if (!canUseAllDivisions(user)) {
+    if (!user.divisionIds.length) {
+      return { allocatedCapital: 0, allocatedRevenue: 0 };
+    }
+    values.push(user.divisionIds);
+    conditions.push(`d.id = any($${values.length}::uuid[])`);
+  }
+  const result = await pool.query<{
+    allocated_capital: string | null;
+    allocated_revenue: string | null;
+  }>(
+    `select
+       coalesce(sum(coalesce(a.allocated_capital, d.allocated_capital, 0)), 0) as allocated_capital,
+       coalesce(sum(coalesce(a.allocated_revenue, d.allocated_revenue, 0)), 0) as allocated_revenue
+     from divisions d
+     cross join unnest($2::text[]) as years(financial_year)
+     left join division_year_allocations a
+       on a.division_id = d.id and a.financial_year = years.financial_year
+     where ${conditions.join(" and ")}`,
+    values,
+  );
+  const row = result.rows[0];
+  return {
+    allocatedCapital: Number(row?.allocated_capital ?? 0),
+    allocatedRevenue: Number(row?.allocated_revenue ?? 0),
+  };
+}
+
 async function loadSettings() {
   return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
@@ -4125,8 +4767,17 @@ const protectedLiveStatusMilestones = [
   "Job Completion",
 ];
 
-function isFileActiveInYear(file: { year?: string; activeYears?: string[] }, year: string) {
-  return file.year === year || file.activeYears?.includes(year);
+function isFileActiveInYear(file: FileRecord, year: string) {
+  if (file.year === year || file.activeYears?.includes(year)) return true;
+  const range = getFinancialYearDateRange(year);
+  const fileStartYear = getFinancialYearStartNumber(file.year);
+  const selectedStartYear = getFinancialYearStartNumber(year);
+  if (!range || fileStartYear === undefined || selectedStartYear === undefined) return false;
+  if (fileStartYear > selectedStartYear) return false;
+  if (isInactiveFile(file)) {
+    return isFileClosed(file) && Boolean(file.fileClosureDate && file.fileClosureDate >= range.start);
+  }
+  return true;
 }
 
 function isFileClosed(file: { completedMilestones?: string[] }) {
@@ -4218,6 +4869,11 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
   };
 }
 
+function getFinancialYearStartNumber(financialYear: string | undefined) {
+  const match = (financialYear ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
 function activeFilesExpression() {
   return `(not ${fileClosedExpression()}
       and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
@@ -4226,6 +4882,27 @@ function activeFilesExpression() {
         where so_active.file_id = f.id
           and not ${isYesExpression("so_active.so_cancelled")}
       )))`;
+}
+
+function specificFinancialYearExpression(selectedYear: string, values: unknown[]) {
+  const range = getFinancialYearDateRange(selectedYear);
+  if (!range) return "true";
+  const yearPlaceholder = addValue(values, selectedYear);
+  const startPlaceholder = addValue(values, range.start);
+  const startYear = Number(range.start.slice(0, 4));
+  return `(f.year = ${yearPlaceholder}::text or exists (
+    select 1 from file_year_activity a
+    where a.file_id = f.id and a.financial_year = ${yearPlaceholder}::text and a.status = 'active'
+  ) or (
+    nullif(substring(coalesce(f.year, '') from '(19[0-9]{2}|20[0-9]{2})'), '')::integer <= ${startYear}
+    and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+    and not (${supplyOrderRowExists()} and not exists (
+      select 1 from supply_orders so_active
+      where so_active.file_id = f.id
+        and not ${isYesExpression("so_active.so_cancelled")}
+    ))
+    and (not ${fileClosedExpression()} or f.file_closure_date >= ${startPlaceholder}::date)
+  ))`;
 }
 
 function getSelectedYearCondition(
@@ -4248,11 +4925,26 @@ function getSelectedYearCondition(
       and lower(coalesce(f.demand_cancelled, '')) <> 'yes'))`;
   }
 
-  const placeholder = addValue(values, selectedYear);
-  return `(f.year = ${placeholder}::text or exists (
-    select 1 from file_year_activity a
-    where a.file_id = f.id and a.financial_year = ${placeholder}::text and a.status = 'active'
-  ))`;
+  return specificFinancialYearExpression(selectedYear, values);
+}
+
+function paymentCompletedExpression() {
+  return `exists (
+    select 1 from file_completed_milestones completed_payment
+    where completed_payment.file_id = f.id
+      and ${normalizeMilestoneExpression("completed_payment.milestone")} = '${normalizeMilestoneName(
+        "Payment",
+      )}'
+  )`;
+}
+
+function getMilestoneClearingSelectedYearCondition(
+  selectedYear: string | undefined,
+  values: unknown[],
+  currentFinancialYear?: string,
+) {
+  if (selectedYear === allActiveFilesYear) return `not ${paymentCompletedExpression()}`;
+  return getSelectedYearCondition(selectedYear, values, currentFinancialYear);
 }
 
 function getFirmHistorySelectedYear(selectedYear: string | undefined) {
@@ -4288,6 +4980,64 @@ function getDashboardFileWhereSql({
   if (scopeSql) conditions.push(scopeSql);
 
   const selectedYearCondition = getSelectedYearCondition(
+    selectedYear,
+    values,
+    currentFinancialYear,
+  );
+  if (selectedYearCondition) conditions.push(selectedYearCondition);
+
+  if (fileYear?.trim() && fileYear.trim() !== "all") {
+    const placeholder = addValue(values, fileYear.trim());
+    conditions.push(`f.year = ${placeholder}::text`);
+  }
+  if (fileInitiationFrom) {
+    const placeholder = addValue(values, fileInitiationFrom);
+    conditions.push(`f.received_date >= ${placeholder}::date`);
+  }
+  if (fileInitiationTo) {
+    const placeholder = addValue(values, fileInitiationTo);
+    conditions.push(`f.received_date <= ${placeholder}::date`);
+  }
+
+  if (activeDivision !== "all") {
+    const placeholder = addValue(values, activeDivision.toLowerCase());
+    conditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
+  }
+
+  if (fileCategories) conditions.push(getFileCategoryCondition(fileCategories));
+
+  return {
+    whereSql: conditions.length ? `where ${conditions.join(" and ")}` : "",
+    values,
+  };
+}
+
+function getDashboardMilestoneClearingFileWhereSql({
+  scopeSql,
+  scopeValues,
+  selectedYear,
+  fileYear,
+  fileInitiationFrom,
+  fileInitiationTo,
+  currentFinancialYear,
+  activeDivision,
+  fileCategories,
+}: {
+  scopeSql: string;
+  scopeValues: unknown[];
+  selectedYear: string | undefined;
+  fileYear?: string | undefined;
+  fileInitiationFrom?: string | undefined;
+  fileInitiationTo?: string | undefined;
+  currentFinancialYear?: string;
+  activeDivision: string;
+  fileCategories?: FileCategoryKey[];
+}) {
+  const conditions: string[] = [];
+  const values = [...scopeValues];
+  if (scopeSql) conditions.push(scopeSql);
+
+  const selectedYearCondition = getMilestoneClearingSelectedYearCondition(
     selectedYear,
     values,
     currentFinancialYear,
@@ -4393,10 +5143,24 @@ type StatusCounts = {
     pending: number;
     reviewed: number;
     cleared: number;
+    paymentDue?: number;
+    paymentInProcess?: number;
+    paymentSubmitted?: number;
+    supplementarySubmitted?: number;
+    supplementaryPending?: number;
+    supplementaryReturnedForCorrection?: number;
+    supplementaryReturnedPending?: number;
+    supplementaryReturnedResubmitted?: number;
+    supplementaryPaid?: number;
+    supplementaryNormalPaid?: number;
+    supplementaryReturnedPaid?: number;
   }>;
   liveBids: number;
   overdueBids: number;
   inProcessBids: number;
+  refloatLiveBids: number;
+  refloatOverdueBids: number;
+  refloatInProcessBids: number;
   liveSupplyOrders: number;
   financialSanctionPending: number;
   financialSanctionCompleted: number;
@@ -4430,6 +5194,7 @@ type AverageDaysAnalyticsRow = {
   minDays?: number;
   maxDays?: number;
   medianDays?: number;
+  fileCount?: number;
   sampleSize: number;
   fileIds?: string;
   sortOrder?: number;
@@ -4561,7 +5326,7 @@ async function loadSimpleDashboardCounts({
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
   }
-  extraConditions.push(`not ${isCancelledExpression()}`);
+  extraConditions.push(`not ${isYesExpression("f.demand_cancelled")}`);
   const processHistoryConditions = extraConditions.map((condition) =>
     condition === `not ${isCancelledExpression()}`
       ? `not ${isYesExpression("f.demand_cancelled")}`
@@ -4726,6 +5491,11 @@ function effectiveOrderCancelledExpression(alias = "eso") {
     or ${isYesExpression(`${alias}.so_cancelled`)})`;
 }
 
+function effectiveOrderNoFurtherActionExpression(alias = "eso") {
+  return `(${isYesExpression(`${alias}.shortclosure`)}
+    and ${isYesExpression(`${alias}.no_further_action`)})`;
+}
+
 function effectiveOrderDpDateExpression(alias = "eso") {
   return `coalesce(${alias}.revised_dp, ${alias}.dp_date)`;
 }
@@ -4776,10 +5546,31 @@ function effectiveOrderLiveExpression(alias = "eso") {
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
+function effectiveOrderPaymentDrivenExpression(alias = "eso") {
+  return `(not ${isYesExpression(`${alias}.file_ir`)}
+    or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`;
+}
+
+function effectiveOrderDeliveryPeriodOpenExpression(alias = "eso") {
+  return `${effectiveOrderPlacedExpression(alias)}
+    and not ${effectiveOrderCancelledExpression(alias)}
+    and not ${isYesExpression(`${alias}.shortclosure`)}
+    and (
+      (${effectiveOrderPaymentDrivenExpression(alias)} and not ${effectiveOrderCompletedMilestoneExpression(
+        "Job Completion",
+        alias,
+      )})
+      or (not ${effectiveOrderPaymentDrivenExpression(alias)} and not ${hasFilledExpression(
+        `${alias}.material_receipt_date`,
+      )})
+    )`;
+}
+
 function effectiveOrderPaymentOpenExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and not ${hasFilledExpression(`${alias}.payment_date`)}
-    and not ${effectiveOrderCancelledExpression(alias)}`;
+    and not ${effectiveOrderCancelledExpression(alias)}
+    and not ${effectiveOrderNoFurtherActionExpression(alias)}`;
 }
 
 function effectiveOrderDeliveryCompletedExpression(alias = "eso") {
@@ -4839,19 +5630,19 @@ function effectiveOrderJobCompletionPeriodOverExpression(alias = "eso") {
 }
 
 function effectiveOrderDeliveryPeriodValidExpression(alias = "eso") {
-  return `${effectiveOrderLiveExpression(alias)}
+  return `${effectiveOrderDeliveryPeriodOpenExpression(alias)}
     and ${effectiveOrderDpDateExpression(alias)} is not null
     and ${effectiveOrderDpDateExpression(alias)} >= current_date`;
 }
 
 function effectiveOrderDeliveryPeriodExpiredExpression(alias = "eso") {
-  return `${effectiveOrderLiveExpression(alias)}
+  return `${effectiveOrderDeliveryPeriodOpenExpression(alias)}
     and ${effectiveOrderDpDateExpression(alias)} is not null
     and ${effectiveOrderDpDateExpression(alias)} < current_date`;
 }
 
 function effectiveOrderDeliveryPeriodExtendedExpression(alias = "eso") {
-  return `${effectiveOrderLiveExpression(alias)}
+  return `${effectiveOrderDeliveryPeriodOpenExpression(alias)}
     and ${hasFilledExpression(`${alias}.revised_dp`)}
     and ${effectiveOrderDpDateExpression(alias)} is not null
     and ${effectiveOrderDpDateExpression(alias)} >= current_date`;
@@ -4892,6 +5683,8 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
       f.demand_cancelled as file_demand_cancelled,
       ${paymentApplicable} as payment_applicable,
       so.so_cancelled,
+      so.shortclosure,
+      so.no_further_action,
       coalesce(nullif(stage_row.stage ->> 'dpDate', '')::date, so.dp_date) as dp_date,
       coalesce(nullif(stage_row.stage ->> 'revisedDp', '')::date, so.revised_dp) as revised_dp,
       case
@@ -4926,6 +5719,14 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
         when stage_row.stage is not null then null::date
         else so.payment_date
       end as payment_date,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then coalesce(stage_row.stage -> 'billReturnCycles', '[]'::jsonb)
+        when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
+          then coalesce(so.bill_return_cycles, '[]'::jsonb)
+        when stage_row.stage is not null then '[]'::jsonb
+        else coalesce(so.bill_return_cycles, '[]'::jsonb)
+      end as bill_return_cycles,
 	      case
 	        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
 	          then stage_row.stage ->> 'currentMilestone'
@@ -4980,7 +5781,115 @@ function paymentRowPendingExpression(alias = "payment_row") {
   return `${alias}.payment_applicable
     and not ${hasFilledExpression(`${alias}.payment_date`)}
     and ${paymentRowReadyExpression(alias)}
-    and not ${effectiveOrderCancelledExpression(alias)}`;
+    and not ${effectiveOrderCancelledExpression(alias)}
+    and not ${effectiveOrderNoFurtherActionExpression(alias)}`;
+}
+
+function paymentRowHasReturnHistoryExpression(alias = "payment_row") {
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${alias}.bill_return_cycles, '[]'::jsonb)) as return_cycle(cycle)
+    where ${hasFilledExpression("return_cycle.cycle ->> 'returnedDate'")}
+       or ${hasFilledExpression("return_cycle.cycle ->> 'resubmittedDate'")}
+       or ${hasFilledExpression("return_cycle.cycle ->> 'reason'")}
+       or ${hasFilledExpression("return_cycle.cycle ->> 'remarks'")}
+  )`;
+}
+
+function paymentRowNormalOpenExpression(alias = "payment_row") {
+  return `${paymentRowPendingExpression(alias)}
+    and not ${paymentRowHasReturnHistoryExpression(alias)}`;
+}
+
+function paymentRowDueExpression(alias = "payment_row") {
+  return `${paymentRowNormalOpenExpression(alias)}
+    and not ${hasFilledExpression(`${alias}.bill_preparation_date`)}
+    and not ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}`;
+}
+
+function paymentRowInProcessExpression(alias = "payment_row") {
+  return `${paymentRowNormalOpenExpression(alias)}
+    and ${hasFilledExpression(`${alias}.bill_preparation_date`)}
+    and not ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}`;
+}
+
+function paymentRowSubmittedExpression(alias = "payment_row") {
+  return `${paymentRowNormalOpenExpression(alias)}
+    and ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}`;
+}
+
+function dashboardSupplementaryBillRowsSource(whereSql: string, extraConditions: string[] = []) {
+  return `(select
+      f.demand_cancelled as file_demand_cancelled,
+      so.so_cancelled,
+      so.shortclosure,
+      so.no_further_action,
+      supplementary_bill.bill
+    from files f
+    left join divisions d on d.id = f.division_id
+    join supply_orders so on so.file_id = f.id
+    cross join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+    ${appendDashboardWhereClause(whereSql, extraConditions)})`;
+}
+
+function supplementaryBillHasReturnHistoryExpression(alias = "supplementary_row") {
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${alias}.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
+       or ${hasFilledExpression("bill_return.cycle ->> 'reason'")}
+       or ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+       or ${hasFilledExpression("bill_return.cycle ->> 'remarks'")}
+  )`;
+}
+
+function supplementaryBillHasOpenReturnExpression(alias = "supplementary_row") {
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${alias}.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
+      and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+  )`;
+}
+
+function supplementaryBillHasCompletedReturnExpression(alias = "supplementary_row") {
+  return `exists (
+    select 1
+    from jsonb_array_elements(coalesce(${alias}.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
+    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
+      and ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+  )`;
+}
+
+function supplementaryBillActiveExpression(alias = "supplementary_row") {
+  return `not (${isYesExpression(`${alias}.file_demand_cancelled`)}
+    or ${isYesExpression(`${alias}.so_cancelled`)}
+    or (${isYesExpression(`${alias}.shortclosure`)} and ${isYesExpression(`${alias}.no_further_action`)}))`;
+}
+
+function supplementaryBillSubmittedExpression(alias = "supplementary_row") {
+  return `${supplementaryBillActiveExpression(alias)}
+    and ${hasFilledExpression(`${alias}.bill ->> 'billSentForPaymentDate'`)}`;
+}
+
+function supplementaryBillPendingExpression(alias = "supplementary_row") {
+  return `${supplementaryBillSubmittedExpression(alias)}
+    and not ${hasFilledExpression(`${alias}.bill ->> 'paymentDate'`)}`;
+}
+
+function supplementaryBillPaidExpression(alias = "supplementary_row") {
+  return `${supplementaryBillActiveExpression(alias)}
+    and ${hasFilledExpression(`${alias}.bill ->> 'paymentDate'`)}`;
+}
+
+function supplementaryBillNormalPaidExpression(alias = "supplementary_row") {
+  return `${supplementaryBillPaidExpression(alias)}
+    and not ${supplementaryBillHasReturnHistoryExpression(alias)}`;
+}
+
+function supplementaryBillReturnedPaidExpression(alias = "supplementary_row") {
+  return `${supplementaryBillPaidExpression(alias)}
+    and ${supplementaryBillHasCompletedReturnExpression(alias)}`;
 }
 
 function effectiveOrderIrPreparationPendingExpression(alias = "eso") {
@@ -5146,6 +6055,19 @@ function biddingApplicableExpression() {
     and not (${isYesExpression("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = 'comparison')`;
 }
 
+function biddingLiveExpression() {
+  return `${biddingApplicableExpression()}
+    and ${hasFilledExpression("f.cfa_date")}
+    and not ${isYesExpression("f.bidding_stage_over")}`;
+}
+
+function refloatBiddingLiveExpression() {
+  return `${biddingApplicableExpression()}
+    and ${isYesExpression("f.refloat")}
+    and ${hasFilledExpression("f.refloat_bidding_date")}
+    and not ${isYesExpression("f.bidding_stage_over")}`;
+}
+
 function statusAppliesExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
   if (milestone.key === "bidding") return biddingApplicableExpression();
   if (milestone.key === "refloatPostTcec")
@@ -5187,7 +6109,7 @@ function statusReviewedExpression(milestone: (typeof statusMilestoneDefinitions)
 
 function statusActiveExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
   if (milestone.key === "refloatBidding") {
-    return `not ${isCancelledExpression()} and ${isYesExpression("f.refloat")} and not ${isYesExpression("f.bidding_stage_over")}`;
+    return `not ${isCancelledExpression()} and ${refloatBiddingLiveExpression()}`;
   }
   if (milestone.key === "refloatPostTcec") {
     return `not ${isCancelledExpression()}
@@ -5314,11 +6236,15 @@ async function loadFinanceTotals({
   values,
   activeDivision,
   dashboardDivisions,
+  selectedYear,
+  currentFinancialYear,
 }: {
   whereSql: string;
   values: unknown[];
   activeDivision: string;
   dashboardDivisions: Division[];
+  selectedYear?: string;
+  currentFinancialYear?: string;
 }): Promise<FinanceTotals> {
   const queryValues = [...values];
   const extraConditions: string[] = [];
@@ -5342,6 +6268,15 @@ async function loadFinanceTotals({
     "actualPaymentRevenue",
     "billAmountRevenue",
   );
+  const financeYear = getFinancialYearDateRange(selectedYear) ? selectedYear : currentFinancialYear;
+  const financeYearRange = getFinancialYearDateRange(financeYear);
+  const advancePaymentDateCondition = financeYearRange
+    ? (() => {
+        const start = addValue(queryValues, financeYearRange.start);
+        const end = addValue(queryValues, financeYearRange.end);
+        return `nullif(so_advance.advance_payment_detail ->> 'paymentDate', '')::date between ${start}::date and ${end}::date`;
+      })()
+    : hasFilledExpression("so_advance.advance_payment_detail ->> 'paymentDate'");
   const result = await pool.query<Record<string, string | number>>(
     `select
        coalesce(sum(case
@@ -5374,6 +6309,7 @@ async function loadFinanceTotals({
          where so_advance.file_id = f.id
            and ${isYesExpression("so_advance.advance_payment")}
            and not ${isYesExpression("so_advance.so_cancelled")}
+           and ${advancePaymentDateCondition}
        ), 0)), 0) as advance_capital,
        coalesce(sum(coalesce((
          select sum(
@@ -5383,6 +6319,7 @@ async function loadFinanceTotals({
          where so_advance.file_id = f.id
            and ${isYesExpression("so_advance.advance_payment")}
            and not ${isYesExpression("so_advance.so_cancelled")}
+           and ${advancePaymentDateCondition}
        ), 0)), 0) as advance_revenue
      from files f
      left join divisions d on d.id = f.division_id
@@ -5592,8 +6529,9 @@ function clearingStatsSelect(
               coalesce(round(percentile_cont(0.5) within group (order by ${days})), 0)::integer as "medianDays"`;
 }
 
-function clearingSampleSelect() {
-  return `count(distinct f.id)::integer as "sampleSize",
+function clearingSampleSelect(sampleExpression = "count(distinct f.id)") {
+  return `${sampleExpression}::integer as "sampleSize",
+              count(distinct f.id)::integer as "fileCount",
               string_agg(distinct f.id::text, ',') as "fileIds"`;
 }
 
@@ -5690,7 +6628,7 @@ async function loadAnalyticsSqlSlice({
   valueThresholdLevels: ValueThresholdLevel[];
 }): Promise<AnalyticsSqlSlice> {
   const fileRankingValues = [...values];
-  const fileRankingConditions: string[] = [`not ${isCancelledExpression()}`];
+  const fileRankingConditions: string[] = [`not ${isYesExpression("f.demand_cancelled")}`];
   const fileRankingDivision = dashboardDivisionCondition(fileRankingValues, divisionName);
   if (fileRankingDivision) fileRankingConditions.push(fileRankingDivision);
   const processHistoryConditions: string[] = [`not ${isYesExpression("f.demand_cancelled")}`];
@@ -5894,19 +6832,18 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length} as sort_order,
             'Supply Order' as name,
             ${clearingStatsSelect(supplyOrderClearingStart, "so.so_date")},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
      ${appendDashboardWhereClause(whereSql, [
        ...fileRankingConditions,
-       `not ${isYesExpression("so.so_cancelled")}`,
        dateDiffCondition(supplyOrderClearingStart, "so.so_date"),
      ])}`,
     `select ${milestoneClearingDefinitions.length + 1} as sort_order,
             'IR Preparation' as name,
             ${clearingStatsSelect(paymentMaterialReceiptDate, paymentIrPreparationDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5919,7 +6856,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 2} as sort_order,
             'IR Receipt' as name,
             ${clearingStatsSelect(paymentIrPreparationDate, paymentIrReceiptDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5932,7 +6869,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 3} as sort_order,
             'Bill preparation' as name,
             ${clearingStatsSelect(billPreparationStart, paymentBillPreparationDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5944,7 +6881,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 4} as sort_order,
             'Bill sent for payment' as name,
             ${clearingStatsSelect(paymentBillPreparationDate, paymentBillSentDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5956,7 +6893,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 5} as sort_order,
             'Bill returned for correction' as name,
             ${clearingStatsSelect(returnedBillReturnedDate, returnedBillResubmittedDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5971,7 +6908,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 6} as sort_order,
             'Supplementary bill returned for correction' as name,
             ${clearingStatsSelect(supplementaryBillReturnedDate, supplementaryBillResubmittedDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -5984,7 +6921,7 @@ async function loadAnalyticsSqlSlice({
     `select ${milestoneClearingDefinitions.length + 7} as sort_order,
             'Payment' as name,
             ${clearingStatsSelect(paymentBillSentDate, paymentDate)},
-            ${clearingSampleSelect()}
+            ${clearingSampleSelect("count(*)")}
      from files f
      left join divisions d on d.id = f.division_id
      join supply_orders so on so.file_id = f.id
@@ -6091,10 +7028,7 @@ async function loadAnalyticsSqlSlice({
        left join lateral jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_delivery(stage)
          on ${isYesExpression("so.stage_delivery")}
            and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0
-       ${appendDashboardWhereClause(whereSql, [
-         ...fileRankingConditions,
-         `not ${isYesExpression("so.so_cancelled")}`,
-       ])}
+       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions])}
      )
      select to_char(dp_date, 'YYYY-MM') as name,
             to_char(dp_date, 'YYYY-MM') as "monthKey",
@@ -6127,7 +7061,10 @@ async function loadAnalyticsSqlSlice({
        left join lateral jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_order(stage)
          on ${isYesExpression("so.stage_delivery")}
            and jsonb_array_length(coalesce(so.stage_deliveries, '[]'::jsonb)) > 0
-       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions])}
+       ${appendDashboardWhereClause(whereSql, [
+         ...fileRankingConditions,
+         `not ${isYesExpression("so.so_cancelled")}`,
+       ])}
        union all
        select
          f.id as file_id,
@@ -6216,10 +7153,13 @@ async function loadAnalyticsSqlSlice({
          coalesce(stage_payment.stage ->> 'billPreparationDate', so.bill_preparation_date::text) as bill_preparation_date,
          coalesce(stage_payment.stage ->> 'billSentForPaymentDate', so.bill_sent_for_payment_date::text) as bill_sent_for_payment_date,
 	         coalesce(stage_payment.stage ->> 'paymentDate', so.payment_date::text) as payment_date,
+	         coalesce(stage_payment.stage -> 'billReturnCycles', so.bill_return_cycles, '[]'::jsonb) as bill_return_cycles,
 	         coalesce(stage_payment.stage ->> 'dpDate', so.dp_date::text) as dp_date,
 	         coalesce(stage_payment.stage ->> 'revisedDp', so.revised_dp::text) as revised_dp,
 	         coalesce(stage_payment.stage -> 'completedMilestones', so.completed_milestones, '[]'::jsonb) as completed_milestones,
-	         so.so_cancelled
+	         so.so_cancelled,
+	         so.shortclosure,
+	         so.no_further_action
        from files f
        left join divisions d on d.id = f.division_id
        join supply_orders so on so.file_id = f.id
@@ -6235,20 +7175,24 @@ async function loadAnalyticsSqlSlice({
          f.ir as file_ir,
          f.material_receipt_date::text as material_receipt_date,
          ''::text as job_completion_date,
-         f.bill_preparation_date::text as bill_preparation_date,
-         f.bill_sent_for_payment_date::text as bill_sent_for_payment_date,
+	         f.bill_preparation_date::text as bill_preparation_date,
+	         f.bill_sent_for_payment_date::text as bill_sent_for_payment_date,
 	         f.payment_date::text as payment_date,
+	         '[]'::jsonb as bill_return_cycles,
 	         f.dp_date::text as dp_date,
 	         f.revised_dp::text as revised_dp,
 	         '[]'::jsonb as completed_milestones,
-	         f.so_cancelled
+	         f.so_cancelled,
+	         'No'::text as shortclosure,
+	         'No'::text as no_further_action
 	       from files f
 	       left join divisions d on d.id = f.division_id
 	       ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, `not ${supplyOrderRowExists()}`])}
 	     )
-     select name, count(distinct file_id)::integer as count
+	     select name, count(*)::integer as count
      from effective_payment_rows
      where not ${isYesExpression("so_cancelled")}
+       and not (${isYesExpression("shortclosure")} and ${isYesExpression("no_further_action")})
        and (
 			         (
 			           (not ${isYesExpression("file_ir")}
@@ -6264,6 +7208,14 @@ async function loadAnalyticsSqlSlice({
          or coalesce(bill_sent_for_payment_date, '') <> ''
        )
        and coalesce(payment_date, '') = ''
+       and not exists (
+         select 1
+         from jsonb_array_elements(coalesce(bill_return_cycles, '[]'::jsonb)) as return_cycle(cycle)
+         where ${hasFilledExpression("return_cycle.cycle ->> 'returnedDate'")}
+            or ${hasFilledExpression("return_cycle.cycle ->> 'resubmittedDate'")}
+            or ${hasFilledExpression("return_cycle.cycle ->> 'reason'")}
+            or ${hasFilledExpression("return_cycle.cycle ->> 'remarks'")}
+       )
      group by 1
      order by count desc`,
     fileRankingValues,
@@ -6316,7 +7268,6 @@ async function loadAnalyticsSqlSlice({
     const levelMatch = `(${levelMatchConditions.join(" and ")})`;
     const thresholdConditions = [
       ...fileRankingConditions,
-      `not ${isCancelledExpression()}`,
       levelMatch,
     ];
     if (previousThresholdMatches.length) {
@@ -6402,7 +7353,6 @@ async function loadAnalyticsSqlSlice({
        left join divisions d on d.id = f.division_id
        ${appendDashboardWhereClause(whereSql, [
          ...fileRankingConditions,
-         `not ${isCancelledExpression()}`,
          `${amount} > 0`,
          `not (${levelMatchConditions.join(" or ")})`,
        ])}`,
@@ -6464,7 +7414,6 @@ async function loadAnalyticsSqlSlice({
     const levelMatch = `(${levelMatchConditions.join(" and ")})`;
     const thresholdConditions = [
       ...fileRankingConditions,
-      `not ${isYesExpression("so.so_cancelled")}`,
       levelMatch,
     ];
     if (previousSoThresholdMatches.length) {
@@ -6552,7 +7501,6 @@ async function loadAnalyticsSqlSlice({
        join supply_orders so on so.file_id = f.id
        ${appendDashboardWhereClause(whereSql, [
          ...fileRankingConditions,
-         `not ${isYesExpression("so.so_cancelled")}`,
          `${amount} > 0`,
          `not (${levelMatchConditions.join(" or ")})`,
        ])}`,
@@ -6685,6 +7633,7 @@ async function loadAnalyticsSqlSlice({
         minDays: Number(row.minDays ?? 0),
         maxDays: Number(row.maxDays ?? 0),
         medianDays: Number(row.medianDays ?? 0),
+        fileCount: Number(row.fileCount ?? row.sampleSize ?? 0),
         sampleSize: Number(row.sampleSize ?? 0),
         fileIds: row.fileIds,
         sortOrder: Number(row.sort_order ?? 0),
@@ -6833,7 +7782,8 @@ async function loadMiscellaneousCounts({
          so.ld,
          so.demand_cancelled,
          so.so_cancelled,
-         so.shortclosure
+         so.shortclosure,
+         so.no_further_action
        from files f
        left join divisions d on d.id = f.division_id
 	       join supply_orders so on so.file_id = f.id
@@ -6891,7 +7841,7 @@ async function loadMiscellaneousCounts({
 function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? [])
     .map((item) => normalizeLiveStatusMilestoneName(item.trim()))
-    .filter(Boolean);
+    .filter(isVisibleLiveStatusMilestoneName);
   const configured = values.length ? values : defaultManualMilestones;
   return appendFileClosedMilestone(
     dedupeLiveStatusMilestones(
@@ -6904,6 +7854,11 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
       ),
     ),
   );
+}
+
+function isVisibleLiveStatusMilestoneName(name: string | undefined): name is string {
+  if (!name) return false;
+  return normalizeMilestoneName(name) !== "bankguarantee";
 }
 
 function insertRefloatMilestones(milestones: string[]) {
@@ -7045,8 +8000,10 @@ function getVisibleLiveMilestoneNames(
   const visible = dedupeLiveStatusMilestones(
     liveMilestones
       ?.map((name) => normalizeLiveStatusMilestoneName(name))
-      .filter((name) => available.has(name)) ??
-      manualMilestoneFlow.map((milestone) => milestone.name),
+      .filter((name) => isVisibleLiveStatusMilestoneName(name) && available.has(name)) ??
+      manualMilestoneFlow
+        .map((milestone) => milestone.name)
+        .filter(isVisibleLiveStatusMilestoneName),
   );
   protectedLiveStatusMilestones.forEach((milestone) => {
     if (available.has(milestone) && !visible.includes(milestone)) visible.push(milestone);
@@ -7078,6 +8035,7 @@ async function loadManualMilestoneSqlSlice({
   const liveConfiguredMilestones = dedupeLiveStatusMilestones(
     configuredMilestones.filter(
       (milestone) =>
+        isVisibleLiveStatusMilestoneName(milestone) &&
         normalizeMilestoneName(milestone) !== normalizeMilestoneName(fileClosedMilestone),
     ),
   );
@@ -7101,7 +8059,7 @@ async function loadManualMilestoneSqlSlice({
       .map((row) => row.name)
       .filter(Boolean)
       .map((name) => normalizeLiveStatusMilestoneName(name)),
-  ]);
+  ]).filter(isVisibleLiveStatusMilestoneName);
   const supplyOrderDrivenManualMilestones = [
     "financialsanction",
     "supplyorder",
@@ -7474,6 +8432,7 @@ async function loadManualMilestoneSqlSlice({
 	     ${appendDashboardWhereClause(whereSql, [
          ...extraConditions,
          `f.current_milestone = any(${livePlaceholder}::text[])`,
+         `${normalizeMilestoneExpression("f.current_milestone")} <> 'bidding'`,
          `${normalizeMilestoneExpression("f.current_milestone")} <> 'jobcompletion'`,
          `not ${isCancelledExpression()}`,
        ])}
@@ -7538,7 +8497,12 @@ async function loadManualMilestoneSqlSlice({
        `not ${isYesExpression("so_current.so_cancelled")}`,
        `${hasFilledExpression("so_current.so_date")}`,
        `not ${isYesExpression("so_current.stage_delivery")}`,
-       `${effectiveDpDateExpression("so_current")} is null`,
+       `${isYesExpression("f.ir")}`,
+       `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
+       `not ${completedOrderMilestoneExpression("so_current", "Delivery")}`,
+       `${effectiveDpDateExpression("so_current")} is not null`,
+       `so_current.so_date <= current_date`,
+       `${effectiveDpDateExpression("so_current")} >= current_date`,
      ])}
      group by 1`,
     queryValues,
@@ -7704,6 +8668,9 @@ async function loadStatusCounts({
     and ${isNoExpression("f.bid_opened")}
     and ${bidOpeningDate} is not null
     and ${bidOpeningDate} < current_date`;
+  const refloatBidOverdue = `${isNoExpression("f.bid_opened")}
+    and f.refloat_bid_opening_date is not null
+    and f.refloat_bid_opening_date < current_date`;
   const milestoneSelects = statusMilestoneDefinitions.flatMap((milestone, index) => {
     const prefix = `milestone_${index}`;
     const applies = statusAppliesExpression(milestone);
@@ -7714,7 +8681,7 @@ async function loadStatusCounts({
       const receivedColumn = bgReceivedColumn(category);
       const validityColumn = bgValidityColumn(category);
       const returnColumn = bgReturnColumn(category);
-      const eligible = `not ${effectiveOrderCancelledExpression("eso")} and ${bgCategoryExpression(
+      const eligible = `not ${isYesExpression("eso.file_demand_cancelled")} and ${bgCategoryExpression(
         "eso",
         category,
       )}`;
@@ -7755,11 +8722,15 @@ async function loadStatusCounts({
         normalizedBg === "pwb"
           ? deliveryPurposeComplete
           : hasFilledExpression("eso.financial_sanction_date");
-      const pending = `${eligible} and ${pendingStarted} and not (${hasFilledExpression(
+      const activeOrder = `not ${isYesExpression("eso.so_cancelled")} and not ${isYesExpression(
+        "eso.shortclosure",
+      )}`;
+      const pending = `${eligible} and ${activeOrder} and ${pendingStarted} and not (${hasFilledExpression(
         `eso.${receivedColumn}`,
       )} or ${effectiveOrderCompletedMilestoneExpression(milestone.label)})`;
       const expired = `${received}
         and not ${hasFilledExpression(`eso.${returnColumn}`)}
+        and not ${isYesExpression("eso.so_cancelled")}
         and (
           ('${normalizedBg}' = 'psb' and not (${psbPurposeComplete}))
           or ('${normalizedBg}' <> 'psb' and not ${hasFilledExpression("eso.payment_date")})
@@ -7770,10 +8741,9 @@ async function loadStatusCounts({
         and not ${hasFilledExpression(`eso.${returnColumn}`)}
         and (
           ${isYesExpression("eso.so_cancelled")}
-          or ${isYesExpression("eso.shortclosure")}
+          or ('${normalizedBg}' = 'psb' and ${isYesExpression("eso.shortclosure")})
           or (
             not ${isYesExpression("eso.so_cancelled")}
-            and not ${isYesExpression("eso.shortclosure")}
             and (
               ('${normalizedBg}' = 'psb'
                 and ${psbPurposeComplete})
@@ -7852,7 +8822,8 @@ async function loadStatusCounts({
          so.stage_deliveries,
          so.demand_cancelled,
          so.so_cancelled,
-         so.shortclosure
+         so.shortclosure,
+         so.no_further_action
        from files f
        left join divisions d on d.id = f.division_id
 	       join supply_orders so on so.file_id = f.id
@@ -7895,7 +8866,8 @@ async function loadStatusCounts({
          '[]'::jsonb as stage_deliveries,
          f.demand_cancelled,
          'No'::text as so_cancelled,
-         'No'::text as shortclosure
+         'No'::text as shortclosure,
+         'No'::text as no_further_action
        from files f
        left join divisions d on d.id = f.division_id
        cross join lateral generate_series(
@@ -7911,15 +8883,30 @@ async function loadStatusCounts({
      )
      select
        ${milestoneSelects.join(",\n       ")},
-      ${countFilter(`${biddingApplicableExpression()} and ${isYesExpression("f.tender_live")}`)} as live_bids,
+      ${countFilter(`${biddingLiveExpression()} and ${isYesExpression("f.tender_live")}`)} as live_bids,
       ${countFilter(bidOverdue)} as overdue_bids,
       ${countFilter(
         `not ${cancelled}
-          and ${biddingApplicableExpression()}
-          and regexp_replace(lower(coalesce(f.current_milestone, '')), '[^a-z0-9]+', '', 'g') = 'bidding'
+          and ${biddingLiveExpression()}
           and not ${isYesExpression("f.tender_live")}
           and not (${bidOverdue})`,
       )} as in_process_bids,
+      ${countFilter(
+        `not ${cancelled}
+          and ${refloatBiddingLiveExpression()}
+          and ${isYesExpression("f.tender_live")}`,
+      )} as refloat_live_bids,
+      ${countFilter(
+        `not ${cancelled}
+          and ${refloatBiddingLiveExpression()}
+          and ${refloatBidOverdue}`,
+      )} as refloat_overdue_bids,
+      ${countFilter(
+        `not ${cancelled}
+          and ${refloatBiddingLiveExpression()}
+          and not ${isYesExpression("f.tender_live")}
+          and not (${refloatBidOverdue})`,
+      )} as refloat_in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
 	       ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
 	       ${effectiveOrderCountFilter(
@@ -7949,6 +8936,65 @@ async function loadStatusCounts({
          from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
          where ${paymentRowPendingExpression("payment_row")}
        ) as order_payment_pending,
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${paymentRowDueExpression("payment_row")}
+       ) as order_payment_due,
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${paymentRowInProcessExpression("payment_row")}
+       ) as order_payment_in_process,
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${paymentRowSubmittedExpression("payment_row")}
+       ) as order_payment_submitted,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillSubmittedExpression("supplementary_row")}
+       ) as supplementary_bill_submitted,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillPendingExpression("supplementary_row")}
+       ) as supplementary_bill_pending,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillActiveExpression("supplementary_row")}
+           and ${supplementaryBillHasReturnHistoryExpression("supplementary_row")}
+       ) as supplementary_bill_returned,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillActiveExpression("supplementary_row")}
+           and not ${hasFilledExpression("supplementary_row.bill ->> 'paymentDate'")}
+           and ${supplementaryBillHasOpenReturnExpression("supplementary_row")}
+       ) as supplementary_bill_return_pending,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillActiveExpression("supplementary_row")}
+           and ${supplementaryBillHasCompletedReturnExpression("supplementary_row")}
+       ) as supplementary_bill_resubmitted,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillPaidExpression("supplementary_row")}
+       ) as supplementary_bill_paid,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillNormalPaidExpression("supplementary_row")}
+       ) as supplementary_bill_normal_paid,
+       (
+         select count(*)::integer
+         from ${dashboardSupplementaryBillRowsSource(whereSql, extraConditions)} supplementary_row
+         where ${supplementaryBillReturnedPaidExpression("supplementary_row")}
+       ) as supplementary_bill_returned_paid,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryCompletedExpression())} as delivery_completed,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryPendingExpression())} as delivery_due,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryOverdueExpression())} as delivery_overdue,
@@ -7983,10 +9029,10 @@ async function loadStatusCounts({
       if (milestone.key === "supplyOrder") {
         return {
           ...base,
-          total: readCount("order_supply_order_total"),
+          total: base.total,
           underProcess: readCount("order_financial_sanction_pending"),
           pending: readCount("order_supply_order_pending"),
-          cleared: readCount("order_supply_order_placed"),
+          cleared: base.cleared,
         };
       }
       if (milestone.key === "financialSanction") {
@@ -8011,11 +9057,26 @@ async function loadStatusCounts({
         };
       }
       if (milestone.key === "payment") {
+        const paymentDue = readCount("order_payment_due");
+        const paymentInProcess = readCount("order_payment_in_process");
+        const paymentSubmitted = readCount("order_payment_submitted");
+        const paymentPending = paymentDue + paymentInProcess + paymentSubmitted;
         return {
           ...base,
-          total: readCount("order_payment_completed") + readCount("order_payment_pending"),
-          pending: readCount("order_payment_pending"),
+          total: readCount("order_payment_completed") + paymentPending,
+          pending: paymentPending,
           cleared: readCount("order_payment_completed"),
+          paymentDue,
+          paymentInProcess,
+          paymentSubmitted,
+          supplementarySubmitted: readCount("supplementary_bill_submitted"),
+          supplementaryPending: readCount("supplementary_bill_pending"),
+          supplementaryReturnedForCorrection: readCount("supplementary_bill_returned"),
+          supplementaryReturnedPending: readCount("supplementary_bill_return_pending"),
+          supplementaryReturnedResubmitted: readCount("supplementary_bill_resubmitted"),
+          supplementaryPaid: readCount("supplementary_bill_paid"),
+          supplementaryNormalPaid: readCount("supplementary_bill_normal_paid"),
+          supplementaryReturnedPaid: readCount("supplementary_bill_returned_paid"),
         };
       }
       return base;
@@ -8023,6 +9084,9 @@ async function loadStatusCounts({
     liveBids: readCount("live_bids"),
     overdueBids: readCount("overdue_bids"),
     inProcessBids: readCount("in_process_bids"),
+    refloatLiveBids: readCount("refloat_live_bids"),
+    refloatOverdueBids: readCount("refloat_overdue_bids"),
+    refloatInProcessBids: readCount("refloat_in_process_bids"),
     liveSupplyOrders: readCount("live_supply_orders"),
     financialSanctionPending: readCount("order_financial_sanction_pending"),
     financialSanctionCompleted: readCount("order_financial_sanction_completed"),
@@ -8080,6 +9144,7 @@ function warnIfMiscellaneousCountsDiffer(
 function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): StatusCounts {
   const findRow = (key: string) => statusFlow.find((row) => row.key === key) ?? {};
   const bidding = findRow("bidding");
+  const refloatBidding = findRow("refloatBidding");
   const financialSanction = findRow("financialSanction");
   const supplyOrder = findRow("supplyOrder");
   const delivery = findRow("delivery");
@@ -8090,7 +9155,7 @@ function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): St
   return {
     milestoneRows: statusMilestoneDefinitions.map((milestone) => {
       const row = findRow(milestone.key);
-      return {
+      const base = {
         key: milestone.key,
         total: readCount(row, "total"),
         underProcess: readCount(row, "underProcess"),
@@ -8099,10 +9164,30 @@ function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): St
         reviewed: readCount(row, "reviewed"),
         cleared: readCount(row, "cleared"),
       };
+      if (milestone.key === "payment") {
+        return {
+          ...base,
+          paymentDue: readCount(row, "paymentDue"),
+          paymentInProcess: readCount(row, "paymentInProcess"),
+          paymentSubmitted: readCount(row, "paymentSubmitted"),
+          supplementarySubmitted: readCount(row, "supplementarySubmitted"),
+          supplementaryPending: readCount(row, "supplementaryPending"),
+          supplementaryReturnedForCorrection: readCount(row, "supplementaryReturnedForCorrection"),
+          supplementaryReturnedPending: readCount(row, "supplementaryReturnedPending"),
+          supplementaryReturnedResubmitted: readCount(row, "supplementaryReturnedResubmitted"),
+          supplementaryPaid: readCount(row, "supplementaryPaid"),
+          supplementaryNormalPaid: readCount(row, "supplementaryNormalPaid"),
+          supplementaryReturnedPaid: readCount(row, "supplementaryReturnedPaid"),
+        };
+      }
+      return base;
     }),
     liveBids: readCount(bidding, "liveBids"),
     overdueBids: readCount(bidding, "overdueBids"),
     inProcessBids: readCount(bidding, "inProcessBids"),
+    refloatLiveBids: readCount(refloatBidding, "liveBids"),
+    refloatOverdueBids: readCount(refloatBidding, "overdueBids"),
+    refloatInProcessBids: readCount(refloatBidding, "inProcessBids"),
     liveSupplyOrders: readCount(supplyOrder, "liveSupplyOrders"),
     financialSanctionPending: readCount(financialSanction, "financialSanctionPending"),
     financialSanctionCompleted: readCount(financialSanction, "financialSanctionCompleted"),
@@ -8146,6 +9231,14 @@ function mergeStatusCountsIntoFlow<T extends Array<Record<string, unknown>>>(
         liveBids: counts.liveBids,
         overdueBids: counts.overdueBids,
         inProcessBids: counts.inProcessBids,
+      };
+    }
+    if (row.key === "refloatBidding") {
+      return {
+        ...baseRow,
+        liveBids: counts.refloatLiveBids,
+        overdueBids: counts.refloatOverdueBids,
+        inProcessBids: counts.refloatInProcessBids,
       };
     }
     if (row.key === "supplyOrder") {
@@ -8194,6 +9287,23 @@ function mergeStatusCountsIntoFlow<T extends Array<Record<string, unknown>>>(
         irPreparationPending: counts.irPreparationPending,
         irReceiptPending: counts.irReceiptPending,
         irCompleted: counts.irCompleted,
+      };
+    }
+    if (row.key === "payment") {
+      return {
+        ...baseRow,
+        paymentDue: milestoneCounts?.paymentDue ?? 0,
+        paymentInProcess: milestoneCounts?.paymentInProcess ?? 0,
+        paymentSubmitted: milestoneCounts?.paymentSubmitted ?? 0,
+        supplementarySubmitted: milestoneCounts?.supplementarySubmitted ?? 0,
+        supplementaryPending: milestoneCounts?.supplementaryPending ?? 0,
+        supplementaryReturnedForCorrection:
+          milestoneCounts?.supplementaryReturnedForCorrection ?? 0,
+        supplementaryReturnedPending: milestoneCounts?.supplementaryReturnedPending ?? 0,
+        supplementaryReturnedResubmitted: milestoneCounts?.supplementaryReturnedResubmitted ?? 0,
+        supplementaryPaid: milestoneCounts?.supplementaryPaid ?? 0,
+        supplementaryNormalPaid: milestoneCounts?.supplementaryNormalPaid ?? 0,
+        supplementaryReturnedPaid: milestoneCounts?.supplementaryReturnedPaid ?? 0,
       };
     }
     return baseRow;
@@ -8249,7 +9359,7 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
       reviewed: row?.reviewed ?? 0,
       hasReviewed: "reviewedColumn" in milestone && Boolean(milestone.reviewedColumn),
       cleared: row?.cleared ?? 0,
-      activeLabel: milestone.key === "refloatBidding" ? "In progress" : "In process",
+      activeLabel: getStatusMilestoneActiveLabel(milestone.key),
     };
     if (milestone.key === "bidding") {
       return {
@@ -8259,12 +9369,36 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
         inProcessBids: counts.inProcessBids,
       };
     }
+    if (milestone.key === "refloatBidding") {
+      return {
+        ...base,
+        liveBids: counts.refloatLiveBids,
+        overdueBids: counts.refloatOverdueBids,
+        inProcessBids: counts.refloatInProcessBids,
+      };
+    }
     if (milestone.key === "supplyOrder") {
       return {
         ...base,
         liveSupplyOrders: counts.liveSupplyOrders,
         financialSanctionPending: counts.financialSanctionPending,
         financialSanctionCompleted: counts.financialSanctionCompleted,
+      };
+    }
+    if (milestone.key === "payment") {
+      return {
+        ...base,
+        paymentDue: row?.paymentDue ?? 0,
+        paymentInProcess: row?.paymentInProcess ?? 0,
+        paymentSubmitted: row?.paymentSubmitted ?? 0,
+        supplementarySubmitted: row?.supplementarySubmitted ?? 0,
+        supplementaryPending: row?.supplementaryPending ?? 0,
+        supplementaryReturnedForCorrection: row?.supplementaryReturnedForCorrection ?? 0,
+        supplementaryReturnedPending: row?.supplementaryReturnedPending ?? 0,
+        supplementaryReturnedResubmitted: row?.supplementaryReturnedResubmitted ?? 0,
+        supplementaryPaid: row?.supplementaryPaid ?? 0,
+        supplementaryNormalPaid: row?.supplementaryNormalPaid ?? 0,
+        supplementaryReturnedPaid: row?.supplementaryReturnedPaid ?? 0,
       };
     }
     return base;
@@ -8308,6 +9442,25 @@ function buildStatusFlowFromSql(counts: StatusCounts) {
         ir,
         ...withDeliveryPeriod.slice(paymentIndex),
       ];
+}
+
+const dueStatusMilestoneKeys = new Set([
+  "scrutiny",
+  "highValue",
+  "tcec",
+  "ad",
+  "rqa",
+  "control",
+  "ifa",
+  "cfa",
+  "postTcec",
+  "refloatPostTcec",
+  "cnc",
+]);
+
+function getStatusMilestoneActiveLabel(key: string) {
+  if (key === "refloatBidding") return "In progress";
+  return dueStatusMilestoneKeys.has(key) ? "Due" : "In process";
 }
 
 function getAnalyticsSqlSlice(analytics: AnalyticsSqlSlice): AnalyticsSqlSlice {
@@ -8389,11 +9542,17 @@ async function verifyCurrentUserPassword(userId: string, password: string) {
   if (!result.rows[0]?.ok) throw new HttpError(403, "Incorrect password.");
 }
 
+function storedAppUserId(user: ReturnType<typeof requireAuth>) {
+  return user.id.startsWith("viewer:") ? null : user.id;
+}
+
 dashboardRouter.get(
   "/suspected-anomalies/acceptances",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     await ensureAnomalyGovernanceSchema();
+    const canReadAll = hasAnomalyGovernanceReadAccess(user);
+    const userId = storedAppUserId(user);
     const result = await pool.query<{
       signature: string;
       reason: string | null;
@@ -8425,11 +9584,12 @@ dashboardRouter.get(
        )
        or (
          $1::boolean = false
+         and $2::uuid is not null
          and not ($2::uuid = any(a.history_hidden_by_user_ids))
          and a.requested_by_user_id = $2
        )
        order by a.requested_at desc`,
-      [hasAnomalyGovernanceReadAccess(user), user.id],
+      [canReadAll, userId],
     );
     response.json({
       acceptances: result.rows.map((row) => ({
@@ -8717,6 +9877,7 @@ dashboardRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const finance1Year = readString(request.query.finance1Year);
     const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
@@ -8837,6 +9998,7 @@ dashboardRouter.get(
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const finance1Year = readString(request.query.finance1Year);
     const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
@@ -8877,11 +10039,13 @@ dashboardRouter.get(
   "/summary",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    await ensureSupplyOrderNoFurtherActionSchema();
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
+    const finance1Year = readString(request.query.finance1Year);
     const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const divisionYear =
@@ -8901,6 +10065,17 @@ dashboardRouter.get(
         ? requestedDivision
         : "all";
     const dashboardFileWhere = getDashboardFileWhereSql({
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+      scopeValues: scope.values,
+      selectedYear,
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      currentFinancialYear: settings.financialYear,
+      activeDivision,
+      fileCategories,
+    });
+    const milestoneClearingFileWhere = getDashboardMilestoneClearingFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
       selectedYear,
@@ -8937,10 +10112,30 @@ dashboardRouter.get(
       activeDivision === "all"
         ? divisions
         : divisions.filter((division) => division.name === activeDivision);
+    const usesEntireDatabaseFinanceAllocation =
+      selectedYear === allFilesYear && (!fileYear || fileYear === "all");
+    const financeInitiationYearAllocation =
+      selectedYear === allFilesYear && fileYear && fileYear !== "all"
+        ? getFinancialYearDateRange(fileYear)
+          ? fileYear
+          : undefined
+        : undefined;
+    const selectedYearStart = getFinancialYearStartNumber(selectedYear);
+    const fileYearStart = getFinancialYearStartNumber(fileYear);
+    const financeCarryForwardSourceYear =
+      fileYear &&
+      fileYear !== "all" &&
+      fileYearStart !== undefined &&
+      selectedYearStart !== undefined &&
+      fileYearStart < selectedYearStart
+        ? fileYear
+        : undefined;
+    const financeFirmTypeActivityYear =
+      selectedYear && getFinancialYearDateRange(selectedYear) ? selectedYear : undefined;
     const analyticsSliceDivision = activeDivision;
     const liveMilestones = readList(request.query.liveMilestones);
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 8,
+      version: 11,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -8950,12 +10145,52 @@ dashboardRouter.get(
       activeDivision,
       fileCategories,
       liveMilestones,
+      usesEntireDatabaseFinanceAllocation,
+      financeInitiationYearAllocation,
+      financeCarryForwardSourceYear,
+      financeFirmTypeActivityYear,
+      finance1Year,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
-      const [files, financeFiles, firmHistoryFiles] = await Promise.all([
+      const [
+        files,
+        financeFiles,
+        firmHistoryFiles,
+        milestoneClearingFiles,
+        financeAllocationOverride,
+      ] = await Promise.all([
         loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
         loadFiles(financeFileWhere.whereSql, financeFileWhere.values),
         loadFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values),
+        loadFiles(milestoneClearingFileWhere.whereSql, milestoneClearingFileWhere.values),
+        usesEntireDatabaseFinanceAllocation
+          ? loadFinancialYears().then((financialYears) =>
+              loadAllYearAllocationTotals({
+                user,
+                divisionIds: dashboardDivisions.map((division) => division.id),
+                financialYears: Array.from(
+                  new Set([
+                    settings.financialYear,
+                    settings.setupYear,
+                    ...settings.financialYears,
+                    ...financialYears,
+                  ]),
+                ).filter(
+                  (year) =>
+                    year &&
+                    year !== allFilesYear &&
+                    year !== allActiveFilesYear &&
+                    year !== activePlusCurrentFyClosedYear,
+                ),
+              }),
+            )
+          : financeInitiationYearAllocation
+            ? loadAllYearAllocationTotals({
+                user,
+                divisionIds: dashboardDivisions.map((division) => division.id),
+                financialYears: [financeInitiationYearAllocation],
+              })
+          : Promise.resolve(undefined),
       ]);
       const filteredFiles = fileCategories
         ? files.filter((file) => matchesFileCategorySelection(file, fileCategories))
@@ -8966,14 +10201,22 @@ dashboardRouter.get(
       const filteredFirmHistoryFiles = fileCategories
         ? firmHistoryFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
         : firmHistoryFiles;
+      const filteredMilestoneClearingFiles = fileCategories
+        ? milestoneClearingFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : milestoneClearingFiles;
       const normalizedSummary = buildDashboardSummary({
         files: filteredFiles,
         firmHistoryFiles: filteredFirmHistoryFiles,
+        milestoneClearingFiles: filteredMilestoneClearingFiles,
         financeFiles: filteredFinanceFiles,
         divisions,
         settings: { ...settings, selectedYear, valueThresholdLevels },
         division: activeDivision,
         liveMilestones,
+        financeAllocationOverride,
+        financeCarryForwardSourceYear,
+        financeFirmTypeActivityYear,
+        finance1Year,
       });
 
       if (process.env.DASHBOARD_SQL_COMPARE === "true") {
@@ -8996,6 +10239,8 @@ dashboardRouter.get(
             values: dashboardFileWhere.values,
             activeDivision,
             dashboardDivisions,
+            selectedYear,
+            currentFinancialYear: settings.financialYear,
           }),
           loadMiscellaneousCounts({
             whereSql: dashboardFileWhere.whereSql,

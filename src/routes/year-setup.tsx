@@ -780,7 +780,15 @@ export function YearSetupPanel() {
                     <span>
                       Showing {splitIndentors.length} of {splitIndentorTotal}
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage <= 1}
+                        onClick={() => setSplitIndentorPage(1)}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        First
+                      </button>
                       <button
                         type="button"
                         disabled={splitIndentorPage <= 1}
@@ -792,6 +800,24 @@ export function YearSetupPanel() {
                       <span>
                         Page {splitIndentorPage} of {splitIndentorTotalPages}
                       </span>
+                      {getYearSetupPaginationPages(
+                        splitIndentorPage,
+                        splitIndentorTotalPages,
+                      ).map((pageNumber) => (
+                        <button
+                          key={pageNumber}
+                          type="button"
+                          onClick={() => setSplitIndentorPage(pageNumber)}
+                          className={
+                            "h-7 min-w-7 rounded-md border px-2 font-medium " +
+                            (pageNumber === splitIndentorPage
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border hover:bg-accent")
+                          }
+                        >
+                          {pageNumber}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         disabled={splitIndentorPage >= splitIndentorTotalPages}
@@ -803,6 +829,14 @@ export function YearSetupPanel() {
                         className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
                       >
                         Next
+                      </button>
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage >= splitIndentorTotalPages}
+                        onClick={() => setSplitIndentorPage(splitIndentorTotalPages)}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Last
                       </button>
                     </div>
                   </div>
@@ -911,6 +945,15 @@ export function YearSetupPanel() {
       )}
     </div>
   );
+}
+
+function getYearSetupPaginationPages(currentPage: number, totalPages: number, maxVisible = 5) {
+  const visible = Math.max(1, Math.min(maxVisible, totalPages));
+  const half = Math.floor(visible / 2);
+  let startPage = Math.max(1, currentPage - half);
+  const endPage = Math.min(totalPages, startPage + visible - 1);
+  startPage = Math.max(1, endPage - visible + 1);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
 function AllocationInput({

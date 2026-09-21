@@ -4,6 +4,10 @@ export function promptDeletionPassword(action: string) {
   return showPasswordPrompt(`Enter deletion password to ${action}:`);
 }
 
+export function promptPassword(message: string) {
+  return showPasswordPrompt(message);
+}
+
 export async function requestDeletionPassword(action: string) {
   const password = store.getSettings().deletionPassword;
   if (!password) {

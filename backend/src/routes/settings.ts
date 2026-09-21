@@ -128,6 +128,10 @@ function presetOwnerKey(user: AuthRequest["authUser"]) {
   return user?.id;
 }
 
+function isStoredAppUser(user: AuthRequest["authUser"]) {
+  return Boolean(user?.id && !user.id.startsWith("viewer:"));
+}
+
 function normalizeYearLabel(value: unknown, field = "financialYear") {
   const label = requireString(value, field).trim();
   if (!label) throw new HttpError(400, `${field} is required.`);
@@ -452,7 +456,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
       ? tagPresets(await loadUserTableFieldPresets(ownerKey), "personal", ownerKey)
       : [];
   const liveStatusLockedFields = ownerKey ? await loadUserLiveStatusFields(ownerKey) : undefined;
-  const uiPreferences = user?.id ? await loadUserUiPreferences(user.id) : undefined;
+  const uiPreferences = isStoredAppUser(user) ? await loadUserUiPreferences(user!.id) : undefined;
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
@@ -764,13 +768,9 @@ async function reconcileFileTypeChanges(
     normalizedNextFileTypeGroups.map((entry) => [entry.fileType.trim().toLowerCase(), entry.group]),
   );
   const nextSet = new Set(nextFileTypes.map((fileType) => fileType.trim().toLowerCase()));
-  const currentSet = new Set(currentFileTypes.map((fileType) => fileType.trim().toLowerCase()));
   const removedFileTypes = currentFileTypes
     .map((fileType) => fileType.trim())
     .filter((fileType) => fileType && !nextSet.has(fileType.toLowerCase()));
-  const addedFileTypes = nextFileTypes
-    .map((fileType) => fileType.trim())
-    .filter((fileType) => fileType && !currentSet.has(fileType.toLowerCase()));
 
   await assertUsedFileTypeGroupsUnchanged(currentFileTypes, currentGroupByType, nextGroupByType);
   if (!removedFileTypes.length) return;
@@ -785,26 +785,10 @@ async function reconcileFileTypeChanges(
   );
   if (!result.rows.length) return;
 
-  const rename = inferSingleFileTypeRename(
-    removedFileTypes,
-    addedFileTypes,
-    currentGroupByType,
-    nextGroupByType,
-  );
-  if (rename) {
-    await pool.query(
-      `update files
-       set file_type = $2
-       where lower(trim(coalesce(file_type, ''))) = $1`,
-      [rename.from.toLowerCase(), rename.to],
-    );
-    return;
-  }
-
   const usedTypes = result.rows.map((row) => `${row.file_type} (${row.count})`).join(", ");
   throw new HttpError(
     400,
-    `This file type is used by existing files and cannot be deleted: ${usedTypes}. Rename it instead, or update those files first.`,
+    `This file type is used by active or archived files, so its name cannot be changed or deleted: ${usedTypes}.`,
   );
 }
 
@@ -834,23 +818,62 @@ async function assertUsedFileTypeGroupsUnchanged(
   const usedTypes = result.rows.map((row) => `${row.file_type} (${row.count})`).join(", ");
   throw new HttpError(
     400,
-    `This file type is used by existing files, so its workflow group cannot be changed: ${usedTypes}.`,
+    `This file type is used by active or archived files, so its workflow group cannot be changed: ${usedTypes}.`,
   );
 }
 
-function inferSingleFileTypeRename(
-  removedFileTypes: string[],
-  addedFileTypes: string[],
-  currentGroupByType: Map<string, FileTypeGroupSetting["group"]>,
-  nextGroupByType: Map<string, FileTypeGroupSetting["group"]>,
-) {
-  if (removedFileTypes.length !== 1 || addedFileTypes.length !== 1) return undefined;
-  const from = removedFileTypes[0];
-  const to = addedFileTypes[0];
-  if (currentGroupByType.get(from.toLowerCase()) !== nextGroupByType.get(to.toLowerCase())) {
-    return undefined;
-  }
-  return { from, to };
+function normalizeMasterValue(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function removedMasterValues(currentValues: string[], nextValues: string[]) {
+  const nextSet = new Set(nextValues.map(normalizeMasterValue).filter(Boolean));
+  return currentValues
+    .map((value) => value.trim())
+    .filter((value) => value && !nextSet.has(normalizeMasterValue(value)));
+}
+
+function noteRemovedValuesBecomeInactive(label: string, removedValues: string[]) {
+  void label;
+  void removedValues;
+  // Removing a used master value from Settings means "inactive for future dropdowns".
+  // Historical active/archive file rows keep their saved text and continue to display it.
+}
+
+async function assertFirmTypesCanChange(nextFirmTypes: string[]) {
+  const settings = await getSettings();
+  const removed = removedMasterValues(settings.firmTypes, nextFirmTypes);
+  noteRemovedValuesBecomeInactive("Firm type", removed);
+}
+
+async function assertModesCanChange(nextModes: string[]) {
+  const settings = await getSettings();
+  const removed = removedMasterValues(settings.modes, nextModes);
+  noteRemovedValuesBecomeInactive("Mode", removed);
+}
+
+async function assertSpecialFileMarkersCanChange(nextMarkers: Array<{ code: string }>) {
+  const settings = await getSettings();
+  const currentCodes = normalizeSpecialFileMarkers(settings.specialFileMarkers).map((marker) => marker.code);
+  const nextCodes = nextMarkers.map((marker) => marker.code);
+  const removed = removedMasterValues(currentCodes, nextCodes);
+  noteRemovedValuesBecomeInactive("Special file marker", removed);
+}
+
+async function assertTcecCommitteesCanChange(financialYear: string, nextCommittees: string[]) {
+  const settings = await getSettings();
+  const current = await loadTcecCommittees(financialYear, settings.tcecCommittees);
+  const removed = removedMasterValues(
+    current.filter((item): item is string => typeof item === "string"),
+    nextCommittees,
+  );
+  noteRemovedValuesBecomeInactive("TCEC committee", removed);
+}
+
+async function assertMilestonesCanChange(nextMilestones: string[]) {
+  const settings = await getSettings();
+  const removed = removedMasterValues(settings.milestones, nextMilestones);
+  noteRemovedValuesBecomeInactive("Milestone", removed);
 }
 
 function readMmgSummaryFields(value: unknown) {
@@ -976,6 +999,10 @@ settingsRouter.get(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     const reportKey = requireParam(request.params.reportKey, "reportKey");
+    if (!isStoredAppUser(user)) {
+      response.json({ preferences: {} });
+      return;
+    }
     const preferences = await loadUserReportPreferences(user.id, reportKey);
     response.json({ preferences });
   }),
@@ -1069,6 +1096,10 @@ settingsRouter.put(
     const user = requireAuth(request as AuthRequest);
     const reportKey = requireParam(request.params.reportKey, "reportKey");
     const body = requireObjectBody(request.body);
+    if (!isStoredAppUser(user)) {
+      response.json({ preferences: {} });
+      return;
+    }
     await replaceUserReportPreferences(user.id, reportKey, body);
     response.json({ preferences: await loadUserReportPreferences(user.id, reportKey) });
   }),
@@ -1151,7 +1182,10 @@ settingsRouter.patch(
     }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
-    if ("theme" in body || "themeTint" in body || "addEditRibbonFields" in body) {
+    if (
+      isStoredAppUser(user) &&
+      ("theme" in body || "themeTint" in body || "addEditRibbonFields" in body)
+    ) {
       await replaceUserUiPreferences(user.id, {
         ...("theme" in body ? { theme: readTheme(body.theme) } : {}),
         ...("themeTint" in body ? { themeTint: readThemeTint(body.themeTint) } : {}),
@@ -1164,11 +1198,15 @@ settingsRouter.patch(
       addField("deletion_password", toDbText(body.deletionPassword) ?? "");
     if ("tcecCommittees" in body) {
       const settings = await getSettings();
-      await replaceTcecCommittees(
+      const financialYear =
         typeof body.setupYear === "string" && body.setupYear.trim()
           ? body.setupYear.trim()
-          : settings.setupYear,
-        readArrayValue(body.tcecCommittees, "tcecCommittees"),
+          : settings.setupYear;
+      const tcecCommittees = readStringArray(body.tcecCommittees, "tcecCommittees");
+      await assertTcecCommitteesCanChange(financialYear, tcecCommittees);
+      await replaceTcecCommittees(
+        financialYear,
+        tcecCommittees,
       );
     }
     if ("valueThresholdLevels" in body) {
@@ -1180,14 +1218,20 @@ settingsRouter.patch(
         readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"),
       );
     }
-    if ("milestones" in body)
-      addField("milestones", readArray(body.milestones, "milestones"), "::jsonb");
-    if ("firmTypes" in body)
+    if ("milestones" in body) {
+      const milestones = readStringArray(body.milestones, "milestones");
+      await assertMilestonesCanChange(milestones);
+      addField("milestones", JSON.stringify(milestones), "::jsonb");
+    }
+    if ("firmTypes" in body) {
+      const firmTypes = readStringArray(body.firmTypes, "firmTypes");
+      await assertFirmTypesCanChange(firmTypes);
       addField(
         "firm_types",
-        JSON.stringify(readStringArray(body.firmTypes, "firmTypes")),
+        JSON.stringify(firmTypes),
         "::jsonb",
       );
+    }
     if ("fileTypes" in body || "fileTypeGroups" in body) {
       const settings = await getSettings(user);
       const fileTypes =
@@ -1201,8 +1245,11 @@ settingsRouter.patch(
       if ("fileTypeGroups" in body)
         addField("file_type_groups", JSON.stringify(fileTypeGroups), "::jsonb");
     }
-    if ("modes" in body)
-      addField("modes", JSON.stringify(readStringArray(body.modes, "modes")), "::jsonb");
+    if ("modes" in body) {
+      const modes = readStringArray(body.modes, "modes");
+      await assertModesCanChange(modes);
+      addField("modes", JSON.stringify(modes), "::jsonb");
+    }
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
     if ("mmgLiveOptions" in body)
       addField(
@@ -1234,12 +1281,15 @@ settingsRouter.patch(
         JSON.stringify(readBgReceiptDelayDays(body.bgReceiptDelayDays)),
         "::jsonb",
       );
-    if ("specialFileMarkers" in body)
+    if ("specialFileMarkers" in body) {
+      const specialFileMarkers = readSpecialFileMarkers(body.specialFileMarkers);
+      await assertSpecialFileMarkersCanChange(specialFileMarkers);
       addField(
         "special_file_markers",
-        JSON.stringify(readSpecialFileMarkers(body.specialFileMarkers)),
+        JSON.stringify(specialFileMarkers),
         "::jsonb",
       );
+    }
     if ("firmUniqueNoLabel" in body)
       addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
     if ("firmRatingConfig" in body)
@@ -1365,6 +1415,27 @@ settingsRouter.post(
 
     clearSettingsCache();
     response.status(201).json({ settings: await getSettings(user) });
+  }),
+);
+
+settingsRouter.get(
+  "/financial-years/:label/usage-count",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const label = requireParam(request.params.label, "label").trim();
+    if (!label) throw new HttpError(400, "label is required.");
+    const fileResult = await pool.query<{ count: string }>(
+      `select count(*)
+       from files f
+       where f.year = $1
+          or exists (
+            select 1 from file_year_activity a
+            where a.file_id = f.id and a.financial_year = $1
+          )`,
+      [label],
+    );
+    response.json({ count: Number(fileResult.rows[0]?.count ?? 0) });
   }),
 );
 

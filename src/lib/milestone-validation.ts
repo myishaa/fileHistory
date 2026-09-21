@@ -6,6 +6,8 @@ type MilestoneCompletionRule = {
   aliases: string[];
   completionLabel: string;
   isApplicable?: (file: Partial<FileRecord>) => boolean;
+  startLabel?: string;
+  hasStarted?: (file: Partial<FileRecord>) => boolean;
   isComplete: (file: Partial<FileRecord>) => boolean;
 };
 
@@ -13,6 +15,8 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
   {
     aliases: ["Scrutiny"],
     completionLabel: "Scrutiny completion date",
+    startLabel: "Scrutiny date",
+    hasStarted: (file) => hasFilledString(file.scrutinyDate),
     isComplete: (file) => hasFilledString(file.scrutinyCompletionDate),
   },
   {
@@ -194,13 +198,25 @@ export function validateMilestoneCompletionConsistency(
     if (!rule || (rule.isApplicable && !rule.isApplicable(file))) continue;
 
     const stageLabel = rule.aliases[0];
+    const stageKeys = rule.aliases.map(normalizeMilestoneName);
     const manuallyCompleted = rule.aliases.some((alias) =>
       completed.has(normalizeMilestoneName(alias)),
     );
     const hasCompletionValue = rule.isComplete(file);
+    const hasStartedValue = rule.hasStarted?.(file) ?? false;
     hasAnyCompletionValue ||= hasCompletionValue;
     hasIncompleteApplicableStage ||= !hasCompletionValue;
 
+    if (
+      hasStartedValue &&
+      !hasCompletionValue &&
+      !manuallyCompleted &&
+      !stageKeys.includes(currentMilestone)
+    ) {
+      errors.push(
+        `${rule.startLabel ?? stageLabel} is filled, but ${stageLabel} is not selected as current manually.`,
+      );
+    }
     if (hasCompletionValue && !manuallyCompleted) {
       errors.push(
         `${rule.completionLabel} is filled, but ${stageLabel} is not marked completed manually.`,
@@ -229,7 +245,7 @@ export function getMilestoneValidationTarget(errors: string[], configuredMilesto
     : milestoneCompletionRules.flatMap((rule) => rule.aliases.slice(0, 1));
   const firstError = errors[0] ?? "";
   const matchingRule = milestoneCompletionRules.find((rule) =>
-    [rule.completionLabel, ...rule.aliases].some((label) =>
+    [rule.completionLabel, rule.startLabel, ...rule.aliases].filter(Boolean).some((label) =>
       firstError.toLowerCase().includes(label.toLowerCase()),
     ),
   );

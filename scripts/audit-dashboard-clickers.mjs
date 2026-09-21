@@ -292,9 +292,16 @@ function collectStatusCounters(summary) {
       add(
         counters,
         "Status-1",
-        `${title} / Supplementary submitted`,
-        row.supplementaryPending,
+        `${title} / Supplementary submitted total`,
+        row.supplementarySubmitted,
         "supplementaryBill:submitted",
+      );
+      add(
+        counters,
+        "Status-1",
+        `${title} / Supplementary pending`,
+        row.supplementaryPending,
+        "supplementaryBill:pending",
       );
       add(
         counters,

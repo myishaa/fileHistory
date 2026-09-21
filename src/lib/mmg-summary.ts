@@ -52,7 +52,15 @@ export type MmgSummaryRow = {
   value: string;
   fileIds?: string[];
   focusTargets?: Record<string, string[]>;
+  dashboardFilter?: string;
 };
+
+export type MmgSummarySourceOverride = {
+  value: string;
+  dashboardFilter?: string;
+};
+
+export type MmgSummarySourceOverrides = Record<string, MmgSummarySourceOverride>;
 
 const defaultModeKeys = new Set(["OBM", "PBM", "LPC", "SBM", "LBM"]);
 const defaultMmgFileTypes = new Set(["goods & services", "amc", "mpc", "cars", "o&m"]);
@@ -196,10 +204,10 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "returnedBillPaid", label: "Returned bill paid", group: "Payment" },
   {
     key: "supplementaryBillsSubmittedPaymentPending",
-    label: "Supplementary bills submitted/payment pending",
+    label: "Supplementary bills submitted total",
     group: "Payment",
   },
-  { key: "supplementaryBillsPaid", label: "Supplementary bills paid", group: "Payment" },
+  { key: "supplementaryBillsPaid", label: "Normal supplementary bills paid", group: "Payment" },
   {
     key: "supplementaryBillReturnedForCorrection",
     label: "Supplementary bill returned for correction",
@@ -220,6 +228,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     label: "Returned supplementary bills paid",
     group: "Payment",
   },
+  { key: "supplementaryBillsPending", label: "Supplementary bills pending", group: "Payment" },
   { key: "totalPaymentDueThisMonth", label: "Total payment due this month", group: "Payment" },
   {
     key: "billsSentForCurrentMonthDeliveries",
@@ -427,6 +436,7 @@ export function buildMmgSummaryRows({
   modes,
   firmTypes,
   fileTypes,
+  sourceOverrides,
 }: {
   files: FileRecord[];
   divisions: Division[];
@@ -436,6 +446,7 @@ export function buildMmgSummaryRows({
   modes?: string[];
   firmTypes?: string[];
   fileTypes?: string[];
+  sourceOverrides?: MmgSummarySourceOverrides;
 }): MmgSummaryRow[] {
   const { values, fileIdsByKey, focusTargetsByKey } = getMmgSummaryValues(
     files,
@@ -448,9 +459,12 @@ export function buildMmgSummaryRows({
     .map((field) => ({
       key: field.key,
       label: field.label,
-      value: values[field.key] ?? "0",
-      fileIds: fileIdsByKey[field.key],
-      focusTargets: focusTargetsByKey[field.key],
+      value: sourceOverrides?.[field.key]?.value ?? values[field.key] ?? "0",
+      fileIds: sourceOverrides?.[field.key]?.dashboardFilter ? undefined : fileIdsByKey[field.key],
+      focusTargets: sourceOverrides?.[field.key]?.dashboardFilter
+        ? undefined
+        : focusTargetsByKey[field.key],
+      dashboardFilter: sourceOverrides?.[field.key]?.dashboardFilter,
     }));
 }
 
@@ -531,7 +545,7 @@ function getMmgSummaryValues(
   financialYear: string,
 ) {
   void _previousYearFiles;
-  void financialYear;
+  const financialYearRange = getFinancialYearDateRange(financialYear);
   const allocatedCapital = divisions.reduce(
     (sum, division) => sum + (parseAmount(division.allocatedCapital) ?? 0),
     0,
@@ -586,9 +600,18 @@ function getMmgSummaryValues(
   const advancePaymentEntries = normalizedAdvancePaymentEntries(files).filter(
     ({ file, order }) => !isCancelledOrder(file, order),
   );
+  const supplyOrdersPlacedThisFy = rawActiveOrders.filter(
+    ({ file, order }) =>
+      isSupplyOrderTabComplete(file, order) &&
+      isDateWithinRange(order.soDate, financialYearRange?.fromDate, financialYearRange?.toDate),
+  );
   const supplementaryBillSubmittedEntries = getSupplementaryBillEntries(
     rawOrders,
     isSupplementaryBillSubmitted,
+  );
+  const supplementaryBillPendingEntries = getSupplementaryBillEntries(
+    rawOrders,
+    isSupplementaryBillPaymentPending,
   );
   const supplementaryBillReturnedEntries = getSupplementaryBillEntries(
     rawOrders,
@@ -604,7 +627,7 @@ function getMmgSummaryValues(
   );
   const supplementaryBillPaidEntries = getSupplementaryBillEntries(
     rawOrders,
-    isSupplementaryBillPaid,
+    isNormalSupplementaryBillPaid,
   );
   const returnedSupplementaryBillPaidEntries = getSupplementaryBillEntries(
     rawOrders,
@@ -898,6 +921,7 @@ function getMmgSummaryValues(
       returnedSupplementaryBillResubmittedEntries.length,
     ),
     returnedSupplementaryBillsPaid: formatCount(returnedSupplementaryBillPaidEntries.length),
+    supplementaryBillsPending: formatCount(supplementaryBillPendingEntries.length),
     paymentPending: formatCount(entryFileIds(pendingPaymentEntries).length),
     totalPendingPaymentStagesCases: formatCount(pendingPaymentEntries.length),
     paymentCompleted: formatCount(
@@ -1039,11 +1063,7 @@ function getMmgSummaryValues(
       rawActiveOrders.filter(({ order }) => hasFilledString(order.revisedDp)).length,
     ),
     totalSoValuePlacedThisFy: formatMoney(
-      rawActiveOrders.reduce(
-        (sum, { file, order }) =>
-          sum + (hasSupplyOrderDate(order) ? getOrderTotal(file, order) : 0),
-        0,
-      ),
+      supplyOrdersPlacedThisFy.reduce((sum, { file, order }) => sum + getOrderTotal(file, order), 0),
     ),
     totalUnpaidSoValue: formatMoney(
       sumOrders(files, ({ file, order }) =>
@@ -1347,6 +1367,7 @@ function getMmgSummaryValues(
       returnedSupplementaryBillResubmittedEntries,
     ),
     returnedSupplementaryBillsPaid: entryFileIds(returnedSupplementaryBillPaidEntries),
+    supplementaryBillsPending: entryFileIds(supplementaryBillPendingEntries),
     paymentPending: entryFileIds(pendingPaymentEntries),
     totalPendingPaymentStagesCases: entryFileIds(pendingPaymentEntries),
     paymentCompleted: entryFileIds(
@@ -1773,6 +1794,11 @@ function getMmgSummaryValues(
       "supplementarybill",
       "paid",
     ),
+    supplementaryBillsPending: entryFocusTargets(
+      supplementaryBillPendingEntries,
+      "supplementarybill",
+      "submitted",
+    ),
     paymentPending: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
     totalPendingPaymentStagesCases: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
     paymentCompleted: entryFocusTargets(
@@ -1999,7 +2025,7 @@ function getMmgSummaryValues(
       "extended",
     ),
     totalSoValuePlacedThisFy: entryFocusTargets(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
+      supplyOrdersPlacedThisFy,
       "supplyorder",
       "placed",
     ),
@@ -2238,12 +2264,11 @@ function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
 }
 
 function isSupplementaryBillSubmitted(bill: SupplementaryBillDetail) {
-  return (
-    hasFilledString(bill.billSentForPaymentDate) &&
-    !hasOpenSupplementaryBillReturn(bill) &&
-    !hasCompletedSupplementaryBillReturn(bill) &&
-    !hasFilledString(bill.paymentDate)
-  );
+  return hasFilledString(bill.billSentForPaymentDate);
+}
+
+function isSupplementaryBillPaymentPending(bill: SupplementaryBillDetail) {
+  return hasFilledString(bill.billSentForPaymentDate) && !hasFilledString(bill.paymentDate);
 }
 
 function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
@@ -2251,11 +2276,7 @@ function isSupplementaryBillReturned(bill: SupplementaryBillDetail) {
 }
 
 function isSupplementaryBillResubmitted(bill: SupplementaryBillDetail) {
-  return (
-    !hasFilledString(bill.paymentDate) &&
-    !hasOpenSupplementaryBillReturn(bill) &&
-    hasCompletedSupplementaryBillReturn(bill)
-  );
+  return hasCompletedSupplementaryBillReturn(bill);
 }
 
 function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
@@ -2264,6 +2285,10 @@ function isSupplementaryBillPaid(bill: SupplementaryBillDetail) {
 
 function isReturnedSupplementaryBillPaid(bill: SupplementaryBillDetail) {
   return isSupplementaryBillPaid(bill) && hasCompletedSupplementaryBillReturn(bill);
+}
+
+function isNormalSupplementaryBillPaid(bill: SupplementaryBillDetail) {
+  return isSupplementaryBillPaid(bill) && !hasSupplementaryBillReturnHistory(bill);
 }
 
 function hasSupplementaryBillData(bill: SupplementaryBillDetail) {
@@ -2340,10 +2365,7 @@ function isDeliveryInspectionApplicable(file: FileRecord) {
 }
 
 function isCancelledDemand(file: FileRecord) {
-  if (isDemandCancelled(file)) return true;
-  const supplyOrders = file.supplyOrders ?? [];
-  if (supplyOrders.length === 0) return false;
-  return supplyOrders.every((order) => isYes(order.soCancelled));
+  return isDemandCancelled(file);
 }
 
 function isDemandCancelled(file: FileRecord) {
@@ -2727,6 +2749,31 @@ function isDateBefore(date: string | undefined, reference: string | undefined) {
   const dateTime = parseDate(date);
   const referenceTime = parseDate(reference);
   return dateTime !== undefined && referenceTime !== undefined && dateTime < referenceTime;
+}
+
+function isDateWithinRange(
+  date: string | undefined,
+  fromDate: string | undefined,
+  toDate: string | undefined,
+) {
+  if (!hasFilledString(date)) return false;
+  if (hasFilledString(fromDate) && date! < fromDate!) return false;
+  if (hasFilledString(toDate) && date! > toDate!) return false;
+  return true;
+}
+
+function getFinancialYearDateRange(financialYear: string | undefined) {
+  const startYear = readFinancialYearStart(financialYear);
+  if (startYear === undefined) return undefined;
+  return {
+    fromDate: `${startYear}-04-01`,
+    toDate: `${startYear + 1}-03-31`,
+  };
+}
+
+function readFinancialYearStart(financialYear: string | undefined) {
+  const match = financialYear?.match(/\b(19\d{2}|20\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
 }
 
 function isBeforeToday(date: string | undefined) {

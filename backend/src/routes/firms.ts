@@ -215,6 +215,51 @@ async function verifyDeletionPassword(value: unknown) {
   if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
 }
 
+async function assertFirmUnusedBeforeArchive(firm: MasterFirm) {
+  const firmName = firm.firmName?.trim().toLowerCase() || "";
+  const firmUniqueNo = firm.firmUniqueNo?.trim().toLowerCase() || "";
+  if (!firmName && !firmUniqueNo) return;
+
+  const result = await pool.query<{ count: string }>(
+    `with matching_files as (
+       select f.id
+       from files f
+       where (
+           ($1 <> '' and lower(trim(coalesce(f.firm, ''))) = $1)
+           or ($2 <> '' and lower(trim(coalesce(f.firm_unique_no, ''))) = $2)
+           or exists (
+             select 1
+             from supply_orders so
+             where so.file_id = f.id
+               and (
+                 ($1 <> '' and lower(trim(coalesce(so.firm, ''))) = $1)
+                 or ($2 <> '' and lower(trim(coalesce(so.firm_unique_no, ''))) = $2)
+               )
+           )
+           or exists (
+             select 1
+             from file_firms ff
+             where ff.file_id = f.id
+               and (
+                 ($1 <> '' and lower(trim(coalesce(ff.firm_name, ''))) = $1)
+                 or ($2 <> '' and lower(trim(coalesce(ff.firm_unique_no, ''))) = $2)
+               )
+           )
+         )
+     )
+     select count(distinct id)::text as count
+     from matching_files`,
+    [firmName, firmUniqueNo],
+  );
+  const count = Number(result.rows[0]?.count ?? 0);
+  if (count > 0) {
+    throw new HttpError(
+      400,
+      `This firm is used in ${count} file${count === 1 ? "" : "s"}, including Archive. Keep the historical firm reference.`,
+    );
+  }
+}
+
 function readFirmPayload(body: Record<string, unknown>) {
   const firmName = toDbText(body.firmName);
   const emailId = toDbText(body.emailId);
@@ -373,6 +418,7 @@ firmsRouter.delete(
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id);
     if (!firm) throw new HttpError(404, "Firm was not found.");
+    await assertFirmUnusedBeforeArchive(firm);
     await pool.query(
       `update master_firms
        set archived_at = now(),
@@ -438,6 +484,7 @@ firmsRouter.delete(
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id, true);
     if (!firm?.archivedAt) throw new HttpError(404, "Archived firm was not found.");
+    await assertFirmUnusedBeforeArchive(firm);
     await pool.query("delete from master_firms where id = $1 and archived_at is not null", [id]);
     response.json({ deleted: true, firm });
   }),

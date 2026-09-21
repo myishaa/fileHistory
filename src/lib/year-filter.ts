@@ -21,6 +21,11 @@ function readFinancialYearStart(year: string | undefined) {
   return match ? Number(match[1]) : undefined;
 }
 
+function getFinancialYearStartDate(year: string | undefined) {
+  const startYear = readFinancialYearStart(year);
+  return startYear ? `${startYear}-04-01` : undefined;
+}
+
 function isDateInFinancialYear(date: string | undefined, financialYear: string | undefined) {
   if (!date) return false;
   const startYear = readFinancialYearStart(financialYear);
@@ -121,5 +126,14 @@ export function isFileVisibleForYear(
       !isInactiveFile(file) || isDateInFinancialYear(file.fileClosureDate, currentFinancialYear)
     );
   }
-  return file.year === year || file.activeYears?.includes(year);
+  if (file.year === year || file.activeYears?.includes(year)) return true;
+
+  const fileStartYear = readFinancialYearStart(file.year);
+  const selectedStartYear = readFinancialYearStart(year);
+  const selectedStartDate = getFinancialYearStartDate(year);
+  if (!fileStartYear || !selectedStartYear || !selectedStartDate) return false;
+  if (fileStartYear > selectedStartYear) return false;
+  if (isCancelledFile(file)) return false;
+  if (!isFileClosed(file)) return true;
+  return Boolean(file.fileClosureDate && file.fileClosureDate >= selectedStartDate);
 }

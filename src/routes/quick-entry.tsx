@@ -103,8 +103,12 @@ function QuickEntryEditor() {
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor";
-  const isReadOnlyQuickEntry = activeUser?.role === "universal_viewer";
-  const canCreateFileStatus = activeUser?.role !== "universal_viewer";
+  const isReadOnlyQuickEntry =
+    activeUser?.role === "universal_viewer" ||
+    activeUser?.role === "viewer" ||
+    activeUser?.role === "division_user";
+  const canOpenCurrentStage = canEditFiles || isReadOnlyQuickEntry;
+  const canCreateFileStatus = canEditFiles || activeUser?.role === "universal_viewer";
   const [uniqueCode, setUniqueCode] = useState("");
   const [message, setMessage] = useState<QuickEntryError | null>(null);
   const [milestoneFileId, setMilestoneFileId] = useState("");
@@ -178,6 +182,7 @@ function QuickEntryEditor() {
         milestone: undefined,
         focusTarget: stage.focusTarget,
         quickFocus: true,
+        returnToQuickEntry: true,
       },
     });
   };
@@ -281,8 +286,7 @@ function QuickEntryEditor() {
 
   return (
     <div className="space-y-4">
-      {!isReadOnlyQuickEntry ? (
-        <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
           <div className="mb-5 flex items-start gap-3">
             <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
               <ScanLine className="size-5 text-primary" />
@@ -290,8 +294,11 @@ function QuickEntryEditor() {
             <div>
               <h2 className="text-base font-semibold">Quick Entry</h2>
               <p className="text-xs text-muted-foreground">
-                Scan the file barcode to open the currently running stage and focus the first
-                unfilled field.
+                Scan or enter the Unique code to open the file's current stage.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Viewers open it read-only. Quick Entry opens exact files only; it does not change
+                Global Filter or Subfilter.
               </p>
             </div>
           </div>
@@ -307,7 +314,7 @@ function QuickEntryEditor() {
                   setMilestoneFileId("");
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && canEditFiles) {
+                  if (event.key === "Enter" && canOpenCurrentStage) {
                     event.preventDefault();
                     void continueToCurrentStage();
                   }
@@ -320,8 +327,8 @@ function QuickEntryEditor() {
             <button
               type="button"
               onClick={() => void continueToCurrentStage()}
-              disabled={loading || !canEditFiles}
-              title={canEditFiles ? "Open current stage" : "Only editors/admins can open stages"}
+              disabled={loading || !canOpenCurrentStage}
+              title="Open current stage"
               className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
@@ -347,6 +354,7 @@ function QuickEntryEditor() {
                         section: "Milestones",
                         milestone: undefined,
                         quickFocus: true,
+                        returnToQuickEntry: true,
                       },
                     })
                   }
@@ -357,8 +365,7 @@ function QuickEntryEditor() {
               ) : null}
             </div>
           ) : null}
-        </section>
-      ) : null}
+      </section>
 
       <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <div className="mb-5 flex items-start gap-3">
@@ -366,9 +373,13 @@ function QuickEntryEditor() {
             <FileText className="size-5 text-primary" />
           </div>
           <div>
-            <h2 className="text-base font-semibold">File Status</h2>
+            <h2 className="text-base font-semibold">
+              {isReadOnlyQuickEntry ? "Quick Viewer" : "File Status"}
+            </h2>
             <p className="text-xs text-muted-foreground">
-              Find a file, view its timeline, then add an independent status note.
+              {isReadOnlyQuickEntry
+                ? "Find a file to view file status, milestone history, and status notes."
+                : "Find a file, view its timeline, then add an independent status note."}
             </p>
           </div>
         </div>
@@ -446,14 +457,17 @@ function QuickEntryEditor() {
               file={context.file}
               onOpenFullFile={() => openFullFile(navigate, context.file.id)}
             />
-            <StatusComposer
-              value={statusDraft}
-              onChange={setStatusDraft}
-              onSave={() => void saveStatus()}
-              disabled={!canCreateFileStatus}
-            />
+            {canCreateFileStatus ? (
+              <StatusComposer
+                value={statusDraft}
+                onChange={setStatusDraft}
+                onSave={() => void saveStatus()}
+                disabled={!canCreateFileStatus}
+              />
+            ) : null}
+            <FileStatusSummaryPanel file={context.file} statuses={context.statuses} />
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-              <TimelinePanel file={context.file} />
+              <MilestoneHistoryPanel file={context.file} />
               <StatusHistoryPanel
                 statuses={context.statuses}
                 editingStatusId={editingStatusId}
@@ -566,12 +580,75 @@ function StatusComposer({
   );
 }
 
-function TimelinePanel({ file }: { file: FileRecord }) {
-  const items = getQuickStatusTimelineItems(file);
-  const firstDate = parseDate(items[0]?.date);
+function FileStatusSummaryPanel({
+  file,
+  statuses,
+}: {
+  file: FileRecord;
+  statuses: FileStatusUpdate[];
+}) {
+  const latestStatus = [...statuses].sort((a, b) => getTime(b.createdAt) - getTime(a.createdAt))[0];
+  const details = [
+    ["Current milestone", file.currentMilestone || "-"],
+    ["Latest File Status", latestStatus?.text || "No File Status entered yet."],
+    [
+      "Status date",
+      latestStatus ? `${formatDateTime(latestStatus.createdAt)} by ${latestStatus.createdByName}` : "-",
+    ],
+  ];
   return (
     <div className="rounded-md border border-border bg-background/60 p-3">
-      <h3 className="text-sm font-semibold">Timeline</h3>
+      <h3 className="text-sm font-semibold">File Status</h3>
+      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+        {details.map(([label, value]) => (
+          <div key={label} className="rounded-md bg-card p-2">
+            <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+            <div className="mt-1 min-h-5 whitespace-pre-wrap break-words text-sm font-medium">
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
+  const items = getQuickStatusTimelineItems(file);
+  const firstDate = parseDate(items[0]?.date);
+  const completedMilestones = file.completedMilestones ?? [];
+  const milestoneStatuses = getQuickViewerMilestoneStatuses(file);
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-3">
+      <h3 className="text-sm font-semibold">Milestone History</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Only applicable milestones are shown. Pending means the milestone applies but is not
+        completed yet.
+      </p>
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {milestoneStatuses.map((milestone) => (
+          <div
+            key={milestone.label}
+            className={
+              "rounded-md border px-3 py-2 " +
+              (milestone.status === "Current"
+                ? "border-primary/35 bg-primary/10"
+                : milestone.status === "Completed"
+                  ? "border-success/35 bg-success/10"
+                  : "border-border bg-card")
+            }
+          >
+            <div className="text-sm font-medium">{milestone.label}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{milestone.status}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 rounded-md border border-border bg-card p-2">
+        <div className="text-[11px] font-medium text-muted-foreground">Completed milestones</div>
+        <div className="mt-1 text-sm font-medium">
+          {completedMilestones.length ? completedMilestones.join(", ") : "No completed milestones recorded."}
+        </div>
+      </div>
       <div className="mt-3 max-h-[520px] overflow-auto pr-1">
         {items.length ? (
           <ol className="relative space-y-0">
@@ -609,6 +686,246 @@ function TimelinePanel({ file }: { file: FileRecord }) {
         )}
       </div>
     </div>
+  );
+}
+
+function getQuickViewerMilestoneStatuses(file: FileRecord) {
+  const current = normalizeQuickEntryMilestone(file.currentMilestone ?? "");
+  const completed = new Set((file.completedMilestones ?? []).map(normalizeQuickEntryMilestone));
+  const definitions = getQuickViewerMilestoneDefinitions(file);
+  return definitions
+    .filter((definition) => definition.applicable)
+    .map((definition) => {
+      const label = definition.label;
+      const matchKeys = [
+        normalizeQuickEntryMilestone(label),
+        ...(definition.matchKeys ?? []).map(normalizeQuickEntryMilestone),
+      ];
+      return {
+        label,
+        date: definition.date,
+        status:
+          matchKeys.includes(current)
+            ? "Current"
+            : matchKeys.some((key) => completed.has(key)) || hasDate(definition.date)
+              ? "Completed"
+              : "Pending",
+      };
+    });
+}
+
+function getQuickViewerMilestoneDefinitions(file: FileRecord) {
+  const orders = rawSupplyOrders(file);
+  const currentMilestone = normalizeQuickEntryMilestone(file.currentMilestone ?? "");
+  const completedMilestones = new Set((file.completedMilestones ?? []).map(normalizeQuickEntryMilestone));
+  const hasOrder = orders.length > 0 || hasDate(file.soDate);
+  const hasFinancialSanction = orders.some((order) => hasDate(order.financialSanctionDate));
+  const hasSo = orders.some((order) => hasDate(order.soDate)) || hasDate(file.soDate);
+  const hasBgEvidence = orders.some(
+    (order) =>
+      isYes(order.psbApplicable) ||
+      ["PSB", "PWB", "PSB+PWB", "PSB and PWB separately"].includes(
+        String(order.bgCoverageType ?? ""),
+      ) ||
+      hasDate(order.psbBgReceivedDate) ||
+      hasDate(order.pwbBgReceivedDate) ||
+      hasDate(order.combinedBgReceivedDate),
+  );
+  const hasDeliveryEvidence = orders.some(
+    (order) =>
+      hasDate(order.dpDate) ||
+      hasDate(order.revisedDp) ||
+      hasDate(order.materialReceiptDate) ||
+      hasDate(order.jobCompletionDate),
+  );
+  const hasIrEvidence = orders.some(
+    (order) => hasDate(order.irPreparationDate) || hasDate(order.irReceiptDate),
+  );
+  const hasBillEvidence = orders.some(
+    (order) => hasDate(order.billPreparationDate) || hasDate(order.billSentForPaymentDate),
+  );
+  const hasPaymentEvidence = orders.some((order) => hasDate(order.paymentDate));
+  const hasAdvanceEvidence = orders.some((order) => isYes(order.advancePayment));
+
+  return [
+    { label: "Scrutiny", applicable: true, date: file.scrutinyDate || file.scrutinyCompletionDate },
+    {
+      label: "Controlled",
+      matchKeys: ["Controlling", "Control"],
+      applicable: true,
+      date: file.immsDate,
+    },
+    {
+      label: "High Value",
+      applicable: isYes(file.highValue) || hasDate(file.highValueMeetingDate),
+      date: file.highValueMinutesDate || file.highValueMeetingDate,
+    },
+    {
+      label: "AD",
+      applicable: isYes(file.ad) || hasDate(file.adSentDate) || hasDate(file.adVettingDate),
+      date: file.adVettingDate || file.adSentDate,
+    },
+    {
+      label: "R&QA",
+      applicable: isYes(file.rqa) || hasDate(file.rqaSentDate) || hasDate(file.rqaApprovalDate),
+      date: file.rqaApprovalDate || file.rqaSentDate,
+    },
+    {
+      label: "Pre-TCEC",
+      applicable: isYes(file.tcec) || hasDate(file.preTcecDate),
+      date: file.preTcecMinutesDate || file.preTcecDate,
+    },
+    {
+      label: "IFA",
+      applicable: isYes(file.ifa) || hasDate(file.ifaSentDate) || hasDate(file.ifaFinalDate),
+      date: file.ifaFinalDate || file.ifaSentDate,
+    },
+    { label: "CFA", applicable: true, date: file.cfaDate || file.cfaSentDate },
+    {
+      label: "Bidding",
+      applicable:
+        isBiddingApplicableForFile(file) ||
+        hasDate(file.bidDate) ||
+        hasDate(file.bidOpeningDate) ||
+        isYes(file.tenderLive),
+      date: isYes(file.biddingStageOver) ? file.bidOpeningDate || file.bidDate : file.bidDate,
+    },
+    {
+      label: "Pre-Bid Meeting",
+      applicable: isYes(file.preBidMeeting) || hasDate(file.preBidMeetingDate),
+      date: file.preBidMeetingDate,
+    },
+    {
+      label: "Post-TCEC",
+      applicable: isYes(file.tcec) || hasDate(file.postTcecDate),
+      date: file.postTcecMinutesDate || file.postTcecDate,
+    },
+    {
+      label: "CNC",
+      applicable:
+        hasDate(file.cncDate) ||
+        hasDate(file.cncApprovalDate) ||
+        currentMilestone === "cnc" ||
+        completedMilestones.has("cnc") ||
+        isTcecPostTcecCncPath(file),
+      date: file.cncApprovalDate || file.cncDate,
+    },
+    {
+      label: "Financial Sanction",
+      applicable: hasOrder || isFinancialSanctionReached(file) || hasFinancialSanction,
+      date: getFirstOrderDate(orders, "financialSanctionDate"),
+    },
+    { label: "Supply Order", applicable: hasOrder || hasFinancialSanction, date: getFirstOrderDate(orders, "soDate") || file.soDate },
+    {
+      label: "Delivery Period",
+      applicable: hasSo || hasDeliveryEvidence,
+      date: getFirstOrderDate(orders, "revisedDp") || getFirstOrderDate(orders, "dpDate") || file.dpDate,
+    },
+    {
+      label: "PSB",
+      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
+      date: getFirstOrderDate(orders, "psbBgReceivedDate"),
+    },
+    {
+      label: "PWB",
+      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "pwb")),
+      date: getFirstOrderDate(orders, "pwbBgReceivedDate"),
+    },
+    {
+      label: "PSB+PWB",
+      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psbpwb")),
+      date: getFirstOrderDate(orders, "combinedBgReceivedDate"),
+    },
+    {
+      label: isJobCompletionWorkflow(file) ? "Job Completion" : "Delivery",
+      applicable: hasSo || hasDeliveryEvidence,
+      date: isJobCompletionWorkflow(file)
+        ? getFirstOrderDate(orders, "jobCompletionDate")
+        : getFirstOrderDate(orders, "materialReceiptDate"),
+    },
+    {
+      label: "IR Preparation",
+      applicable: isYes(file.ir) || hasIrEvidence,
+      date: getFirstOrderDate(orders, "irPreparationDate"),
+    },
+    {
+      label: "IR Receipt",
+      applicable: isYes(file.ir) || hasIrEvidence,
+      date: getFirstOrderDate(orders, "irReceiptDate"),
+    },
+    {
+      label: "Bill preparation",
+      applicable: hasSo || hasBillEvidence || hasPaymentEvidence,
+      date: getFirstOrderDate(orders, "billPreparationDate"),
+    },
+    {
+      label: "Bill sent for payment",
+      applicable: hasSo || hasBillEvidence || hasPaymentEvidence,
+      date: getFirstOrderDate(orders, "billSentForPaymentDate"),
+    },
+    {
+      label: "Payment",
+      applicable: hasSo || hasPaymentEvidence,
+      date: getFirstOrderDate(orders, "paymentDate"),
+    },
+    {
+      label: "Advance Payment",
+      applicable: hasAdvanceEvidence,
+      date: getFirstAdvancePaymentDate(orders),
+    },
+    {
+      label: "File Closed",
+      applicable: hasDate(file.fileClosureDate) || normalizeQuickEntryMilestone(file.currentMilestone) === "fileclosed",
+      date: file.fileClosureDate,
+    },
+  ];
+}
+
+function isTcecPostTcecCncPath(file: FileRecord) {
+  return (
+    isYes(file.tcec) &&
+    (hasDate(file.postTcecDate) ||
+      hasDate(file.postTcecMinutesDate) ||
+      normalizeQuickEntryMilestone(file.currentMilestone) === "posttcec" ||
+      normalizeQuickEntryMilestone(file.currentMilestone) === "cnc")
+  );
+}
+
+function getFirstOrderDate(orders: Array<{ [key: string]: unknown }>, key: string) {
+  return orders
+    .map((order) => String(order[key] ?? ""))
+    .filter(hasDate)
+    .sort()[0];
+}
+
+function getFirstAdvancePaymentDate(orders: Array<{ [key: string]: unknown }>) {
+  return orders
+    .map((order) => {
+      const detail = order.advancePaymentDetail as { paymentDate?: unknown } | undefined;
+      return String(detail?.paymentDate ?? "");
+    })
+    .filter(hasDate)
+    .sort()[0];
+}
+
+function isBgMilestoneApplicable(file: FileRecord, order: { [key: string]: unknown }, kind: string) {
+  if (kind === "psb") {
+    return (
+      isYes(order.psbApplicable) ||
+      ["PSB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) ||
+      hasDate(order.psbBgReceivedDate)
+    );
+  }
+  if (kind === "pwb") {
+    return (
+      isYes(file.bg) &&
+      (["PWB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) ||
+        hasDate(order.pwbBgReceivedDate))
+    );
+  }
+  return (
+    isYes(file.bg) &&
+    (String(order.bgCoverageType ?? "") === "PSB+PWB" || hasDate(order.combinedBgReceivedDate))
   );
 }
 
@@ -718,6 +1035,7 @@ function openFullFile(navigate: ReturnType<typeof useNavigate>, fileId: string) 
       section: "File details",
       milestone: undefined,
       quickFocus: false,
+      returnToQuickEntry: true,
     },
   });
 }

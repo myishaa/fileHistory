@@ -48,6 +48,7 @@ import {
   Printer,
   Trash2,
   Unlock,
+  Info,
 } from "lucide-react";
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
 import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
@@ -85,6 +86,8 @@ export const Route = createFileRoute("/add")({
     focusTarget: typeof search.focusTarget === "string" ? search.focusTarget : undefined,
     drillPath: typeof search.drillPath === "string" ? search.drillPath : undefined,
     quickFocus: search.quickFocus === true || search.quickFocus === "true",
+    returnToQuickEntry:
+      search.returnToQuickEntry === true || search.returnToQuickEntry === "true",
   }),
   component: AddFilePage,
 });
@@ -197,6 +200,7 @@ const empty = {
   soCancelledDate: "",
   shortclosure: "No",
   shortclosureDate: "",
+  noFurtherAction: "No",
   fileClosureDate: "",
 };
 
@@ -550,6 +554,7 @@ function normalizeDirtyValue(key: string, value: unknown): unknown {
       "demandCancelled",
       "dpExtension",
       "ld",
+      "noFurtherAction",
       "psbApplicable",
       "shortclosure",
       "soCancelled",
@@ -654,6 +659,7 @@ type ExtraField<K extends string = FieldKey> = {
   control?: "radio";
   options?: string[];
   placeholder?: string;
+  helper?: string;
   typeahead?: boolean;
   min?: number;
 };
@@ -837,6 +843,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   soCancelledDate: "",
   shortclosure: "No",
   shortclosureDate: "",
+  noFurtherAction: "No",
   stageDelivery: "No",
   stageDeliveryCount: "",
   deliveryPeriodStartDate: "",
@@ -934,6 +941,13 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "actualPaymentCapital", label: "Actual payment amount" },
   { key: "shortclosure", label: "Shortclosure (Yes/No)", options: yesNo },
   { key: "shortclosureDate", label: "Shortclosure date", type: "date" },
+  {
+    key: "noFurtherAction",
+    label: "No Further Action",
+    options: yesNo,
+    helper:
+      "Default is No. Use Yes only with Shortclosure when the S.O. balance/workflow is closed and no delivery, job completion, payment, BG, advance, or stage action should remain open. It still counts as Shortclosure.",
+  },
   { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
   { key: "stageDelivery", label: "Stage Delivery", control: "radio", options: yesNo },
@@ -1024,7 +1038,13 @@ const supplyOrderSubviewFields = {
   ],
   supplementaryBills: [],
   firmRating: [],
-  miscellaneous: ["shortclosure", "shortclosureDate", "soCancelled", "soCancelledDate"],
+  miscellaneous: [
+    "shortclosure",
+    "shortclosureDate",
+    "noFurtherAction",
+    "soCancelled",
+    "soCancelledDate",
+  ],
 } satisfies Record<string, SupplyOrderKey[]>;
 
 const supplyOrderSubviewTabs = [
@@ -1088,6 +1108,7 @@ const supplyOrderFieldPrerequisites = {
   actualPaymentCapital: ["paymentDate"],
   shortclosure: ["soDate"],
   shortclosureDate: ["shortclosure"],
+  noFurtherAction: ["shortclosure"],
   soCancelled: ["soDate"],
   soCancelledDate: ["soCancelled"],
 } satisfies Partial<Record<SupplyOrderKey, SupplyOrderKey[]>>;
@@ -1361,6 +1382,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     focusTarget,
     drillPath: rawDrillPath,
     quickFocus,
+    returnToQuickEntry,
   } = Route.useSearch();
   const navigate = useNavigate();
   const drillPath = useMemo(() => parseDrillPath(rawDrillPath), [rawDrillPath]);
@@ -2037,6 +2059,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       if (k === "refloat" && isYes(v)) {
         patch.biddingStageOver = "No";
       }
+      if (k === "biddingStageOver" && isYes(v)) {
+        patch.tenderLive = "No";
+      }
+      if (k === "bidOpened" && isYes(v)) {
+        patch.tenderLive = "No";
+      }
       if (k === "division") {
         if (f.division.trim().toLowerCase() !== v.trim().toLowerCase()) {
           patch.indentor = "";
@@ -2497,6 +2525,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const milestonesLocked = isEditing && !unlockedSections.has("Milestones");
   const getSectionRemarksForDirty = (remarks: FileRemark[], sectionTitle: string) =>
     cleanFileRemarks(remarks.filter((remark) => remark.section === sectionTitle)) ?? [];
+  const isSectionRemarksDirty = (sectionTitle: string) =>
+    !isDirtyValueEqual(
+      getSectionRemarksForDirty(fileRemarks, sectionTitle),
+      getSectionRemarksForDirty(createRemarksFromFile(editingFile), sectionTitle),
+    );
   const getFormFieldsForDirty = (sectionTitle: string) => {
     const sectionFields =
       extraSections.find((section) => section.title === sectionTitle)?.fields ?? [];
@@ -2521,6 +2554,19 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return !isDirtyValueEqual(
         cleanFileMarkers(fileMarkers) ?? [],
         cleanFileMarkers(createMarkersFromFile(editingFile)) ?? [],
+      );
+    }
+    if (sectionTitle === "Milestones") {
+      return (
+        !isDirtyValueEqual(
+          normalizeDirtyValue("currentMilestone", currentMilestone),
+          normalizeDirtyValue("currentMilestone", editingFile?.currentMilestone),
+        ) ||
+        !isDirtyValueEqual(
+          normalizeDirtyValue("completedMilestones", completedMilestones),
+          normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForLocks),
+        ) ||
+        formWithLockedYear.fileClosureDate !== savedFormForLocks.fileClosureDate
       );
     }
     if (sectionTitle === "Supply order and payment") {
@@ -2594,7 +2640,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         className={options.className}
         onSave={() =>
           save({
-            returnToQuickEntry: Boolean(quickFocus),
+            returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
           })
         }
       />
@@ -2813,13 +2859,31 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
 
   const save = async (options?: { returnToQuickEntry?: boolean }) => {
     if (readOnlyMode) return;
-    if (uniqueCodeGateLocked) {
-      alert(
-        "Select Division and wait for Unique code generation before entering or saving file details.",
-      );
-      return;
+    let formForSave = formWithLockedYear;
+    if (!hasFilledValue(formForSave.uniqueCode)) {
+      if (!selectedDivisionName) {
+        alert("Select Division before saving file details.");
+        return;
+      }
+      try {
+        const { uniqueCode } = await fetchNextUniqueCode({
+          financialYear: uniqueCodeFinancialYear,
+          division: selectedDivisionName,
+          divisionId: selectedDivisionId || undefined,
+        });
+        if (!hasFilledValue(uniqueCode)) {
+          alert("Unique code could not be generated. Please try again.");
+          return;
+        }
+        setServerUniqueCode(uniqueCode);
+        formForSave = { ...formForSave, uniqueCode };
+      } catch (error) {
+        console.error(error);
+        alert("Unique code could not be generated. Please check connection and try again.");
+        return;
+      }
     }
-    const requestedSupplyOrderCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
+    const requestedSupplyOrderCount = clampSupplyOrderCount(formForSave.noOfSo);
     const requestedSupplyOrders = resizeSupplyOrders(supplyOrders, requestedSupplyOrderCount);
     const useSupplyOrderMilestonesForSave = shouldUseSupplyOrderMilestones(
       requestedSupplyOrders,
@@ -2831,11 +2895,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       : requestedSupplyOrders;
     const cleanedRequestedSupplyOrders = cleanSupplyOrderRows(
       ordersWithMainMilestoneBridge,
-      formWithLockedYear,
+      formForSave,
     );
     const cleanedSupplyOrders = cleanedRequestedSupplyOrders.filter(hasMeaningfulSupplyOrderData);
     if (
-      isYes(formWithLockedYear.demandCancelled) &&
+      isYes(formForSave.demandCancelled) &&
       hasPlacedSupplyOrderRows(cleanedSupplyOrders)
     ) {
       alert(
@@ -2845,7 +2909,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     const stageAutofilledSupplyOrders = autoFillStageDeliveriesForSave(
       cleanedSupplyOrders,
-      formWithLockedYear,
+      formForSave,
     );
     const supplyOrdersForSave = useSupplyOrderMilestonesForSave
       ? stageAutofilledSupplyOrders
@@ -2853,7 +2917,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const supplyOrderMilestoneProgressForSave = getSupplyOrderMilestoneProgress(
       milestoneOptions,
       supplyOrdersForSave,
-      formWithLockedYear,
+      formForSave,
       useSupplyOrderMilestonesForSave,
       currentMilestone,
     );
@@ -2861,7 +2925,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       fileLevelMilestoneOptions,
       fileLevelApplicableMilestones,
       completedMilestones,
-      formWithLockedYear,
+      formForSave,
       supplyOrderMilestoneProgressForSave,
     );
     const currentMilestoneForSave =
@@ -2870,7 +2934,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         : currentMilestone;
     const payload = {
       ...toFilePayload(
-        clearDivisionDisabledFields(applyConditionalRules(formWithLockedYear), divisions),
+        clearDivisionDisabledFields(applyConditionalRules(formForSave), divisions),
       ),
       ...firstSupplyOrderMirrorPatch(cleanedSupplyOrders),
       noOfSo: String(requestedSupplyOrderCount),
@@ -2878,9 +2942,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       remarks: cleanFileRemarks(fileRemarks) ?? [],
       markers: cleanFileMarkers(fileMarkers) ?? [],
       activeYears,
-      bqBasis: biddingApplicable ? formWithLockedYear.bqBasis : "",
+      bqBasis: biddingApplicable ? formForSave.bqBasis : "",
       bqFirms:
-        biddingApplicable && formWithLockedYear.bqBasis === "Firm"
+        biddingApplicable && formForSave.bqBasis === "Firm"
           ? (cleanFirmRows(firmDetails.bqFirms) ?? [])
           : [],
       invitedFirms: biddingApplicable ? (cleanFirmRows(firmDetails.invitedFirms) ?? []) : [],
@@ -2891,7 +2955,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const stageWarnings = getStageDeliveryWarnings(
       supplyOrdersForSave,
       savedSupplyOrdersForLocks,
-      formWithLockedYear,
+      formForSave,
       completedMilestonesForSave,
     );
     if (stageWarnings.length) {
@@ -2908,16 +2972,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     const supplyOrderMilestoneErrors = getSupplyOrderMilestoneErrors(
       supplyOrdersForSave,
-      formWithLockedYear,
+      formForSave,
     );
     const supplyOrderTabCompletionErrors = getSupplyOrderTabCompletionErrors(
       supplyOrdersForSave,
-      formWithLockedYear,
+      formForSave,
     );
     const supplyOrderDateChronologyErrors = getSupplyOrderDateChronologyErrors(supplyOrdersForSave);
     const paymentBlockedByBgErrors = getPaymentBlockedByBgErrors(
       supplyOrdersForSave,
-      formWithLockedYear,
+      formForSave,
     );
     const milestonesForValidation = fileLevelMilestoneOptions;
     const milestoneErrors = [
@@ -3166,6 +3230,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               lockFilledFields={milestonesLocked}
               fileClosureDate={formWithLockedYear.fileClosureDate}
               lockControl={renderSectionUnlockButton("Milestones")}
+              renderUpdateButton={() =>
+                renderSectionUpdateButton({
+                  testId: null,
+                  dirty: isSectionDirty("Milestones"),
+                })
+              }
               onCurrentChange={setCurrentMilestone}
               onCompletedChange={setCompletedMilestones}
               onFileClosureDateChange={(value) => update("fileClosureDate", value)}
@@ -3274,7 +3344,43 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onDateChange={updateRemarkDate}
                   onDelete={deleteRemark}
                   disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
+                  saveControl={
+                    !readOnlyMode && !activeSectionCfaApprovalLocked ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          save({
+                            returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
+                          })
+                        }
+                        disabled={
+                          editingFile
+                            ? uniqueCodeGateLocked || !isSectionRemarksDirty(activeSection.title)
+                            : !fileRemarks.some((remark) => remark.section === activeSection.title)
+                        }
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Save className="size-3.5" /> {saved ? "Saved" : "Save remarks"}
+                      </button>
+                    ) : undefined
+                  }
                 />
+              ) : null}
+              {!isEditing && !readOnlyMode ? (
+                <div className="mt-4 flex justify-end border-t border-border/60 pt-4">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      save({
+                        returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
+                      })
+                    }
+                    data-testid="add-save-file-details"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Save className="size-4" /> {saved ? "Saved" : "Save"}
+                  </button>
+                </div>
               ) : null}
               {editingFile && activeSection.title !== "File Markers" ? (
                 <SectionMessages
@@ -3292,7 +3398,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               ) : null}
             </section>
           )}
-          {activeSection?.title !== "Supply order and payment" && renderSectionUpdateButton() ? (
+          {activeSection && activeSection.title !== "Supply order and payment" && renderSectionUpdateButton() ? (
             <div className="md:col-span-2 flex justify-end border-t border-border/60 pt-4">
               {renderSectionUpdateButton()}
             </div>
@@ -3328,16 +3434,15 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 <Eraser className="size-4" /> Clear
               </button>
             )}
-            {!isEditing && !readOnlyMode ? (
+            {!isEditing && !readOnlyMode && !activeSection ? (
               <button
                 type="button"
                 onClick={() =>
                   save({
-                    returnToQuickEntry: Boolean(quickFocus),
+                    returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
                   })
                 }
                 data-testid="add-save"
-                disabled={uniqueCodeGateLocked}
                 className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
@@ -3399,6 +3504,7 @@ function SectionRemarks({
   onDateChange,
   onDelete,
   disabled = false,
+  saveControl,
 }: {
   sectionTitle: string;
   remarks: FileRemark[];
@@ -3407,22 +3513,29 @@ function SectionRemarks({
   onDateChange: (remarkId: string, date: string) => void;
   onDelete: (remarkId: string) => void;
   disabled?: boolean;
+  saveControl?: ReactNode;
 }) {
   return (
     <div className="mt-5 border-t border-border pt-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs font-medium text-muted-foreground">
-          {remarks.length ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"}` : ""}
+        <div>
+          <div className="text-sm font-semibold text-foreground">Remarks</div>
+          <div className="text-xs text-muted-foreground">
+            {remarks.length ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"}` : "No remarks added"}
+          </div>
         </div>
-        {!disabled ? (
-          <button
-            type="button"
-            onClick={onAdd}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
-          >
-            <Plus className="size-3.5" /> Add remark
-          </button>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {saveControl}
+          {!disabled ? (
+            <button
+              type="button"
+              onClick={onAdd}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
+            >
+              <Plus className="size-3.5" /> Add remark
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {remarks.length ? (
@@ -8010,13 +8123,26 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
             remarks shown
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => printRemarksReport(form, visibleRemarks, stageFilter)}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
-        >
-          <Printer className="size-3.5" /> Export PDF
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "pdf")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            title="Export Remarks Summary PDF"
+            aria-label="Export Remarks Summary PDF"
+          >
+            <Printer className="size-3.5" /> Export PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "excel")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            title="Export Remarks Summary Excel"
+            aria-label="Export Remarks Summary Excel"
+          >
+            <Save className="size-3.5" /> Export Excel
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -8172,15 +8298,19 @@ function TimelineBlock({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => exportTimelineReport(form, filledItems, "pdf")}
+            onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "pdf")}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            title="Export Timeline PDF"
+            aria-label="Export Timeline PDF"
           >
             <Printer className="size-3.5" /> Export PDF
           </button>
           <button
             type="button"
-            onClick={() => exportTimelineReport(form, filledItems, "excel")}
+            onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "excel")}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            title="Export Timeline Excel"
+            aria-label="Export Timeline Excel"
           >
             <Save className="size-3.5" /> Export Excel
           </button>
@@ -8318,6 +8448,7 @@ function MilestonesBlock({
   lockFilledFields,
   fileClosureDate,
   lockControl,
+  renderUpdateButton,
   onCurrentChange,
   onCompletedChange,
   onFileClosureDateChange,
@@ -8337,6 +8468,7 @@ function MilestonesBlock({
   lockFilledFields: boolean;
   fileClosureDate: string;
   lockControl: ReactNode;
+  renderUpdateButton?: () => ReactNode;
   onCurrentChange: (value: string) => void;
   onCompletedChange: (value: string[]) => void;
   onFileClosureDateChange: (value: string) => void;
@@ -8409,7 +8541,10 @@ function MilestonesBlock({
             Select the current stage and mark completed stages manually.
           </span>
         </div>
-        {lockControl}
+        <div className="flex flex-col items-end gap-2">
+          {lockControl}
+          {renderUpdateButton ? renderUpdateButton() : null}
+        </div>
       </div>
 
       <div className="rounded-md border border-border bg-card p-4">
@@ -8834,7 +8969,8 @@ function getFormDescriptionWithUniqueCode(form: FormState) {
 
 function exportTimelineReport(
   form: FormState,
-  filledItems: TimelineItem[],
+  timelineGroups: TimelineGroup[],
+  showAllDates: boolean,
   format: "excel" | "pdf",
 ) {
   const details = [
@@ -8843,24 +8979,44 @@ function exportTimelineReport(
     { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
     { label: "Indentor", value: form.indentor },
   ];
-  const timelineRows = filledItems.map((item, index) => {
-    const firstItem = filledItems[0];
-    const previousItem = filledItems[index - 1];
+  const exportItems = showAllDates
+    ? timelineGroups.flatMap((group) =>
+        getFullTimelineItems(group.items).map((item) => ({ ...item, group: group.title })),
+      )
+    : getFilledTimelineItems(timelineGroups.flatMap((group) => group.items)).map((item) => ({
+        ...item,
+        group: "",
+      }));
+  const filledExportItems = exportItems.filter((item) => item.date);
+  const timelineRows = exportItems.map((item, index) => {
+    const filledIndex = item.date ? filledExportItems.findIndex((filled) => filled.id === item.id) : -1;
+    const firstItem = filledExportItems[0];
+    const previousItem = filledIndex > 0 ? filledExportItems[filledIndex - 1] : undefined;
     const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
-    const cumulativeDays = firstItem ? getTimelineDayGap(firstItem.date, item.date) : undefined;
+    const cumulativeDays =
+      firstItem && item.date ? getTimelineDayGap(firstItem.date, item.date) : undefined;
 
-    return [
-      index + 1,
-      item.label,
-      formatTimelineDate(item.date),
-      formatDayCount(gapDays),
-      formatDayCount(cumulativeDays),
-    ];
+    return showAllDates
+      ? [
+          index + 1,
+          item.group,
+          item.label,
+          item.date ? formatTimelineDate(item.date) : "Not filled",
+          item.date ? formatDayCount(gapDays) : "-",
+          item.date ? formatDayCount(cumulativeDays) : "-",
+        ]
+      : [
+          index + 1,
+          item.label,
+          formatTimelineDate(item.date),
+          formatDayCount(gapDays),
+          formatDayCount(cumulativeDays),
+        ];
   });
 
   void downloadBackendExport({
     format,
-    title: "File Timeline",
+    title: showAllDates ? "File Timeline - All Dates" : "File Timeline",
     fileName: `${getExportFileName(form.imms || form.uniqueCode || "timeline")}.${
       format === "excel" ? "xls" : "pdf"
     }`,
@@ -8872,7 +9028,9 @@ function exportTimelineReport(
       },
       {
         title: "Timeline",
-        headers: ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
+        headers: showAllDates
+          ? ["S.No.", "Group", "Field", "Date", "Time gap", "Cumulative time"]
+          : ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
         rows: timelineRows.length ? timelineRows : [["No timeline fields are filled."]],
       },
     ],
@@ -8942,7 +9100,12 @@ function exportFirmDetails(details: FirmDetailsState, format: "excel" | "pdf") {
   });
 }
 
-function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter: string) {
+function exportRemarksReport(
+  form: FormState,
+  remarks: FileRemark[],
+  stageFilter: string,
+  format: "excel" | "pdf",
+) {
   const details = [
     { label: "Unique code", value: form.uniqueCode },
     { label: "Control number", value: form.imms },
@@ -8951,10 +9114,12 @@ function printRemarksReport(form: FormState, remarks: FileRemark[], stageFilter:
     { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
   ];
   void downloadBackendExport({
-    format: "pdf",
+    format,
     title: "Remarks Summary",
     subtitle: `Stage: ${stageFilter}`,
-    fileName: `${getExportFileName(form.imms || form.uniqueCode || "remarks-summary")}.pdf`,
+    fileName: `${getExportFileName(form.imms || form.uniqueCode || "remarks-summary")}.${
+      format === "excel" ? "xls" : "pdf"
+    }`,
     tables: [
       {
         title: "File details",
@@ -9958,6 +10123,7 @@ function cleanSupplyOrderRows(
       isYes(row.shortclosure ?? "") && hasFilledValue(row.shortclosureDate)
         ? row.shortclosureDate
         : undefined,
+    noFurtherAction: isYes(row.shortclosure ?? "") ? row.noFurtherAction || "No" : "No",
     soCancelled: row.soCancelled || undefined,
     soCancelledDate:
       isYes(row.soCancelled ?? "") && hasFilledValue(row.soCancelledDate)
@@ -10078,15 +10244,6 @@ function getStageDeliveryWarnings(
     if (stageDeliveryEnabled && stagePaymentEnabled && advancePaymentEnabled) {
       const advance = order.advancePaymentDetail ?? {};
       warnings.push(...getAdvancePaymentChronologyWarnings(advance, order, orderLabel, form));
-      if (!hasSelectedAmount(advance.stageAmountCapital, advance.stageAmountRevenue, form)) {
-        warnings.push(`${orderLabel} Advance Payment: Advance amount is missing.`);
-      }
-      if (!hasFilledValue(advance.billPreparationDate)) {
-        warnings.push(`${orderLabel} Advance Payment: Bill preparation date is missing.`);
-      }
-      if (!hasFilledValue(advance.billSentForPaymentDate)) {
-        warnings.push(`${orderLabel} Advance Payment: Bill sent for payment date is missing.`);
-      }
       if (hasWrongAmountSide(advance.stageAmountCapital, advance.stageAmountRevenue, form)) {
         warnings.push(
           `${orderLabel} Advance Payment: Advance amount has value on the wrong Capital/Revenue side.`,
@@ -11043,6 +11200,12 @@ function applySupplyOrderRules(
   if (!hasFilledValue(next.advancePayment)) {
     next = { ...next, advancePayment: "No" };
   }
+  if (!hasFilledValue(next.noFurtherAction)) {
+    next = { ...next, noFurtherAction: "No" };
+  }
+  if (!isYes(next.shortclosure ?? "")) {
+    next = { ...next, noFurtherAction: "No" };
+  }
   if (isNo(next.stageDelivery ?? "")) {
     next = {
       ...next,
@@ -11939,6 +12102,9 @@ function shouldShowSupplyOrderField(key: SupplyOrderKey, order: SupplyOrderDetai
   if (key === "shortclosureDate") {
     return isYes(order.shortclosure ?? "");
   }
+  if (key === "noFurtherAction") {
+    return isYes(order.shortclosure ?? "");
+  }
   if (key === "soCancelledDate") {
     return isYes(order.soCancelled ?? "");
   }
@@ -11957,6 +12123,7 @@ function isCancellationSupplyOrderField(key: SupplyOrderKey) {
   return (
     key === "shortclosure" ||
     key === "shortclosureDate" ||
+    key === "noFurtherAction" ||
     key === "soCancelled" ||
     key === "soCancelledDate"
   );
@@ -12013,6 +12180,10 @@ function getInitialExtensionCount(value: string) {
 }
 
 function getAutoTenderLive(form: FormState) {
+  if (isYes(form.bidOpened) || isYes(form.biddingStageOver)) {
+    return "No";
+  }
+
   if (hasDate(form.refloatBiddingDate) && hasDate(form.refloatBidOpeningDate)) {
     return isTenderLiveOnCalendarDate(form.refloatBiddingDate, form.refloatBidOpeningDate)
       ? "Yes"
@@ -12403,7 +12574,7 @@ function DynamicField({
   const testId = `add-field-${radioName ?? String(field.key)}`;
   if (field.options && (field.control === "radio" || isYesNoOptions(field.options))) {
     return (
-      <Field label={field.label}>
+      <Field label={field.label} helper={field.helper}>
         <RadioGroup
           name={radioName ?? field.key}
           testId={testId}
@@ -12418,7 +12589,7 @@ function DynamicField({
 
   if (field.typeahead && field.options) {
     return (
-      <Field label={field.label}>
+      <Field label={field.label} helper={field.helper}>
         <SearchableDropdown
           value={value}
           onChange={onChange}
@@ -12435,7 +12606,7 @@ function DynamicField({
 
   if (field.options) {
     return (
-      <Field label={field.label}>
+      <Field label={field.label} helper={field.helper}>
         <select
           ref={inputRef}
           value={value}
@@ -12459,7 +12630,7 @@ function DynamicField({
 
   if (field.type === "textarea") {
     return (
-      <Field label={field.label}>
+      <Field label={field.label} helper={field.helper}>
         <textarea
           ref={inputRef}
           value={value}
@@ -12474,7 +12645,7 @@ function DynamicField({
   }
 
   return (
-    <Field label={field.label}>
+    <Field label={field.label} helper={field.helper}>
       {field.type === "date" ? (
         <DateInput
           ref={inputRef as (element: HTMLInputElement | null) => void}
@@ -12804,16 +12975,34 @@ function RadioGroup({
 function Field({
   label,
   hint,
+  helper,
   children,
 }: {
   label: string;
   hint?: string;
+  helper?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="grid grid-cols-1 gap-2 md:grid-cols-[240px_minmax(0,1fr)] md:items-start">
       <div className="flex min-h-10 items-center justify-between md:justify-start md:pt-0">
-        <span className="text-sm font-semibold">{label}</span>
+        <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
+          {label}
+          {helper ? (
+            <span className="group relative inline-flex">
+              <button
+                type="button"
+                className="inline-flex size-5 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                aria-label={`${label} help`}
+              >
+                <Info className="size-3" />
+              </button>
+              <span className="pointer-events-none absolute left-0 top-6 z-20 hidden w-[min(30rem,calc(100vw-2rem))] rounded-md border border-border bg-popover p-3 text-xs font-normal leading-relaxed text-popover-foreground shadow-lg group-hover:block">
+                {helper}
+              </span>
+            </span>
+          ) : null}
+        </span>
         {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
       </div>
       <div className="min-w-0">{children}</div>

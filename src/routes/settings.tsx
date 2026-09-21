@@ -26,6 +26,7 @@ import {
   updateMasterFirm,
   useActiveUser,
   useDivisions,
+  useFiles,
   useSettings,
   useUsers,
   type AppUser,
@@ -35,6 +36,8 @@ import {
   type FileRecord,
   type FirmRatingConfig,
   type Indentor,
+  type IndentorTransferPreview,
+  type IndentorTransferScope,
   type IpAccessConfig,
   type IpAccessMode,
   type IpLoginAttempt,
@@ -53,7 +56,7 @@ import {
   type DemandProcessingPreset,
 } from "@/lib/demand-processing-analysis";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
-import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
+import { promptDeletionPassword, promptPassword, requestDeletionPassword } from "@/lib/delete-password";
 import {
   fileCategoryOptions,
   getAllFileCategoryKeys,
@@ -120,6 +123,12 @@ const defaultModes = ["OBM", "PBM", "SBM", "LBM", "LPC"];
 const allFileCategoryKeys = fileCategoryOptions.map((option) => option.key);
 const fileClosedMilestone = "File Closed";
 const settingsPageSizeOptions = [25, 50, 100] as const;
+type MasterValueStatus = "active" | "inactive";
+type MasterValueUsageRow = {
+  value: string;
+  usageCount: number;
+  status: MasterValueStatus;
+};
 
 function appendFileClosedMilestone(milestones: string[]) {
   const normalize = (value: string) =>
@@ -278,14 +287,18 @@ const settingsSectionHelpers = {
   divisions: [
     "Maintains division names, codes, AD flag, and division-level allocation context.",
     "Division changes affect filters, access, dashboards, and reports.",
+    "A division used in active or archived files must be transferred/merged before it can be archived.",
   ],
   indentors: [
     "Maintains indentor master data and division mapping.",
-    "This helps keep file entry, filters, and reports consistent.",
+    "Editing an indentor changes the master record only; old file rows keep their saved indentor text.",
+    "Use Indentor Transfer when existing files must move from one indentor or division responsibility to another.",
+    "Indentors used in active or archived files are protected from direct archive/delete.",
   ],
   firms: [
     "Maintains firm master data and the Firm Unique No. label.",
     "Firm data is used for search, firm analysis, and firm performance reports.",
+    "A firm used in active or archived files/S.O.s stays protected for historical reference.",
   ],
   firmRating: [
     "Controls firm rating fields and maximum marks.",
@@ -294,22 +307,27 @@ const settingsSectionHelpers = {
   fileTypes: [
     "Controls available file types and their workflow group.",
     "Workflow group affects delivery, inspection, and payment behavior in the app.",
+    "Name and workflow group are locked once active or archived files use the file type.",
   ],
   modes: [
     "Controls available procurement modes such as OBM, PBM, SBM, LBM, and LPC.",
     "These modes appear in file entry, filters, analytics, and reports.",
+    "Used modes can be inactivated for future selection; old files keep their saved mode text.",
   ],
   firmTypes: [
     "Controls firm type options such as MSE, MSE (Women), and Non-MSE.",
     "These options are used in S.O. firm details and firm-type reporting.",
+    "Used firm types can be inactivated for future selection; old S.O. rows keep their saved firm type text.",
   ],
   fileMarkers: [
     "Controls special marker codes that can be attached to files.",
     "Markers help tag and filter special cases.",
+    "Used markers should be inactivated for future use, not deleted from history.",
   ],
   tcec: [
     "Controls TCEC committee options.",
     "These options are used in TCEC fields, analytics, and reports.",
+    "Used committee labels can be inactivated for future selection; active and archived files keep their saved committee text.",
   ],
   thresholds: [
     "Controls value slabs used for count/value analysis.",
@@ -317,11 +335,12 @@ const settingsSectionHelpers = {
   ],
   anomalyGovernance: [
     "Shows suspected data issues and accepted/rejected anomaly decisions.",
-    "Custom rules here can affect what appears in anomaly checks.",
+    "Use this to review anomaly decisions and reopen accepted/rejected items if needed.",
   ],
   milestones: [
     "Controls the milestone sequence used for workflow tracking.",
     "Changing milestones can affect Status-2, Status-4, and related search focus behavior.",
+    "Used milestones can be inactivated for future selection; file and S.O. histories keep their saved milestone text.",
   ],
   presets: [
     "Controls reusable Search table field presets.",
@@ -364,6 +383,10 @@ const deletionPasswordHelper = [
 ];
 
 const settingsControlHelpers = {
+  genericAdd: [
+    "Adds this value to future dropdown choices.",
+    "Existing file records are not changed automatically.",
+  ],
   workspaceDelete: [
     "Deletes only the selected FY from workspace year options.",
     "Current FY and any FY having files cannot be deleted.",
@@ -379,20 +402,23 @@ const settingsControlHelpers = {
   ],
   firmTypeDelete: [
     "Removes this firm type option from Settings.",
-    "Use cautiously if old files or reports still refer to this label.",
+    "Unused firm types can be deleted.",
+    "Used firm types should be inactivated for future selection; old S.O. rows keep their saved text.",
   ],
   fileTypeGroup: [
     "Goods & Services follows normal delivery, inspection, and bill behavior.",
     "MPC/AMC/O&M/CARS follows contract-style workflow behavior.",
+    "This is locked once any active or archived file uses the file type.",
   ],
   fileTypeDelete: [
     "Deletes only a non-default file type option.",
-    "Deletion is blocked if any existing file uses this file type.",
-    "Rename is allowed, but workflow group changes are restricted once used.",
+    "Deletion is blocked if any active or archived file uses this file type.",
+    "Name and workflow group changes are restricted once used.",
   ],
   genericDelete: [
     "Removes this option from Settings.",
-    "Use cautiously because old records or reports may still refer to this label.",
+    "Unused options can be deleted.",
+    "If the option is already used in file history, use Inactivate where available so old file text remains visible.",
   ],
   userDelete: [
     "Moves this user account out of active use.",
@@ -458,7 +484,7 @@ const settingsControlHelpers = {
     "Accepted, rejected, and revoked tabs show decision history.",
   ],
   anomalyRefresh: [
-    "Reloads anomaly requests, decisions, and custom rules.",
+    "Reloads anomaly requests and decision history.",
     "Use this after another user has submitted or reviewed an anomaly.",
   ],
   anomalyFileAccept: [
@@ -480,10 +506,6 @@ const settingsControlHelpers = {
   anomalyClear: [
     "Clears selected rejected or revoked decision rows from the visible history.",
     "This action asks for your account password.",
-  ],
-  anomalyRuleAdd: [
-    "Creates a custom anomaly rule.",
-    "Custom rules can change which suspected issues appear in anomaly checks.",
   ],
   anomalyRuleToggle: [
     "Enables or disables this custom anomaly rule.",
@@ -586,11 +608,61 @@ function canViewAllDivisions(role: AppUserRole | undefined) {
   return role === "admin" || role === "sub_admin" || role === "universal_viewer";
 }
 
+let settingsUsageFilesCache: FileRecord[] | undefined;
+let settingsUsageFilesPromise: Promise<FileRecord[]> | undefined;
+
+function useSettingsUsageFiles() {
+  const fallbackFiles = useFiles();
+  const [usageFiles, setUsageFiles] = useState<FileRecord[]>(
+    () => settingsUsageFilesCache ?? fallbackFiles,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (settingsUsageFilesCache) {
+      setUsageFiles(settingsUsageFilesCache);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    settingsUsageFilesPromise ??= Promise.all([
+      fetchFilesForYear(""),
+      store.listArchivedFiles().catch(() => ({ files: [] as FileRecord[] })),
+    ]).then(([activePayload, archivedPayload]) => {
+      const byId = new Map<string, FileRecord>();
+      [...activePayload.files, ...archivedPayload.files].forEach((file) => byId.set(file.id, file));
+      const files = Array.from(byId.values());
+      settingsUsageFilesCache = files;
+      return files;
+    });
+
+    settingsUsageFilesPromise
+      .then((files) => {
+        if (!cancelled) setUsageFiles(files);
+      })
+      .catch((error) => {
+        console.error(error);
+        if (!cancelled) setUsageFiles(fallbackFiles);
+      })
+      .finally(() => {
+        settingsUsageFilesPromise = undefined;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fallbackFiles]);
+
+  return usageFiles;
+}
+
 function SettingsPage() {
   const activeUser = useActiveUser();
   const locationSearch = useRouterState({ select: (state) => state.location.search });
   const [activeAdminSection, setActiveAdminSection] = useState("divisions");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
+  const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
 
   useEffect(() => {
     const requestedSection =
@@ -810,13 +882,14 @@ function SettingsPage() {
       content: <ArchiveSettings />,
     },
   ];
-  const adminSections =
-    activeUser?.role === "sub_admin"
+  const universalViewer = isUniversalViewer(activeUser?.role);
+  const adminSections = universalViewer
+    ? allAdminSections.filter((section) => section.key === "user" || section.key === "presets")
+    : activeUser?.role === "sub_admin"
       ? allAdminSections.filter((section) => section.key === "user" || section.key === "workspace")
       : allAdminSections;
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
-  const universalViewer = isUniversalViewer(activeUser?.role);
   const selectedAdminSectionUnlocked =
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
     (universalViewer && ["user", "presets"].includes(selectedAdminSection.key));
@@ -826,32 +899,73 @@ function SettingsPage() {
   };
 
   return (
-    <div className="space-y-4 max-w-6xl">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
-        <aside className="rounded-md border border-border bg-card p-3 shadow-[var(--shadow-card)]">
-          <div className="space-y-1">
-            {adminSections.map((section) => {
-              const selected = selectedAdminSection.key === section.key;
-              return (
-                <div key={section.key} className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setActiveAdminSection(section.key)}
-                    className={
-                      "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                      (selected
-                        ? "bg-primary text-primary-foreground shadow-sm"
-                        : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                    }
-                  >
-                    {section.label}
-                  </button>
-                  <SettingsHelper items={section.helper} label={`${section.label} help`} />
-                </div>
-              );
-            })}
-          </div>
-        </aside>
+    <div className="space-y-4 max-w-none">
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900">
+        <div className="font-semibold">Settings protection rule</div>
+        <div className="mt-1 text-xs leading-5">
+          If a value is used in any active or archived file history, Settings will protect it. Use
+          Transfer/Merge/Inactivate where applicable instead of deleting historical references.
+        </div>
+      </div>
+      <div
+        className={
+          "grid grid-cols-1 gap-4 " +
+          (settingsSidePanelHooked
+            ? "lg:grid-cols-[230px_minmax(0,1fr)]"
+            : "lg:grid-cols-[48px_minmax(0,1fr)]")
+        }
+      >
+        {settingsSidePanelHooked ? (
+          <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+            <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
+              <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                Settings
+              </div>
+              <button
+                type="button"
+                onClick={() => setSettingsSidePanelHooked(false)}
+                className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Unhook side panel"
+              >
+                Unhook
+              </button>
+            </div>
+            <div className="space-y-1">
+              {adminSections.map((section) => {
+                const selected = selectedAdminSection.key === section.key;
+                return (
+                  <div key={section.key} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveAdminSection(section.key)}
+                      className={
+                        "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                        (selected
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                      }
+                    >
+                      {section.label}
+                    </button>
+                    <SettingsHelper items={section.helper} label={`${section.label} help`} />
+                  </div>
+                );
+              })}
+            </div>
+          </aside>
+        ) : (
+          <aside className="rounded-xl border border-border bg-card p-2 shadow-[var(--shadow-card)]">
+            <button
+              type="button"
+              onClick={() => setSettingsSidePanelHooked(true)}
+              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Hook side panel"
+              aria-label="Hook side panel"
+            >
+              <span className="[writing-mode:vertical-rl] rotate-180">Hook panel</span>
+            </button>
+          </aside>
+        )}
         <div className="min-w-0">
           <LockedAdminSection
             section={selectedAdminSection}
@@ -882,7 +996,7 @@ function LockedAdminSection({
   const [verifying, setVerifying] = useState(false);
 
   const unlock = async () => {
-    const password = window.prompt(`Enter admin password to edit ${section.label}:`);
+    const password = await promptPassword(`Enter admin password to edit ${section.label}:`);
     if (password === null) return;
     if (!password.trim()) {
       window.alert("Password is required.");
@@ -970,7 +1084,11 @@ function SettingsHelper({ items, label }: { items: string[]; label: string }) {
             <Info className="size-3" />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="right" align="start" className="max-w-xs text-xs leading-relaxed">
+        <TooltipContent
+          side="right"
+          align="start"
+          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+        >
           <ul className="list-disc space-y-1 pl-4">
             {bullets.map((item, index) => (
               <li key={`${item}-${index}`}>{item}</li>
@@ -1137,104 +1255,6 @@ function AddEditRibbonSettings() {
   );
 }
 
-const mmgLiveTrialOptions = [
-  {
-    key: "status1",
-    label: "Status-1",
-    description: "Milestone status counts from Dashboard.",
-  },
-  {
-    key: "status2",
-    label: "Status-2",
-    description: "Division-wise live milestone table from Dashboard.",
-  },
-  {
-    key: "finance",
-    label: "Finance totals",
-    description: "Allocated, intended, booked, committed, and spent totals.",
-  },
-] as const;
-
-function MmgLiveSettings() {
-  const settings = useSettings();
-  const selectedOptions = settings.mmgLiveOptions ?? [];
-
-  const toggleOption = (optionKey: string) => {
-    const next = selectedOptions.includes(optionKey)
-      ? selectedOptions.filter((key) => key !== optionKey)
-      : [...selectedOptions, optionKey];
-    store.updateSettings({ mmgLiveOptions: next });
-  };
-
-  return (
-    <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="mb-1 text-sm font-semibold">MMG live</h2>
-          <p className="max-w-2xl text-xs text-muted-foreground">
-            Trial setup for publishing selected Dashboard/Reports summaries to a read-only local
-            intranet page.
-          </p>
-        </div>
-        <a
-          href="/mmg-live"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
-        >
-          Preview
-        </a>
-      </div>
-
-      <label className="mb-4 flex items-center justify-between gap-4 rounded-md border border-border bg-secondary/25 px-3 py-2">
-        <span>
-          <span className="block text-sm font-medium">Activate MMG live page</span>
-          <span className="block text-xs text-muted-foreground">
-            When inactive, the public page shows an unavailable message.
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          checked={settings.mmgLiveEnabled === true}
-          onChange={(event) => store.updateSettings({ mmgLiveEnabled: event.target.checked })}
-          className="size-4"
-        />
-      </label>
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        {mmgLiveTrialOptions.map((option) => (
-          <label
-            key={option.key}
-            className={
-              "rounded-md border p-4 transition " +
-              (selectedOptions.includes(option.key)
-                ? "border-primary bg-primary/10"
-                : "border-border bg-background hover:bg-accent")
-            }
-          >
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">{option.label}</div>
-                <p className="mt-1 text-xs text-muted-foreground">{option.description}</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={selectedOptions.includes(option.key)}
-                onChange={() => toggleOption(option.key)}
-                className="mt-0.5 size-4"
-              />
-            </div>
-          </label>
-        ))}
-      </div>
-
-      <div className="mt-4 rounded-md border border-dashed border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
-        Public URL: <span className="font-medium text-foreground">/mmg-live</span>
-      </div>
-    </div>
-  );
-}
-
 function WorkspaceSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
@@ -1265,9 +1285,10 @@ function WorkspaceSettings() {
   }, [financialYears, settings.financialYear, workspaceYear]);
   useEffect(() => {
     let cancelled = false;
-    fetchFilesForYear(workspaceYear)
+    store
+      .getFinancialYearUsageCount(workspaceYear)
       .then((payload) => {
-        if (!cancelled) setSelectedYearFileCount(payload.files.length);
+        if (!cancelled) setSelectedYearFileCount(payload.count);
       })
       .catch((error) => {
         console.error(error);
@@ -1509,8 +1530,10 @@ function WorkspaceSettings() {
 function TcecCommitteeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const committees = settings.tcecCommittees ?? [];
+  const rows = getMasterValueUsageRows(committees, getTcecCommitteeUsage(files));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -1536,6 +1559,11 @@ function TcecCommitteeSettings() {
     updateCommittees(committees.filter((item) => item !== committee));
   };
 
+  const activate = (committee: string) => {
+    const exists = committees.some((item) => item.toLowerCase() === committee.toLowerCase());
+    if (!exists) updateCommittees([...committees, committee]);
+  };
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">TCEC Committee</h2>
@@ -1545,7 +1573,7 @@ function TcecCommitteeSettings() {
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="Committee name" />
-        <HelpedControl helper={settingsControlHelpers.firmTypeAdd} label="Add firm type help">
+        <HelpedControl helper={settingsControlHelpers.genericAdd} label="Add TCEC committee help">
           <button
             type="button"
             onClick={add}
@@ -1557,28 +1585,25 @@ function TcecCommitteeSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {committees.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No committee names added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {committees.map((committee) => (
-              <li key={committee} className="flex items-center justify-between gap-3 px-4 py-3">
-                <span className="text-sm font-medium">{committee}</span>
-                <HelpedControl
-                  helper={settingsControlHelpers.genericDelete}
-                  label={`Delete ${committee} help`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => remove(committee)}
-                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                    aria-label={`Delete ${committee}`}
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </HelpedControl>
+            {rows.map((row) => (
+              <li key={row.value} className="flex items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <span className="text-sm font-medium">{row.value}</span>
+                  <MasterValueMeta row={row} />
+                </div>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.value)}
+                  onDeactivate={() => remove(row.value)}
+                  onDelete={() => remove(row.value)}
+                  label={row.value}
+                />
               </li>
             ))}
           </ul>
@@ -1591,8 +1616,10 @@ function TcecCommitteeSettings() {
 function FirmTypeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const firmTypes = normalizeFirmTypes(settings.firmTypes);
+  const rows = getMasterValueUsageRows(firmTypes, getFirmTypeUsage(files));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -1618,6 +1645,14 @@ function FirmTypeSettings() {
     updateFirmTypes(firmTypes.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const activate = (firmType: string) => {
+    const exists = firmTypes.some((item) => item.toLowerCase() === firmType.toLowerCase());
+    if (!exists) updateFirmTypes([...firmTypes, firmType]);
+  };
+
+  const activeRows = rows.filter((row) => row.status === "active");
+  const inactiveRows = rows.filter((row) => row.status === "inactive");
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-1 inline-flex items-center gap-1.5">
@@ -1640,32 +1675,55 @@ function FirmTypeSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {firmTypes.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No firm types added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {firmTypes.map((firmType, index) => (
-              <li key={`${firmType}-${index}`} className="flex items-center gap-3 px-4 py-3">
-                <input
-                  value={firmType}
-                  onChange={(event) => rename(index, event.target.value)}
-                  className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+            {activeRows.map((row) => {
+              const index = firmTypes.findIndex(
+                (firmType) => firmType.toLowerCase() === row.value.toLowerCase(),
+              );
+              const usedFirmType = row.usageCount > 0;
+              return (
+              <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <input
+                    value={row.value}
+                    onChange={(event) => rename(index, event.target.value)}
+                    disabled={usedFirmType}
+                    title={usedFirmType ? "Used firm type cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
+                    className={
+                      "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                      (usedFirmType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                    }
+                  />
+                  <MasterValueMeta row={row} />
+                </div>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.value)}
+                  onDeactivate={() => remove(index)}
+                  onDelete={() => remove(index)}
+                  label={row.value}
                 />
-                <HelpedControl
-                  helper={settingsControlHelpers.firmTypeDelete}
-                  label={`Delete ${firmType} help`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => remove(index)}
-                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                    aria-label={`Delete ${firmType}`}
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </HelpedControl>
+              </li>
+              );
+            })}
+            {inactiveRows.map((row) => (
+              <li key={`inactive-${row.value}`} className="flex items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-muted-foreground">{row.value}</div>
+                  <MasterValueMeta row={row} />
+                </div>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.value)}
+                  onDeactivate={() => undefined}
+                  onDelete={() => undefined}
+                  label={row.value}
+                />
               </li>
             ))}
           </ul>
@@ -1678,8 +1736,10 @@ function FirmTypeSettings() {
 function ModeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const modes = normalizeModes(settings.modes);
+  const rows = getMasterValueUsageRows(modes, getModeUsage(files), { uppercase: true });
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -1706,6 +1766,15 @@ function ModeSettings() {
     updateModes(modes.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const activate = (mode: string) => {
+    const normalized = mode.trim().toUpperCase();
+    const exists = modes.some((item) => item.trim().toUpperCase() === normalized);
+    if (!exists) updateModes([...modes, normalized]);
+  };
+
+  const activeRows = rows.filter((row) => row.status === "active");
+  const inactiveRows = rows.filter((row) => row.status === "inactive");
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Modes</h2>
@@ -1725,47 +1794,63 @@ function ModeSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {modes.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No modes added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {modes.map((mode, index) => {
-              const protectedMode = isDefaultMode(mode);
+            {activeRows.map((row) => {
+              const index = modes.findIndex((mode) => mode.trim().toUpperCase() === row.value);
+              const protectedMode = isDefaultMode(row.value);
+              const usedMode = row.usageCount > 0;
+              const lockedModeName = protectedMode || usedMode;
               return (
-                <li key={`${mode}-${index}`} className="flex items-center gap-3 px-4 py-3">
-                  <input
-                    value={mode}
-                    onChange={(event) => rename(index, event.target.value)}
-                    disabled={protectedMode}
-                    className={
-                      "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-                      (protectedMode ? "bg-secondary/50 text-muted-foreground" : "bg-background")
-                    }
-                  />
+                <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <input
+                      value={row.value}
+                      onChange={(event) => rename(index, event.target.value)}
+                      disabled={lockedModeName}
+                      title={usedMode ? "Used mode cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
+                      className={
+                        "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                        (lockedModeName ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                      }
+                    />
+                    <MasterValueMeta row={row} />
+                  </div>
                   {protectedMode ? (
                     <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
                       Default
                     </span>
                   ) : (
-                    <HelpedControl
-                      helper={settingsControlHelpers.genericDelete}
-                      label={`Delete ${mode} help`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => remove(index)}
-                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                        aria-label={`Delete ${mode}`}
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
-                    </HelpedControl>
+                    <MasterValueActions
+                      row={row}
+                      onActivate={() => activate(row.value)}
+                      onDeactivate={() => remove(index)}
+                      onDelete={() => remove(index)}
+                      label={row.value}
+                    />
                   )}
                 </li>
               );
             })}
+            {inactiveRows.map((row) => (
+              <li key={`inactive-${row.value}`} className="flex items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-muted-foreground">{row.value}</div>
+                  <MasterValueMeta row={row} />
+                </div>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.value)}
+                  onDeactivate={() => undefined}
+                  onDelete={() => undefined}
+                  label={row.value}
+                />
+              </li>
+            ))}
           </ul>
         )}
       </div>
@@ -1776,10 +1861,12 @@ function ModeSettings() {
 function FileTypeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const [newFileTypeGroup, setNewFileTypeGroup] = useState<FileTypeGroup>("goodsServices");
   const fileTypes = normalizeFileTypes(settings.fileTypes);
   const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
+  const rows = getMasterValueUsageRows(fileTypes, getFileTypeUsage(files));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -1836,11 +1923,20 @@ function FileTypeSettings() {
     );
   };
 
+  const activate = (fileType: string) => {
+    const exists = fileTypes.some((item) => item.toLowerCase() === fileType.toLowerCase());
+    if (!exists) updateFileTypes([...fileTypes, fileType]);
+  };
+
+  const activeRows = rows.filter((row) => row.status === "active");
+  const inactiveRows = rows.filter((row) => row.status === "inactive");
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">File Types</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Add file types and assign the workflow group used by future files.
+        Name and workflow group are locked once any active or archived file uses the file type.
+        Unused file types can still be edited or removed.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_260px_auto] gap-3">
@@ -1870,44 +1966,56 @@ function FileTypeSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {fileTypes.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No file types added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {fileTypes.map((fileType, index) => {
-              const protectedFileType = isDefaultFileType(fileType);
-              return (
+            {activeRows.map((row) => {
+	              const index = fileTypes.findIndex(
+	                (fileType) => fileType.toLowerCase() === row.value.toLowerCase(),
+	              );
+	              const fileType = row.value;
+	              const usedFileType = row.usageCount > 0;
+	              const protectedFileType = isDefaultFileType(fileType) || usedFileType;
+	              return (
                 <li
                   key={`${fileType}-${index}`}
                   className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_260px_auto]"
                 >
-                  <input
-                    value={fileType}
-                    onChange={(event) => rename(index, event.target.value)}
-                    disabled={protectedFileType}
-                    className={
-                      "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-                      (protectedFileType
-                        ? "bg-secondary/50 text-muted-foreground"
-                        : "bg-background")
-                    }
-                  />
+                  <div>
+                    <input
+                      value={fileType}
+                      onChange={(event) => rename(index, event.target.value)}
+	                      disabled={protectedFileType}
+                      className={
+                        "h-9 w-full min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                        (protectedFileType
+                          ? "bg-secondary/50 text-muted-foreground"
+                          : "bg-background")
+                      }
+                    />
+                    <MasterValueMeta row={row} />
+                  </div>
                   <div className="flex items-center gap-1">
-                    <select
+	                    <select
                       value={
                         fileTypeGroups.find(
                           (entry) =>
                             entry.fileType.trim().toLowerCase() === fileType.trim().toLowerCase(),
                         )?.group ?? getDefaultFileTypeGroup(fileType)
                       }
-                      onChange={(event) =>
-                        updateGroup(fileType, event.target.value as FileTypeGroup)
-                      }
-                      className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                      aria-label={`Workflow group for ${fileType}`}
-                    >
+	                      onChange={(event) =>
+	                        updateGroup(fileType, event.target.value as FileTypeGroup)
+	                      }
+	                      disabled={usedFileType}
+	                      className={
+	                        "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+	                        (usedFileType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+	                      }
+	                      aria-label={`Workflow group for ${fileType}`}
+	                    >
                       {fileTypeGroupOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
@@ -1919,28 +2027,41 @@ function FileTypeSettings() {
                       label={`${fileType} workflow group help`}
                     />
                   </div>
-                  {protectedFileType ? (
-                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
-                      Default
-                    </span>
+	                  {protectedFileType ? (
+	                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+	                      {usedFileType ? "In use" : "Default"}
+	                    </span>
                   ) : (
-                    <HelpedControl
-                      helper={settingsControlHelpers.fileTypeDelete}
-                      label={`Delete ${fileType} help`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => remove(index)}
-                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                        aria-label={`Delete ${fileType}`}
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
-                    </HelpedControl>
+                    <MasterValueActions
+                      row={row}
+                      onActivate={() => activate(fileType)}
+                      onDeactivate={() => remove(index)}
+                      onDelete={() => remove(index)}
+                      label={fileType}
+                    />
                   )}
                 </li>
               );
             })}
+            {inactiveRows.map((row) => (
+              <li
+                key={`inactive-${row.value}`}
+                className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_260px_auto]"
+              >
+                <div className="text-sm font-medium text-muted-foreground">
+                  {row.value}
+                  <MasterValueMeta row={row} />
+                </div>
+                <span className="text-xs text-muted-foreground">Historical value</span>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.value)}
+                  onDeactivate={() => undefined}
+                  onDelete={() => undefined}
+                  label={row.value}
+                />
+              </li>
+            ))}
           </ul>
         )}
       </div>
@@ -1965,9 +2086,11 @@ function normalizeSpecialFileMarkers(markers: SpecialFileMarker[] | undefined) {
 function SpecialFileMarkerSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const markers = normalizeSpecialFileMarkers(settings.specialFileMarkers);
+  const rows = getSpecialFileMarkerUsageRows(markers, getFileMarkerUsage(files));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -2002,6 +2125,14 @@ function SpecialFileMarkerSettings() {
     updateMarkers(markers.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const activate = (marker: SpecialFileMarker) => {
+    const exists = markers.some((item) => item.code === marker.code);
+    if (!exists) updateMarkers([...markers, marker]);
+  };
+
+  const activeRows = rows.filter((row) => row.status === "active");
+  const inactiveRows = rows.filter((row) => row.status === "inactive");
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Special File Marker Codes</h2>
@@ -2026,40 +2157,67 @@ function SpecialFileMarkerSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {markers.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No marker codes added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {markers.map((marker, index) => (
+            {activeRows.map((row) => {
+              const index = markers.findIndex((marker) => marker.code === row.marker.code);
+              const usedMarker = row.usageCount > 0;
+              return (
               <li
-                key={`${marker.code}-${index}`}
+                key={`${row.marker.code}-${index}`}
                 className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
               >
+                <div>
+                  <input
+                    value={row.marker.code}
+                    onChange={(event) => rename(index, event.target.value)}
+                    disabled={usedMarker}
+                    title={usedMarker ? "Used marker code cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
+                    className={
+                      "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm font-semibold uppercase outline-none focus:ring-2 focus:ring-ring/40 " +
+                      (usedMarker ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                    }
+                  />
+                  <MasterValueMeta row={row} />
+                </div>
                 <input
-                  value={marker.code}
-                  onChange={(event) => rename(index, event.target.value)}
-                  className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm font-semibold uppercase outline-none focus:ring-2 focus:ring-ring/40"
-                />
-                <input
-                  value={marker.description}
+                  value={row.marker.description}
                   onChange={(event) => updateDescription(index, event.target.value)}
                   className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                 />
-                <HelpedControl
-                  helper={settingsControlHelpers.genericDelete}
-                  label={`Delete ${marker.code} help`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => remove(index)}
-                    className="size-9 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                    aria-label={`Delete ${marker.code}`}
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </HelpedControl>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.marker)}
+                  onDeactivate={() => remove(index)}
+                  onDelete={() => remove(index)}
+                  label={row.marker.code}
+                />
+              </li>
+              );
+            })}
+            {inactiveRows.map((row) => (
+              <li
+                key={`inactive-${row.marker.code}`}
+                className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
+              >
+                <div>
+                  <div className="text-sm font-semibold text-muted-foreground">{row.marker.code}</div>
+                  <MasterValueMeta row={row} />
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {row.marker.description || "Inactive historical marker code"}
+                </div>
+                <MasterValueActions
+                  row={row}
+                  onActivate={() => activate(row.marker)}
+                  onDeactivate={() => undefined}
+                  onDelete={() => undefined}
+                  label={row.marker.code}
+                />
               </li>
             ))}
           </ul>
@@ -2120,6 +2278,319 @@ function isDefaultMode(mode: string | undefined) {
   return Boolean(normalized && defaultModes.includes(normalized));
 }
 
+function validateRangeContinuity(
+  ranges: Array<{ label: string; min?: number; max?: number }>,
+  unitGap: number,
+) {
+  const sorted = ranges
+    .map((range) => ({ ...range }))
+    .sort((a, b) => (a.min ?? Number.NEGATIVE_INFINITY) - (b.min ?? Number.NEGATIVE_INFINITY));
+  for (let index = 0; index < sorted.length; index += 1) {
+    const current = sorted[index];
+    if (current.min !== undefined && current.max !== undefined && current.min > current.max) {
+      return `${current.label}: minimum cannot be greater than maximum.`;
+    }
+    const next = sorted[index + 1];
+    if (!next) continue;
+    if (current.max === undefined) {
+      return `${current.label}: open-ended range must be the last range.`;
+    }
+    if (next.min === undefined) {
+      return `${next.label}: minimum is required after another range.`;
+    }
+    if (next.min <= current.max) {
+      return `${next.label} overlaps with ${current.label}. Next minimum must be higher than previous maximum.`;
+    }
+    if (next.min > current.max + unitGap) {
+      return `Gap found between ${current.label} and ${next.label}.`;
+    }
+  }
+  return "";
+}
+
+function validateValueThresholdRanges(levels: ValueThresholdLevel[]) {
+  const metrics: Array<{ key: ValueThresholdAppliesTo; label: string }> = [
+    { key: "capital", label: "Capital value" },
+    { key: "revenue", label: "Revenue value" },
+  ];
+  for (const metric of metrics) {
+    const ranges = levels
+      .filter((level) => level.appliesTo === "both" || level.appliesTo === metric.key)
+      .map((level) => {
+        const min = parseOptionalPositiveNumber(level.minValue);
+        const max = parseOptionalPositiveNumber(level.maxValue);
+        if (min.invalid || max.invalid) {
+          return { error: `${level.label}: enter valid positive threshold values.` };
+        }
+        return {
+          label: `${metric.label} ${level.label}`,
+          min: min.value,
+          max: max.value,
+        };
+      });
+    const invalid = ranges.find((range): range is { error: string } => "error" in range);
+    if (invalid) return invalid.error;
+    const message = validateRangeContinuity(
+      ranges.filter((range): range is { label: string; min?: number; max?: number } => !("error" in range)),
+      1,
+    );
+    if (message) return message;
+  }
+  return "";
+}
+
+function normalizeMasterKey(value: string, uppercase = false) {
+  const trimmed = value.trim();
+  return uppercase ? trimmed.toUpperCase() : trimmed.toLowerCase();
+}
+
+function addUsage(
+  usage: Map<string, { value: string; fileIds: Set<string> }>,
+  fileId: string,
+  rawValue: string | undefined,
+  options: { uppercase?: boolean } = {},
+) {
+  const value = rawValue?.trim();
+  if (!value) return;
+  const displayValue = options.uppercase ? value.toUpperCase() : value;
+  const key = normalizeMasterKey(displayValue, options.uppercase);
+  const row = usage.get(key) ?? { value: displayValue, fileIds: new Set<string>() };
+  row.fileIds.add(fileId);
+  usage.set(key, row);
+}
+
+function getFirmTypeUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.firmType);
+    file.supplyOrders?.forEach((order) => addUsage(usage, file.id, order.firmType));
+  });
+  return usage;
+}
+
+function getModeUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => addUsage(usage, file.id, file.mode, { uppercase: true }));
+  return usage;
+}
+
+function getTcecCommitteeUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.preTcecCommitteeNo);
+    addUsage(usage, file.id, file.postTcecCommitteeNumber);
+    addUsage(usage, file.id, file.refloatPostTcecCommitteeNo);
+  });
+  return usage;
+}
+
+function getFileMarkerUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    file.markers?.forEach((marker) => addUsage(usage, file.id, marker.text, { uppercase: true }));
+  });
+  return usage;
+}
+
+function getDivisionUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.divisionId);
+    addUsage(usage, file.id, file.division);
+  });
+  return usage;
+}
+
+function getFileTypeUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => addUsage(usage, file.id, file.fileType));
+  return usage;
+}
+
+function getMilestoneUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.currentMilestone);
+    file.completedMilestones?.forEach((milestone) => addUsage(usage, file.id, milestone));
+    file.supplyOrders?.forEach((order) => {
+      addUsage(usage, file.id, order.currentMilestone);
+      order.completedMilestones?.forEach((milestone) => addUsage(usage, file.id, milestone));
+      order.advancePaymentDetail?.completedMilestones?.forEach((milestone) =>
+        addUsage(usage, file.id, milestone),
+      );
+      addUsage(usage, file.id, order.advancePaymentDetail?.currentMilestone);
+    });
+  });
+  return usage;
+}
+
+function getFirmUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.firm);
+    addUsage(usage, file.id, file.firmUniqueNo);
+    file.supplyOrders?.forEach((order) => {
+      addUsage(usage, file.id, order.firm);
+      addUsage(usage, file.id, order.firmUniqueNo);
+    });
+  });
+  return usage;
+}
+
+function getIndentorUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => addUsage(usage, file.id, file.indentor));
+  return usage;
+}
+
+function getFirmUsageCount(firm: MasterFirm, usage: Map<string, { value: string; fileIds: Set<string> }>) {
+  const fileIds = new Set<string>();
+  [firm.firmName, firm.firmUniqueNo].forEach((value) => {
+    const key = normalizeMasterKey(value ?? "");
+    if (!key) return;
+    usage.get(key)?.fileIds.forEach((fileId) => fileIds.add(fileId));
+  });
+  return fileIds.size;
+}
+
+function getDivisionUsageCount(
+  division: Division,
+  usage: Map<string, { value: string; fileIds: Set<string> }>,
+) {
+  const fileIds = new Set<string>();
+  [division.id, division.name, division.code].forEach((value) => {
+    const key = normalizeMasterKey(value ?? "");
+    if (!key) return;
+    usage.get(key)?.fileIds.forEach((fileId) => fileIds.add(fileId));
+  });
+  return fileIds.size;
+}
+
+function getMasterValueUsageRows(
+  activeValues: string[],
+  usage: Map<string, { value: string; fileIds: Set<string> }>,
+  options: { uppercase?: boolean } = {},
+): MasterValueUsageRow[] {
+  const activeKeys = new Set(activeValues.map((value) => normalizeMasterKey(value, options.uppercase)));
+  const activeRows = activeValues.map((value) => {
+    const displayValue = options.uppercase ? value.trim().toUpperCase() : value.trim();
+    const key = normalizeMasterKey(displayValue, options.uppercase);
+    return {
+      value: displayValue,
+      usageCount: usage.get(key)?.fileIds.size ?? 0,
+      status: "active" as const,
+    };
+  });
+  const inactiveRows = Array.from(usage.entries())
+    .filter(([key]) => !activeKeys.has(key))
+    .map(([, row]) => ({
+      value: row.value,
+      usageCount: row.fileIds.size,
+      status: "inactive" as const,
+    }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+  return [...activeRows, ...inactiveRows];
+}
+
+function getSpecialFileMarkerUsageRows(
+  activeMarkers: SpecialFileMarker[],
+  usage: Map<string, { value: string; fileIds: Set<string> }>,
+) {
+  const activeCodes = new Set(activeMarkers.map((marker) => marker.code.trim().toUpperCase()));
+  const activeRows = activeMarkers.map((marker) => {
+    const code = marker.code.trim().toUpperCase();
+    return {
+      marker: { ...marker, code },
+      value: code,
+      usageCount: usage.get(code)?.fileIds.size ?? 0,
+      status: "active" as const,
+    };
+  });
+  const inactiveRows = Array.from(usage.entries())
+    .filter(([code]) => !activeCodes.has(code))
+    .map(([, row]) => ({
+      marker: { code: row.value, description: "Inactive historical marker code" },
+      value: row.value,
+      usageCount: row.fileIds.size,
+      status: "inactive" as const,
+    }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+  return [...activeRows, ...inactiveRows];
+}
+
+function MasterValueMeta({ row }: { row: MasterValueUsageRow }) {
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+      <span
+        className={
+          "inline-flex items-center rounded-md border px-2 py-0.5 font-medium " +
+          (row.status === "active"
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+            : "border-amber-500/30 bg-amber-500/10 text-amber-700")
+        }
+      >
+        {row.status === "active" ? "Active" : "Inactive"}
+      </span>
+      <span>
+        Used in {row.usageCount} file{row.usageCount === 1 ? "" : "s"} including Archive
+      </span>
+    </div>
+  );
+}
+
+function MasterValueActions({
+  row,
+  onActivate,
+  onDeactivate,
+  onDelete,
+  label,
+}: {
+  row: MasterValueUsageRow;
+  onActivate: () => void;
+  onDeactivate: () => void;
+  onDelete: () => void;
+  label: string;
+}) {
+  if (row.status === "inactive") {
+    return (
+      <button
+        type="button"
+        onClick={onActivate}
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium hover:bg-accent"
+      >
+        <Check className="size-3.5" /> Activate
+      </button>
+    );
+  }
+
+  if (row.usageCount > 0) {
+    return (
+      <button
+        type="button"
+        onClick={onDeactivate}
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-amber-500/40 px-2 text-xs font-medium text-amber-700 hover:bg-amber-500/10"
+        aria-label={`Mark ${label} inactive`}
+        title={`Used in ${row.usageCount} file${row.usageCount === 1 ? "" : "s"} including Archive. Mark inactive instead of deleting.`}
+      >
+        <X className="size-3.5" /> Inactivate
+      </button>
+    );
+  }
+
+  return (
+    <HelpedControl helper={settingsControlHelpers.genericDelete} label={`Delete ${label} help`}>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+        aria-label={`Delete ${label}`}
+      >
+        <Trash2 className="size-4" />
+      </button>
+    </HelpedControl>
+  );
+}
+
 const defaultThresholdAppliesTo: ValueThresholdAppliesTo = "both";
 
 function createThresholdLevels(count: number, existing: ValueThresholdLevel[]) {
@@ -2177,11 +2648,16 @@ function ValueThresholdSettings() {
         (min.value !== undefined && max.value !== undefined && min.value > max.value)
       );
     });
-    if (invalid) {
-      setMessage("Check threshold values before saving.");
-      return;
-    }
-    setLevels(normalized);
+	    if (invalid) {
+	      setMessage("Check threshold values before saving.");
+	      return;
+	    }
+	    const rangeMessage = validateValueThresholdRanges(normalized);
+	    if (rangeMessage) {
+	      setMessage(rangeMessage);
+	      return;
+	    }
+	    setLevels(normalized);
     setMessage("Thresholds saved.");
     store.updateSettings({ setupYear: selectedYear, valueThresholdLevels: normalized });
   };
@@ -2427,7 +2903,7 @@ function AnomalyGovernanceSettings() {
 
   const clearSelected = async (signatures: string[]) => {
     if (!signatures.length) return;
-    const password = window.prompt("Enter your account password to clear selected anomalies:");
+    const password = await promptPassword("Enter your account password to clear selected anomalies:");
     if (!password?.trim()) return;
     try {
       await store.clearSuspectedAnomalyHistory(password.trim(), signatures);
@@ -2446,56 +2922,6 @@ function AnomalyGovernanceSettings() {
     } catch (error) {
       console.error(error);
       setMessage(error instanceof Error ? error.message : "Could not update anomaly rule.");
-    }
-  };
-
-  const createRule = async () => {
-    const name = window.prompt("Rule name:");
-    if (!name?.trim()) return;
-    const fieldA = window.prompt(
-      `Field A key:\n${fields.map((field) => `${field.key} - ${field.label}`).join("\n")}`,
-    );
-    if (!fieldA?.trim()) return;
-    const ruleType = window.prompt(
-      "Rule type: date_order, required_field, delay_days, date_boundary",
-      "date_order",
-    );
-    if (!ruleType?.trim()) return;
-    const fieldB = ruleType === "date_boundary" ? "" : window.prompt("Field B key:");
-    if (ruleType !== "date_boundary" && !fieldB?.trim()) return;
-    const operator =
-      ruleType === "required_field"
-        ? "requires"
-        : ruleType === "date_boundary"
-          ? window.prompt("Operator: not_before_fixed or not_after_fixed", "not_before_fixed")
-          : window.prompt("Operator: not_before or not_after", "not_before");
-    if (!operator?.trim()) return;
-    const fixedValue =
-      ruleType === "date_boundary"
-        ? window.prompt("Fixed date (DD-MM-YYYY or YYYY-MM-DD):")
-        : undefined;
-    if (ruleType === "date_boundary" && !fixedValue?.trim()) return;
-    const thresholdDays =
-      ruleType === "delay_days"
-        ? Number.parseInt(window.prompt("Threshold days:", "0") ?? "", 10)
-        : undefined;
-    try {
-      await store.createAnomalyRule({
-        name: name.trim(),
-        ruleType: ruleType.trim(),
-        fieldA: fieldA.trim(),
-        operator: operator.trim(),
-        fieldB: fieldB?.trim(),
-        fixedValue: fixedValue?.trim(),
-        thresholdDays,
-        severity: "Medium",
-        scope: "all",
-        enabled: true,
-      });
-      await load();
-    } catch (error) {
-      console.error(error);
-      setMessage(error instanceof Error ? error.message : "Could not create anomaly rule.");
     }
   };
 
@@ -2759,8 +3185,8 @@ function AnomalyGovernanceSettings() {
       <div>
         <h2 className="mb-1 text-sm font-semibold">Anomaly Control</h2>
         <p className="text-sm text-muted-foreground">
-          Review user acceptance requests, approve file-specific or universal exceptions, and manage
-          custom anomaly rules.
+          Review user acceptance requests, approve file-specific or universal exceptions, and review
+          existing custom anomaly rules.
         </p>
       </div>
       {message ? (
@@ -2830,15 +3256,6 @@ function AnomalyGovernanceSettings() {
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
-          <HelpedControl helper={settingsControlHelpers.anomalyRuleAdd} label="Add anomaly rule help">
-            <button
-              type="button"
-              onClick={() => void createRule()}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
-            >
-              <Plus className="size-3.5" /> Add rule
-            </button>
-          </HelpedControl>
         </div>
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="min-w-full text-left text-xs">
@@ -2886,7 +3303,7 @@ function AnomalyGovernanceSettings() {
               ) : (
                 <tr>
                   <td className="px-3 py-3 text-muted-foreground" colSpan={6}>
-                    No custom rules configured.
+                    No anomaly rule settings available.
                   </td>
                 </tr>
               )}
@@ -2901,14 +3318,17 @@ function AnomalyGovernanceSettings() {
 function MilestoneSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const milestones = appendFileClosedMilestone(
     settings.milestones && settings.milestones.length > 0
       ? settings.milestones
       : defaultMilestoneSequence,
   );
-  const [protectedMilestoneKeys] = useState(
-    () => new Set(milestones.map((milestone) => normalizeMilestoneName(milestone))),
+  const rows = getMasterValueUsageRows(milestones, getMilestoneUsage(files));
+  const protectedMilestoneKeys = useMemo(
+    () => new Set([normalizeMilestoneName(fileClosedMilestone)]),
+    [],
   );
   const [position, setPosition] = useState(String(milestones.length + 1));
 
@@ -2942,6 +3362,11 @@ function MilestoneSettings() {
     updateMilestones(milestones.filter((item) => item !== milestone));
   };
 
+  const activate = (milestone: string) => {
+    const exists = milestones.some((item) => item.toLowerCase() === milestone.toLowerCase());
+    if (!exists) updateMilestones([...milestones, milestone]);
+  };
+
   const move = (index: number, direction: -1 | 1) => {
     const nextIndex = index + direction;
     if (nextIndex < 0 || nextIndex >= milestones.length) return;
@@ -2954,7 +3379,8 @@ function MilestoneSettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Milestones</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Add milestone names and place them at the required sequence in the workflow.
+        Rename/reorder carefully. Used milestones can be inactivated for future selection while old
+        file/S.O. history remains visible. File Closed stays protected.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
@@ -2983,61 +3409,77 @@ function MilestoneSettings() {
       </div>
 
       <div className="mt-4 rounded-md border border-border">
-        {milestones.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
             No milestone names added yet.
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {milestones.map((milestone, index) => (
+            {rows.map((row) => {
+              const milestone = row.value;
+              const activeIndex = milestones.findIndex(
+                (item) => item.toLowerCase() === milestone.toLowerCase(),
+              );
+              const active = row.status === "active";
+              return (
               <li key={milestone} className="flex items-center justify-between gap-3 px-4 py-3">
                 <span className="flex min-w-0 items-center gap-3">
                   <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-secondary text-xs font-semibold">
-                    {index + 1}
+                    {active ? activeIndex + 1 : "-"}
                   </span>
-                  <span className="truncate text-sm font-medium">{milestone}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{milestone}</span>
+                    <MasterValueMeta row={row} />
+                  </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => move(index, -1)}
-                    disabled={index === 0}
-                    className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                    aria-label={`Move ${milestone} up`}
-                  >
-                    <ArrowUp className="size-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => move(index, 1)}
-                    disabled={index === milestones.length - 1}
-                    className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                    aria-label={`Move ${milestone} down`}
-                  >
-                    <ArrowDown className="size-4" />
-                  </button>
+                  {active ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => move(activeIndex, -1)}
+                        disabled={activeIndex === 0}
+                        className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        aria-label={`Move ${milestone} up`}
+                      >
+                        <ArrowUp className="size-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => move(activeIndex, 1)}
+                        disabled={activeIndex === milestones.length - 1}
+                        className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        aria-label={`Move ${milestone} down`}
+                      >
+                        <ArrowDown className="size-4" />
+                      </button>
+                    </>
+                  ) : null}
                   {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
                     <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
                       Existing
                     </span>
+                  ) : active ? (
+                    <MasterValueActions
+                      row={row}
+                      onActivate={() => activate(milestone)}
+                      onDeactivate={() => remove(milestone)}
+                      onDelete={() => remove(milestone)}
+                      label={milestone}
+                    />
                   ) : (
-                    <HelpedControl
-                      helper={settingsControlHelpers.genericDelete}
-                      label={`Delete ${milestone} help`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => remove(milestone)}
-                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                        aria-label={`Delete ${milestone}`}
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
-                    </HelpedControl>
+                    <MasterValueActions
+                      row={row}
+                      onActivate={() => activate(milestone)}
+                      onDeactivate={() => undefined}
+                      onDelete={() => undefined}
+                      label={milestone}
+                    />
                   )}
                 </span>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
@@ -3244,6 +3686,7 @@ function DemandProcessingPresetSettings() {
   const presets = normalizeDemandProcessingPresets(settings.demandProcessingPresets);
   const dayRanges = normalizeDemandProcessingDayRanges(settings.demandProcessingDayRanges);
   const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
+  const [dayRangeMessage, setDayRangeMessage] = useState("");
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? presets[0];
 
   useEffect(() => {
@@ -3280,18 +3723,25 @@ function DemandProcessingPresetSettings() {
     setSelectedPresetId(next[0]?.id ?? "");
   };
   const updateDayRanges = (next: DemandProcessingDayRange[]) => {
-    store.updateSettings({ demandProcessingDayRanges: normalizeDemandProcessingDayRanges(next) });
+    const normalized = normalizeDemandProcessingDayRanges(next);
+    const message = validateDemandProcessingDayRanges(normalized);
+    setDayRangeMessage(message);
+    if (message) return;
+    store.updateSettings({ demandProcessingDayRanges: normalized });
   };
   const updateDayRange = (id: string, patch: Partial<DemandProcessingDayRange>) => {
     updateDayRanges(dayRanges.map((range) => (range.id === id ? { ...range, ...patch } : range)));
   };
   const addDayRange = () => {
+    const lastRange = dayRanges[dayRanges.length - 1];
+    const lastMax = Number(String(lastRange?.maxDays ?? "").trim());
+    const nextMin = Number.isInteger(lastMax) && lastMax >= 0 ? String(lastMax + 1) : "";
     updateDayRanges([
       ...dayRanges,
       {
         id: crypto.randomUUID(),
         label: `Range ${dayRanges.length + 1}`,
-        minDays: "",
+        minDays: nextMin,
         maxDays: "",
       },
     ]);
@@ -3406,6 +3856,7 @@ function DemandProcessingPresetSettings() {
       </div>
       <DemandProcessingDayRangeSettings
         ranges={dayRanges}
+        message={dayRangeMessage}
         onAdd={addDayRange}
         onReset={resetDayRanges}
         onUpdate={updateDayRange}
@@ -3486,14 +3937,40 @@ function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDay
   return ranges.length ? ranges : defaultDemandProcessingDayRanges;
 }
 
+function validateDemandProcessingDayRanges(ranges: DemandProcessingDayRange[]) {
+  const parsed = ranges.map((range) => {
+    const label = range.label.trim();
+    const minText = String(range.minDays ?? "").trim();
+    const maxText = String(range.maxDays ?? "").trim();
+    const min = Number(minText);
+    const max = maxText ? Number(maxText) : undefined;
+    if (!label) return { error: "Each day range needs a label." };
+    if (!minText || !Number.isInteger(min) || min < 0) {
+      return { error: `${label}: minimum days must be a non-negative whole number.` };
+    }
+    if (maxText && (!Number.isInteger(max) || max < 0)) {
+      return { error: `${label}: maximum days must be a non-negative whole number.` };
+    }
+    return { label, min, max };
+  });
+  const invalid = parsed.find((range): range is { error: string } => "error" in range);
+  if (invalid) return invalid.error;
+  return validateRangeContinuity(
+    parsed.filter((range): range is { label: string; min: number; max?: number } => !("error" in range)),
+    1,
+  );
+}
+
 function DemandProcessingDayRangeSettings({
   ranges,
+  message,
   onAdd,
   onReset,
   onUpdate,
   onRemove,
 }: {
   ranges: DemandProcessingDayRange[];
+  message?: string;
   onAdd: () => void;
   onReset: () => void;
   onUpdate: (id: string, patch: Partial<DemandProcessingDayRange>) => void;
@@ -3524,8 +4001,13 @@ function DemandProcessingDayRangeSettings({
             <Plus className="size-4" /> Add range
           </button>
         </div>
-      </div>
-      <div className="space-y-2">
+	      </div>
+	      {message ? (
+	        <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+	          {message}
+	        </p>
+	      ) : null}
+	      <div className="space-y-2">
         {ranges.map((range) => (
           <div
             key={range.id}
@@ -3700,6 +4182,8 @@ function MmgSummarySettings() {
 
 function DivisionSettings() {
   const divisions = useDivisions();
+  const files = useSettingsUsageFiles();
+  const divisionUsage = getDivisionUsage(files);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [ad, setAd] = useState("");
@@ -3743,9 +4227,8 @@ function DivisionSettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Divisions</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Use this page for the master list of division names, codes, AD marking, and viewer
-        passwords. Deleting a division sends it to Archive for recovery. Year-wise activation,
-        yearly funds, and merged/continued division work are handled in Year Setup.
+        Rename only for corrections. Transfer/merge work belongs in Year Setup. Delete is available
+        only when no files use the division.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_0.8fr_0.7fr_auto]">
@@ -3784,6 +4267,7 @@ function DivisionSettings() {
           <tbody>
             {divisions.map((division) => {
               const isEditing = editingId === division.id;
+              const usageCount = getDivisionUsageCount(division, divisionUsage);
               const editChanged =
                 editName.trim() !== division.name ||
                 editCode.trim() !== (division.code ?? "") ||
@@ -3803,7 +4287,7 @@ function DivisionSettings() {
                       <span className="font-medium">{division.name}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">
+	    <td className="break-words px-3 py-3 text-muted-foreground">
                     {isEditing ? (
                       <DivisionInput
                         value={editCode}
@@ -3840,10 +4324,13 @@ function DivisionSettings() {
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {isEditing ? (
-                      <DivisionInput
+                      <input
+                        type="password"
                         value={editViewerPassword}
-                        onChange={setEditViewerPassword}
+                        onChange={(event) => setEditViewerPassword(event.target.value)}
                         placeholder="New viewer password"
+                        autoComplete="new-password"
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
                       />
                     ) : (
                       "Set while editing"
@@ -3878,24 +4365,35 @@ function DivisionSettings() {
                           >
                             <Pencil className="size-4" />
                           </button>
-                          <HelpedControl
-                            helper={settingsControlHelpers.genericDelete}
-                            label={`Delete ${division.name} help`}
-                          >
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                if (
-                                  await requestDeletionPassword(`delete division "${division.name}"`)
-                                ) {
-                                  store.deleteDivision(division.id);
-                                }
-                              }}
-                              className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                            >
-                              <Trash2 className="size-4" />
-                            </button>
-                          </HelpedControl>
+	                          {usageCount > 0 ? (
+	                            <button
+	                              type="button"
+	                              disabled
+		                              title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Transfer/Merge first.`}
+	                              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+	                            >
+	                              Transfer/Merge first
+	                            </button>
+	                          ) : (
+	                            <HelpedControl
+	                              helper={settingsControlHelpers.genericDelete}
+	                              label={`Delete ${division.name} help`}
+	                            >
+	                              <button
+	                                type="button"
+	                                onClick={async () => {
+	                                  if (
+	                                    await requestDeletionPassword(`delete division "${division.name}"`)
+	                                  ) {
+	                                    store.deleteDivision(division.id);
+	                                  }
+	                                }}
+	                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+	                              >
+	                                <Trash2 className="size-4" />
+	                              </button>
+	                            </HelpedControl>
+	                          )}
                         </>
                       )}
                     </div>
@@ -4055,6 +4553,8 @@ function FirmRatingSettings() {
 function FirmDatabaseSettings() {
   const activeUser = useActiveUser();
   const settings = useSettings();
+  const files = useSettingsUsageFiles();
+  const firmUsage = getFirmUsage(files);
   const canManage =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
@@ -4197,7 +4697,8 @@ function FirmDatabaseSettings() {
         <div>
           <h2 className="text-sm font-semibold mb-1">Firm Database</h2>
           <p className="text-xs text-muted-foreground">
-            Save reusable firm records for future file firm details.
+            Edit only for same-firm corrections. Delete is available only when no files/S.O.s use
+            the firm name or unique number.
           </p>
         </div>
         <input
@@ -4288,20 +4789,21 @@ function FirmDatabaseSettings() {
           setPageSize(value);
           setPage(1);
         }}
+        onPageChange={setPage}
         onPrevious={() => setPage((current) => Math.max(1, current - 1))}
         onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
       />
 
-      <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[1360px] table-fixed text-sm">
+      <div className="mt-5 max-w-full overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[980px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[16%]" />
+            <col className="w-[18%]" />
             <col className="w-[13%]" />
-            <col className="w-[16%]" />
-            <col className="w-[21%]" />
-            <col className="w-[12%]" />
-            <col className="w-[9%]" />
-            <col className="w-[7%]" />
+            <col className="w-[17%]" />
+            <col className="w-[18%]" />
+            <col className="w-[10%]" />
+            <col className="w-[10%]" />
+            <col className="w-[8%]" />
             <col className="w-[6%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
@@ -4326,6 +4828,7 @@ function FirmDatabaseSettings() {
             ) : (
               firms.map((firm) => {
                 const isEditing = editingId === firm.id;
+                const usageCount = getFirmUsageCount(firm, firmUsage);
                 const editChanged = !isSettingsDirtyValueEqual(cleanFirmDraft(editDraft), {
                   firmName: firm.firmName ?? "",
                   emailId: firm.emailId ?? "",
@@ -4369,10 +4872,10 @@ function FirmDatabaseSettings() {
                       onChange={(value) => updateEditDraft("contactNo", numericOnly(value))}
                       type="tel"
                     />
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {firm.firmRating || "Not rated"}
-                    </td>
-                    <td className="px-4 py-3">
+	                    <td className="break-words px-3 py-3 text-muted-foreground">
+	                      {firm.firmRating || "Not rated"}
+	                    </td>
+	                    <td className="px-3 py-3">
                       <div className="flex justify-end gap-1">
                         {isEditing ? (
                           <>
@@ -4407,20 +4910,31 @@ function FirmDatabaseSettings() {
                             >
                               <Pencil className="size-4" />
                             </button>
-                            {canDeleteFirms ? (
-                              <HelpedControl
-                                helper={settingsControlHelpers.genericDelete}
-                                label={`Delete ${firm.firmName || "firm"} help`}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => void removeFirm(firm.id)}
-                                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                                >
-                                  <Trash2 className="size-4" />
-                                </button>
-                              </HelpedControl>
-                            ) : null}
+	                            {canDeleteFirms ? (
+	                              usageCount > 0 ? (
+	                                <button
+	                                  type="button"
+	                                  disabled
+		                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Keep historical firm reference.`}
+	                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+	                                >
+	                                  Used
+	                                </button>
+	                              ) : (
+	                                <HelpedControl
+	                                  helper={settingsControlHelpers.genericDelete}
+	                                  label={`Delete ${firm.firmName || "firm"} help`}
+	                                >
+	                                  <button
+	                                    type="button"
+	                                    onClick={() => void removeFirm(firm.id)}
+	                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+	                                  >
+	                                    <Trash2 className="size-4" />
+	                                  </button>
+	                                </HelpedControl>
+	                              )
+	                            ) : null}
                           </>
                         )}
                       </div>
@@ -4446,6 +4960,7 @@ function FirmDatabaseSettings() {
           setPageSize(value);
           setPage(1);
         }}
+        onPageChange={setPage}
         onPrevious={() => setPage((current) => Math.max(1, current - 1))}
         onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
       />
@@ -4467,7 +4982,7 @@ function FirmCell({
   invalid?: boolean;
 }) {
   return (
-    <td className="px-4 py-3 text-muted-foreground">
+    <td className="break-words px-3 py-3 text-muted-foreground">
       {editing ? (
         <FirmInput
           value={value ?? ""}
@@ -4525,6 +5040,7 @@ function SettingsPaginationControls({
   pageSize,
   className = "mt-5",
   onPageSizeChange,
+  onPageChange,
   onPrevious,
   onNext,
 }: {
@@ -4537,9 +5053,12 @@ function SettingsPaginationControls({
   pageSize: number;
   className?: string;
   onPageSizeChange: (pageSize: number) => void;
+  onPageChange: (page: number) => void;
   onPrevious: () => void;
   onNext: () => void;
 }) {
+  const pageNumbers = getSettingsPaginationPages(page, totalPages);
+
   return (
     <div
       className={
@@ -4570,11 +5089,34 @@ function SettingsPaginationControls({
         <button
           type="button"
           disabled={page <= 1}
+          onClick={() => onPageChange(1)}
+          className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          First
+        </button>
+        <button
+          type="button"
+          disabled={page <= 1}
           onClick={onPrevious}
           className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Previous
         </button>
+        {pageNumbers.map((pageNumber) => (
+          <button
+            key={pageNumber}
+            type="button"
+            onClick={() => onPageChange(pageNumber)}
+            className={
+              "h-8 min-w-8 rounded-md border px-2 font-medium " +
+              (pageNumber === page
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border hover:bg-accent")
+            }
+          >
+            {pageNumber}
+          </button>
+        ))}
         <span>
           Page {page} of {totalPages}
         </span>
@@ -4586,9 +5128,26 @@ function SettingsPaginationControls({
         >
           Next
         </button>
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+          className="h-8 rounded-md border border-border px-3 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Last
+        </button>
       </div>
     </div>
   );
+}
+
+function getSettingsPaginationPages(currentPage: number, totalPages: number, maxVisible = 5) {
+  const visible = Math.max(1, Math.min(maxVisible, totalPages));
+  const half = Math.floor(visible / 2);
+  let startPage = Math.max(1, currentPage - half);
+  const endPage = Math.min(totalPages, startPage + visible - 1);
+  startPage = Math.max(1, endPage - visible + 1);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
 const emptyIndentorDraft: IndentorDraft = {
@@ -4618,6 +5177,8 @@ const indentorDesignationOptions = [
 function IndentorSettings() {
   const activeUser = useActiveUser();
   const divisions = useDivisions();
+  const files = useSettingsUsageFiles();
+  const indentorUsage = getIndentorUsage(files);
   const canManage = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const availableDivisions =
     !activeUser || canViewAllDivisions(activeUser.role)
@@ -4633,6 +5194,18 @@ function IndentorSettings() {
   const [indentorTotal, setIndentorTotal] = useState(0);
   const [indentorsLoading, setIndentorsLoading] = useState(false);
   const [indentorsError, setIndentorsError] = useState<string | undefined>();
+  const [transferIndentors, setTransferIndentors] = useState<Indentor[]>([]);
+  const [transferSourceId, setTransferSourceId] = useState("");
+  const [transferTargetId, setTransferTargetId] = useState("");
+  const [transferScope, setTransferScope] = useState<IndentorTransferScope>("active");
+  const [transferYear, setTransferYear] = useState("");
+  const [transferPreview, setTransferPreview] = useState<IndentorTransferPreview | null>(null);
+  const [transferMessage, setTransferMessage] = useState<string | undefined>();
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferCommitting, setTransferCommitting] = useState(false);
+  const [transferReason, setTransferReason] = useState("");
+  const [transferArchiveSource, setTransferArchiveSource] = useState(false);
+  const [transferConfirmation, setTransferConfirmation] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<IndentorDraft>(emptyIndentorDraft);
 
@@ -4676,6 +5249,16 @@ function IndentorSettings() {
     loadIndentors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [divisionFilter, debouncedSearch, page, pageSize]);
+
+  useEffect(() => {
+    if (!canManage) return;
+    fetchIndentors({ page: 1, pageSize: 200 })
+      .then((result) => setTransferIndentors(result.indentors))
+      .catch((error) => {
+        console.error(error);
+        setTransferMessage(error instanceof Error ? error.message : "Failed to load transfer list.");
+      });
+  }, [canManage]);
 
   const totalPages = Math.max(1, Math.ceil(indentorTotal / pageSize));
   const firstResultNumber = indentorTotal === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -4762,15 +5345,100 @@ function IndentorSettings() {
     }
   };
 
+  const previewIndentorTransfer = async () => {
+    setTransferMessage(undefined);
+    setTransferPreview(null);
+    if (!transferSourceId || !transferTargetId) {
+      setTransferMessage("Select both source and target indentor.");
+      return;
+    }
+    if (transferSourceId === transferTargetId) {
+      setTransferMessage("Source and target indentor cannot be same.");
+      return;
+    }
+    if (transferScope === "financialYear" && !transferYear.trim()) {
+      setTransferMessage("Enter financial year for selected FY transfer.");
+      return;
+    }
+    setTransferLoading(true);
+    try {
+      const result = await store.previewIndentorTransfer({
+        sourceIndentorId: transferSourceId,
+        targetIndentorId: transferTargetId,
+        scope: transferScope,
+        financialYear: transferScope === "financialYear" ? transferYear.trim() : undefined,
+      });
+      setTransferPreview(result.preview);
+      setTransferConfirmation("");
+      setTransferMessage(
+        `Preview ready: ${result.preview.count} file${result.preview.count === 1 ? "" : "s"} matched.`,
+      );
+    } catch (error) {
+      setTransferMessage(error instanceof Error ? error.message : "Failed to preview transfer.");
+    } finally {
+      setTransferLoading(false);
+    }
+  };
+
+  const commitIndentorTransfer = async () => {
+    if (!transferPreview) return;
+    setTransferMessage(undefined);
+    if (!transferReason.trim()) {
+      setTransferMessage("Reason is required before transfer.");
+      return;
+    }
+    const expectedConfirmation = `TRANSFER ${transferPreview.count} FILES`;
+    if (transferConfirmation.trim().toUpperCase() !== expectedConfirmation) {
+      setTransferMessage(`Type "${expectedConfirmation}" to confirm transfer.`);
+      return;
+    }
+    setTransferCommitting(true);
+    try {
+      const result = await store.commitIndentorTransfer({
+        sourceIndentorId: transferPreview.sourceIndentor.id,
+        targetIndentorId: transferPreview.targetIndentor.id,
+        scope: transferScope,
+        financialYear: transferScope === "financialYear" ? transferYear.trim() : undefined,
+        reason: transferReason.trim(),
+        expectedCount: transferPreview.count,
+        confirmationText: transferConfirmation.trim().toUpperCase(),
+        archiveSourceIndentor: transferArchiveSource,
+      });
+      setTransferMessage(
+        `Transfer completed: ${result.transfer.movedFileCount} file${result.transfer.movedFileCount === 1 ? "" : "s"} moved.`,
+      );
+      setTransferPreview(null);
+      setTransferSourceId("");
+      setTransferTargetId("");
+      setTransferReason("");
+      setTransferConfirmation("");
+      setTransferArchiveSource(false);
+      loadIndentors();
+      fetchIndentors({ page: 1, pageSize: 200 })
+        .then((list) => setTransferIndentors(list.indentors))
+        .catch((error) => console.error(error));
+      void store.reload();
+    } catch (error) {
+      setTransferMessage(error instanceof Error ? error.message : "Failed to transfer indentor files.");
+    } finally {
+      setTransferCommitting(false);
+    }
+  };
+
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-sm font-semibold mb-1">Indentors</h2>
-          <p className="text-xs text-muted-foreground">
-            Add and search division-wise indentors used when files are created.
-          </p>
-        </div>
+	          <h2 className="text-sm font-semibold mb-1">Indentors</h2>
+	          <p className="text-xs text-muted-foreground">
+	            Add and search division-wise indentors used when files are created.
+	          </p>
+	          <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+	            Edit is for correcting indentor master details only. It does not update old file
+	            rows already saved with that indentor. Use Indentor Transfer when existing files
+	            must move to another indentor or division responsibility.
+	          </p>
+	        </div>
         <div className="flex w-full flex-col gap-2 sm:max-w-xl sm:flex-row">
           <select
             value={divisionFilter}
@@ -4842,6 +5510,196 @@ function IndentorSettings() {
         </button>
       </div>
 
+      {canManage ? (
+        <div className="mt-5 rounded-md border border-border bg-secondary/20 p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Indentor Transfer</h3>
+            <p className="text-xs text-muted-foreground">
+              Preview files before moving responsibility from one indentor to another.
+            </p>
+            <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
+              If the target indentor belongs to another division, file responsibility and
+              division-wise reporting move to that division. Budget allocation is not transferred
+              automatically; adjust division allocation separately if required.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_12rem_9rem_auto]">
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Source indentor</span>
+              <select
+                value={transferSourceId}
+                onChange={(event) => {
+                  setTransferSourceId(event.target.value);
+                  setTransferPreview(null);
+                }}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              >
+                <option value="">Select source</option>
+                {transferIndentors.map((indentor) => (
+                  <option key={indentor.id} value={indentor.id}>
+                    {indentor.name} - {indentor.divisionName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Target indentor</span>
+              <select
+                value={transferTargetId}
+                onChange={(event) => {
+                  setTransferTargetId(event.target.value);
+                  setTransferPreview(null);
+                }}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              >
+                <option value="">Select target</option>
+                {transferIndentors.map((indentor) => (
+                  <option key={indentor.id} value={indentor.id} disabled={indentor.id === transferSourceId}>
+                    {indentor.name} - {indentor.divisionName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>Transfer scope</span>
+              <select
+                value={transferScope}
+                onChange={(event) => {
+                  setTransferScope(event.target.value as IndentorTransferScope);
+                  setTransferPreview(null);
+                }}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              >
+                <option value="active">Active/open files</option>
+                <option value="financialYear">Selected FY files</option>
+                <option value="all">All historical files</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span>FY</span>
+              <input
+                value={transferYear}
+                onChange={(event) => {
+                  setTransferYear(event.target.value);
+                  setTransferPreview(null);
+                }}
+                disabled={transferScope !== "financialYear"}
+                placeholder="2026-27"
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => void previewIndentorTransfer()}
+                disabled={transferLoading}
+                className="h-9 rounded-md border border-border bg-background px-3 text-xs font-semibold hover:bg-accent disabled:cursor-wait disabled:opacity-60"
+              >
+                {transferLoading ? "Checking..." : "Preview"}
+              </button>
+            </div>
+          </div>
+          {transferMessage ? (
+            <p className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs">
+              {transferMessage}
+            </p>
+          ) : null}
+          {transferPreview ? (
+            <div className="mt-3 rounded-md border border-border bg-background">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs">
+                <span className="font-semibold">
+                  {transferPreview.count} affected file{transferPreview.count === 1 ? "" : "s"}
+                </span>
+                <span className="text-muted-foreground">
+                  Review the list, enter a reason, then type the confirmation text before transfer.
+                </span>
+              </div>
+              <div className="max-h-56 overflow-auto">
+                {transferPreview.files.length ? (
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="bg-secondary/60 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">File</th>
+                        <th className="px-3 py-2">Division</th>
+                        <th className="px-3 py-2">FY</th>
+                        <th className="px-3 py-2">Closure</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {transferPreview.files.map((file) => (
+                        <tr key={file.id} className="border-t border-border">
+                          <td className="px-3 py-2 font-medium">
+                            {file.uniqueCode || file.fileNo || file.title || file.id}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {file.division || "Not set"}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">{file.year || "Not set"}</td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {file.fileClosureDate || "Open"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="px-3 py-4 text-xs text-muted-foreground">
+                    No files matched this transfer scope.
+                  </div>
+                )}
+              </div>
+              {transferPreview.count > 0 ? (
+                <div className="space-y-3 border-t border-border p-3">
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span>Reason for transfer</span>
+                    <input
+                      value={transferReason}
+                      onChange={(event) => setTransferReason(event.target.value)}
+                      placeholder="Example: Indentor retired / responsibility reassigned"
+                      className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                    />
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={transferArchiveSource}
+                      onChange={(event) => setTransferArchiveSource(event.target.checked)}
+                      className="size-4"
+                    />
+                    <span>Archive source indentor after successful transfer</span>
+                  </label>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      <span>
+                        Type{" "}
+                        <span className="font-semibold text-foreground">
+                          TRANSFER {transferPreview.count} FILES
+                        </span>
+                      </span>
+                      <input
+                        value={transferConfirmation}
+                        onChange={(event) => setTransferConfirmation(event.target.value)}
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                      />
+                    </label>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => void commitIndentorTransfer()}
+                        disabled={transferCommitting}
+                        className="h-9 rounded-md bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {transferCommitting ? "Transferring..." : "Commit Transfer"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <SettingsPaginationControls
         firstResultNumber={firstResultNumber}
         lastResultNumber={lastResultNumber}
@@ -4854,21 +5712,22 @@ function IndentorSettings() {
           setPageSize(value);
           setPage(1);
         }}
+        onPageChange={setPage}
         onPrevious={() => setPage((current) => Math.max(1, current - 1))}
         onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
       />
 
-      <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[1050px] table-fixed text-sm">
+      <div className="mt-5 max-w-full overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[900px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[14%]" />
-            <col className="w-[14%]" />
+            <col className="w-[15%]" />
+            <col className="w-[15%]" />
+            <col className="w-[9%]" />
             <col className="w-[12%]" />
-            <col className="w-[14%]" />
-            <col className="w-[12%]" />
-            <col className="w-[12%]" />
-            <col className="w-[14%]" />
-            <col className="w-[8%]" />
+            <col className="w-[11%]" />
+            <col className="w-[10%]" />
+            <col className="w-[18%]" />
+            <col className="w-[10%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
@@ -4896,6 +5755,8 @@ function IndentorSettings() {
             ) : (
               indentors.map((indentor) => {
                 const isEditing = editingId === indentor.id;
+                const usageCount =
+                  indentorUsage.get(normalizeMasterKey(indentor.name))?.fileIds.size ?? 0;
                 const editChanged = !isSettingsDirtyValueEqual(editDraft, {
                   divisionId: indentor.divisionId,
                   name: indentor.name,
@@ -4907,7 +5768,7 @@ function IndentorSettings() {
                 });
                 return (
                   <tr key={indentor.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3">
+	                    <td className="break-words px-3 py-3">
                       {isEditing ? (
                         <IndentorDivisionSelect
                           value={editDraft.divisionId}
@@ -4948,7 +5809,7 @@ function IndentorSettings() {
                       value={isEditing ? editDraft.email : indentor.email}
                       onChange={(value) => updateEditDraft("email", value)}
                     />
-                    <td className="px-4 py-3">
+	                    <td className="px-3 py-3">
                       {canManage ? (
                         <div className="flex justify-end gap-1">
                           {isEditing ? (
@@ -4978,18 +5839,29 @@ function IndentorSettings() {
                               >
                                 <Pencil className="size-4" />
                               </button>
-                              <HelpedControl
-                                helper={settingsControlHelpers.genericDelete}
-                                label={`Delete ${indentor.name} help`}
-                              >
+                              {usageCount > 0 ? (
                                 <button
                                   type="button"
-                                  onClick={() => deleteIndentor(indentor.id)}
-                                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                  disabled
+	                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Use Indentor Transfer first.`}
+                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
                                 >
-                                  <Trash2 className="size-4" />
+                                  Transfer
                                 </button>
-                              </HelpedControl>
+                              ) : (
+                                <HelpedControl
+                                  helper={settingsControlHelpers.genericDelete}
+                                  label={`Delete ${indentor.name} help`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteIndentor(indentor.id)}
+                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                  >
+                                    <Trash2 className="size-4" />
+                                  </button>
+                                </HelpedControl>
+                              )}
                             </>
                           )}
                         </div>
@@ -5017,6 +5889,7 @@ function IndentorSettings() {
           setPageSize(value);
           setPage(1);
         }}
+        onPageChange={setPage}
         onPrevious={() => setPage((current) => Math.max(1, current - 1))}
         onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
       />
@@ -5490,7 +6363,13 @@ function UserSettings() {
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_0.8fr_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="User name" />
         <DivisionInput value={username} onChange={setUsername} placeholder="Username" />
-        <DivisionInput value={password} onChange={setPassword} placeholder="Password" />
+        <input
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder="Password"
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+        />
         <UserRoleSelect value={role} onChange={setRole} />
         <button
           type="button"
@@ -5602,10 +6481,12 @@ function UserSettings() {
                             onChange={setEditUsername}
                             placeholder="Username"
                           />
-                          <DivisionInput
+                          <input
+                            type="password"
                             value={editPassword}
-                            onChange={setEditPassword}
+                            onChange={(event) => setEditPassword(event.target.value)}
                             placeholder="New password"
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
                           />
                         </div>
                       ) : (
@@ -6725,7 +7606,7 @@ function IndentorCell({
   onChange: (value: string) => void;
 }) {
   return (
-    <td className="px-4 py-3 text-muted-foreground">
+    <td className="break-words px-3 py-3 text-muted-foreground">
       {editing ? <DivisionInput value={value} onChange={onChange} placeholder="" /> : value}
     </td>
   );

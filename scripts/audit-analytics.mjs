@@ -201,9 +201,13 @@ function checkMilestoneClearingRows(issues, passName, rows) {
   let previousAverage = Infinity;
   for (const row of rows ?? []) {
     const sampleSize = n(row.sampleSize);
+    const fileCount = n(row.fileCount ?? row.sampleSize);
     const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-    if (sampleSize !== ids.length) {
-      issues.push({ pass: passName, area: "milestoneClearingRanking", milestone: row.name, issue: "sampleSize does not equal unique fileIds count", sampleSize, fileIds: ids.length });
+    if (fileCount !== ids.length) {
+      issues.push({ pass: passName, area: "milestoneClearingRanking", milestone: row.name, issue: "fileCount does not equal unique fileIds count", fileCount, fileIds: ids.length });
+    }
+    if (sampleSize < fileCount) {
+      issues.push({ pass: passName, area: "milestoneClearingRanking", milestone: row.name, issue: "sampleSize is smaller than fileCount", sampleSize, fileCount });
     }
     if (n(row.minDays) > n(row.medianDays) || n(row.medianDays) > n(row.maxDays)) {
       issues.push({ pass: passName, area: "milestoneClearingRanking", milestone: row.name, issue: "min/median/max order invalid", row });
@@ -249,7 +253,7 @@ async function checkAnalyticsClickers(token, issues, pass, summary) {
     await checkSearchCount(token, issues, pass, "Division turnaround ranking", row.name, row.sampleSize, { dashboardFilter: "divisionTurnaroundSample", division: row.name }, false);
   }
   for (const row of analytics.divisionPaymentPendingRanking ?? []) {
-    await checkSearchCount(token, issues, pass, "Payment pending ranking", row.name, row.count, { dashboardFilter: "paymentDue", division: row.name });
+    await checkSearchCount(token, issues, pass, "Payment pending ranking", row.name, row.count, { dashboardFilter: "paymentDue", division: row.name }, false);
   }
   for (const row of analytics.topFirmSupplyOrders ?? []) {
     await checkSearchCount(token, issues, pass, "Top firms by S.O. value", row.name, row.value, { analyticsType: "firm", analyticsNames: [row.name] }, false);

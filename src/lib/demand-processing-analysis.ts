@@ -55,6 +55,10 @@ type DateFieldConfig = {
   key: string;
 };
 
+function isYes(value: string | undefined) {
+  return value?.trim().toLowerCase() === "yes";
+}
+
 const dateFieldConfigs: DateFieldConfig[] = [
   { id: "file.receivedDate", label: "Demand received date", group: "File details", scope: "file", key: "receivedDate" },
   { id: "file.demandCancelledDate", label: "Demand cancelled date", group: "File details", scope: "file", key: "demandCancelledDate" },
@@ -236,6 +240,7 @@ export function buildDemandProcessingRows(
 
     if (usesUnifiedPaymentField) {
       (file.supplyOrders ?? []).forEach((order, orderIndex) => {
+        if (isYes(order.soCancelled)) return;
         getUnifiedPaymentEvents(file, order, orderIndex).forEach((event) => {
           addRow(
             event.basis,
@@ -267,6 +272,7 @@ export function buildDemandProcessingRows(
     }
     const orders = file.supplyOrders?.length ? file.supplyOrders : [{} as SupplyOrderDetail];
     orders.forEach((order, orderIndex) => {
+      if (isYes(order.soCancelled)) return;
       const orderRef = order.soNo || order.gemSoNo || `S.O. ${orderIndex + 1}`;
       const value = getDemandProcessingOrderValue(file, order);
       if (scope === "order") {

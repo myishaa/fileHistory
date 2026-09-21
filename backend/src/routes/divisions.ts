@@ -75,6 +75,22 @@ async function verifyDeletionPassword(value: unknown) {
   if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
 }
 
+async function assertDivisionUnusedBeforeArchive(divisionId: string) {
+  const result = await pool.query<{ count: string }>(
+    `select count(*)::text as count
+     from files
+     where division_id = $1`,
+    [divisionId],
+  );
+  const count = Number(result.rows[0]?.count ?? 0);
+  if (count > 0) {
+    throw new HttpError(
+      400,
+      `This division is used in ${count} file${count === 1 ? "" : "s"}, including Archive. Transfer/Merge files first.`,
+    );
+  }
+}
+
 async function upsertYearAllocation(
   divisionId: string,
   financialYear: string,
@@ -143,6 +159,33 @@ function clearDivisionCache() {
   clearCachePrefix("divisions:");
   clearCachePrefix("lookup:selected-year");
 }
+
+divisionsRouter.get(
+  "/viewer-login-options",
+  asyncHandler(async (_request, response) => {
+    const financialYear = await getSelectedYear();
+    const result = await pool.query<DivisionRow>(
+      `select
+         d.id,
+         d.name,
+         d.code,
+         null::numeric as allocated_capital,
+         null::numeric as allocated_revenue,
+         d.ad,
+         d.messages_enabled,
+         coalesce(a.active, true) as active,
+         d.archived_at
+       from divisions d
+       left join division_year_allocations a
+         on a.division_id = d.id and a.financial_year = $1
+       where d.archived_at is null
+         and coalesce(a.active, true) = true
+       order by d.name asc`,
+      [financialYear],
+    );
+    response.json({ divisions: result.rows.map(mapDivision) });
+  }),
+);
 
 divisionsRouter.get(
   "/",
@@ -798,6 +841,7 @@ divisionsRouter.delete(
     const id = requireParam(request.params.id, "id");
     const division = await getDivision(id, await readAllocationYear(request.query.year));
     if (!division) throw new HttpError(404, "Division not found.");
+    await assertDivisionUnusedBeforeArchive(id);
 
     await pool.query(
       `update divisions
@@ -867,6 +911,7 @@ divisionsRouter.delete(
     const id = requireParam(request.params.id, "id");
     const division = await getDivision(id, await readAllocationYear(request.query.year));
     if (!division?.archivedAt) throw new HttpError(404, "Archived division not found.");
+    await assertDivisionUnusedBeforeArchive(id);
 
     const client = await pool.connect();
     try {

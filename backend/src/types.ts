@@ -206,6 +206,7 @@ export type SupplyOrderDetail = {
   soCancelledDate?: string;
   shortclosure?: string;
   shortclosureDate?: string;
+  noFurtherAction?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -409,6 +410,7 @@ export type FileRecord = {
   soCancelledDate?: string;
   shortclosure?: string;
   shortclosureDate?: string;
+  noFurtherAction?: string;
   bqFirms?: FirmDetail[];
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];

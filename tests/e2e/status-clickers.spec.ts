@@ -96,6 +96,7 @@ function baseOrder(code: string, index: number): SupplyOrderDetail {
     stageDelivery: "No",
     stagePayment: "No",
     advancePayment: "No",
+    noFurtherAction: "No",
     paymentMode: "Online",
   };
 }
@@ -312,12 +313,49 @@ async function authenticate(page: Page, token: string) {
 
 test.describe("dashboard status clickers", () => {
   let counterGroups: SeededCounterGroup[];
+  let excludedShortclosedPaymentFile: FileRecord;
   let browserSessionToken: string;
 
   test.beforeAll(async () => {
     await cleanupQaFiles();
     const userId = await ensureQaUser();
     counterGroups = await seedCounterGroups(userId);
+    const seedToken = await saveUserSession(userId);
+    try {
+      const year = await selectedYear();
+      excludedShortclosedPaymentFile = await seedFile(
+        seedToken,
+        year,
+        {
+          name: "Payment / Completed shortclosed no further action exclusion",
+          testId: "status-counter-payment-completed",
+          buildOrder: () => ({
+            materialReceiptDate: "2026-07-20",
+            billPreparationDate: "2026-07-21",
+            billSentForPaymentDate: "2026-07-22",
+            paymentDate: "2026-07-30",
+            paymentMode: "Online",
+            actualPaymentCapital: "10000",
+            shortclosure: "Yes",
+            shortclosureDate: "2026-07-25",
+            noFurtherAction: "Yes",
+            completedMilestones: [
+              "Financial Sanction",
+              "Supply Order",
+              "Delivery Period",
+              "Delivery",
+              "Bill preparation",
+              "Bill sent for payment",
+              "Payment",
+            ],
+          }),
+        },
+        counterTargets.length,
+        0,
+      );
+    } finally {
+      await deleteSession(seedToken);
+    }
     browserSessionToken = await saveUserSession(userId);
   });
 
@@ -342,8 +380,13 @@ test.describe("dashboard status clickers", () => {
     await expect(globalYear).toHaveValue(seededYear);
     await page.goto("/dashboard");
     const fileYear = page.getByTestId("dashboard-file-year-select");
-    await fileYear.selectOption(seededYear);
-    await expect(fileYear).toHaveValue(seededYear);
+    const hasSeededFileYear = await fileYear
+      .locator("option")
+      .evaluateAll((options, year) => options.some((option) => option.getAttribute("value") === year), seededYear);
+    if (hasSeededFileYear) {
+      await fileYear.selectOption(seededYear);
+      await expect(fileYear).toHaveValue(seededYear);
+    }
 
     let checkedFiles = 0;
     for (const group of counterGroups) {
@@ -362,6 +405,11 @@ test.describe("dashboard status clickers", () => {
           await page.getByPlaceholder("Free search").fill(code);
           await expect(page.getByTestId(`search-result-${slug(code)}`)).toBeVisible();
           checkedFiles += 1;
+        }
+        if (group.name === "Payment / Completed") {
+          const excludedCode = excludedShortclosedPaymentFile.uniqueCode ?? "";
+          await page.getByPlaceholder("Free search").fill(excludedCode);
+          await expect(page.getByTestId(`search-result-${slug(excludedCode)}`)).toHaveCount(0);
         }
       });
     }

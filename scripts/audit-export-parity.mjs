@@ -47,41 +47,54 @@ function cashOutgoExportRows(rows) {
 
 function financeExportRows(summary) {
   const totals = summary.financeTotals ?? {};
+  const paymentInYearCapital = n(totals.paidCapital) + n(totals.advanceCapital);
+  const paymentInYearRevenue = n(totals.paidRevenue) + n(totals.advanceRevenue);
   return [
     ["1", "Allocated", formatCurrency(totals.allocatedCapital), formatCurrency(totals.allocatedRevenue), "Allocated amount"],
     ["2", "Intended", formatCurrency(totals.projectedCapital), formatCurrency(totals.projectedRevenue), "Against allocation"],
     ["3", "Booked", formatCurrency(totals.bookedCapital), formatCurrency(totals.bookedRevenue), "Against allocation"],
     ["4", "Committed", formatCurrency(totals.spentCapital), formatCurrency(totals.spentRevenue), "Against allocation"],
-    ["5", "Payment in 2026-27", formatCurrency(totals.paidCapital), formatCurrency(totals.paidRevenue), "Actual payment amount"],
-    ["6", "Paid", formatCurrency(totals.sameYearPaidCapital), formatCurrency(totals.sameYearPaidRevenue), "Payment made"],
-    ["7", "Advance Payment", formatCurrency(totals.advanceCapital), formatCurrency(totals.advanceRevenue), "Actual advance amount"],
     [
-      "8",
+      "5",
+      "Paid Till Date",
+      formatCurrency(totals.paidTillDateCapital),
+      formatCurrency(totals.paidTillDateRevenue),
+      "Cumulative paid amount, including final, stage, supplementary, and advance payments",
+    ],
+    [
+      "6",
+      "Payment in 2026-27",
+      formatCurrency(paymentInYearCapital),
+      formatCurrency(paymentInYearRevenue),
+      "Payment-date based amount, including final, stage, supplementary, and advance payments",
+    ],
+    [
+      "7",
       "Carry Forward from previous FYs as on 2026-27 end",
       formatCurrency(totals.previousCarryForward?.capital),
       formatCurrency(totals.previousCarryForward?.revenue),
-      `${n(totals.previousCarryForward?.count)} older carry-forward rows`,
+      `${n(totals.previousCarryForward?.count)} older liability/source-FY rows still unpaid at 2026-27 end`,
     ],
     [
-      "9",
+      "8",
       "Cleared Carry Forward in 2026-27",
       formatCurrency(totals.clearedCarryForward?.capital),
       formatCurrency(totals.clearedCarryForward?.revenue),
-      `${n(totals.clearedCarryForward?.count)} previous-year carry-forward rows`,
+      `${n(totals.clearedCarryForward?.count)} older liability/source-FY rows paid in 2026-27`,
     ],
     [
-      "10",
+      "9",
       "Carry Forward of 2026-27",
       formatCurrency(totals.carryForward?.capital),
       formatCurrency(totals.carryForward?.revenue),
-      `${n(totals.carryForward?.count)} payment rows`,
+      `${n(totals.carryForward?.count)} 2026-27 liability/source-FY rows unpaid by FY end`,
     ],
     [
-      "11",
+      "10",
       "Carry Forward of 2026-27 cleared later",
       formatCurrency(totals.futureClearedCarryForward?.capital),
       formatCurrency(totals.futureClearedCarryForward?.revenue),
-      `${n(totals.futureClearedCarryForward?.count)} 2026-27 carry-forward rows`,
+      `${n(totals.futureClearedCarryForward?.count)} 2026-27 liability/source-FY rows paid in later FYs`,
     ],
   ];
 }
@@ -231,12 +244,31 @@ async function main() {
       "Intended",
       "Booked",
       "Committed",
+      "Paid Till Date",
       "Payment in 2026-27",
-      "Paid",
-      "Advance Payment",
       "Carry Forward",
-      "previous FYs",
-      ...financeRows.flat().filter((value) => Boolean(value) && !String(value).startsWith("Carry Forward")),
+      "liability/source-FY",
+      ...financeRows.flat().filter(Boolean),
+      ...distributionRows.flat().filter(Boolean),
+    ];
+    const financePdfExpectedText = [
+      financePayload.title,
+      "S.No.",
+      "Category",
+      "Capital",
+      "Revenue",
+      "Notes",
+      "Firm Type Distribution - S.O. Value",
+      "Firm type",
+      "Value",
+      "Share",
+      "Allocated",
+      "Intended",
+      "Booked",
+      "Committed",
+      "Paid Till Date",
+      "Payment in 2026-27",
+      "Carry Forward",
       ...distributionRows.flat().filter(Boolean),
     ];
     const financeExcel = await exportTable("excel", financePayload, token);
@@ -248,7 +280,7 @@ async function main() {
       issues.push({ area: "finance pdf", issue: "unexpected content type", contentType: financePdf.contentType });
     }
     assertContains(issues, "finance excel", financeExcel.text, financeExpectedText);
-    assertContains(issues, "finance pdf", financePdf.text, financeExpectedText);
+    assertContains(issues, "finance pdf", financePdf.text, financePdfExpectedText);
   } finally {
     await fetch(`${API_BASE_URL}/api/auth/logout`, {
       method: "POST",

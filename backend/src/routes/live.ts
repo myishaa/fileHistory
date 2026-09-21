@@ -196,12 +196,25 @@ function getSelectedYearWhere(selectedYear: string, currentFinancialYear: string
     };
   }
 
+  const range = getFinancialYearDateRange(selectedYear);
+  if (!range) {
+    return {
+      whereSql: "",
+      values: [],
+    };
+  }
+  const startYear = Number(range.start.slice(0, 4));
   return {
     whereSql: `where f.year = $1 or exists (
         select 1 from file_year_activity a
         where a.file_id = f.id and a.financial_year = $1 and a.status = 'active'
+      ) or (
+        nullif(substring(coalesce(f.year, '') from '(19[0-9]{2}|20[0-9]{2})'), '')::integer <= ${startYear}
+        and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+        and not ${allSupplyOrdersCancelledExpression()}
+        and (not ${fileClosedExpression()} or f.file_closure_date >= $2::date)
       )`,
-    values: [selectedYear],
+    values: [selectedYear, range.start],
   };
 }
 

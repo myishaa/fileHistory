@@ -81,6 +81,7 @@ function MessagesPage() {
     view === "processing" ? filteredNotifications.length : filteredMessages.length;
   const totalPages = Math.max(1, Math.ceil(itemCount / pageSize));
   const safePage = Math.min(currentPage, totalPages);
+  const pageNumbers = getMessagePaginationPages(safePage, totalPages);
   const pageMessages = filteredMessages.slice((safePage - 1) * pageSize, safePage * pageSize);
   const pageNotifications = filteredNotifications.slice(
     (safePage - 1) * pageSize,
@@ -233,7 +234,15 @@ function MessagesPage() {
         <div className="text-sm text-muted-foreground">
           Page {safePage} of {totalPages}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => updateSearch({ page: 1 })}
+            disabled={safePage <= 1}
+            className="inline-flex h-9 items-center rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          >
+            First
+          </button>
           <button
             type="button"
             onClick={() => updateSearch({ page: Math.max(1, safePage - 1) })}
@@ -243,6 +252,21 @@ function MessagesPage() {
             <ChevronLeft className="size-4" />
             Previous
           </button>
+          {pageNumbers.map((pageNumber) => (
+            <button
+              key={pageNumber}
+              type="button"
+              onClick={() => updateSearch({ page: pageNumber })}
+              className={
+                "h-9 min-w-9 rounded-md border px-2 text-sm font-medium " +
+                (pageNumber === safePage
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card hover:bg-accent")
+              }
+            >
+              {pageNumber}
+            </button>
+          ))}
           <button
             type="button"
             onClick={() => updateSearch({ page: Math.min(totalPages, safePage + 1) })}
@@ -252,10 +276,27 @@ function MessagesPage() {
             Next
             <ChevronRight className="size-4" />
           </button>
+          <button
+            type="button"
+            onClick={() => updateSearch({ page: totalPages })}
+            disabled={safePage >= totalPages}
+            className="inline-flex h-9 items-center rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Last
+          </button>
         </div>
       </div>
     </div>
   );
+}
+
+function getMessagePaginationPages(currentPage: number, totalPages: number, maxVisible = 5) {
+  const visible = Math.max(1, Math.min(maxVisible, totalPages));
+  const half = Math.floor(visible / 2);
+  let startPage = Math.max(1, currentPage - half);
+  const endPage = Math.min(totalPages, startPage + visible - 1);
+  startPage = Math.max(1, endPage - visible + 1);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
 function FileProcessingNotificationRow({

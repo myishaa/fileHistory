@@ -296,10 +296,17 @@ function drawTableRow(
       `${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re S`,
     );
 
+    page.commands.push("q");
+    page.commands.push(
+      `${formatPdfNumber(x + 1)} ${formatPdfNumber(yBottom + 1)} ${formatPdfNumber(
+        Math.max(1, width - 2),
+      )} ${formatPdfNumber(Math.max(1, rowHeight - 2))} re W n`,
+    );
     wrappedCells[index].forEach((line, lineIndex) => {
       const textY = yTop - pdfCellPaddingY - pdfFontSize - lineIndex * pdfLineHeight;
       drawText(page, line, x + pdfCellPaddingX, textY, pdfFontSize);
     });
+    page.commands.push("Q");
     x += width;
   });
 
@@ -318,13 +325,7 @@ function drawDescriptionTable(
   if (page.y - headerHeight < pdfMargin) {
     page = addPage();
   }
-  drawTableRow(
-    page,
-    [["Export detail"], ["Selection / note"]],
-    columnWidths,
-    headerHeight,
-    true,
-  );
+  drawTableRow(page, [["Export detail"], ["Selection / note"]], columnWidths, headerHeight, true);
 
   rows.forEach((row) => {
     const wrappedCells = [
@@ -470,13 +471,19 @@ function getPdfColumnProfile(header: string, index: number): PdfColumnProfile {
   if (/(date|period|fy|year|dp|validity|expiry)/.test(normalized)) {
     return { min: 58, base: 68, max: 88, contentCap: 16 };
   }
-  if (/(amount|value|capital|revenue|cost|price|payment|paid|balance|allocation)/.test(normalized)) {
+  if (
+    /(amount|value|capital|revenue|cost|price|payment|paid|balance|allocation)/.test(normalized)
+  ) {
     return { min: 64, base: 78, max: 108, contentCap: 18 };
   }
   if (/(yes|no|count|qty|quantity|number|mode|type|category|status|flag)/.test(normalized)) {
     return { min: 46, base: 62, max: 92, contentCap: 18 };
   }
-  if (/(description|remark|remarks|details|address|scope|subject|title|item|milestone|firm|vendor|indentor|division|reference)/.test(normalized)) {
+  if (
+    /(description|remark|remarks|details|address|scope|subject|title|item|milestone|firm|vendor|indentor|division|reference)/.test(
+      normalized,
+    )
+  ) {
     return { min: 92, base: 132, max: 240, contentCap: 48 };
   }
   return { min: 58, base: 82, max: 150, contentCap: 28 };
@@ -490,18 +497,16 @@ function normalizeHeaderForWidth(header: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function estimateColumnContentWidth(
-  header: string,
-  values: string[],
-  profile: PdfColumnProfile,
-) {
+function estimateColumnContentWidth(header: string, values: string[], profile: PdfColumnProfile) {
   const samples = [header, ...values.slice(0, 80)].map(normalizeCell);
   const contentScore = samples.reduce((max, value) => {
-    const longestWord = value.split(/\s+/).reduce((longest, word) => Math.max(longest, word.length), 0);
+    const longestWord = value
+      .split(/\s+/)
+      .reduce((longest, word) => Math.max(longest, word.length), 0);
     const usefulLength = Math.min(value.length, profile.contentCap);
     return Math.max(max, Math.max(usefulLength * 0.72, longestWord));
   }, 0);
-  return pdfCellPaddingX * 2 + contentScore * pdfFontSize * 0.5;
+  return pdfCellPaddingX * 2 + contentScore * getPdfAverageCharacterWidth(pdfFontSize);
 }
 
 function fitColumnWidthsToPage(widths: number[], mins: number[], maxes: number[]) {
@@ -555,7 +560,9 @@ function growColumnWidths(widths: number[], maxes: number[], extra: number) {
 
 function normalizeWidthRounding(widths: number[]) {
   const rounded = widths.map((width) => Number(width.toFixed(2)));
-  const delta = Number((pdfContentWidth - rounded.reduce((sum, width) => sum + width, 0)).toFixed(2));
+  const delta = Number(
+    (pdfContentWidth - rounded.reduce((sum, width) => sum + width, 0)).toFixed(2),
+  );
   if (rounded.length) rounded[rounded.length - 1] += delta;
   return rounded;
 }
@@ -565,7 +572,14 @@ function clampNumber(value: number, min: number, max: number) {
 }
 
 function getMaxCharsForColumn(width: number) {
-  return Math.max(8, Math.floor((width - pdfCellPaddingX * 2) / (pdfFontSize * 0.48)));
+  return Math.max(
+    5,
+    Math.floor((width - pdfCellPaddingX * 2) / getPdfAverageCharacterWidth(pdfFontSize)),
+  );
+}
+
+function getPdfAverageCharacterWidth(fontSize: number) {
+  return fontSize * 0.62;
 }
 
 function normalizeCell(value: string) {
@@ -598,7 +612,10 @@ function renderDescriptionHtml(sections: ExportDescriptionSections) {
         <thead><tr><th>Export detail</th><th>Selection</th></tr></thead>
         <tbody>
           ${sections.details
-            .map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`)
+            .map(
+              (row) =>
+                `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`,
+            )
             .join("")}
         </tbody>
       </table>`
@@ -613,7 +630,9 @@ function renderDescriptionHtml(sections: ExportDescriptionSections) {
   return `${detailsHtml}${notesHtml}`;
 }
 
-function parseExportDescriptionSections(description: string | undefined): ExportDescriptionSections {
+function parseExportDescriptionSections(
+  description: string | undefined,
+): ExportDescriptionSections {
   const sections: ExportDescriptionSections = { details: [], notes: [] };
   splitExportDescription(description).forEach((line) => {
     const pair = parseExportDescriptionPair(line);
@@ -638,7 +657,7 @@ function parseExportDescriptionPair(line: string): { label: string; value: strin
 function isExportDetailLabel(label: string) {
   const normalized = label.trim().toLowerCase();
   return (
-    /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|filter|subfilter|value type|payment mode|stage|milestone|generated by|layout|files)$/.test(
+    /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|source|filter|filters|subfilter|value type|payment mode|stage|milestone|generated by|layout|files)$/.test(
       normalized,
     ) || /^(global|selected|active|from|to) /.test(normalized)
   );

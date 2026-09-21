@@ -80,6 +80,7 @@ export type FileSearchExportColumn = {
 export type FileSearchExportPayload = {
   format: ExportFormat;
   title: string;
+  description?: string;
   columns: FileSearchExportColumn[];
   query: Record<string, string>;
   layout?: FileSearchExportLayout;

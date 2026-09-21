@@ -129,6 +129,7 @@ export type FileRecord = {
   soCancelledDate?: string;
   shortclosure?: string;
   shortclosureDate?: string;
+  noFurtherAction?: string;
   bqFirms?: FirmDetail[];
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
@@ -298,6 +299,7 @@ export type SupplyOrderDetail = {
   soCancelledDate?: string;
   shortclosure?: string;
   shortclosureDate?: string;
+  noFurtherAction?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -449,6 +451,28 @@ export type DivisionSplitTransferPayload = {
   effectiveDate?: string;
   notes?: string;
   deactivateSourceDivision: boolean;
+};
+export type IndentorTransferScope = "active" | "financialYear" | "all";
+export type IndentorTransferPreviewFile = {
+  id: string;
+  uniqueCode?: string;
+  fileNo?: string;
+  title?: string;
+  division?: string;
+  year?: string;
+  fileClosureDate?: string;
+};
+export type IndentorTransferPreview = {
+  count: number;
+  files: IndentorTransferPreviewFile[];
+  sourceIndentor: Indentor;
+  targetIndentor: Indentor;
+};
+export type IndentorTransferResult = {
+  movedFileCount: number;
+  sourceIndentor: Indentor;
+  targetIndentor: Indentor;
+  archivedSourceIndentor: boolean;
 };
 export type AppUserRole =
   | "admin"
@@ -813,9 +837,7 @@ async function loadAll(force = false) {
               : defaultTableFieldPresets,
           }),
         );
-        const divisions = await request<{ divisions: Division[] }>(
-          divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
-        );
+        const divisions = await request<{ divisions: Division[] }>("/api/divisions/viewer-login-options");
         setState({
           files: [],
           messages: [],
@@ -951,6 +973,11 @@ export const store = {
         method: "POST",
         body: JSON.stringify({ label, select }),
       }),
+    );
+  },
+  getFinancialYearUsageCount(label: string) {
+    return request<{ count: number }>(
+      `/api/settings/financial-years/${encodeURIComponent(label)}/usage-count`,
     );
   },
   deleteFinancialYear(label: string) {
@@ -1401,6 +1428,32 @@ export const store = {
   deleteIndentor(id: string) {
     return request<{ archived: true; indentor: Indentor }>(`/api/indentors/${id}`, {
       method: "DELETE",
+    });
+  },
+  previewIndentorTransfer(payload: {
+    sourceIndentorId: string;
+    targetIndentorId: string;
+    scope: IndentorTransferScope;
+    financialYear?: string;
+  }) {
+    return request<{ preview: IndentorTransferPreview }>("/api/indentors/transfer/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  commitIndentorTransfer(payload: {
+    sourceIndentorId: string;
+    targetIndentorId: string;
+    scope: IndentorTransferScope;
+    financialYear?: string;
+    reason: string;
+    expectedCount: number;
+    confirmationText: string;
+    archiveSourceIndentor: boolean;
+  }) {
+    return request<{ transfer: IndentorTransferResult }>("/api/indentors/transfer", {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   },
   listArchivedIndentors() {
