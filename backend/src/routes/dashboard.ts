@@ -1470,6 +1470,7 @@ function getSuspectedAnomalyRows(
           rawContext,
         );
       }
+      addShortclosedPendingActivityAnomalies(file, rawOrder, rawContext, addIssue);
       if (isYes(rawOrder.dpExtension) && !hasFilledString(rawOrder.revisedDp)) {
         addIssue(
           "Delivery Period",
@@ -3647,6 +3648,94 @@ function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
   return isYes(order.shortclosure) && isYes(order.noFurtherAction);
 }
 
+function addShortclosedPendingActivityAnomalies(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  context: string,
+  addIssue: AddAnomalyIssue,
+) {
+  if (!isYes(order.shortclosure) || isYes(order.noFurtherAction) || isYes(order.soCancelled)) {
+    return;
+  }
+  const addPending = (activity: string, evidence: string) => {
+    addIssue(
+      "Shortclosure",
+      `S.O. is shortclosed but ${activity} is pending`,
+      "No further action",
+      "Yes after clearing pending activity",
+      "Pending activity",
+      evidence,
+      context,
+    );
+  };
+
+  if (isPhysicalDeliveryWorkflow(file) && !hasFilledString(order.materialReceiptDate)) {
+    addPending("material receipt", "Material receipt date is blank");
+  }
+  if (
+    isYes(file.ir) &&
+    hasFilledString(order.materialReceiptDate) &&
+    !hasFilledString(order.irPreparationDate)
+  ) {
+    addPending("IR preparation", "IR preparation date is blank");
+  }
+  if (
+    isYes(file.ir) &&
+    hasFilledString(order.irPreparationDate) &&
+    !hasFilledString(order.irReceiptDate)
+  ) {
+    addPending("IR receipt", "IR receipt date is blank");
+  }
+  if (isJobCompletionWorkflow(file) && !hasFilledString(order.jobCompletionDate)) {
+    addPending("job completion", "Job completion date is blank");
+  }
+  if (
+    !hasFilledString(order.paymentDate) &&
+    (hasPaymentDetailApartFromMode(order) ||
+      hasPaymentAmount(order) ||
+      isDeliveryOrJobCompletionDone(file, order))
+  ) {
+    addPending("payment", "Payment date is blank");
+  }
+  if (isDeliveryOrJobCompletionDone(file, order) && !hasFilledString(order.billPreparationDate)) {
+    addPending("bill preparation", "Bill preparation date is blank");
+  }
+  if (
+    hasFilledString(order.billPreparationDate) &&
+    !hasFilledString(order.billSentForPaymentDate)
+  ) {
+    addPending("bill submission", "Bill sent for payment date is blank");
+  }
+  if (hasPendingReturnedBillWorkflow(order.paymentDate, order.billReturnCycles)) {
+    addPending("returned bill correction", "Returned bill is not finally paid/resolved");
+  }
+  if (isYes(order.advancePayment) && !isAdvancePaymentWorkflowComplete(order)) {
+    addPending("advance payment", "Advance payment workflow is incomplete");
+  }
+  (order.stageDeliveries ?? []).forEach((stage, index) => {
+    if ((hasStagePaymentOrAmountFields(stage) || getOrderValue(stage) > 0) && !stage.paymentDate) {
+      addPending(`stage ${index + 1} payment`, `Stage ${index + 1} payment date is blank`);
+    }
+  });
+  getSupplementaryBills(order).forEach((bill, index) => {
+    if (hasSupplementaryBillDataLocal(bill) && !hasFilledString(bill.paymentDate)) {
+      addPending(
+        `supplementary bill ${index + 1} payment`,
+        `Supplementary bill ${index + 1} payment date is blank`,
+      );
+    }
+  });
+  if (hasFilledString(order.psbBgReceivedDate) && !hasFilledString(order.psbBgReturnDate)) {
+    addPending("PSB return", "PSB return date is blank");
+  }
+  if (hasFilledString(order.pwbBgReceivedDate) && !hasFilledString(order.pwbBgReturnDate)) {
+    addPending("PWB return", "PWB return date is blank");
+  }
+  if (hasFilledString(order.combinedBgReceivedDate) && !hasFilledString(order.combinedBgReturnDate)) {
+    addPending("combined BG return", "Combined BG return date is blank");
+  }
+}
+
 function addFileClosureChronologyAnomalies(file: FileRecord, addPair: AddAnomalyPair) {
   const closureDate = file.fileClosureDate;
   if (!isIsoDate(closureDate)) return;
@@ -5504,6 +5593,52 @@ function effectiveOrderPlacedExpression(alias = "eso") {
   return hasFilledExpression(`${alias}.so_date`);
 }
 
+function effectiveOrderValueCompleteExpression(alias = "eso") {
+  return `(case
+    when coalesce(${alias}.file_value_capital, 0) <> 0 then ${hasFilledExpression(
+      `${alias}.so_value_capital`,
+    )}
+    when coalesce(${alias}.file_value_revenue, 0) <> 0 then ${hasFilledExpression(
+      `${alias}.so_value_revenue`,
+    )}
+    else (${hasFilledExpression(`${alias}.so_value_capital`)} or ${hasFilledExpression(
+      `${alias}.so_value_revenue`,
+    )})
+  end)`;
+}
+
+function effectiveOrderTabCompleteExpression(alias = "eso") {
+  return `${hasFilledExpression(`${alias}.so_no`)}
+    and (${isNoExpression(`${alias}.file_gem`)} or ${hasFilledExpression(`${alias}.gem_so_no`)})
+    and ${hasFilledExpression(`${alias}.so_date`)}
+    and ${effectiveOrderValueCompleteExpression(alias)}
+    and ${hasFilledExpression(`${alias}.firm`)}
+    and ${hasFilledExpression(`${alias}.firm_type`)}
+    and (upper(trim(coalesce(${alias}.firm_type, ''))) <> 'OTHER' or ${hasFilledExpression(
+      `${alias}.firm_type_other`,
+    )})
+    and (${isYesExpression(`${alias}.stage_delivery`)} or ${isNoExpression(
+      `${alias}.stage_delivery`,
+    )})
+    and (
+      not ${isYesExpression(`${alias}.stage_delivery`)}
+      or (
+        ${hasFilledExpression(`${alias}.stage_delivery_count`)}
+        and (${isYesExpression(`${alias}.stage_payment`)} or ${isNoExpression(
+          `${alias}.stage_payment`,
+        )})
+      )
+    )
+    and (
+      not (${isYesExpression(`${alias}.stage_delivery`)} and ${isYesExpression(
+        `${alias}.stage_payment`,
+      )})
+      or (${isYesExpression(`${alias}.advance_payment`)} or ${isNoExpression(
+        `${alias}.advance_payment`,
+      )})
+    )`;
+}
+
 function effectiveOrderCurrentMilestoneExpression(milestone: string, alias = "eso") {
   return `${normalizeMilestoneExpression(`${alias}.current_milestone`)} = '${normalizeMilestoneName(
     milestone,
@@ -5567,7 +5702,7 @@ function effectiveOrderDeliveryPeriodOpenExpression(alias = "eso") {
 }
 
 function effectiveOrderPaymentOpenExpression(alias = "eso") {
-  return `${effectiveOrderPlacedExpression(alias)}
+  return `${effectiveOrderTabCompleteExpression(alias)}
     and not ${hasFilledExpression(`${alias}.payment_date`)}
     and not ${effectiveOrderCancelledExpression(alias)}
     and not ${effectiveOrderNoFurtherActionExpression(alias)}`;
@@ -6229,6 +6364,13 @@ function financialSanctionPendingExpression(orderAlias = "eso") {
   return `${financialSanctionReachedExpression()}
     and not ${effectiveOrderCancelledExpression(orderAlias)}
     and not ${hasFilledExpression(`${orderAlias}.financial_sanction_date`)}`;
+}
+
+function effectiveOrderFinancialSanctionPendingExpression(alias = "eso") {
+  return `not ${effectiveOrderCancelledExpression(alias)}
+    and not ${hasFilledExpression(`${alias}.financial_sanction_date`)}
+    and (${alias}.file_financial_sanction_reached
+      or ${effectiveOrderCurrentMilestoneExpression("Financial Sanction", alias)})`;
 }
 
 async function loadFinanceTotals({
@@ -8653,7 +8795,7 @@ async function loadStatusCounts({
   activeDivision: string;
 }): Promise<StatusCounts> {
   const queryValues = [...values];
-  const extraConditions: string[] = [];
+  const extraConditions: string[] = [`not ${isYesExpression("f.demand_cancelled")}`];
   if (activeDivision !== "all") {
     const placeholder = addValue(queryValues, activeDivision.toLowerCase());
     extraConditions.push(`lower(coalesce(d.name, '')) = ${placeholder}::text`);
@@ -8788,6 +8930,9 @@ async function loadStatusCounts({
 	       select
 	         f.id as file_id,
            f.file_type,
+           f.gem as file_gem,
+           f.value_capital as file_value_capital,
+           f.value_revenue as file_value_revenue,
 	         f.bg as file_bg,
 	         f.ir as file_ir,
          f.psb,
@@ -8797,7 +8942,14 @@ async function loadStatusCounts({
 	         so.current_milestone,
 	         so.completed_milestones,
 	         so.financial_sanction_date,
+         so.so_no,
+         so.gem_so_no,
 		         so.so_date,
+         so.so_value_capital,
+         so.so_value_revenue,
+         so.firm,
+         so.firm_type,
+         so.firm_type_other,
          so.dp_date,
          so.revised_dp,
 	         so.material_receipt_date,
@@ -8819,6 +8971,9 @@ async function loadStatusCounts({
          so.warranty_period_date,
          so.ld,
          so.stage_delivery,
+         so.stage_delivery_count,
+         so.stage_payment,
+         so.advance_payment,
          so.stage_deliveries,
          so.demand_cancelled,
          so.so_cancelled,
@@ -8832,16 +8987,26 @@ async function loadStatusCounts({
 	       select
 	         f.id as file_id,
            f.file_type,
+           f.gem as file_gem,
+           f.value_capital as file_value_capital,
+           f.value_revenue as file_value_revenue,
 	         f.bg as file_bg,
 	         f.ir as file_ir,
          f.psb,
 	         f.demand_cancelled as file_demand_cancelled,
 	         f.so_cancelled as file_so_cancelled,
          ${financialSanctionReachedExpression()} as file_financial_sanction_reached,
-	         'Supply Order'::text as current_milestone,
+	         ''::text as current_milestone,
 	         '[]'::jsonb as completed_milestones,
 	         null::date as financial_sanction_date,
+         null::text as so_no,
+         null::text as gem_so_no,
 		         null::date as so_date,
+         null::numeric as so_value_capital,
+         null::numeric as so_value_revenue,
+         null::text as firm,
+         null::text as firm_type,
+         null::text as firm_type_other,
          null::date as dp_date,
          null::date as revised_dp,
 	         null::date as material_receipt_date,
@@ -8863,6 +9028,9 @@ async function loadStatusCounts({
          null::date as warranty_period_date,
          null::text as ld,
          null::text as stage_delivery,
+         null::integer as stage_delivery_count,
+         null::text as stage_payment,
+         null::text as advance_payment,
          '[]'::jsonb as stage_deliveries,
          f.demand_cancelled,
          'No'::text as so_cancelled,
@@ -8910,9 +9078,7 @@ async function loadStatusCounts({
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
 	       ${effectiveOrderCountFilter(effectiveOrderPlacedExpression())} as order_supply_order_placed,
 	       ${effectiveOrderCountFilter(
-           `eso.file_financial_sanction_reached
-            and not ${effectiveOrderCancelledExpression()}
-            and not ${hasFilledExpression("eso.financial_sanction_date")}`,
+           effectiveOrderFinancialSanctionPendingExpression(),
          )} as order_financial_sanction_pending,
 	       ${effectiveOrderCountFilter(
            `not ${effectiveOrderCancelledExpression()} and ${hasFilledExpression(
@@ -8921,9 +9087,14 @@ async function loadStatusCounts({
          )} as order_financial_sanction_completed,
        ${countFilter(financialSanctionPreviousStageExpression())} as order_financial_sanction_previous_stage,
 	       ${effectiveOrderCountFilter(
-           `not ${effectiveOrderCancelledExpression()} and ${effectiveOrderCurrentMilestoneExpression(
+           `(not ${effectiveOrderCancelledExpression()} and ${effectiveOrderCurrentMilestoneExpression(
              "Supply Order",
-           )}`,
+           )}
+            and not ${isYesExpression("eso.shortclosure")}
+            or (not ${effectiveOrderCancelledExpression()}
+              and not ${isYesExpression("eso.shortclosure")}
+              and ${hasFilledExpression("eso.financial_sanction_date")}
+              and not ${effectiveOrderPlacedExpression()}))`,
          )} as order_supply_order_pending,
        ${effectiveOrderCountFilter(effectiveOrderPaymentOpenExpression())} as live_supply_orders,
        (
@@ -9312,10 +9483,40 @@ function mergeStatusCountsIntoFlow<T extends Array<Record<string, unknown>>>(
 
 function warnIfStatusCountsDiffer(reference: StatusCounts, candidate: StatusCounts) {
   if (stableJson(reference) === stableJson(candidate)) return;
-  console.warn("Dashboard SQL status counts differ from TypeScript summary.", {
-    reference,
-    candidate,
+  console.warn(
+    "Dashboard SQL status counts differ from TypeScript summary.",
+    getStatusCountDiffRows(reference, candidate),
+  );
+}
+
+function getStatusCountDiffRows(reference: StatusCounts, candidate: StatusCounts) {
+  const rows: Array<{ key: string; typescript: number; sql: number }> = [];
+  const addDiff = (key: string, typescript: unknown, sql: unknown) => {
+    const left = Number(typescript ?? 0);
+    const right = Number(sql ?? 0);
+    if (left !== right) rows.push({ key, typescript: left, sql: right });
+  };
+  const referenceMilestones = new Map(reference.milestoneRows.map((row) => [row.key, row]));
+  const candidateMilestones = new Map(candidate.milestoneRows.map((row) => [row.key, row]));
+  const milestoneKeys = new Set([...referenceMilestones.keys(), ...candidateMilestones.keys()]);
+  milestoneKeys.forEach((milestoneKey) => {
+    const left = referenceMilestones.get(milestoneKey) ?? { key: milestoneKey };
+    const right = candidateMilestones.get(milestoneKey) ?? { key: milestoneKey };
+    const fieldKeys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    fieldKeys.forEach((fieldKey) => {
+      if (fieldKey === "key") return;
+      addDiff(
+        `${milestoneKey}.${fieldKey}`,
+        left[fieldKey as keyof typeof left],
+        right[fieldKey as keyof typeof right],
+      );
+    });
   });
+  (Object.keys(reference) as Array<keyof StatusCounts>).forEach((key) => {
+    if (key === "milestoneRows") return;
+    addDiff(String(key), reference[key], candidate[key]);
+  });
+  return rows;
 }
 
 function getStatusMilestonePresentation(key: string) {
@@ -10284,10 +10485,8 @@ dashboardRouter.get(
           normalizedSummary.miscellaneousCounts,
           sqlMiscellaneousCounts,
         );
-        warnIfStatusCountsDiffer(
-          getStatusCountsFromFlow(normalizedSummary.statusFlow),
-          sqlStatusCounts,
-        );
+        const referenceStatusCounts = getStatusCountsFromFlow(normalizedSummary.statusFlow);
+        warnIfStatusCountsDiffer(referenceStatusCounts, sqlStatusCounts);
         warnIfAnalyticsSqlSliceDiffers(
           "dashboard",
           getAnalyticsSqlSlice(normalizedSummary.analytics),

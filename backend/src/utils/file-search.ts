@@ -1944,7 +1944,7 @@ function isLiveSupplyOrder(file: FileRecord) {
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
       !isSupplyOrderCancelled(file, order) &&
-      !isYes(order.shortclosure),
+      !isShortclosureNoFurtherAction(order),
   );
 }
 

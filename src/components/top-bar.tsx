@@ -16,7 +16,7 @@ import {
   Bell,
 } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   store,
   useActiveUser,
@@ -59,6 +59,7 @@ export function TopBar() {
   const fileProcessingNotifications = useFileProcessingNotifications();
   const activeUser = useActiveUser();
   const [anomalyWarningCount, setAnomalyWarningCount] = useState(0);
+  const [anomalyWarningError, setAnomalyWarningError] = useState(false);
   const [ipAccessWarningCount, setIpAccessWarningCount] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [filterGuideOpen, setFilterGuideOpen] = useState(false);
@@ -119,11 +120,32 @@ export function TopBar() {
   const fileProcessingWarningCount = isViewer
     ? fileProcessingNotifications.filter((notification) => notification.status === "pending").length
     : 0;
-  const bellCount = messageWarningCount + anomalyWarningCount + fileProcessingWarningCount;
+  const displayedAnomalyWarningCount =
+    anomalyWarningError && anomalyWarningCount === 0 ? 1 : anomalyWarningCount;
+  const bellCount = messageWarningCount + displayedAnomalyWarningCount + fileProcessingWarningCount;
   const adminBellCount = bellCount + ipAccessWarningCount;
+  const refreshAnomalyWarningCount = useCallback(() => {
+    if (!activeUser) {
+      setAnomalyWarningCount(0);
+      setAnomalyWarningError(false);
+      return;
+    }
+    const selectedYear = settings.selectedYear || settings.financialYear;
+    void store
+      .countSuspectedAnomalies(selectedYear)
+      .then((count) => {
+        setAnomalyWarningCount(count);
+        setAnomalyWarningError(false);
+      })
+      .catch((error) => {
+        console.error(error);
+        setAnomalyWarningError(true);
+      });
+  }, [activeUser, settings.financialYear, settings.selectedYear]);
   useEffect(() => {
     if (!activeUser) {
       setAnomalyWarningCount(0);
+      setAnomalyWarningError(false);
       return;
     }
     let cancelled = false;
@@ -132,11 +154,14 @@ export function TopBar() {
       void store
         .countSuspectedAnomalies(selectedYear)
         .then((count) => {
-          if (!cancelled) setAnomalyWarningCount(count);
+          if (!cancelled) {
+            setAnomalyWarningCount(count);
+            setAnomalyWarningError(false);
+          }
         })
         .catch((error) => {
           console.error(error);
-          if (!cancelled) setAnomalyWarningCount(0);
+          if (!cancelled) setAnomalyWarningError(true);
         });
     };
     loadAnomalyCount();
@@ -281,7 +306,12 @@ export function TopBar() {
           <div className="relative">
             <button
               type="button"
-              onClick={() => setWarningsOpen((open) => !open)}
+              onClick={() => {
+                setWarningsOpen((open) => {
+                  if (!open) refreshAnomalyWarningCount();
+                  return !open;
+                });
+              }}
               title="Warnings"
               aria-label="Warnings"
               aria-expanded={warningsOpen}
@@ -342,11 +372,15 @@ export function TopBar() {
                     <span>
                       <span className="block text-sm font-medium">Suspected anomaly observed</span>
                       <span className="block text-xs text-muted-foreground">
-                        Open suspected anomaly
+                        {anomalyWarningError
+                          ? "Could not refresh anomaly count"
+                          : "Open suspected anomaly"}
                       </span>
                     </span>
                     <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
-                      {anomalyWarningCount}
+                      {anomalyWarningError && anomalyWarningCount === 0
+                        ? "!"
+                        : anomalyWarningCount}
                     </span>
                   </button>
                   <button

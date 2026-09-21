@@ -16643,7 +16643,7 @@ function countLiveSupplyOrders(files: FileRecord[]) {
           isSupplyOrderTabComplete(file, order) &&
           !hasFilledString(order.paymentDate) &&
           !isSupplyOrderCancelled(file, order) &&
-          !isYes(order.shortclosure),
+          !isShortclosureNoFurtherAction(order),
       ).length,
     0,
   );
@@ -16976,7 +16976,7 @@ function isLiveSupplyOrder(file: FileRecord) {
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
       !isSupplyOrderCancelled(file, order) &&
-      !isYes(order.shortclosure),
+      !isShortclosureNoFurtherAction(order),
   );
 }
 

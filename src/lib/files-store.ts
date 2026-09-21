@@ -1099,6 +1099,7 @@ export const store = {
     const params = new URLSearchParams({ selectedYear });
     const payload = await request<{ rows: Array<{ signature: string }> }>(
       `/api/dashboard/suspected-anomalies?${params.toString()}`,
+      { cache: "no-store" },
     );
     return payload.rows.length;
   },

@@ -3226,7 +3226,7 @@ function liveSupplyOrderSql() {
     `${supplyOrderTabCompleteSql("so")}
      and not ${hasTextSql("so.payment_date")}
      and not ${isYesSql("so.so_cancelled")}
-     and not ${isYesSql("so.shortclosure")}`,
+     and not (${isYesSql("so.shortclosure")} and ${isYesSql("so.no_further_action")})`,
     `${hasTextSql("f.so_date")}
      and not ${hasTextSql("f.payment_date")}
      and not (${isYesSql("f.demand_cancelled")} or ${isYesSql("f.so_cancelled")})`,
