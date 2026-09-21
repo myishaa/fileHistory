@@ -16867,6 +16867,10 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
                 isBiddingInProgressFile(file) && !isFileTenderLive(file) && !isBidOverdue(file),
             ).length
           : undefined,
+      completed:
+        milestone.key === "delivery" ? countDeliveryCompletedOrders(files) : undefined,
+      due: milestone.key === "delivery" ? countDeliveryPendingOrders(files) : undefined,
+      overdue: milestone.key === "delivery" ? countDeliveryOverdueOrders(files) : undefined,
     };
   });
   const supplyOrderIndex = flow.findIndex((milestone) => milestone.key === "supplyOrder");

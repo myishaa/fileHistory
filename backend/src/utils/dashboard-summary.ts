@@ -1915,6 +1915,10 @@ function getMilestoneFlow(files: FileRecord[]) {
                 !isBidOverdue(file),
             ).length
           : undefined,
+      completed:
+        milestone.key === "delivery" ? countDeliveryCompletedOrders(files) : undefined,
+      due: milestone.key === "delivery" ? countDeliveryPendingOrders(files) : undefined,
+      overdue: milestone.key === "delivery" ? countDeliveryOverdueOrders(files) : undefined,
     };
   });
   const preBidMeeting = {

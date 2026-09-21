@@ -5751,7 +5751,7 @@ function effectiveOrderJobCompletionLiveExpression(alias = "eso") {
 function effectiveOrderJobCompletionCompletedExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and ${effectiveOrderJobCompletionWorkflowExpression(alias)}
-    and ${effectiveOrderCompletedMilestoneExpression("Job Completion", alias)}
+    and ${hasFilledExpression(`${alias}.job_completion_date`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
@@ -5814,12 +5814,15 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
     or (not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}))`;
   return `(select
       f.file_type,
+      f.file_type_group,
       f.ir as file_ir,
       f.demand_cancelled as file_demand_cancelled,
       ${paymentApplicable} as payment_applicable,
       so.so_cancelled,
       so.shortclosure,
       so.no_further_action,
+      so.so_date,
+      coalesce(nullif(stage_row.stage ->> 'deliveryPeriodStartDate', '')::date, so.so_date) as delivery_period_start_date,
       coalesce(nullif(stage_row.stage ->> 'dpDate', '')::date, so.dp_date) as dp_date,
       coalesce(nullif(stage_row.stage ->> 'revisedDp', '')::date, so.revised_dp) as revised_dp,
       case
@@ -5830,6 +5833,14 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
         when stage_row.stage is not null then nullif(stage_row.stage ->> 'jobCompletionDate', '')::date
         else so.job_completion_date
       end as job_completion_date,
+      case
+        when stage_row.stage is not null then nullif(stage_row.stage ->> 'irPreparationDate', '')::date
+        else so.ir_preparation_date
+      end as ir_preparation_date,
+      case
+        when stage_row.stage is not null then nullif(stage_row.stage ->> 'irReceiptDate', '')::date
+        else so.ir_receipt_date
+      end as ir_receipt_date,
       case
         when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
           then nullif(stage_row.stage ->> 'billPreparationDate', '')::date
@@ -5889,19 +5900,42 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
 	    ${appendDashboardWhereClause(whereSql, extraConditions)})`;
 }
 
+function paymentRowContractExpression(alias = "payment_row") {
+  const defaultGroup = `case
+    when lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m') then 'contract'
+    else 'goodsservices'
+  end`;
+  return `lower(trim(coalesce(nullif(${alias}.file_type_group, ''), ${defaultGroup}))) = 'contract'`;
+}
+
+function paymentRowPhysicalDeliveryWorkflowExpression(alias = "payment_row") {
+  return `not ${isNoExpression(`${alias}.file_ir`)}
+    and not (${paymentRowContractExpression(alias)})`;
+}
+
 function paymentRowReadyExpression(alias = "payment_row") {
   return `(
     ${hasFilledExpression(`${alias}.bill_preparation_date`)}
     or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
-	    or (
-	      (not ${isYesExpression(`${alias}.file_ir`)}
-	        or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
-      and ${hasFilledExpression(`${alias}.job_completion_date`)}
-	    )
     or (
-	      ${isYesExpression(`${alias}.file_ir`)}
-	      and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+	      ${paymentRowPhysicalDeliveryWorkflowExpression(alias)}
 	      and ${hasFilledExpression(`${alias}.material_receipt_date`)}
+    )
+    or (
+      not (${paymentRowPhysicalDeliveryWorkflowExpression(alias)})
+      and ${isYesExpression(`${alias}.shortclosure`)}
+      and ${hasFilledExpression(`${alias}.job_completion_date`)}
+    )
+    or (
+      not (${paymentRowPhysicalDeliveryWorkflowExpression(alias)})
+      and not (${paymentRowContractExpression(alias)})
+      and ${isNoExpression(`${alias}.file_ir`)}
+      and ${hasFilledExpression(`${alias}.job_completion_date`)}
+    )
+    or (
+      ${paymentRowContractExpression(alias)}
+      and not ${isYesExpression(`${alias}.shortclosure`)}
+      and ${effectiveOrderDpDateExpression(alias)} is not null
     )
   )`;
 }
@@ -9169,15 +9203,44 @@ async function loadStatusCounts({
        ${effectiveOrderCountFilter(effectiveOrderDeliveryCompletedExpression())} as delivery_completed,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryPendingExpression())} as delivery_due,
        ${effectiveOrderCountFilter(effectiveOrderDeliveryOverdueExpression())} as delivery_overdue,
-       ${effectiveOrderCountFilter(effectiveOrderJobCompletionCompletedExpression())} as job_completion_completed,
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${hasFilledExpression("payment_row.so_date")}
+           and not (${paymentRowPhysicalDeliveryWorkflowExpression("payment_row")})
+           and ${hasFilledExpression("payment_row.job_completion_date")}
+           and not ${effectiveOrderCancelledExpression("payment_row")}
+       ) as job_completion_completed,
        ${effectiveOrderCountFilter(effectiveOrderJobCompletionLiveExpression())} as job_completion_live,
        ${effectiveOrderCountFilter(effectiveOrderJobCompletionPeriodOverExpression())} as job_completion_period_over,
 	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodValidExpression())} as delivery_period_valid,
-	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExpiredExpression())} as delivery_period_expired,
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${hasFilledExpression("payment_row.so_date")}
+           and ${effectiveOrderDpDateExpression("payment_row")} is not null
+           and ${effectiveOrderDpDateExpression("payment_row")} < current_date
+           and payment_row.delivery_period_start_date <= current_date
+           and not ${effectiveOrderCancelledExpression("payment_row")}
+           and not ${isYesExpression("payment_row.shortclosure")}
+           and (
+             (not (${paymentRowPhysicalDeliveryWorkflowExpression("payment_row")})
+               and not ${hasFilledExpression("payment_row.job_completion_date")})
+             or (${paymentRowPhysicalDeliveryWorkflowExpression("payment_row")}
+               and not ${hasFilledExpression("payment_row.material_receipt_date")})
+           )
+       ) as delivery_period_expired,
 	       ${effectiveOrderCountFilter(effectiveOrderDeliveryPeriodExtendedExpression())} as delivery_period_extended,
 	       ${effectiveOrderCountFilter(effectiveOrderIrPreparationPendingExpression())} as ir_preparation_pending,
 	       ${effectiveOrderCountFilter(effectiveOrderIrReceiptPendingExpression())} as ir_receipt_pending,
-	       ${effectiveOrderCountFilter(effectiveOrderIrCompletedExpression())} as ir_completed
+       (
+         select count(*)::integer
+         from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
+         where ${hasFilledExpression("payment_row.so_date")}
+           and ${paymentRowPhysicalDeliveryWorkflowExpression("payment_row")}
+           and ${hasFilledExpression("payment_row.ir_receipt_date")}
+           and not ${effectiveOrderCancelledExpression("payment_row")}
+       ) as ir_completed
      from files f
      left join divisions d on d.id = f.division_id
      ${statusWhereSql}`,
@@ -9351,6 +9414,13 @@ function getStatusCountsFromFlow(statusFlow: Array<Record<string, unknown>>): St
           supplementaryReturnedPaid: readCount(row, "supplementaryReturnedPaid"),
         };
       }
+      if (isBgStatusKey(milestone.key)) {
+        return {
+          ...base,
+          bgExpired: readCount(row, "bgExpired"),
+          bgToBeReturned: readCount(row, "bgToBeReturned"),
+        };
+      }
       return base;
     }),
     liveBids: readCount(bidding, "liveBids"),
@@ -9491,6 +9561,7 @@ function warnIfStatusCountsDiffer(reference: StatusCounts, candidate: StatusCoun
 
 function getStatusCountDiffRows(reference: StatusCounts, candidate: StatusCounts) {
   const rows: Array<{ key: string; typescript: number; sql: number }> = [];
+  const comparisonOnlyFields = new Set(["deliveryCompleted", "deliveryDue", "deliveryOverdue"]);
   const addDiff = (key: string, typescript: unknown, sql: unknown) => {
     const left = Number(typescript ?? 0);
     const right = Number(sql ?? 0);
@@ -9514,6 +9585,7 @@ function getStatusCountDiffRows(reference: StatusCounts, candidate: StatusCounts
   });
   (Object.keys(reference) as Array<keyof StatusCounts>).forEach((key) => {
     if (key === "milestoneRows") return;
+    if (comparisonOnlyFields.has(String(key))) return;
     addDiff(String(key), reference[key], candidate[key]);
   });
   return rows;
