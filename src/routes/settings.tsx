@@ -67,6 +67,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { YearSetupPanel } from "@/routes/year-setup";
+import { HelperContent } from "@/components/helper-content";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
   displayFinancialYearLabel,
@@ -479,7 +481,7 @@ const settingsControlHelpers = {
     "Permanent deletion from this bin needs the configured deletion password.",
   ],
   anomalyWorkflow: [
-    "Current shows active suspected issues.",
+    "Current shows active suspected issues, including rejected or revoked items if the data issue still exists.",
     "Received request shows user acceptance requests waiting for Admin.",
     "Accepted, rejected, and revoked tabs show decision history.",
   ],
@@ -562,6 +564,12 @@ function humanizeSettingsAnomalyLabel(value?: string) {
   if (value === "fileclosedbutbgreturnpendingexists") {
     return "File is closed but BG return is still pending";
   }
+  if (
+    value ===
+    "stagedeliveryperiodsoverlapacceptableifstagesruninparallelacceptthisanomalyforthisfileifintentional"
+  ) {
+    return "Stage delivery periods overlap";
+  }
   return value
     .replace(/fileclosed/g, "File closed ")
     .replace(/bgreturn/g, " BG return ")
@@ -578,23 +586,6 @@ function humanizeSettingsAnomalyLabel(value?: string) {
     .replace(/\s+/g, " ")
     .trim();
 }
-
-type AnomalyRuleRow = {
-  id: string;
-  name: string;
-  description: string;
-  ruleType: string;
-  fieldA: string;
-  operator: string;
-  fieldB?: string;
-  fixedValue?: string;
-  thresholdDays?: number;
-  severity: string;
-  scope: string;
-  enabled: boolean;
-};
-
-type AnomalyRuleField = { key: string; label: string; scope: string };
 
 function canViewAdminSettings(role: AppUserRole | undefined) {
   return role === "admin" || role === "sub_admin" || role === "universal_viewer";
@@ -1087,13 +1078,9 @@ function SettingsHelper({ items, label }: { items: string[]; label: string }) {
         <TooltipContent
           side="right"
           align="start"
-          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
-          <ul className="list-disc space-y-1 pl-4">
-            {bullets.map((item, index) => (
-              <li key={`${item}-${index}`}>{item}</li>
-            ))}
-          </ul>
+          <HelperContent lines={bullets} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -2834,8 +2821,6 @@ function formatIndianIntegerInput(integerPart: string) {
 function AnomalyGovernanceSettings() {
   const [acceptances, setAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
   const [activeAnomalies, setActiveAnomalies] = useState<SuspectedAnomalyRow[]>([]);
-  const [rules, setRules] = useState<AnomalyRuleRow[]>([]);
-  const [fields, setFields] = useState<AnomalyRuleField[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [workflowTab, setWorkflowTab] = useState<
@@ -2848,14 +2833,11 @@ function AnomalyGovernanceSettings() {
     setLoading(true);
     setMessage("");
     try {
-      const [acceptancePayload, rulePayload, anomalyPayload] = await Promise.all([
+      const [acceptancePayload, anomalyPayload] = await Promise.all([
         store.listSuspectedAnomalyAcceptances(),
-        store.listAnomalyRules(),
         store.listSuspectedAnomalies(settings.selectedYear),
       ]);
       setAcceptances(acceptancePayload.acceptances);
-      setRules(rulePayload.rules);
-      setFields(rulePayload.fields);
       setActiveAnomalies(anomalyPayload.rows);
     } catch (error) {
       console.error(error);
@@ -2869,8 +2851,6 @@ function AnomalyGovernanceSettings() {
     void load();
   }, [settings.selectedYear]);
 
-  const fieldLabel = (key?: string) =>
-    fields.find((field) => field.key === key)?.label ?? key ?? "";
   const anomalySummary = (row: AnomalyAcceptanceRow) => ({
     title: row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception",
     detail:
@@ -2885,6 +2865,8 @@ function AnomalyGovernanceSettings() {
       .split("_")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(" ");
+  const formatScope = (scope: string | undefined) =>
+    scope === "universal" ? "Universal" : "File";
 
   const review = async (signature: string, action: string) => {
     const adminMessage =
@@ -2915,22 +2897,7 @@ function AnomalyGovernanceSettings() {
     }
   };
 
-  const toggleRule = async (rule: AnomalyRuleRow) => {
-    try {
-      await store.updateAnomalyRule(rule.id, { enabled: !rule.enabled });
-      await load();
-    } catch (error) {
-      console.error(error);
-      setMessage(error instanceof Error ? error.message : "Could not update anomaly rule.");
-    }
-  };
-
-  const currentAnomalies = activeAnomalies.filter(
-    (row) =>
-      row.requestStatus !== "pending" &&
-      row.requestStatus !== "rejected" &&
-      row.requestStatus !== "revoked",
-  );
+  const currentAnomalies = activeAnomalies.filter((row) => row.requestStatus !== "pending");
   const sentAnomalies = activeAnomalies.filter((row) => row.requestStatus === "pending");
   const fileAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_file");
   const universalAcceptedAnomalies = acceptances.filter(
@@ -2962,22 +2929,6 @@ function AnomalyGovernanceSettings() {
   ];
   const canClearDecisionRows = workflowTab === "rejected" || workflowTab === "revoked";
   const selectedDecisionSet = new Set(selectedDecisionSignatures);
-  const toggleDecisionSignature = (signature: string) => {
-    setSelectedDecisionSignatures((current) =>
-      current.includes(signature)
-        ? current.filter((item) => item !== signature)
-        : [...current, signature],
-    );
-  };
-  useEffect(() => {
-    setSelectedDecisionSignatures([]);
-  }, [workflowTab]);
-  const decisionSignatureKey = decisionAnomalies.map((row) => row.signature).join("|");
-  useEffect(() => {
-    setSelectedDecisionSignatures((current) =>
-      current.filter((signature) => decisionAnomalies.some((row) => row.signature === signature)),
-    );
-  }, [decisionSignatureKey]);
   const groupActive = (rows: SuspectedAnomalyRow[]) => {
     const groups = new Map<string, SuspectedAnomalyRow[]>();
     rows.forEach((row) => {
@@ -2994,12 +2945,40 @@ function AnomalyGovernanceSettings() {
     });
     return Array.from(groups.entries()).map(([title, items]) => ({ title, items }));
   };
+  const currentGroups = groupActive(currentAnomalies);
+  const sentGroups = groupActive(sentAnomalies);
+  const decisionGroups = groupHistory(decisionAnomalies);
+  const currentRowNumberBySignature = new Map(
+    currentGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
+  const sentRowNumberBySignature = new Map(
+    sentGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
+  const decisionRowNumberBySignature = new Map(
+    decisionGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
+  const toggleDecisionSignature = (signature: string) => {
+    setSelectedDecisionSignatures((current) =>
+      current.includes(signature)
+        ? current.filter((item) => item !== signature)
+        : [...current, signature],
+    );
+  };
+  useEffect(() => {
+    setSelectedDecisionSignatures([]);
+  }, [workflowTab]);
+  const decisionSignatureKey = decisionAnomalies.map((row) => row.signature).join("|");
+  useEffect(() => {
+    setSelectedDecisionSignatures((current) =>
+      current.filter((signature) => decisionAnomalies.some((row) => row.signature === signature)),
+    );
+  }, [decisionSignatureKey]);
   const renderActiveAnomalyGroups = (rows: SuspectedAnomalyRow[]) => {
     if (!rows.length)
       return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
     return (
       <div className="space-y-3">
-        {groupActive(rows).map((group) => (
+        {(workflowTab === "sent" ? sentGroups : currentGroups).map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-3 py-2">
               <h4 className="text-sm font-semibold">{group.title}</h4>
@@ -3009,8 +2988,13 @@ function AnomalyGovernanceSettings() {
               {group.items.map((row) => (
                 <div
                   key={row.signature}
-                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.6fr]"
+                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[3rem_1.2fr_2fr_1.6fr]"
                 >
+                  <div className="font-semibold text-muted-foreground">
+                    {workflowTab === "sent"
+                      ? sentRowNumberBySignature.get(row.signature)
+                      : currentRowNumberBySignature.get(row.signature)}
+                  </div>
                   <div>
                     <span className="font-semibold">{row.fileRef}</span>
                     <span className="mt-1 block text-muted-foreground">{row.division || "-"}</span>
@@ -3090,7 +3074,7 @@ function AnomalyGovernanceSettings() {
       return <p className="text-xs text-muted-foreground">No anomalies in this tab.</p>;
     return (
       <div className="space-y-3">
-        {groupHistory(decisionAnomalies).map((group) => (
+        {decisionGroups.map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-3 py-2">
               <h4 className="text-sm font-semibold">{group.title}</h4>
@@ -3102,8 +3086,11 @@ function AnomalyGovernanceSettings() {
                 return (
                   <div
                     key={row.signature}
-                    className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr_1fr]"
+                    className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[3rem_1.1fr_2fr_1fr_1fr]"
                   >
+                    <div className="font-semibold text-muted-foreground">
+                      {decisionRowNumberBySignature.get(row.signature)}
+                    </div>
                     <div className="flex items-start gap-2">
                       {canClearDecisionRows ? (
                         <input
@@ -3131,11 +3118,12 @@ function AnomalyGovernanceSettings() {
                         </div>
                       ) : null}
                     </div>
-                    <div>
-                      <div className="font-medium">{formatStatus(row.status)}</div>
-                      <div className="text-muted-foreground">
-                        {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
-                      </div>
+	                    <div>
+	                      <div className="font-medium">{formatStatus(row.status)}</div>
+	                      <div className="text-muted-foreground">{formatScope(row.scope)} decision</div>
+	                      <div className="text-muted-foreground">
+	                        {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
+	                      </div>
                       <div className="text-muted-foreground">
                         {(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}
                       </div>
@@ -3185,8 +3173,7 @@ function AnomalyGovernanceSettings() {
       <div>
         <h2 className="mb-1 text-sm font-semibold">Anomaly Control</h2>
         <p className="text-sm text-muted-foreground">
-          Review user acceptance requests, approve file-specific or universal exceptions, and review
-          existing custom anomaly rules.
+          Review user acceptance requests and approve file-specific or universal exceptions.
         </p>
       </div>
       {message ? (
@@ -3253,64 +3240,6 @@ function AnomalyGovernanceSettings() {
             : renderHistoryGroups()}
       </section>
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
-        </div>
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="min-w-full text-left text-xs">
-            <thead className="bg-secondary/60 text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Rule</th>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2">Condition</th>
-                <th className="px-3 py-2">Severity</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rules.length ? (
-                rules.map((rule) => (
-                  <tr key={rule.id} className="border-t border-border align-top">
-                    <td className="px-3 py-2 font-medium">{rule.name}</td>
-                    <td className="px-3 py-2">{rule.ruleType}</td>
-                    <td className="px-3 py-2">
-                      {fieldLabel(rule.fieldA)} {rule.operator}{" "}
-                      {rule.ruleType === "date_boundary"
-                        ? rule.fixedValue
-                        : fieldLabel(rule.fieldB)}
-                      {rule.thresholdDays !== undefined ? ` (${rule.thresholdDays} days)` : ""}
-                    </td>
-                    <td className="px-3 py-2">{rule.severity}</td>
-                    <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
-                    <td className="px-3 py-2">
-                      <HelpedControl
-                        helper={settingsControlHelpers.anomalyRuleToggle}
-                        label={`${rule.name} rule status help`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => void toggleRule(rule)}
-                          className="rounded border border-border px-2 py-1 hover:bg-accent"
-                        >
-                          {rule.enabled ? "Disable" : "Enable"}
-                        </button>
-                      </HelpedControl>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td className="px-3 py-3 text-muted-foreground" colSpan={6}>
-                    No anomaly rule settings available.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
   );
 }
@@ -4415,11 +4344,12 @@ type IndentorDraft = Pick<
 
 type FirmDraft = Pick<
   MasterFirm,
-  "firmName" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
+  "firmName" | "firmType" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
 >;
 
 const emptyFirmDraft: FirmDraft = {
   firmName: "",
+  firmType: "",
   emailId: "",
   city: "",
   address: "",
@@ -4430,6 +4360,7 @@ const emptyFirmDraft: FirmDraft = {
 function cleanFirmDraft(draft: FirmDraft): FirmDraft {
   return {
     firmName: draft.firmName?.trim() || "",
+    firmType: draft.firmType?.trim() || "",
     emailId: draft.emailId?.trim() || "",
     city: draft.city?.trim() || "",
     address: draft.address?.trim() || "",
@@ -4573,6 +4504,7 @@ function FirmDatabaseSettings() {
   const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
   const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
+  const firmTypeOptions = normalizeFirmTypes(settings.firmTypes);
   const firmUniqueNoLabelChanged = (labelDraft.trim() || "Firm Unique No.") !== firmUniqueNoLabel;
 
   useEffect(() => {
@@ -4646,6 +4578,7 @@ function FirmDatabaseSettings() {
     setEditingId(firm.id);
     setEditDraft({
       firmName: firm.firmName ?? "",
+      firmType: firm.firmType ?? "",
       emailId: firm.emailId ?? "",
       city: firm.city ?? "",
       address: firm.address ?? "",
@@ -4727,7 +4660,7 @@ function FirmDatabaseSettings() {
         </div>
       ) : null}
 
-      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_0.85fr_1fr_1fr_0.8fr_0.9fr_auto]">
+      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_0.85fr_1fr_1fr_0.8fr_0.9fr_0.9fr_auto]">
         <DivisionInput
           value={draft.firmName ?? ""}
           onChange={(value) => updateDraft("firmName", value)}
@@ -4760,6 +4693,11 @@ function FirmDatabaseSettings() {
           onChange={(value) => updateDraft("contactNo", numericOnly(value))}
           placeholder="Contact No."
           type="tel"
+        />
+        <FirmTypeSelect
+          value={draft.firmType ?? ""}
+          options={firmTypeOptions}
+          onChange={(value) => updateDraft("firmType", value)}
         />
         <button
           type="button"
@@ -4795,14 +4733,15 @@ function FirmDatabaseSettings() {
       />
 
       <div className="mt-5 max-w-full overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[980px] table-fixed text-sm">
+        <table className="w-full min-w-[1120px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[18%]" />
-            <col className="w-[13%]" />
+            <col className="w-[16%]" />
+            <col className="w-[12%]" />
+            <col className="w-[15%]" />
             <col className="w-[17%]" />
-            <col className="w-[18%]" />
-            <col className="w-[10%]" />
-            <col className="w-[10%]" />
+            <col className="w-[8%]" />
+            <col className="w-[9%]" />
+            <col className="w-[9%]" />
             <col className="w-[8%]" />
             <col className="w-[6%]" />
           </colgroup>
@@ -4814,6 +4753,7 @@ function FirmDatabaseSettings() {
               <th className="px-4 py-2.5 text-left font-medium">Address</th>
               <th className="px-4 py-2.5 text-left font-medium">City</th>
               <th className="px-4 py-2.5 text-left font-medium">Contact No.</th>
+              <th className="px-4 py-2.5 text-left font-medium">Firm Type</th>
               <th className="px-4 py-2.5 text-left font-medium">Rating</th>
               <th className="px-4 py-2.5 text-right font-medium">Action</th>
             </tr>
@@ -4821,7 +4761,7 @@ function FirmDatabaseSettings() {
           <tbody>
             {firms.length === 0 ? (
               <tr className="border-t border-border">
-                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={8}>
+                <td className="px-4 py-6 text-center text-muted-foreground" colSpan={9}>
                   {loading ? "Loading firms..." : "No firms found."}
                 </td>
               </tr>
@@ -4831,6 +4771,7 @@ function FirmDatabaseSettings() {
                 const usageCount = getFirmUsageCount(firm, firmUsage);
                 const editChanged = !isSettingsDirtyValueEqual(cleanFirmDraft(editDraft), {
                   firmName: firm.firmName ?? "",
+                  firmType: firm.firmType ?? "",
                   emailId: firm.emailId ?? "",
                   city: firm.city ?? "",
                   address: firm.address ?? "",
@@ -4871,6 +4812,12 @@ function FirmDatabaseSettings() {
                       value={isEditing ? editDraft.contactNo : firm.contactNo}
                       onChange={(value) => updateEditDraft("contactNo", numericOnly(value))}
                       type="tel"
+                    />
+                    <FirmCell
+                      editing={isEditing}
+                      value={isEditing ? editDraft.firmType : firm.firmType}
+                      onChange={(value) => updateEditDraft("firmType", value)}
+                      options={firmTypeOptions}
                     />
 	                    <td className="break-words px-3 py-3 text-muted-foreground">
 	                      {firm.firmRating || "Not rated"}
@@ -4974,27 +4921,59 @@ function FirmCell({
   onChange,
   type = "text",
   invalid = false,
+  options,
 }: {
   editing: boolean;
   value?: string;
   onChange: (value: string) => void;
   type?: string;
   invalid?: boolean;
+  options?: string[];
 }) {
   return (
     <td className="break-words px-3 py-3 text-muted-foreground">
       {editing ? (
-        <FirmInput
-          value={value ?? ""}
-          onChange={onChange}
-          placeholder=""
-          type={type}
-          invalid={invalid}
-        />
+        options ? (
+          <FirmTypeSelect value={value ?? ""} options={options} onChange={onChange} />
+        ) : (
+          <FirmInput
+            value={value ?? ""}
+            onChange={onChange}
+            placeholder=""
+            type={type}
+            invalid={invalid}
+          />
+        )
       ) : (
         value || "Not set"
       )}
     </td>
+  );
+}
+
+function FirmTypeSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const values = Array.from(new Set([...options, ...(value ? [value] : [])]));
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+    >
+      <option value="">Select Firm Type</option>
+      {values.map((option) => (
+        <option key={option} value={option}>
+          {option}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -5195,6 +5174,17 @@ function IndentorSettings() {
   const [indentorsLoading, setIndentorsLoading] = useState(false);
   const [indentorsError, setIndentorsError] = useState<string | undefined>();
   const [transferIndentors, setTransferIndentors] = useState<Indentor[]>([]);
+  const transferIndentorOptions = useMemo(() => {
+    const labelById = new Map<string, string>();
+    const idByLabel = new Map<string, string>();
+    for (const indentor of transferIndentors) {
+      const base = `${indentor.name} - ${indentor.divisionName}${indentor.sfId ? ` [${indentor.sfId}]` : ""}`;
+      const label = idByLabel.has(base) ? `${base} [${indentor.id}]` : base;
+      labelById.set(indentor.id, label);
+      idByLabel.set(label, indentor.id);
+    }
+    return { labelById, idByLabel };
+  }, [transferIndentors]);
   const [transferSourceId, setTransferSourceId] = useState("");
   const [transferTargetId, setTransferTargetId] = useState("");
   const [transferScope, setTransferScope] = useState<IndentorTransferScope>("active");
@@ -5272,24 +5262,18 @@ function IndentorSettings() {
     setEditDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const isComplete = (value: IndentorDraft) =>
-    value.divisionId &&
-    value.name.trim() &&
-    value.sfId.trim() &&
-    value.designation.trim() &&
-    value.mobileNo.trim() &&
-    value.landlineNo.trim() &&
-    value.email.trim();
+  const isReadyToSave = (value: IndentorDraft) =>
+    Boolean(value.divisionId && value.name.trim());
 
   const resetDraft = () =>
     setDraft({ ...emptyIndentorDraft, divisionId: availableDivisions[0]?.id ?? "" });
 
   const addIndentor = async () => {
-    if (!isComplete(draft)) return;
+    if (!isReadyToSave(draft)) return;
     if (
       activeUser?.role === "viewer" &&
       !window.confirm(
-        "Please confirm all indentor details are correct. Once added by a viewer, these details cannot be edited or deleted by the viewer.",
+        "Please confirm the division and name are correct. Other details can be completed later by an admin or sub-admin. Once added, a viewer cannot edit or delete this indentor.",
       )
     ) {
       return;
@@ -5322,7 +5306,7 @@ function IndentorSettings() {
   };
 
   const saveEdit = async (id: string) => {
-    if (!isComplete(editDraft)) return;
+    if (!isReadyToSave(editDraft)) return;
     await store.updateIndentor(id, {
       divisionId: editDraft.divisionId,
       name: editDraft.name.trim(),
@@ -5433,6 +5417,10 @@ function IndentorSettings() {
 	          <p className="text-xs text-muted-foreground">
 	            Add and search division-wise indentors used when files are created.
 	          </p>
+	          <p className="mt-1 text-xs text-muted-foreground">
+	            Division and Name are required. Other details may be left blank and completed later
+	            by an admin or sub-admin.
+	          </p>
 	          <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
 	            Edit is for correcting indentor master details only. It does not update old file
 	            rows already saved with that indentor. Use Indentor Transfer when existing files
@@ -5503,7 +5491,7 @@ function IndentorSettings() {
         <button
           type="button"
           onClick={addIndentor}
-          disabled={!isComplete(draft)}
+          disabled={!isReadyToSave(draft)}
           className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="size-4" /> Add indentor
@@ -5526,39 +5514,39 @@ function IndentorSettings() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_12rem_9rem_auto]">
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Source indentor</span>
-              <select
-                value={transferSourceId}
-                onChange={(event) => {
-                  setTransferSourceId(event.target.value);
+              <SearchableDropdown
+                value={transferIndentorOptions.labelById.get(transferSourceId) ?? ""}
+                onChange={(label) => {
+                  const nextId = transferIndentorOptions.idByLabel.get(label) ?? "";
+                  setTransferSourceId(nextId);
+                  if (nextId === transferTargetId) setTransferTargetId("");
                   setTransferPreview(null);
                 }}
+                options={Array.from(transferIndentorOptions.idByLabel.keys())}
+                placeholder="Select source"
+                deferChangeUntilSelect
+                typeAheadOnly
+                allowCustomValue={false}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="">Select source</option>
-                {transferIndentors.map((indentor) => (
-                  <option key={indentor.id} value={indentor.id}>
-                    {indentor.name} - {indentor.divisionName}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Target indentor</span>
-              <select
-                value={transferTargetId}
-                onChange={(event) => {
-                  setTransferTargetId(event.target.value);
+              <SearchableDropdown
+                value={transferIndentorOptions.labelById.get(transferTargetId) ?? ""}
+                onChange={(label) => {
+                  setTransferTargetId(transferIndentorOptions.idByLabel.get(label) ?? "");
                   setTransferPreview(null);
                 }}
+                options={Array.from(transferIndentorOptions.idByLabel.entries())
+                  .filter(([, id]) => id !== transferSourceId)
+                  .map(([label]) => label)}
+                placeholder="Select target"
+                deferChangeUntilSelect
+                typeAheadOnly
+                allowCustomValue={false}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="">Select target</option>
-                {transferIndentors.map((indentor) => (
-                  <option key={indentor.id} value={indentor.id} disabled={indentor.id === transferSourceId}>
-                    {indentor.name} - {indentor.divisionName}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Transfer scope</span>
@@ -5619,7 +5607,7 @@ function IndentorSettings() {
                   <table className="min-w-full text-left text-xs">
                     <thead className="bg-secondary/60 text-muted-foreground">
                       <tr>
-                        <th className="px-3 py-2">File</th>
+                        <th className="px-3 py-2">Control No.</th>
                         <th className="px-3 py-2">Division</th>
                         <th className="px-3 py-2">FY</th>
                         <th className="px-3 py-2">Closure</th>
@@ -5629,7 +5617,7 @@ function IndentorSettings() {
                       {transferPreview.files.map((file) => (
                         <tr key={file.id} className="border-t border-border">
                           <td className="px-3 py-2 font-medium">
-                            {file.uniqueCode || file.fileNo || file.title || file.id}
+                            {file.imms || "-"}
                           </td>
                           <td className="px-3 py-2 text-muted-foreground">
                             {file.division || "Not set"}
@@ -5817,7 +5805,7 @@ function IndentorSettings() {
                               <button
                                 type="button"
                                 onClick={() => saveEdit(indentor.id)}
-                                disabled={!editChanged || !isComplete(editDraft)}
+                                disabled={!editChanged || !isReadyToSave(editDraft)}
                                 className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <Check className="size-4" />

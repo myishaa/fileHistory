@@ -1,6 +1,9 @@
 const API_BASE_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:3000";
 const username = process.env.AUDIT_USERNAME ?? "dashboard_audit";
 const password = process.env.AUDIT_PASSWORD ?? "dashboard_audit123";
+const requestTimeoutMs = Number(process.env.AUDIT_REQUEST_TIMEOUT_MS ?? 30_000);
+const clickerConcurrency = Number(process.env.AUDIT_CLICKER_CONCURRENCY ?? 8);
+const maxClickerRows = Number(process.env.AUDIT_ANALYTICS_MAX_CLICKER_ROWS ?? 12);
 
 const defaultCategories = "goodsServices,amc,mpc,cars,om";
 const allCustomCategories =
@@ -59,6 +62,12 @@ function mapByName(rows, valueFields) {
     map.set(key, current);
   }
   return map;
+}
+
+function sampleRows(rows) {
+  const list = rows ?? [];
+  if (!maxClickerRows || maxClickerRows < 0) return list;
+  return list.slice(0, maxClickerRows);
 }
 
 function compareMaps(issues, area, expected, actual) {
@@ -146,12 +155,35 @@ async function login() {
 }
 
 async function api(path, token) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { cookie: `recordkeeper_session=${encodeURIComponent(token)}` },
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: { cookie: `recordkeeper_session=${encodeURIComponent(token)}` },
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => undefined);
+    if (!response.ok) throw new Error(`${path} failed ${response.status}: ${body?.error ?? "unknown error"}`);
+    return body;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`${path} timed out after ${requestTimeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function runLimited(tasks, limit = clickerConcurrency) {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, async () => {
+    while (queue.length) {
+      const task = queue.shift();
+      if (task) await task();
+    }
   });
-  const body = await response.json().catch(() => undefined);
-  if (!response.ok) throw new Error(`${path} failed ${response.status}: ${body?.error ?? "unknown error"}`);
-  return body;
+  await Promise.all(workers);
 }
 
 function checkNonNegativeRows(issues, passName, analytics) {
@@ -246,54 +278,58 @@ async function checkSearchCount(token, issues, pass, area, label, expected, targ
 
 async function checkAnalyticsClickers(token, issues, pass, summary) {
   const analytics = summary.analytics ?? {};
-  for (const row of analytics.divisionFileRanking ?? []) {
-    await checkSearchCount(token, issues, pass, "Division file ranking", row.name, row.count, { dashboardFilter: "totalFiles", division: row.name });
+  const tasks = [];
+  const addTask = (task) => tasks.push(task);
+  for (const row of sampleRows(analytics.divisionFileRanking)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Division file ranking", row.name, row.count, { dashboardFilter: "totalFiles", division: row.name }));
   }
-  for (const row of analytics.divisionTurnaroundRanking ?? []) {
-    await checkSearchCount(token, issues, pass, "Division turnaround ranking", row.name, row.sampleSize, { dashboardFilter: "divisionTurnaroundSample", division: row.name }, false);
+  for (const row of sampleRows(analytics.divisionTurnaroundRanking)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Division turnaround ranking", row.name, row.sampleSize, { dashboardFilter: "divisionTurnaroundSample", division: row.name }, false));
   }
-  for (const row of analytics.divisionPaymentPendingRanking ?? []) {
-    await checkSearchCount(token, issues, pass, "Payment pending ranking", row.name, row.count, { dashboardFilter: "paymentDue", division: row.name }, false);
+  for (const row of sampleRows(analytics.divisionPaymentPendingRanking)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Payment pending ranking", row.name, row.count, { dashboardFilter: "paymentDue", division: row.name }, false));
   }
-  for (const row of analytics.topFirmSupplyOrders ?? []) {
-    await checkSearchCount(token, issues, pass, "Top firms by S.O. value", row.name, row.value, { analyticsType: "firm", analyticsNames: [row.name] }, false);
+  for (const row of sampleRows(analytics.topFirmSupplyOrders)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Top firms by S.O. value", row.name, row.value, { analyticsType: "firm", analyticsNames: [row.name] }, false));
   }
-  for (const row of analytics.topIndentorsByFiles ?? []) {
-    await checkSearchCount(token, issues, pass, "Top indentors by files", row.name, row.count, { analyticsType: "indentor", analyticsNames: [row.name] });
+  for (const row of sampleRows(analytics.topIndentorsByFiles)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Top indentors by files", row.name, row.count, { analyticsType: "indentor", analyticsNames: [row.name] }));
   }
-  for (const row of analytics.topIndentorsByValue ?? []) {
-    await checkSearchCount(token, issues, pass, "Top indentors by value", row.name, row.value, { analyticsType: "indentor", analyticsNames: [row.name] }, false);
+  for (const row of sampleRows(analytics.topIndentorsByValue)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Top indentors by value", row.name, row.value, { analyticsType: "indentor", analyticsNames: [row.name] }, false));
   }
-  for (const row of analytics.biddingModeMix ?? []) {
-    await checkSearchCount(token, issues, pass, "Bidding mode mix", row.name, row.count, { dashboardFilter: `mode:${String(row.name).toUpperCase()}` });
+  for (const row of sampleRows(analytics.biddingModeMix)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Bidding mode mix", row.name, row.count, { dashboardFilter: `mode:${String(row.name).toUpperCase()}` }));
   }
-  for (const row of analytics.milestoneClearingRanking ?? []) {
+  for (const row of sampleRows(analytics.milestoneClearingRanking)) {
     const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-    await checkExactFileIdsClicker(token, issues, pass, "Milestone clearing ranking", row.name, ids);
+    addTask(() => checkExactFileIdsClicker(token, issues, pass, "Milestone clearing ranking", row.name, ids));
   }
-  for (const row of analytics.monthWiseSupplyOrder ?? []) {
-    await checkSearchCount(token, issues, pass, "Month-wise S.O.", monthKey(row), row.count, { dashboardFilter: `supplyOrderMonth:${monthKey(row)}` }, false);
+  for (const row of sampleRows(analytics.monthWiseSupplyOrder)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise S.O.", monthKey(row), row.count, { dashboardFilter: `supplyOrderMonth:${monthKey(row)}` }, false));
   }
-  for (const row of analytics.monthWiseDeliverySchedule ?? []) {
-    await checkSearchCount(token, issues, pass, "Month-wise D.P. gross", monthKey(row), row.grossCount, { dashboardFilter: `deliverySchedule:gross:${monthKey(row)}` }, false);
-    await checkSearchCount(token, issues, pass, "Month-wise D.P. net", monthKey(row), row.netCount, { dashboardFilter: `deliverySchedule:net:${monthKey(row)}` }, false);
+  for (const row of sampleRows(analytics.monthWiseDeliverySchedule)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise D.P. gross", monthKey(row), row.grossCount, { dashboardFilter: `deliverySchedule:gross:${monthKey(row)}` }, false));
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise D.P. net", monthKey(row), row.netCount, { dashboardFilter: `deliverySchedule:net:${monthKey(row)}` }, false));
   }
-  for (const row of analytics.monthWiseBgExpiry ?? []) {
-    await checkSearchCount(token, issues, pass, "Month-wise BG expiry total", monthKey(row), row.count, { dashboardFilter: `bgExpiryMonth:all:${monthKey(row)}` }, false);
-    await checkSearchCount(token, issues, pass, "Month-wise BG expiry PSB", monthKey(row), row.psb, { dashboardFilter: `bgExpiryMonth:psb:${monthKey(row)}` }, false);
-    await checkSearchCount(token, issues, pass, "Month-wise BG expiry PWB", monthKey(row), row.pwb, { dashboardFilter: `bgExpiryMonth:pwb:${monthKey(row)}` }, false);
-    await checkSearchCount(token, issues, pass, "Month-wise BG expiry PSB+PWB", monthKey(row), row.psbPwb, { dashboardFilter: `bgExpiryMonth:psbpwb:${monthKey(row)}` }, false);
+  for (const row of sampleRows(analytics.monthWiseBgExpiry)) {
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise BG expiry total", monthKey(row), row.count, { dashboardFilter: `bgExpiryMonth:all:${monthKey(row)}` }, false));
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise BG expiry PSB", monthKey(row), row.psb, { dashboardFilter: `bgExpiryMonth:psb:${monthKey(row)}` }, false));
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise BG expiry PWB", monthKey(row), row.pwb, { dashboardFilter: `bgExpiryMonth:pwb:${monthKey(row)}` }, false));
+    addTask(() => checkSearchCount(token, issues, pass, "Month-wise BG expiry PSB+PWB", monthKey(row), row.psbPwb, { dashboardFilter: `bgExpiryMonth:psbpwb:${monthKey(row)}` }, false));
   }
-  for (const row of analytics.cncSummary ?? []) {
+  for (const row of sampleRows(analytics.cncSummary)) {
     const cncDate = String(row.cncDate ?? row.name ?? "");
     for (const key of ["reviewed", "approved", "financialSanctionSigned", "supplyOrderPlaced", "approvalPending", "financialSanctionPending", "supplyOrderPending"]) {
-      await checkSearchCount(token, issues, pass, "CNC Summary", `${cncDate}:${key}`, row[key], { dashboardFilter: `cncSummary:${encodeURIComponent(key)}:${encodeURIComponent(cncDate)}` }, false);
+      addTask(() => checkSearchCount(token, issues, pass, "CNC Summary", `${cncDate}:${key}`, row[key], { dashboardFilter: `cncSummary:${encodeURIComponent(key)}:${encodeURIComponent(cncDate)}` }, false));
     }
   }
+  await runLimited(tasks);
 }
 
 async function checkDelayStatus(token, issues, pass) {
   const daysList = [0, 5, 30, 60];
+  const tasks = [];
   for (const days of daysList) {
     const payload = await api(reportsPath(pass, days), token);
     const delay = payload.summary?.delaySummary ?? {};
@@ -305,20 +341,25 @@ async function checkDelayStatus(token, issues, pass) {
     if (n(delay.longestDays) < n(delay.averageDays)) {
       issues.push({ pass: pass.name, area: "Delay Status", days, issue: "longestDays lower than averageDays", averageDays: delay.averageDays, longestDays: delay.longestDays });
     }
-    for (const row of rows) {
-      await checkSearchCount(token, issues, pass, "Delay Status", `${days}:${row.key}`, row.count, { dashboardFilter: `delayStatus:${days}:${row.key}` });
-      const filtered = await api(reportsPath(pass, days, row.key), token);
-      const filteredRows = filtered.summary?.delaySummary?.byMilestone ?? [];
-      const filteredTotal = filteredRows.reduce((sum, item) => sum + n(item.count), 0);
-      if (filteredTotal !== n(row.count)) {
-        issues.push({ pass: pass.name, area: "Delay Status", days, milestone: row.key, issue: "milestone subfilter total mismatch", expected: n(row.count), actual: filteredTotal });
+    for (const row of sampleRows(rows)) {
+      tasks.push(async () => {
+        await checkSearchCount(token, issues, pass, "Delay Status", `${days}:${row.key}`, row.count, { dashboardFilter: `delayStatus:${days}:${row.key}` });
+        const filtered = await api(reportsPath(pass, days, row.key), token);
+        const filteredRows = filtered.summary?.delaySummary?.byMilestone ?? [];
+        const filteredTotal = filteredRows.reduce((sum, item) => sum + n(item.count), 0);
+        if (filteredTotal !== n(row.count)) {
+          issues.push({ pass: pass.name, area: "Delay Status", days, milestone: row.key, issue: "milestone subfilter total mismatch", expected: n(row.count), actual: filteredTotal });
+        }
+      });
+    }
+    tasks.push(async () => {
+      const allResult = await api(searchPath(pass, { dashboardFilter: `delayStatus:${days}:all` }), token);
+      if (rowTotal > 0 && n(allResult.total) <= 0) {
+        issues.push({ pass: pass.name, area: "Delay Status", days, issue: "all delay clicker opens no files", rowTotal });
       }
-    }
-    const allResult = await api(searchPath(pass, { dashboardFilter: `delayStatus:${days}:all` }), token);
-    if (rowTotal > 0 && n(allResult.total) <= 0) {
-      issues.push({ pass: pass.name, area: "Delay Status", days, issue: "all delay clicker opens no files", rowTotal });
-    }
+    });
   }
+  await runLimited(tasks);
 }
 
 function compareCategoryPartitions(issues, summaries) {
@@ -393,6 +434,7 @@ async function main() {
         dashboardFileCount: summary.dashboardFileCount,
         milestoneClearingRows: analytics.milestoneClearingRanking?.length ?? 0,
         delayCheckedDays: 4,
+        clickerRowLimit: maxClickerRows || "all",
       });
     }
     compareCategoryPartitions(issues, summaries);

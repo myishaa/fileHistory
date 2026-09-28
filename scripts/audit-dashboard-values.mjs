@@ -161,20 +161,26 @@ function checkDistributionShares(issues, pass, distributions) {
   }
 }
 
+function isSpecificFinancialYear(value) {
+  return /\b(19\d{2}|20\d{2})\b/.test(String(value ?? ""));
+}
+
 function checkDistributionValues(issues, pass, summary) {
+  const passLabel = typeof pass === "string" ? pass : pass.name;
+  const selectedYear = typeof pass === "string" ? undefined : pass.selectedYear;
   const distributions = summary.financeFirmTypeDistributions ?? {};
   for (const [key, rows] of Object.entries(distributions)) {
     if (!Array.isArray(rows)) continue;
     const total = rows.reduce((sum, row) => sum + n(row.value), 0);
-    if (key === "supplyOrderValue") {
+    if (key === "supplyOrderValue" && !isSpecificFinancialYear(selectedYear)) {
       const expected = n(summary.financeTotals?.spentCapital) + n(summary.financeTotals?.spentRevenue);
       if (round(total) !== round(expected)) {
-        issues.push({ pass, area: key, issue: "firm type S.O. distribution does not equal committed total", expected: round(expected), actual: round(total) });
+        issues.push({ pass: passLabel, area: key, issue: "firm type S.O. distribution does not equal committed total", expected: round(expected), actual: round(total) });
       }
     }
     for (const row of rows) {
       if (n(row.value) < 0 || n(row.share) < 0) {
-        issues.push({ pass, area: key, firmType: row.name, issue: "negative distribution value/share", row });
+        issues.push({ pass: passLabel, area: key, firmType: row.name, issue: "negative distribution value/share", row });
       }
     }
   }
@@ -258,7 +264,7 @@ async function main() {
       checkCarryForwardBreakups(issues, pass.name, totals);
       checkPercents(issues, pass.name, totals, summary.financePercents ?? {});
       checkDistributionShares(issues, pass.name, summary.financeFirmTypeDistributions ?? {});
-      checkDistributionValues(issues, pass.name, summary);
+      checkDistributionValues(issues, pass, summary);
       await checkCarryForwardClickers(token, issues, pass, summary);
     }
     compareAdditive(

@@ -316,7 +316,7 @@ function expandSupplyOrderStageEntries(
 }
 
 function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | undefined {
-  if (!isYes(order.stageDelivery) || !isYes(order.stagePayment) || !isYes(order.advancePayment)) {
+  if (!isYes(order.advancePayment)) {
     return undefined;
   }
   const advance = order.advancePaymentDetail;

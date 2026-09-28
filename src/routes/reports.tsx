@@ -33,7 +33,16 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { HelperContent } from "@/components/helper-content";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 import {
   fileMatchesInitiationDateRange,
@@ -935,12 +944,17 @@ function ReportsPage() {
   const canEditMerData =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
-    activeUser?.role === "editor" ||
     (activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "global");
   const canEditCashOutGoPlan =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor" ||
+    (activeUser?.role === "universal_viewer" &&
+      (activeUser.cashOutgoEditScope === "personal" ||
+        activeUser.cashOutgoEditScope === "global"));
+  const canEditCashOutGoPlanSettings =
+    activeUser?.role === "admin" ||
+    activeUser?.role === "sub_admin" ||
     (activeUser?.role === "universal_viewer" &&
       (activeUser.cashOutgoEditScope === "personal" ||
         activeUser.cashOutgoEditScope === "global"));
@@ -1041,6 +1055,10 @@ function ReportsPage() {
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(false);
+  const [fileCategoryLocked, setFileCategoryLocked] = useState(false);
+  const [fileCategoryPreferenceLoading, setFileCategoryPreferenceLoading] = useState(true);
+  const [fileCategoryPreferenceSaving, setFileCategoryPreferenceSaving] = useState(false);
+  const [fileCategoryPreferenceError, setFileCategoryPreferenceError] = useState("");
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
   const [fileYearLocked, setFileYearLocked] = useState(false);
   const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
@@ -1093,7 +1111,59 @@ function ReportsPage() {
     [activeUser?.allowedFileCategories, activeUser?.role, settings.fileTypes],
   );
   useEffect(() => {
+    if (!activeUser?.id) return;
+    let active = true;
+    setFileCategoryPreferenceLoading(true);
+    setFileCategoryPreferenceError("");
+    setFileCategoryLocked(false);
+    setFileCategoryFilterTouched(false);
+    setSelectedFileCategories(visibleFileCategoryKeys);
+    const loadPreference = activeUser.id.startsWith("viewer:")
+      ? Promise.resolve((() => {
+          try {
+            const saved = window.localStorage.getItem(
+              `recordkeeper:reports-file-type:${activeUser.id}`,
+            );
+            return JSON.parse(saved || "{}");
+          } catch {
+            return {};
+          }
+        })())
+      : fetchReportPreferences<{ locked?: boolean; categories?: string[] }>("fileTypeFilter")
+          .then(({ preferences }) => preferences);
+    void loadPreference
+      .then((preferences) => {
+        if (!active) return;
+        if (preferences.locked === true && Array.isArray(preferences.categories)) {
+          const visible = new Set(visibleFileCategoryKeys);
+          setSelectedFileCategories(
+            preferences.categories.filter(
+              (key: string): key is FileCategoryKey => visible.has(key as FileCategoryKey),
+            ),
+          );
+          setFileCategoryFilterTouched(true);
+          setFileCategoryLocked(true);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setFileCategoryPreferenceError(
+            error instanceof Error ? error.message : "File Type preference could not be loaded.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setFileCategoryPreferenceLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeUser?.id, visibleFileCategoryKeys]);
+  useEffect(() => {
     setSelectedFileCategories((current) => {
+      if (fileCategoryLocked) {
+        return current.filter((key) => visibleFileCategoryKeys.includes(key));
+      }
       const allFixedSelected = allFileCategoryKeys.every((key) => current.includes(key));
       const visible = new Set(visibleFileCategoryKeys);
       const next = current.filter((key) => visible.has(key));
@@ -1102,7 +1172,7 @@ function ReportsPage() {
       }
       return next.length ? next : visibleFileCategoryKeys;
     });
-  }, [visibleFileCategoryKeys]);
+  }, [visibleFileCategoryKeys, fileCategoryLocked]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = window.localStorage.getItem(bgReceiptDelayStorageKey);
@@ -2899,12 +2969,41 @@ function ReportsPage() {
     });
   };
   const toggleFileCategory = (category: FileCategoryKey, checked: boolean) => {
+    if (fileCategoryLocked) return;
     setFileCategoryFilterTouched(true);
     setSelectedFileCategories((current) =>
       checked
         ? visibleFileCategoryKeys.filter((key) => new Set([...current, category]).has(key))
         : current.filter((key) => key !== category),
     );
+  };
+  const toggleFileCategoryLock = async () => {
+    if (!activeUser?.id || fileCategoryPreferenceSaving || fileCategoryPreferenceLoading) return;
+    const nextLocked = !fileCategoryLocked;
+    setFileCategoryPreferenceSaving(true);
+    setFileCategoryPreferenceError("");
+    try {
+      const preferences = {
+        locked: nextLocked,
+        categories: selectedFileCategories,
+      };
+      if (activeUser.id.startsWith("viewer:")) {
+        window.localStorage.setItem(
+          `recordkeeper:reports-file-type:${activeUser.id}`,
+          JSON.stringify(preferences),
+        );
+      } else {
+        await saveReportPreferences("fileTypeFilter", preferences);
+      }
+      setFileCategoryLocked(nextLocked);
+      if (nextLocked) setFileCategoryFilterTouched(true);
+    } catch (error) {
+      setFileCategoryPreferenceError(
+        error instanceof Error ? error.message : "File Type preference could not be saved.",
+      );
+    } finally {
+      setFileCategoryPreferenceSaving(false);
+    }
   };
   const selectReportMode = (mode: ReportMode) => {
     if (mode === "preSoExpectedCashOutgo") {
@@ -3036,6 +3135,13 @@ function ReportsPage() {
         <div className="min-w-0 space-y-4">
           <div className="rounded-md border border-border bg-card p-3 shadow-[var(--shadow-card)]">
             <div className="flex flex-wrap items-end gap-3">
+              {reportMode !== "merData" ? (
+                <DivisionFilter
+                  divisions={divisions}
+                  activeDivision={activeDivision}
+                  onDivisionChange={setSelectedDivision}
+                />
+              ) : null}
               <FileYearFilter
                 value={activeFileYear}
                 options={availableFileYearOptions}
@@ -3058,17 +3164,32 @@ function ReportsPage() {
               <FileCategoryFilter
                 selectedCategories={selectedFileCategories}
                 options={visibleFileCategoryOptions}
-                disabled={fileCategoryFilterDisabled}
+                disabled={fileCategoryFilterDisabled || fileCategoryLocked || fileCategoryPreferenceLoading}
                 active={fileCategoryFilterActive}
                 onChange={toggleFileCategory}
+                locked={fileCategoryLocked}
+                lockDisabled={
+                  fileCategoryFilterDisabled ||
+                  fileCategoryPreferenceLoading ||
+                  fileCategoryPreferenceSaving
+                }
+                browserOnly={activeUser?.id?.startsWith("viewer:") === true}
+                onLockToggle={() => {
+                  void toggleFileCategoryLock();
+                }}
               />
               {isPreSoExpectedCashOutgoReport ? (
                 <div className="rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">
-                  Report is fixed for: Global filter = All active files; Subfilter = All file
+                  Report is fixed for: Global Filter = All active files; Subfilter = All file
                   years; Date range is blocked.
                 </div>
               ) : null}
             </div>
+            {fileCategoryPreferenceError ? (
+              <p className="mt-2 text-xs text-destructive" role="alert">
+                {fileCategoryPreferenceError}
+              </p>
+            ) : null}
           </div>
           {reportsError ||
           (reportsLoading && !hasLoadedReports) ||
@@ -3355,6 +3476,7 @@ function ReportsPage() {
               error={cashOutGoPlanError}
               includePreviousFy={cashOutGoPlanIncludePreviousFy}
               canEdit={canEditCashOutGoPlan}
+              canEditSettings={canEditCashOutGoPlanSettings}
               onIncludePreviousFyChange={setCashOutGoPlanIncludePreviousFy}
               onSettingChange={updateCashOutGoPlanSettings}
               onOffsetReset={resetCashOutGoPlanOffset}
@@ -3363,9 +3485,6 @@ function ReportsPage() {
               onBillOffsetOverrideReset={resetCashOutGoPlanBillOffsetOverride}
               onOpenSourceFile={openCashOutGoPlanSource}
               onOpenRowsSearch={openCashOutGoPlanRowsSearch}
-              divisions={divisions}
-              activeDivision={activeDivision}
-              onDivisionChange={setSelectedDivision}
               onSave={persistCashOutGoPlan}
               saveDisabled={!cashOutGoPlanDirty}
               onPdf={(expandedSections) =>
@@ -3938,14 +4057,14 @@ type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {
   itemsDeliveredBillsPrepared: [
     "Shows delivered/D.P. done cases where bill is prepared but payment workflow is not completed.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where billing/payment workflow exists.",
     "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
     "Includes returned supplementary bills pending correction/resubmission.",
     "Date range, when enabled, filters by Bill preparation date.",
   ],
   billsSubmitted: [
     "Shows bills sent/submitted to PCDA where payment is still pending.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where billing/payment workflow exists.",
     "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
     "Includes supplementary bills sent/resubmitted to PCDA and unpaid.",
     "Date range, when enabled, filters by Bill sent/submission date.",
@@ -3962,7 +4081,7 @@ const supplementaryBillInclusionNotes = {
   currentMonthLiability: [
     "Shows cumulative unpaid liability up to the selected month.",
     "It combines Delivery/D.P. done bill-preparation pending, Bill Prepared, and Bills Submitted payment-pending rows through the selected month.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where liability/payment workflow exists.",
     "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
     "Includes supplementary bills that are submitted/resubmitted and unpaid.",
   ],
@@ -3998,7 +4117,7 @@ const reportModeHelperText = {
   ],
   merData: [
     "MER is manually entered month-wise FY cash-outgo data.",
-    "MER corresponds to Global Filter F.Y.",
+    "MER corresponds to the FY selected in Global Filter.",
     "For Active files, MER uses the official Current FY.",
     "For Active + Current FY closed, MER uses the official Current FY.",
     "For a specific FY, MER uses that selected FY.",
@@ -4009,47 +4128,47 @@ const reportModeHelperText = {
     "Paid supplementary bills are counted by supplementary Payment Date.",
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
     "Excluded: Cancelled Demand and cancelled S.O. rows.",
-    "Included: Shortclosed/no-further-action S.O. rows where supplementary payment is actually completed.",
+    "Included: Shortclosed S.O. rows where supplementary payment is actually completed.",
     "Returned and paid supplementary bills are included.",
   ],
   supplementaryBillsSubmitted: [
     "Shows supplementary bills submitted/resubmitted where payment is pending.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
-    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where supplementary payment workflow exists.",
+    "If such pending supplementary workflow exists under cancelled S.O., it appears under Anomaly bell.",
   ],
   supplementaryPendingReturnedBills: [
     "Shows returned supplementary bills pending correction/resubmission.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
-    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where supplementary return workflow exists.",
+    "If such pending supplementary workflow exists under cancelled S.O., it appears under Anomaly bell.",
   ],
   supplementaryReturnedBillsResubmitted: [
     "Shows returned supplementary bills resubmitted where payment is still pending.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
-    "If such pending supplementary workflow exists under cancelled or shortclosed/no-further-action S.O., it appears under Anomaly bell.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where supplementary return workflow exists.",
+    "If such pending supplementary workflow exists under cancelled S.O., it appears under Anomaly bell.",
   ],
   supplementaryReturnedBillsPaid: [
     "Shows returned supplementary bills that are paid.",
     "Supplementary actual amount is used; if blank, supplementary bill amount is used.",
     "Excluded: Cancelled Demand and cancelled S.O. rows.",
-    "Included: Shortclosed/no-further-action S.O. rows where supplementary payment is actually completed.",
+    "Included: Shortclosed S.O. rows where supplementary payment is actually completed.",
   ],
   pendingReturnedBills: [
     "Shows returned bills pending correction/resubmission.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where returned-bill workflow exists.",
   ],
   returnedBillsResubmitted: [
     "Shows returned bills resubmitted where payment is still pending.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where returned-bill workflow exists.",
   ],
   returnedBillsPaid: [
     "Shows returned bills that are paid.",
     "Excluded: Cancelled Demand and cancelled S.O. rows.",
-    "Included: Shortclosed/no-further-action S.O. rows where payment is actually completed.",
+    "Included: Shortclosed S.O. rows where payment is actually completed.",
   ],
   soPaymentMatrix: [
     "Shows one row per S.O. with expected pending payment amount placed under the month in which payment is expected.",
     "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment schedule.",
-    "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+    "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where payment workflow exists.",
     "Other S.O. rows in the same file continue normally.",
     "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
     "Rows without a derivable expected payment month inside the selected FY are not shown.",
@@ -4058,7 +4177,7 @@ const reportModeHelperText = {
     "Shows one row per S.O. with completed payment amount placed under the actual payment month.",
     "It works for all file types; stage-payment S.O.s are read stage-wise and normal S.O.s are read from the main payment date.",
     "Excluded: Cancelled Demand and cancelled S.O. rows.",
-    "Shortclosed/no-further-action S.O. rows are included when payment is actually completed.",
+    "Shortclosed S.O. rows are included when payment is actually completed.",
     "Other S.O. rows in the same file continue normally.",
     "The field selector changes only the left-side descriptive columns. Apr-Mar month columns and payment calculation remain fixed.",
     "Rows without a completed payment month inside the selected FY are not shown.",
@@ -4066,7 +4185,7 @@ const reportModeHelperText = {
 } satisfies Partial<Record<ReportMode, HelperText>>;
 type HelperText = string | string[];
 const CASH_OUT_GO_RED_ROW_HELPER =
-  "A row turns red when Expected sent/resubmission date is before today and Actual sent date is still blank.";
+  "A row turns red when Expected sent / resubmission date is before today and Actual sent date is still blank.";
 const soPaymentMatrixDefaultFields: SoPaymentMatrixFieldKey[] = [
   "fileUniqueNo",
   "demandDescription",
@@ -4119,19 +4238,13 @@ const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   },
 ];
 const fileYearSubfilterHelper = [
-  "Subfilter is applied after the Global Filter.",
-  "Global Filter decides the main report scope.",
-  "File Initiation Year narrows that scope by the year in which files were started.",
+  "Global Filter first decides the report file set.",
+  "File Initiation Year then keeps only files started in the selected FY.",
+  "All file years means no extra initiation-year restriction.",
+  "When Global Filter is All files, the no-restriction option is called Entire database.",
+  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files visible in the 2026-27 file set.",
   "For month columns, MER, and date defaults, All files / All active files / Active + current FY closed use the Current FY from Settings.",
-  "A specific FY in Global Filter uses that same FY for month columns, MER, and date defaults.",
-  "Future-year payments do not change previous-FY actual cash outgo unless dates or MER are edited into that previous FY.",
-  "A specific FY here means files started in that FY only.",
-  "All file years means no extra initiation-year restriction inside the selected Global Filter.",
-  "When Global Filter is All files, the no-restriction option is labelled Entire database.",
-  "All files + Entire database shows every accessible database file.",
-  "All files + a specific File Initiation Year shows every accessible file started in that FY.",
-  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows files started in 2025-26 within the 2026-27 context.",
-  "After you change File Initiation Year, that choice stays for the current tab session.",
+  "This selection stays for the current browser tab session.",
   "Lock keeps this File Initiation Year selection fixed on Dashboard and Reports until you unlock it.",
 ];
 const fileInitiationDateRangeHelper = [
@@ -4469,7 +4582,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   const custom = reportModeHelperText[mode];
   const supplementary = supplementaryBillInclusionNotes[mode];
   const commonFilters =
-    "Uses the current Global Filter, File Initiation Year subfilter, date range, division, file category, and user access wherever applicable.";
+    "Uses the current Global Filter, File Initiation Year subfilter, date range, division, File Type filter, and user access wherever applicable.";
   if (custom && supplementary) return [...flattenHelperText(custom), ...flattenHelperText(supplementary)];
   if (custom) return custom;
   if (supplementary) return [commonFilters, ...flattenHelperText(supplementary)];
@@ -4477,7 +4590,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows month-wise cash outgo planning using MER for past months and software forecast rows for pending payments.",
       "Cancelled Demand and cancelled S.O. rows are excluded from software-calculated actual/forecast rows.",
-      "Shortclosed S.O. rows are included where real billing/delivery/payment action exists; shortclosed/no-further-action rows are excluded from pure future D.P. forecast.",
+      "Shortclosed S.O. rows are included where real billing/delivery/payment action exists; pure future D.P. forecast can exclude curtailed rows where no delivery/job/payment event exists.",
       "Editable row dates/offsets depend on the user's Cash Out Go Plan access level.",
       commonFilters,
     ];
@@ -4493,7 +4606,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows delivered/D.P. done cases where bill preparation is still pending.",
       "Expected payment is derived from the relevant delivery/job completion/D.P. trigger plus configured offset days.",
-      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where liability/payment workflow exists.",
       "Included: Closed Files as per the Global Filter and File Initiation Year. Other S.O. rows in the same file continue normally.",
       commonFilters,
     ];
@@ -4596,7 +4709,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
       "Shows month-wise delivery / contract period schedule by D.P./revised D.P./contract-period dates.",
       "When Global Filter is a specific FY, only D.P./contract-period dates inside that FY are counted. File Initiation Year can still narrow source files.",
       "Pending excludes rows where material delivery or job completion is already done.",
-      "Excluded: Cancelled Demand and cancelled S.O. Shortclosed/no-further-action S.O. is excluded when no delivery/job completion is recorded.",
+      "Excluded: Cancelled Demand and cancelled S.O. Shortclosed rows with No Further Action are excluded only from unfructified future delivery schedule.",
       "Included: Closed Files as per the Global Filter and File Initiation Year; contract and IR=No cases are included as contract-period/job-completion schedule.",
       commonFilters,
     ];
@@ -4630,7 +4743,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows BG receipt delay using the selected delay-day thresholds.",
       "Delay is calculated only where BG is applicable and receipt is due/pending.",
-      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where BG receipt is still pending.",
       commonFilters,
     ];
   }
@@ -4647,7 +4760,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
       "Shows files or S.O./stage cases currently stuck beyond the selected delay threshold at their current stage.",
       "For S.O./stage milestones such as IR Preparation, one file may contribute more than one delayed case; Search clickers open unique files.",
       "Milestones already cleared before the delay limit are not counted as current delay.",
-      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed/no-further-action rows are excluded from pending future action.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where a current workflow stage is still pending.",
       commonFilters,
     ];
   }
@@ -4655,7 +4768,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
     return [
       "Shows unpaid liabilities grouped by ageing bucket as on the selected date.",
       "Ageing starts from delivery/job completion, bill preparation, or bill sent trigger as applicable.",
-      "Excluded: Cancelled Demand, cancelled S.O. rows, and shortclosed/no-further-action S.O. rows. Other S.O. rows in the same file continue normally.",
+      "Excluded: Cancelled Demand and cancelled S.O. rows. Shortclosed S.O. rows remain included where liability/payment workflow exists. Other S.O. rows in the same file continue normally.",
       commonFilters,
     ];
   }
@@ -4914,7 +5027,8 @@ function isReportScopeDateFilterReport(mode: ReportMode) {
 }
 
 function getDateRangeHelperText(mode: ReportMode): HelperText {
-  const commonPrefix = "Global filter, division, file category, and File Year are applied first.";
+  const commonPrefix =
+    "Global Filter, File Initiation Year, division, and File Type filter are applied first.";
   if (mode === "mmgSummary") {
     return ["Date range filters source files by Demand received date.", commonPrefix];
   }
@@ -5164,7 +5278,7 @@ function getReportsExportContextDescription({
       fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
     }`,
     `Division: ${division === "all" ? "All accessible divisions" : division}`,
-    `File Category: ${
+    `File Type: ${
       fileCategoryFilterDisabled
         ? "Not applied"
         : formatFileCategoryExportSelection(selectedFileCategories, visibleFileCategoryOptions)
@@ -5217,7 +5331,7 @@ function getReportsCombinedCashOutgoExportContextDescription({
       fileYearFilterDisabled ? "Not applied" : formatExportDateRange(fileInitiationDateRange)
     }`,
     `Division: ${division === "all" ? "All accessible divisions" : division}`,
-    `File Category: ${
+    `File Type: ${
       fileCategoryFilterDisabled
         ? "Not applied"
         : formatFileCategoryExportSelection(selectedFileCategories, visibleFileCategoryOptions)
@@ -5826,7 +5940,7 @@ type DemandProcessingStats = {
   negative: number;
   negativeFileCount: number;
 };
-type DemandProcessingAnalysisUnit = "demand" | "order" | "stage" | "advance";
+type DemandProcessingAnalysisUnit = "demand" | "order" | "stage" | "advance" | "bill";
 const hiddenDemandProcessingDateFieldIds = new Set([
   "order.billPreparationDate",
   "order.billSentForPaymentDate",
@@ -6451,10 +6565,72 @@ function DemandProcessingAnalysisReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Average date gap calculated from records where both selected dates are filled.
+            Date gaps use the selected record level; payment-event pairs count each bill once.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">{actions}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Dialog>
+            <DialogTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent"
+              >
+                <Info className="size-4" />
+                Analysis guide
+              </button>
+            </DialogTrigger>
+            <DialogContent className="max-h-[88vh] w-[min(56rem,calc(100vw-1rem))] max-w-[96vw] gap-0 overflow-hidden p-0">
+              <DialogHeader className="border-b border-border px-5 py-4 pr-12">
+                <DialogTitle className="text-lg">How Demand Processing Analysis counts dates</DialogTitle>
+                <DialogDescription className="mt-1 text-[13px] leading-6">
+                  The selected date pair determines the observation being measured. Both dates must be present.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="max-h-[calc(88vh-6rem)] space-y-3 overflow-y-auto px-5 py-4 text-[13px] leading-6 text-foreground">
+                <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
+                  <h3 className="font-semibold">Payment timing</h3>
+                  <p>
+                    For a returned bill, the report uses the last resubmission date before final payment. If the bill
+                    was never returned, it uses the original bill-sent date. The bill contributes one duration, even
+                    if it had several return cycles.
+                  </p>
+                </section>
+                <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
+                  <h3 className="font-semibold">What counts as one bill</h3>
+                  <p>
+                    A regular S.O. bill, each stage bill, an advance payment, and each supplementary bill are separate
+                    observations. Different bills under one S.O. are not combined. File count is still the number of
+                    unique files, so it can be lower than the bill/payment count.
+                  </p>
+                </section>
+                <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
+                  <h3 className="font-semibold">Example</h3>
+                  <p>
+                    A stage bill is submitted on 1 May, returned on 5 May, resubmitted on 8 May, returned again on
+                    12 May, resubmitted on 15 May, and paid on 20 May. Its payment duration is counted once: 15 May
+                    to 20 May = 5 days. The earlier attempts do not reuse the same final payment date.
+                  </p>
+                </section>
+                <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
+                  <h3 className="font-semibold">Averages and day ranges</h3>
+                  <p>
+                    Averages and day-range buckets use the same observations. For example, if one S.O. has an advance
+                    paid in 10 days and two stage bills paid in 20 and 75 days, the report counts three observations:
+                    two in 0–30 days and one in 61–90 days. A file clicker opens unique files, not duplicate rows.
+                  </p>
+                </section>
+                <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
+                  <h3 className="font-semibold">Negative results</h3>
+                  <p>
+                    If the selected To date is earlier than the From date, the result is shown as negative and left
+                    out of average, median, minimum, maximum, and day-range buckets.
+                  </p>
+                </section>
+              </div>
+            </DialogContent>
+          </Dialog>
+          {actions}
+        </div>
       </div>
       <div className="space-y-4 p-4">
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[320px_minmax(0,1fr)_minmax(0,1fr)_190px]">
@@ -6501,9 +6677,8 @@ function DemandProcessingAnalysisReport({
               Payment mode
               <FloatingHelper
                 text={[
-                  "Segregates unified payment analysis by Online or Offline payment mode.",
-                  "Any includes both modes and rows where mode is blank.",
-                  "Online/Offline works best with unified payment date fields because those merge normal, stage, advance, returned, and supplementary bill flows.",
+                  "Choose Online or Offline to limit unified payment events to that payment mode.",
+                  "Any includes both modes, including events with no mode recorded.",
                 ]}
                 label="Demand processing payment mode help"
                 className="size-5 border-0 bg-transparent shadow-none"
@@ -6522,14 +6697,24 @@ function DemandProcessingAnalysisReport({
           </label>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-7">
+          <DemandMetric
+            label={analysisUnit === "bill" ? "Bill/payment count" : "Matched records"}
+            value={stats.count}
+            helperText={[
+              analysisUnit === "bill"
+                ? "Each regular, stage, advance, or supplementary bill contributes at most one observation for the selected date pair."
+                : "Counts matching date-pair observations, not unique files.",
+              "Both dates must be filled. Negative gaps are shown separately.",
+            ]}
+          />
           <DemandMetric
             label="File count"
             value={stats.fileCount}
             onClick={onOpenUsed}
             helperText={[
-              `${getAnalysisUnitCountLabel(analysisUnit)} may be higher when one file has multiple matching rows.`,
-              "The clicker opens files in Search, so this tile shows unique file count.",
+              `${getAnalysisUnitCountLabel(analysisUnit)} can exceed file count when a file has multiple matching observations.`,
+              "Click to open the matching unique files in Search.",
             ]}
           />
           <DemandMetric label="Average days" value={formatGapNumber(stats.average)} />
@@ -6541,7 +6726,7 @@ function DemandProcessingAnalysisReport({
             value={stats.negativeFileCount}
             onClick={stats.negativeFileCount ? onOpenReverse : undefined}
             helperText={[
-              "These are rows where the selected To date is earlier than the selected From date.",
+              "These are unique files with at least one result where the selected To date is earlier than the selected From date.",
               "They can happen even for logically correct pairs, for example delivery completed before D.P. date.",
               "Negative results are excluded from average, median, minimum, and maximum days.",
               "This tile shows unique file count because the clicker opens matching files in Search.",
@@ -6556,7 +6741,7 @@ function DemandProcessingAnalysisReport({
         />
 
         <div className="rounded-md border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
-          Basis: {getAnalysisBasisLabel(fromField?.scope, toField?.scope)}. Selected gap:{" "}
+          Basis: {analysisUnit === "bill" ? "bill/payment-wise" : getAnalysisBasisLabel(fromField?.scope, toField?.scope)}. Selected gap:{" "}
           <span className="font-medium text-foreground">{fromField?.label ?? "From date"}</span> to{" "}
           <span className="font-medium text-foreground">{toField?.label ?? "To date"}</span>.
         </div>
@@ -6828,7 +7013,9 @@ function DemandProcessingRangeSummary({
       <div className="mb-2">
         <h3 className="text-base font-bold">{getAnalysisUnitBucketTitle(analysisUnit)}</h3>
         <p className="text-xs text-muted-foreground">
-          Each {getAnalysisUnitNoun(analysisUnit)} is counted once using its maximum gap days.
+          {analysisUnit === "bill"
+            ? "Each bill/payment observation is counted once in the range matching its gap."
+            : `Each ${getAnalysisUnitNoun(analysisUnit)} is counted once using its maximum gap days.`}
         </p>
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -7216,6 +7403,9 @@ function getDemandProcessingUnitKey(
   row: DemandProcessingAnalysisRow,
   analysisUnit: DemandProcessingAnalysisUnit,
 ) {
+  if (analysisUnit === "bill") {
+    return `${row.fileId}:bill:${row.paymentObjectKey ?? `${row.orderIndex ?? 0}:${row.stageIndex ?? "order"}`}`;
+  }
   if (analysisUnit === "stage") {
     return `${row.fileId}:stage:${row.orderIndex ?? 0}:${row.stageIndex ?? 0}`;
   }
@@ -7289,6 +7479,7 @@ function formatGapNumber(value: number) {
 }
 
 function getAnalysisBasisLabel(fromScope: string | undefined, toScope: string | undefined) {
+  if (fromScope === "order" && toScope === "order") return "S.O.-wise";
   if (fromScope === "stage" || toScope === "stage") return "stage-wise";
   if (fromScope === "advance" || toScope === "advance") return "advance-payment-wise";
   if (fromScope === "order" || toScope === "order") return "S.O.-wise";
@@ -7296,6 +7487,9 @@ function getAnalysisBasisLabel(fromScope: string | undefined, toScope: string | 
 }
 
 function getDemandProcessingAnalysisUnit(fromFieldId: string, toFieldId: string) {
+  if (fromFieldId.startsWith("payment.unified") || toFieldId.startsWith("payment.unified")) {
+    return "bill";
+  }
   const fromScope = getDemandProcessingField(fromFieldId)?.scope;
   const toScope = getDemandProcessingField(toFieldId)?.scope;
   if (fromScope === "stage" || toScope === "stage") return "stage";
@@ -7305,6 +7499,7 @@ function getDemandProcessingAnalysisUnit(fromFieldId: string, toFieldId: string)
 }
 
 function getAnalysisUnitCountLabel(unit: DemandProcessingAnalysisUnit) {
+  if (unit === "bill") return "Bill/payment observations";
   if (unit === "stage") return "No. of Stages";
   if (unit === "advance") return "No. of Advance Payments";
   if (unit === "order") return "No. of S.O.s";
@@ -7312,6 +7507,7 @@ function getAnalysisUnitCountLabel(unit: DemandProcessingAnalysisUnit) {
 }
 
 function getAnalysisUnitBucketTitle(unit: DemandProcessingAnalysisUnit) {
+  if (unit === "bill") return "Bill/payment age buckets";
   if (unit === "stage") return "Stage age buckets";
   if (unit === "advance") return "Advance payment age buckets";
   if (unit === "order") return "S.O. age buckets";
@@ -7319,6 +7515,7 @@ function getAnalysisUnitBucketTitle(unit: DemandProcessingAnalysisUnit) {
 }
 
 function getAnalysisUnitNoun(unit: DemandProcessingAnalysisUnit) {
+  if (unit === "bill") return "bill/payment";
   if (unit === "stage") return "stage";
   if (unit === "advance") return "advance payment";
   if (unit === "order") return "S.O.";
@@ -8218,49 +8415,56 @@ function getMonthlyReportRowTotalFilter(
   return primaryColumn?.getFilter?.(row);
 }
 
-function ReportHeaderActions({
+function DivisionFilter({
   divisions,
   activeDivision,
   onDivisionChange,
-  showDivision = true,
-  onPdf,
-  onExcel,
 }: {
   divisions: ReturnType<typeof useAccessibleDivisions>;
   activeDivision: string;
   onDivisionChange: (division: string) => void;
+}) {
+  const divisionFilterActive = activeDivision !== "all";
+  return (
+    <label
+      className={filterLabelClass(
+        divisionFilterActive,
+        "flex min-w-[150px] flex-col gap-1 text-xs text-muted-foreground",
+      )}
+    >
+      <span>Division</span>
+      <select
+        value={activeDivision}
+        onChange={(event) => onDivisionChange(event.target.value)}
+        className={filterControlClass(
+          divisionFilterActive,
+          "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+        )}
+      >
+        <option value="all">All divisions</option>
+        {divisions.map((division) => (
+          <option key={division.id} value={division.name}>
+            {division.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ReportHeaderActions({
+  onPdf,
+  onExcel,
+}: {
+  divisions?: ReturnType<typeof useAccessibleDivisions>;
+  activeDivision?: string;
+  onDivisionChange?: (division: string) => void;
   showDivision?: boolean;
   onPdf?: () => void;
   onExcel?: () => void;
 }) {
-  const divisionFilterActive = activeDivision !== "all";
   return (
     <>
-      {showDivision ? (
-        <label
-          className={filterLabelClass(
-            divisionFilterActive,
-            "flex min-w-[150px] flex-col gap-1 text-xs text-muted-foreground",
-          )}
-        >
-          <span>Division</span>
-          <select
-            value={activeDivision}
-            onChange={(event) => onDivisionChange(event.target.value)}
-            className={filterControlClass(
-              divisionFilterActive,
-              "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
-            )}
-          >
-            <option value="all">Divisions</option>
-            {divisions.map((division) => (
-              <option key={division.id} value={division.name}>
-                {division.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
       {onPdf || onExcel ? (
         <div className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-card">
           {onPdf ? (
@@ -8296,12 +8500,20 @@ function FileCategoryFilter({
   disabled = false,
   active = false,
   onChange,
+  locked,
+  lockDisabled,
+  browserOnly,
+  onLockToggle,
 }: {
   selectedCategories: FileCategoryKey[];
   options: FileCategoryOption[];
   disabled?: boolean;
   active?: boolean;
   onChange: (category: FileCategoryKey, checked: boolean) => void;
+  locked: boolean;
+  lockDisabled: boolean;
+  browserOnly: boolean;
+  onLockToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const selectedVisibleCount = options.filter((option) =>
@@ -8311,49 +8523,69 @@ function FileCategoryFilter({
 
   return (
     <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
-      <span>File category</span>
-      <div
-        className={
-          filterControlClass(active, "rounded-md border border-input bg-background") +
-          (disabled ? " opacity-60" : "")
-        }
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          disabled={disabled}
-          onClick={() => setOpen((current) => !current)}
+      <span>File Type</span>
+      <div className="flex items-start gap-1.5">
+        <div
           className={
-            "flex min-h-9 w-full items-center justify-between gap-3 px-2 py-1.5 text-left text-sm hover:bg-accent/60 disabled:cursor-not-allowed " +
-            (active ? "text-destructive" : "text-foreground")
+            filterControlClass(active, "rounded-md border border-input bg-background") +
+            (disabled && !locked ? " opacity-60" : "")
           }
         >
-          <span className="truncate">{summary}</span>
-          <ChevronDown
-            className={`size-4 shrink-0 text-muted-foreground transition-transform ${
-              open ? "rotate-180" : ""
-            }`}
-          />
+          <button
+            type="button"
+            aria-expanded={open}
+            disabled={disabled && !locked}
+            onClick={() => setOpen((current) => !current)}
+            className={
+              "flex min-h-9 w-full items-center justify-between gap-3 px-2 py-1.5 text-left text-sm hover:bg-accent/60 disabled:cursor-not-allowed " +
+              (active ? "text-destructive" : "text-foreground")
+            }
+          >
+            <span className="truncate">{summary}</span>
+            <ChevronDown
+              className={`size-4 shrink-0 text-muted-foreground transition-transform ${
+                open ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+          {open ? (
+            <div className="flex flex-wrap items-center gap-2 border-t border-border px-2 py-2">
+              {options.map((option) => (
+                <label
+                  key={option.key}
+                  className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedCategories.includes(option.key)}
+                    disabled={disabled}
+                    onChange={(event) => onChange(option.key, event.target.checked)}
+                    className="size-4 rounded border-input disabled:cursor-not-allowed"
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onLockToggle}
+          disabled={lockDisabled}
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          title={locked ? "Unlock File Type filter" : "Lock and save File Type filter"}
+          aria-label={locked ? "Unlock File Type filter" : "Lock and save File Type filter"}
+        >
+          {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
         </button>
-        {open && !disabled ? (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border px-2 py-2">
-            {options.map((option) => (
-              <label
-                key={option.key}
-                className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-foreground"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedCategories.includes(option.key)}
-                  disabled={disabled}
-                  onChange={(event) => onChange(option.key, event.target.checked)}
-                  className="size-4 rounded border-input disabled:cursor-not-allowed"
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
-        ) : null}
+        <FloatingHelper
+          text={browserOnly
+            ? "Lock saves these File Type choices in this browser for the shared viewer. Unlock to change them."
+            : "Lock saves these File Type choices for your account. They return when you sign in again. Unlock to change them."}
+          label="File Type lock help"
+          className="size-8 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
       </div>
     </div>
   );
@@ -9569,6 +9801,7 @@ function CashOutGoPlanReport({
   error,
   includePreviousFy,
   canEdit,
+  canEditSettings,
   onIncludePreviousFyChange,
   onSettingChange,
   onOffsetReset,
@@ -9577,9 +9810,6 @@ function CashOutGoPlanReport({
   onBillOffsetOverrideReset,
   onOpenSourceFile,
   onOpenRowsSearch,
-  divisions,
-  activeDivision,
-  onDivisionChange,
   onSave,
   saveDisabled,
   onPdf,
@@ -9592,6 +9822,7 @@ function CashOutGoPlanReport({
   error?: string;
   includePreviousFy: boolean;
   canEdit: boolean;
+  canEditSettings: boolean;
   onIncludePreviousFyChange: (value: boolean) => void;
   onSettingChange: (
     field: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays",
@@ -9607,9 +9838,6 @@ function CashOutGoPlanReport({
   onBillOffsetOverrideReset: (rowKey: string) => void;
   onOpenSourceFile: (row: CashOutGoPlanDetailRow) => void;
   onOpenRowsSearch: (rows: CashOutGoPlanDetailRow[]) => void;
-  divisions: Division[];
-  activeDivision: string;
-  onDivisionChange: (division: string) => void;
   onSave: () => void;
   saveDisabled: boolean;
   onPdf: (expandedSections: CashOutGoPlanExpandedSections) => void;
@@ -9636,10 +9864,11 @@ function CashOutGoPlanReport({
               <h2 className="text-base font-bold">Cash Out Go Plan</h2>
               <FloatingHelper
                 text={[
-                  "Admin, Sub-admin and Editor can save the official/global Cash Out Go Plan.",
+                  "Admin and Sub-admin can save the official Cash Out Go Plan and top offset settings.",
+                  "Editor can save official row dates and row-specific offsets, but cannot change the top offset settings or MER.",
                   "Universal Viewer type 1 - View only: can vary filters/view results but cannot save Cash Out Go Plan or MER.",
                   "Universal Viewer type 2 - Personal Cash Out Go only: can save Cash Out Go Plan offsets and row dates for that own account only.",
-                  "Universal Viewer type 3 - Global Cash Out Go + MER: can save the official/global Cash Out Go Plan and MER for the software.",
+                  "Universal Viewer type 3 - Global Cash Out Go + MER: can save the official Cash Out Go Plan, top offsets and MER for the software.",
                   "Division users/viewers can view permitted data but cannot save Cash Out Go Plan changes.",
                 ]}
                 label="Cash Out Go Plan access rules"
@@ -9672,27 +9901,12 @@ function CashOutGoPlanReport({
         </div>
 
         <div className="mb-4 flex flex-wrap items-end gap-3">
-          <div className="text-xs font-medium">
-            <span className="mb-1 block text-muted-foreground">Division</span>
-            <select
-              value={activeDivision}
-              onChange={(event) => onDivisionChange(event.target.value)}
-              className="h-9 min-w-40 rounded-md border border-input bg-background px-2 text-sm"
-            >
-              <option value="all">All divisions</option>
-              {divisions.map((division) => (
-                <option key={division.id} value={division.name}>
-                  {division.name}
-                </option>
-              ))}
-            </select>
-          </div>
           <CashOutGoPlanOffsetControl
             label="Bill submission offset"
             defaultDays={DEFAULT_BILL_SUBMISSION_OFFSET_DAYS}
             customDays={plan?.settings.handSubmissionOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomHandSubmissionOffsetDays)}
-            disabled={!plan || !canEdit}
+            disabled={!plan || !canEditSettings}
             active={handSubmissionOffsetActive}
             helperText={[
               "Used for Bills at Hand rows.",
@@ -9708,7 +9922,7 @@ function CashOutGoPlanReport({
             defaultDays={DEFAULT_BILL_PAYMENT_OFFSET_DAYS}
             customDays={plan?.settings.billOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomBillOffsetDays)}
-            disabled={!plan || !canEdit}
+            disabled={!plan || !canEditSettings}
             active={billPaymentOffsetActive}
             helperText={[
               "Used to calculate Expected payment after a bill is sent/resubmitted.",
@@ -9725,7 +9939,7 @@ function CashOutGoPlanReport({
             defaultDays={DEFAULT_DP_OFFSET_DAYS}
             customDays={plan?.settings.dpOffsetDays}
             customEnabled={Boolean(plan?.settings.useCustomDpOffsetDays)}
-            disabled={!plan || !canEdit}
+            disabled={!plan || !canEditSettings}
             active={dpOffsetActive}
             helperText={[
               "Used for D.P.-based expected sent/resubmission dates.",
@@ -9738,27 +9952,36 @@ function CashOutGoPlanReport({
             onReset={() => onOffsetReset("dpOffsetDays")}
           />
           {canEdit ? (
-          <div className="flex items-end gap-1">
-            <button
-              type="button"
-              className="btn-ghost h-9 px-2 text-xs"
-              onClick={onSave}
-              disabled={!plan || saving || !dirty}
-              title="Save Cash Out Go Plan settings and row overrides to backend global settings"
-            >
-              <Save className="size-3.5" />
-              Save settings
-            </button>
-            <FloatingHelper
-              text={[
-                "This save is not browser-session only.",
-                "It saves Cash Out Go Plan settings and row overrides to the backend.",
-                "The saved scope depends on access: Admin/Sub-admin/Editor and Universal Viewer type 3 save the official/global plan; Universal Viewer type 2 saves only that viewer's personal plan.",
-              ]}
-              label="Save settings help"
-              className="size-8"
-              iconClassName="size-3"
-            />
+          <div className="flex flex-col items-start gap-1">
+            <div className="flex items-end gap-1">
+              <button
+                type="button"
+                className="btn-ghost h-9 px-2 text-xs"
+                onClick={onSave}
+                disabled={!plan || saving || !dirty}
+                title="Save permitted Cash Out Go Plan changes"
+              >
+                <Save className="size-3.5" />
+                {saving ? "Saving..." : dirty ? "Save plan" : "Saved"}
+              </button>
+              <FloatingHelper
+                text={[
+                  "This save is not browser-session only.",
+                  "It saves permitted Cash Out Go Plan changes to the backend.",
+                  "Admin/Sub-admin and Universal Viewer type 3 can save official top offsets and row overrides.",
+                  "Editor can save official row dates and row-specific offsets only.",
+                  "Universal Viewer type 2 saves only that viewer's personal plan.",
+                ]}
+                label="Save settings help"
+                className="size-8"
+                iconClassName="size-3"
+              />
+            </div>
+            {saving ? (
+              <span className="text-[11px] font-medium text-muted-foreground">Saving changes...</span>
+            ) : dirty ? (
+              <span className="text-[11px] font-medium text-amber-700">Unsaved changes</span>
+            ) : null}
           </div>
           ) : null}
           <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium">
@@ -9767,9 +9990,9 @@ function CashOutGoPlanReport({
               checked={includePreviousFy}
               onChange={(event) => onIncludePreviousFyChange(event.target.checked)}
             />
-            Include previous FY submitted bills
+            Include previous FYs submitted bills
             <PreviousFySubmittedBillsHelper
-              label="Previous FY submitted bills help"
+              label="Previous FYs submitted bills help"
               className="size-6 border-0 bg-transparent shadow-none"
               iconClassName="size-3"
             />
@@ -9835,7 +10058,7 @@ function CashOutGoPlanReport({
           <CashOutGoDetailTable
             title="Bills at Hand"
             helperText={[
-              "Expected sent/resubmission is calculated from the base date plus Bill submission Offset Days. Edit the date for a row if a specific submission/resubmission date is expected.",
+              "Expected sent / resubmission is calculated from the base date plus Bill submission Offset Days. Edit the date for a row if a specific submission/resubmission date is expected.",
               CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.billsAtHand}
@@ -9856,7 +10079,7 @@ function CashOutGoPlanReport({
           <CashOutGoDetailTable
             title="Items Delivered and Bills Yet to Be Prepared"
             helperText={[
-              "Expected sent/resubmission is calculated as base date plus D.P. offset days. Base date is Material Receipt Date when delivery/inspection applies; otherwise it is Job Completion Date for non-contract IR No files, or Revised D.P./D.P. date plus one day for files like MPC, AMC etc.",
+              "Expected sent / resubmission is calculated as base date plus D.P. offset days. Base date is Material Receipt Date when delivery/inspection applies; otherwise it is Job Completion Date for non-contract IR No files, or Revised D.P./D.P. date plus one day for files like MPC, AMC etc.",
               CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.deliveredBillsPending}
@@ -9881,7 +10104,7 @@ function CashOutGoPlanReport({
             title="Items Based on D.P."
             helperText={[
               "Forecasts bills from D.P. dates where delivery/job completion is not yet recorded.",
-              "Expected sent/resubmission is calculated from D.P. plus one day and D.P. offset days.",
+              "Expected sent / resubmission is calculated from D.P. plus one day and D.P. offset days.",
               "D.P. dates after 31 March of the selected FY are excluded.",
               "If expected payment goes beyond 31 March of the selected FY, the row remains visible but counts as zero in the plan.",
               CASH_OUT_GO_RED_ROW_HELPER,
@@ -10070,7 +10293,11 @@ function PreSoExpectedCashOutgoReport({
                   {saving ? "Saving..." : dirty ? "Save plan" : "Saved"}
                 </button>
                 <FloatingHelper
-                  text="Save plan stores selected Pre-S.O. files, tentative dates, and stage offset settings in the database according to the user's permitted scope."
+                  text={[
+                    "Save plan stores selected Pre-S.O. files and tentative dates according to the user's permitted scope.",
+                    "Editors can save file-level tentative dates globally, but cannot change stage-wise offset defaults.",
+                    "Stage-wise offset defaults are controlled by Admin/Sub-admin and Universal Viewer with Global Cash Out Go permission.",
+                  ]}
                   label="Pre-S.O. save plan help"
                   className="size-8 border-0 bg-transparent shadow-none"
                   iconClassName="size-3"
@@ -10128,8 +10355,9 @@ function PreSoExpectedCashOutgoReport({
           </p>
           {!canSaveStageOffsets ? (
             <div className="mb-4 rounded-md border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
-              Stage offset defaults are controlled globally by Admin/Sub-admin. You can still save
-              file selection and tentative dates where permitted.
+              Editors can save file-level tentative dates globally, but cannot change stage-wise
+              offset defaults. Stage offset defaults are controlled by Admin/Sub-admin and Universal
+              Viewer with Global Cash Out Go permission.
             </div>
           ) : null}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -10277,7 +10505,7 @@ function PreSoExpectedCashOutgoReport({
                             <tr>
                               <th className="px-3 py-2 text-left font-medium">S. No.</th>
                               <th className="px-3 py-2 text-left font-medium">Use</th>
-                              <th className="px-3 py-2 text-left font-medium">File</th>
+                              <th className="px-3 py-2 text-left font-medium">Control No.</th>
                               <th className="px-3 py-2 text-left font-medium">Demand description</th>
                               <th className="px-3 py-2 text-left font-medium">Division</th>
                               <th className="px-3 py-2 text-left font-medium">Mode</th>
@@ -10341,7 +10569,7 @@ function PreSoExpectedCashOutgoReport({
                                       onClick={() => onOpenFile(row)}
                                       className="text-left font-semibold text-primary underline-offset-2 hover:underline"
                                     >
-                                      {getPreSoFileRef(row.file)}
+                                      {row.file.imms || "-"}
                                     </button>
                                   </td>
                                   <td className="px-3 py-2">{row.file.demandDescription || "-"}</td>
@@ -10822,14 +11050,12 @@ function getPreSoStageOptions(): PreSoStageOption[] {
   const supplyOrderIndex = milestoneDefinitions.findIndex((milestone) => milestone.key === "supplyOrder");
   const preSoMilestones =
     supplyOrderIndex >= 0 ? milestoneDefinitions.slice(0, supplyOrderIndex) : milestoneDefinitions;
-  const requiredBgMilestones = milestoneDefinitions.filter(
-    (milestone) => milestone.key === "psb" || milestone.key === "psbPwb",
-  );
   return [
     { key: "workflowNotStarted", label: "Workflow Not Started" },
-    ...preSoMilestones.map((milestone) => ({ key: milestone.key, label: milestone.label })),
+    ...preSoMilestones
+      .filter((milestone) => milestone.key !== "psb" && milestone.key !== "psbPwb")
+      .map((milestone) => ({ key: milestone.key, label: milestone.label })),
     { key: "financialSanction", label: "Financial Sanction" },
-    ...requiredBgMilestones.map((milestone) => ({ key: milestone.key, label: milestone.label })),
   ];
 }
 
@@ -11167,7 +11393,7 @@ function formatMonthKeyLabel(monthKey: string) {
 }
 
 function getPreSoFileRef(file: FileRecord) {
-  return file.uniqueCode || file.imms || file.fileNo || file.title || file.id;
+  return file.uniqueCode || file.imms || file.id;
 }
 
 function formatPreSoSelectFilesCurrency(value: number) {
@@ -11510,12 +11736,11 @@ function exportCashOutGoPlan(
       },
       {
         title: "Total Expected Expenditure",
-        headers: ["Capital", "Revenue", "Total"],
+        headers: ["Capital", "Revenue"],
         rows: [
           [
             formatCurrency(getCashOutGoTotalExpectedRow(plan).capital),
             formatCurrency(getCashOutGoTotalExpectedRow(plan).revenue),
-            formatCurrency(getCashOutGoTotalExpectedRow(plan).total),
           ],
         ],
       },
@@ -11524,17 +11749,16 @@ function exportCashOutGoPlan(
 }
 
 const cashOutGoPlanDetailExportColumns = [
-  "File",
+  "Control No.",
   "Description",
   "Firm",
   "Source",
   "Base date",
-  "Expected sent/resubmission",
+  "Expected sent / resubmission",
   "Payment Offset",
   "Expected payment",
   "Capital",
   "Revenue",
-  "Total",
 ];
 
 function getCashOutGoPlanExpandedDetailExportTables(
@@ -11585,7 +11809,6 @@ function getCashOutGoPlanDetailExportRow(row: CashOutGoPlanDetailRow) {
     row.expectedPaymentDate,
     formatCurrency(row.capital),
     formatCurrency(row.revenue),
-    formatCurrency(row.total),
   ];
 }
 
@@ -11619,16 +11842,12 @@ function CashOutGoTotalExpectedTable({ plan }: { plan: CashOutGoPlanPayload }) {
             <tr className="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
               <th className="px-3 py-2.5 text-right font-semibold">Capital</th>
               <th className="px-3 py-2.5 text-right font-semibold">Revenue</th>
-              <th className="px-3 py-2.5 text-right font-semibold">Total</th>
             </tr>
           </thead>
           <tbody>
             <tr className="bg-card">
               <td className="px-3 py-3 text-right tabular-nums">{formatCurrency(row.capital)}</td>
               <td className="px-3 py-3 text-right tabular-nums">{formatCurrency(row.revenue)}</td>
-              <td className="px-3 py-3 text-right font-semibold tabular-nums">
-                {formatCurrency(row.total)}
-              </td>
             </tr>
           </tbody>
         </table>
@@ -11677,7 +11896,7 @@ function CashOutGoDetailTable({
   dpOnly?: boolean;
 }) {
   const totals = getCashOutGoSectionTotals(rows);
-  const columnCount = 11;
+  const columnCount = 10;
   return (
     <details
       open={open}
@@ -11713,14 +11932,14 @@ function CashOutGoDetailTable({
         <table className="w-full min-w-[1100px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
-              <th className="px-3 py-2">File</th>
+              <th className="px-3 py-2">Control No.</th>
               <th className="px-3 py-2">Description</th>
               <th className="px-3 py-2">Firm</th>
               <th className="px-3 py-2">Source</th>
               <th className="px-3 py-2">Base date</th>
               <th className="px-3 py-2">
                 <span className="inline-flex items-center gap-1.5">
-                  Expected sent/resubmission
+                  Expected sent / resubmission
                   <FloatingHelper
                     text={[
                       "This is the expected date for sending or resubmitting the bill.",
@@ -11743,7 +11962,7 @@ function CashOutGoDetailTable({
                       "If the entered value equals the global/default offset, it is treated as no override and saved blank.",
                       "When filled, this row becomes a manual override and is highlighted red.",
                       "Use the reset icon beside Save to clear this row override.",
-                      "It changes Expected payment only; it should not change Expected sent/resubmission.",
+                      "It changes Expected payment only; it should not change Expected sent / resubmission.",
                     ]}
                     className="size-5 border-0 bg-transparent shadow-none"
                     iconClassName="size-3"
@@ -11766,7 +11985,6 @@ function CashOutGoDetailTable({
               </th>
               <th className="px-3 py-2 text-right">Capital</th>
               <th className="px-3 py-2 text-right">Revenue</th>
-              <th className="px-3 py-2 text-right">Total</th>
             </tr>
           </thead>
           <tbody>
@@ -11837,8 +12055,8 @@ function CashOutGoDetailTable({
                               onClick={() => onExpectedSentDateReset?.(row.rowKey)}
                               disabled={saving || !row.expectedSentDateOverride}
                               className="rounded border border-border p-1 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                              title="Reset Expected sent/resubmission to software-calculated date"
-                              aria-label="Reset Expected sent/resubmission to software-calculated date"
+                              title="Reset Expected sent / resubmission to software-calculated date"
+                              aria-label="Reset Expected sent / resubmission to software-calculated date"
                             >
                               <RotateCcw className="size-3.5" />
                             </button>
@@ -11955,9 +12173,6 @@ function CashOutGoDetailTable({
                   <td className="px-3 py-2 text-right tabular-nums">
                     {formatCurrency(row.revenue)}
                   </td>
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                    {formatCurrency(row.total)}
-                  </td>
                 </tr>
               ))
             ) : (
@@ -12009,13 +12224,9 @@ function FloatingHelper({
         <TooltipContent
           side={side}
           align="center"
-          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] leading-relaxed"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg leading-relaxed"
         >
-          <ul className="list-disc space-y-1 pl-4">
-            {flattenHelperText(text).map((item, index) => (
-              <li key={`${item}-${index}`}>{item}</li>
-            ))}
-          </ul>
+          <HelperContent lines={flattenHelperText(text)} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -12045,13 +12256,9 @@ function InfoCircleHelper({
         <TooltipContent
           side="top"
           align="center"
-          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] leading-relaxed"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg leading-relaxed"
         >
-          <ul className="list-disc space-y-1 pl-4 text-xs">
-            {flattenHelperText(text).map((item, index) => (
-              <li key={`${item}-${index}`}>{item}</li>
-            ))}
-          </ul>
+          <HelperContent lines={flattenHelperText(text)} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -12059,7 +12266,7 @@ function InfoCircleHelper({
 }
 
 function PreviousFySubmittedBillsHelper({
-  label = "Previous FY submitted bills help",
+  label = "Previous FYs submitted bills help",
   className = "",
   iconClassName = "size-3",
 }: {
@@ -12068,38 +12275,6 @@ function PreviousFySubmittedBillsHelper({
   iconClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const rows = [
-    {
-      filter: "All files",
-      unchecked: "All accessible database files can enter the file pool, but submitted bills are counted only if submission/resubmission date is inside the selected FY.",
-      checked: "Submitted/resubmitted bills from previous FYs are also included if payment is pending.",
-      effect: "Broadest file pool; checkbox still controls previous-FY submitted pending bills.",
-    },
-    {
-      filter: "All active files",
-      unchecked: "File pool is broad, but earlier-FY submitted bills stay excluded from submitted-bill section.",
-      checked: "All earlier-FY submitted pending bills from active accessible files are included.",
-      effect: "This checkbox can still be required even with All active files.",
-    },
-    {
-      filter: "Active + current FY closed",
-      unchecked: "Active files plus current-FY closed files can enter the file pool, but submitted bills are counted only if submission/resubmission date is inside the selected FY.",
-      checked: "Previous-FY submitted pending bills are also included from that active/current-FY-closed file pool.",
-      effect: "Useful when current planning includes active files and current-FY closed files, but some pending bills were submitted in previous FYs.",
-    },
-    {
-      filter: "Selected FY, e.g. 2026-27",
-      unchecked: "Submitted bills only if submission/resubmission date is inside 2026-27.",
-      checked: "Also includes submitted/resubmitted bills before 2026-27 if payment is pending.",
-      effect: "Useful for pending bills submitted in previous FYs.",
-    },
-    {
-      filter: "User access / permitted files",
-      unchecked: "Only accessible files are considered; submitted bills are restricted to selected FY.",
-      checked: "Earlier-FY submitted pending bills are included only within accessible files.",
-      effect: "It never brings back files outside the user's permitted access.",
-    },
-  ];
   return (
     <>
       <button
@@ -12125,16 +12300,13 @@ function PreviousFySubmittedBillsHelper({
           onClick={() => setOpen(false)}
         >
           <div
-            className="max-h-[82vh] w-[min(94vw,980px)] overflow-auto rounded-xl border border-sky-100 bg-[#f4f9ff] p-4 text-xs leading-relaxed text-foreground shadow-2xl"
+            className="max-h-[82vh] w-[min(92vw,520px)] overflow-auto rounded-xl border border-sky-100 bg-[#f4f9ff] p-4 text-xs leading-relaxed text-foreground shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-foreground">
-                  Include previous FY submitted bills
-                </div>
-                <div className="mt-1 text-muted-foreground">
-                  Behavior is two-layered: Global Filter first decides the file pool; this checkbox then decides whether earlier-FY submitted pending bills from that pool are included.
+                  Include previous FYs submitted bills
                 </div>
               </div>
               <button
@@ -12145,34 +12317,16 @@ function PreviousFySubmittedBillsHelper({
                 Close
               </button>
             </div>
-            <div className="overflow-x-auto rounded-lg border border-sky-100 bg-white/70">
-              <table className="min-w-[860px] border-collapse text-left">
-                <thead>
-                  <tr className="border-b border-sky-100 bg-sky-50 text-foreground">
-                    <th className="px-2 py-2 font-semibold">Global filter situation</th>
-                    <th className="px-2 py-2 font-semibold">Unchecked</th>
-                    <th className="px-2 py-2 font-semibold">Checked</th>
-                    <th className="px-2 py-2 font-semibold">Important effect</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.filter} className="border-b border-sky-100/80 last:border-0">
-                      <td className="px-2 py-2 align-top font-medium text-foreground">
-                        {row.filter}
-                      </td>
-                      <td className="px-2 py-2 align-top text-muted-foreground">
-                        {row.unchecked}
-                      </td>
-                      <td className="px-2 py-2 align-top text-muted-foreground">{row.checked}</td>
-                      <td className="px-2 py-2 align-top text-muted-foreground">{row.effect}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3 rounded-md border border-sky-100 bg-white/70 px-3 py-2 text-muted-foreground">
-              Example: selected FY is 2026-27. A bill submitted on 25-Mar-2026 with payment pending is included only when this checkbox is checked, provided the file also passes current filters.
+            <div className="space-y-2 rounded-lg border border-sky-100 bg-white/70 px-3 py-3 text-muted-foreground">
+              <p>Global Filter and File Initiation Year first decide which files are considered.</p>
+              <p>
+                When unchecked, submitted bills are counted only if the submission/resubmission date
+                falls in the selected FY.
+              </p>
+              <p>
+                When checked, earlier-FY submitted/resubmitted bills are also included if payment is
+                still pending and the file is otherwise permitted by the current filters.
+              </p>
             </div>
           </div>
         </div>
@@ -12776,7 +12930,7 @@ function DelayStatusReport({
 
       <div className="overflow-hidden rounded-lg border border-border">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] border-collapse text-sm">
+          <table className="w-full min-w-[820px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
                 {delayStatusColumns.map((column) => (
@@ -12812,13 +12966,13 @@ function DelayStatusReport({
                             (column.align === "right" ? "text-right tabular-nums" : "text-left")
                           }
                         >
-                          {column.key === "action" ? (
+                          {column.key === "fileRef" ? (
                             <button
                               type="button"
                               onClick={() => onOpenFile(row)}
-                              className="inline-flex h-7 items-center rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                              className="font-medium text-primary underline-offset-2 hover:underline"
                             >
-                              Open
+                              {getDelayStatusDisplayValue(row, column.key, absoluteIndex) || "-"}
                             </button>
                           ) : (
                             getDelayStatusDisplayValue(row, column.key, absoluteIndex)
@@ -13406,7 +13560,7 @@ async function downloadDelayStatus(
   format: "excel" | "pdf",
   description?: string,
 ) {
-  const exportColumns = delayStatusColumns.filter((column) => column.key !== "action");
+  const exportColumns = delayStatusColumns;
   await downloadBackendExport({
     format,
     title,
@@ -13423,7 +13577,7 @@ async function downloadDelayStatus(
 }
 
 function getDelayStatusTableHtml(rows: DelayStatusRow[]) {
-  const exportColumns = delayStatusColumns.filter((column) => column.key !== "action");
+  const exportColumns = delayStatusColumns;
   return `
     <table>
       <thead>
@@ -13638,13 +13792,11 @@ type CashOutgoColumnKey = "serial" | "month" | "capital" | "revenue";
 type DelayStatusColumnKey =
   | "serial"
   | "fileRef"
-  | "division"
   | "indentor"
   | "description"
   | "milestone"
   | "stageStartDate"
-  | "daysInStage"
-  | "action";
+  | "daysInStage";
 type MonthlyReportColumn = {
   key: string;
   label: string;
@@ -13679,14 +13831,12 @@ const cashOutgoColumns = [
 
 const delayStatusColumns = [
   { key: "serial", label: "S.No.", align: "right" },
-  { key: "fileRef", label: "File", align: "left" },
-  { key: "division", label: "Division", align: "left" },
+  { key: "fileRef", label: "Control No.", align: "left" },
   { key: "indentor", label: "Indentor", align: "left" },
   { key: "description", label: "Description", align: "left" },
   { key: "milestone", label: "Current milestone", align: "left" },
   { key: "stageStartDate", label: "Stage start date", align: "left" },
   { key: "daysInStage", label: "Days", align: "right" },
-  { key: "action", label: "Search", align: "left" },
 ] satisfies Array<{ key: DelayStatusColumnKey; label: string; align: "left" | "right" }>;
 
 const monthlyCountColumns: MonthlyReportColumn[] = [
@@ -14742,10 +14892,10 @@ function getBiddingDelay(
   if (daysInStage === undefined || daysInStage <= thresholdDays) return undefined;
   return {
     fileId: file.id,
-    fileRef: getFileReference(file),
+    fileRef: file.imms ?? "",
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: getDescriptionWithUniqueCode(file),
+    description: file.demandDescription ?? "",
     milestoneKey: biddingDelayMilestoneKey,
     milestone: biddingDelayMilestoneLabel,
     stageStartDate: status.stageStartDate,
@@ -14840,10 +14990,10 @@ function getWorkflowNotStartedDelay(
   if (daysInStage === undefined || daysInStage <= thresholdDays) return undefined;
   return {
     fileId: file.id,
-    fileRef: getFileReference(file),
+    fileRef: file.imms ?? "",
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: getDescriptionWithUniqueCode(file),
+    description: file.demandDescription ?? "",
     milestoneKey: "workflowNotStarted",
     milestone: "Workflow Not Started",
     stageStartDate,
@@ -14870,10 +15020,10 @@ function getCurrentMilestoneDelay(
 
   return {
     fileId: file.id,
-    fileRef: getFileReference(file),
+    fileRef: file.imms ?? "",
     division: file.division ?? "",
     indentor: file.indentor ?? "",
-    description: getDescriptionWithUniqueCode(file),
+    description: file.demandDescription ?? "",
     milestoneKey: milestone.key,
     milestone: milestone.label,
     stageStartDate,
@@ -15077,10 +15227,10 @@ function getCurrentOrderMilestoneDelayRows(
       return [
         {
           fileId: file.id,
-          fileRef: getSupplyOrderDelayReference(file, order, orderIndex),
+          fileRef: file.imms ?? "",
           division: file.division ?? "",
           indentor: file.indentor ?? "",
-          description: getDescriptionWithUniqueCode(file),
+          description: file.demandDescription ?? "",
           milestoneKey: milestone.key,
           milestone: milestone.label,
           stageStartDate,
@@ -15111,10 +15261,10 @@ function getReturnedBillDelayRows(
     return [
       {
         fileId: file.id,
-        fileRef: getSupplyOrderDelayReference(file, order, orderIndex),
+        fileRef: file.imms ?? "",
         division: file.division ?? "",
         indentor: file.indentor ?? "",
-        description: getDescriptionWithUniqueCode(file),
+        description: file.demandDescription ?? "",
         milestoneKey: billReturnedDelayMilestoneKey,
         milestone: "Returned Bills",
         stageStartDate,
@@ -15154,10 +15304,10 @@ function getSupplementaryReturnedBillDelayRows(
       return [
         {
           fileId: file.id,
-          fileRef: `${getSupplyOrderDelayReference(file, order, orderIndex)} / Supp. bill ${billIndex + 1}`,
+          fileRef: file.imms ?? "",
           division: file.division ?? "",
           indentor: file.indentor ?? "",
-          description: getDescriptionWithUniqueCode(file),
+        description: file.demandDescription ?? "",
           milestoneKey: supplementaryBillReturnedDelayMilestoneKey,
           milestone: "Supplementary bill returned for correction",
           stageStartDate,
@@ -15537,7 +15687,6 @@ function getDelayStatusSummary(rows: DelayStatusRow[]) {
 
 function getDelayStatusDisplayValue(row: DelayStatusRow, key: DelayStatusColumnKey, index: number) {
   if (key === "serial") return String(index + 1);
-  if (key === "action") return "";
   if (key === "daysInStage") return String(row.daysInStage);
   if (key === "milestone") return getWorkflowDisplayLabel(row.milestone);
   return row[key];
@@ -16642,8 +16791,7 @@ function countLiveSupplyOrders(files: FileRecord[]) {
         (order) =>
           isSupplyOrderTabComplete(file, order) &&
           !hasFilledString(order.paymentDate) &&
-          !isSupplyOrderCancelled(file, order) &&
-          !isShortclosureNoFurtherAction(order),
+          !isSupplyOrderCancelled(file, order),
       ).length,
     0,
   );
@@ -16825,11 +16973,7 @@ function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
-  return (
-    !isYes(file.demandCancelled) &&
-    !isYes(order.soCancelled) &&
-    !isShortclosureNoFurtherAction(order)
-  );
+  return !isYes(file.demandCancelled) && !isYes(order.soCancelled);
 }
 
 function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
@@ -16975,8 +17119,7 @@ function isLiveSupplyOrder(file: FileRecord) {
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isShortclosureNoFurtherAction(order),
+      !isSupplyOrderCancelled(file, order),
   );
 }
 
@@ -17275,10 +17418,8 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery)) {
     if (!hasFilledString(order.stageDeliveryCount)) return false;
     if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
-      return false;
-    }
   }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
   return true;
 }
 

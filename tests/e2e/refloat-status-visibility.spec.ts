@@ -32,11 +32,11 @@ async function ensureQaUser() {
 }
 
 async function selectedYear() {
-  const result = await pool.query<{ selected_year: string }>(
-    "select selected_year from app_settings where id = true",
+  const result = await pool.query<{ financial_year: string }>(
+    "select financial_year from app_settings where id = true",
   );
-  const year = result.rows[0]?.selected_year;
-  if (!year) throw new Error("Settings selected year not found.");
+  const year = result.rows[0]?.financial_year;
+  if (!year) throw new Error("Settings financial year not found.");
   return year;
 }
 

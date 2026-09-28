@@ -19,6 +19,22 @@ export const indentorsRouter = Router();
 
 type IndentorTransferScope = "active" | "financialYear" | "all";
 
+let optionalSfIdIndexReady: Promise<void> | undefined;
+
+function ensureOptionalSfIdIndex() {
+  optionalSfIdIndexReady ??= pool
+    .query(`
+      create unique index if not exists indentors_division_sf_id_nonempty_active_key
+      on indentors (division_id, sf_id)
+      where archived_at is null and nullif(btrim(sf_id), '') is not null
+    `)
+    .then(async () => {
+      await pool.query("drop index if exists indentors_division_sf_id_active_key");
+    })
+    .then(() => undefined);
+  return optionalSfIdIndexReady;
+}
+
 type IndentorRow = {
   id: string;
   division_id: string;
@@ -39,6 +55,7 @@ type IndentorRow = {
 type IndentorTransferPreviewRow = {
   id: string;
   unique_code: string | null;
+  imms: string | null;
   file_no: string | null;
   title: string | null;
   division: string | null;
@@ -130,6 +147,12 @@ function readTrimmed(value: unknown, field: string) {
 
 function readOptionalText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readOptionalIndentorField(value: unknown, field: string) {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") throw new HttpError(400, `${field} must be text.`);
+  return value.trim();
 }
 
 function readTransferScope(value: unknown): IndentorTransferScope {
@@ -231,6 +254,7 @@ async function getIndentorTransferCandidates(
     `select
        f.id,
        f.unique_code,
+       f.imms,
        f.file_no,
        f.title,
        d.name as division,
@@ -248,6 +272,7 @@ async function getIndentorTransferCandidates(
     files: result.rows.map((row) => ({
       id: row.id,
       uniqueCode: row.unique_code ?? undefined,
+      imms: row.imms ?? undefined,
       fileNo: row.file_no ?? undefined,
       title: row.title ?? undefined,
       division: row.division ?? undefined,
@@ -338,6 +363,7 @@ indentorsRouter.post(
           : "";
     if (!divisionId) throw new HttpError(400, "divisionId is required.");
     await assertDivisionAccess(user, divisionId);
+    await ensureOptionalSfIdIndex();
 
     const result = await pool.query<{ id: string }>(
       `insert into indentors (
@@ -348,11 +374,11 @@ indentorsRouter.post(
       [
         divisionId,
         readTrimmed(body.name, "name"),
-        readTrimmed(body.sfId, "SF ID"),
-        readTrimmed(body.designation, "designation"),
-        readTrimmed(body.mobileNo, "mobile no."),
-        readTrimmed(body.landlineNo, "landline no."),
-        readTrimmed(body.email, "email id"),
+        readOptionalIndentorField(body.sfId, "SF ID"),
+        readOptionalIndentorField(body.designation, "designation"),
+        readOptionalIndentorField(body.mobileNo, "mobile no."),
+        readOptionalIndentorField(body.landlineNo, "landline no."),
+        readOptionalIndentorField(body.email, "email id"),
         user.id.startsWith("viewer:") ? null : user.id,
       ],
     );
@@ -374,6 +400,7 @@ indentorsRouter.patch(
         ? body.divisionId.trim()
         : existing.divisionId;
     await assertDivisionAccess(user, divisionId);
+    await ensureOptionalSfIdIndex();
 
     await pool.query(
       `update indentors
@@ -389,11 +416,11 @@ indentorsRouter.patch(
         id,
         divisionId,
         readTrimmed(body.name, "name"),
-        readTrimmed(body.sfId, "SF ID"),
-        readTrimmed(body.designation, "designation"),
-        readTrimmed(body.mobileNo, "mobile no."),
-        readTrimmed(body.landlineNo, "landline no."),
-        readTrimmed(body.email, "email id"),
+        readOptionalIndentorField(body.sfId, "SF ID"),
+        readOptionalIndentorField(body.designation, "designation"),
+        readOptionalIndentorField(body.mobileNo, "mobile no."),
+        readOptionalIndentorField(body.landlineNo, "landline no."),
+        readOptionalIndentorField(body.email, "email id"),
       ],
     );
     response.json({ indentor: await getIndentor(id) });

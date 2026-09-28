@@ -3,6 +3,7 @@ const selectedYear = process.env.AUDIT_SELECTED_YEAR ?? "__all_active_files__";
 const fileYear = process.env.AUDIT_FILE_YEAR ?? "all";
 const username = process.env.AUDIT_USERNAME ?? "ovais";
 const password = process.env.AUDIT_PASSWORD ?? "ovais123";
+const sessionToken = process.env.AUDIT_SESSION_TOKEN;
 const maxPages = Number.parseInt(process.env.AUDIT_MAX_PAGES ?? "20", 10);
 const includeNotes = process.env.AUDIT_INCLUDE_NOTES === "1";
 const configuredFileCategories = process.env.AUDIT_FILE_CATEGORIES;
@@ -59,9 +60,10 @@ function normalizeLiveStatusMilestoneName(milestone) {
 
 function getLiveStatusDashboardFilter(milestoneName) {
   const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
-  return normalizeMilestoneName(filterMilestoneName) === "supplementarybillreturnedforcorrection"
-    ? "supplementaryBill:returned"
-    : `manualMilestoneCurrent:${filterMilestoneName}`;
+  const normalized = normalizeMilestoneName(filterMilestoneName);
+  if (normalized === "supplementarybillreturnedforcorrection") return "supplementaryBill:returned";
+  if (normalized === "deliveryperiod") return "deliveryPeriodLive";
+  return `manualMilestoneCurrent:${filterMilestoneName}`;
 }
 
 function isFileVisibleForSelectedYear(file) {
@@ -91,6 +93,7 @@ async function api(path, token) {
 }
 
 async function login() {
+  if (sessionToken) return sessionToken;
   const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },

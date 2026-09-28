@@ -7,9 +7,23 @@ import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../uti
 
 export const firmsRouter = Router();
 
+let masterFirmTypeSchemaReady: Promise<void> | undefined;
+
+function ensureMasterFirmTypeSchema() {
+  masterFirmTypeSchemaReady ??= pool
+    .query("alter table master_firms add column if not exists firm_type text")
+    .then(() => undefined);
+  return masterFirmTypeSchemaReady;
+}
+
+firmsRouter.use((_request, _response, next) => {
+  ensureMasterFirmTypeSchema().then(() => next()).catch(next);
+});
+
 type MasterFirmRow = {
   id: string;
   firm_name: string | null;
+  firm_type: string | null;
   email_id: string | null;
   city: string | null;
   address: string | null;
@@ -27,6 +41,7 @@ function mapFirm(row: MasterFirmRow): MasterFirm {
   return {
     id: row.id,
     firmName: fromDbText(row.firm_name) || undefined,
+    firmType: fromDbText(row.firm_type) || undefined,
     emailId: fromDbText(row.email_id) || undefined,
     city: fromDbText(row.city) || undefined,
     address: fromDbText(row.address) || undefined,
@@ -262,6 +277,7 @@ async function assertFirmUnusedBeforeArchive(firm: MasterFirm) {
 
 function readFirmPayload(body: Record<string, unknown>) {
   const firmName = toDbText(body.firmName);
+  const firmType = toDbText(body.firmType);
   const emailId = toDbText(body.emailId);
   const city = toDbText(body.city);
   const address = toDbText(body.address);
@@ -276,7 +292,7 @@ function readFirmPayload(body: Record<string, unknown>) {
   if (!firmName && !emailId && !firmUniqueNo) {
     throw new HttpError(400, "Enter firm name, email id, or Firm Unique No.");
   }
-  return { firmName, emailId, city, address, firmUniqueNo, contactNo };
+  return { firmName, firmType, emailId, city, address, firmUniqueNo, contactNo };
 }
 
 function isUniqueViolation(error: unknown) {
@@ -314,6 +330,7 @@ firmsRouter.get(
         `(lower(coalesce(mf.firm_name, '')) like $${values.length}
           or lower(coalesce(mf.email_id, '')) like $${values.length}
           or lower(coalesce(mf.firm_unique_no, '')) like $${values.length}
+          or lower(coalesce(mf.firm_type, '')) like $${values.length}
           or lower(coalesce(mf.contact_no, '')) like $${values.length})`,
       );
     }
@@ -353,11 +370,12 @@ firmsRouter.post(
     const payload = readFirmPayload(requireObjectBody(request.body));
     try {
       const result = await pool.query<MasterFirmRow>(
-        `insert into master_firms (firm_name, email_id, city, address, firm_unique_no, contact_no, created_by)
-         values ($1, $2, $3, $4, $5, $6, $7)
+        `insert into master_firms (firm_name, firm_type, email_id, city, address, firm_unique_no, contact_no, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
          returning *, null::text as created_by_name`,
         [
           payload.firmName,
+          payload.firmType,
           payload.emailId,
           payload.city,
           payload.address,
@@ -386,12 +404,13 @@ firmsRouter.patch(
     try {
       const result = await pool.query<MasterFirmRow>(
         `update master_firms
-         set firm_name = $2, email_id = $3, city = $4, address = $5, firm_unique_no = $6, contact_no = $7
+         set firm_name = $2, firm_type = $3, email_id = $4, city = $5, address = $6, firm_unique_no = $7, contact_no = $8
          where id = $1 and archived_at is null
          returning *, null::text as created_by_name`,
         [
           id,
           payload.firmName,
+          payload.firmType,
           payload.emailId,
           payload.city,
           payload.address,

@@ -64,6 +64,7 @@ export type FileSearchParams = {
   revenueOnly?: boolean;
   description?: string;
   firm?: string;
+  firmIdentityUniqueNo?: string;
   firmUniqueNo?: string;
   firmContactNo?: string;
   firmCity?: string;
@@ -416,7 +417,7 @@ const milestoneDefinitions = [
     key: "bidding",
     previous: "cfaDate",
     current: "biddingStageOver",
-    applies: (file) => isBiddingApplicableForFile(file),
+    applies: (file) => isBiddingApplicableForFile(file) && !isYes(file.refloat),
   },
   {
     key: "postTcec",
@@ -509,27 +510,35 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
   const analyticsNameSet = new Set((params.analyticsNames ?? []).map(normalizeAnalyticsName));
   const showDemandCancelledFiles = shouldShowDemandCancelledFiles(params);
   const requiredFilledFields = params.requiredFilledFields ?? [];
+  const dashboardFilters = [
+    params.dashboardFilter,
+    ...(params.extraDashboardFilters ?? []),
+  ].filter((filter): filter is string => Boolean(filter?.trim()));
+  const directFileIdDrilldown = dashboardFilters.some(isFileIdsDashboardFilter);
 
   const filtered = files.filter((file) => {
     if (!showDemandCancelledFiles && isYes(file.demandCancelled)) return false;
     if (params.yearFilter && !includesText(file.year, params.yearFilter)) return false;
     if (
+      !directFileIdDrilldown &&
       params.fileInitiationFrom &&
       (!file.receivedDate || file.receivedDate < params.fileInitiationFrom)
     ) {
       return false;
     }
     if (
+      !directFileIdDrilldown &&
       params.fileInitiationTo &&
       (!file.receivedDate || file.receivedDate > params.fileInitiationTo)
     ) {
       return false;
     }
-    if (fileCategories && !matchesFileCategorySelection(file, fileCategories)) return false;
-    const dashboardFilters = [
-      params.dashboardFilter,
-      ...(params.extraDashboardFilters ?? []),
-    ].filter((filter): filter is string => Boolean(filter?.trim()));
+    if (
+      !directFileIdDrilldown &&
+      fileCategories &&
+      !matchesFileCategorySelection(file, fileCategories)
+    )
+      return false;
     if (dashboardFilters.some((filter) => !matchesDashboardFilter(file, filter))) return false;
     const excludedDashboardFilters = (params.excludeDashboardFilters ?? []).filter((filter) =>
       Boolean(filter?.trim()),
@@ -562,6 +571,12 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
     if (params.description && !includesText(file.demandDescription, params.description))
       return false;
     if (params.firm && !matchesFirmScopedText(file, firmSearchScopes, "firmName", params.firm)) {
+      return false;
+    }
+    if (
+      params.firmIdentityUniqueNo &&
+      !matchesFirmScopedExactUniqueNo(file, firmSearchScopes, params.firmIdentityUniqueNo)
+    ) {
       return false;
     }
     if (
@@ -1022,6 +1037,7 @@ function isFirmOriginatedSearch(params: FileSearchParams) {
     params.analyticsType === "firm" ||
     dashboardFilters.some((filter) => filter.startsWith("firmAnalysis:")) ||
     Boolean(params.firm?.trim()) ||
+    Boolean(params.firmIdentityUniqueNo?.trim()) ||
     Boolean(params.firmUniqueNo?.trim()) ||
     Boolean(params.firmContactNo?.trim()) ||
     Boolean(params.firmCity?.trim()) ||
@@ -1329,6 +1345,26 @@ function matchesFirmScopedText(
   });
 }
 
+function matchesFirmScopedExactUniqueNo(
+  file: FileRecord,
+  scopes: FirmSearchScope[],
+  uniqueNo: string,
+) {
+  return scopes.some((scope) => {
+    if (scope !== "so" && !isBiddingApplicableForFile(file)) return false;
+    if (scope === "bq") {
+      return (file.bqFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+    }
+    if (scope === "invited") {
+      return (file.invitedFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+    }
+    if (scope === "bidder") {
+      return (file.bidderFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+    }
+    return fileSupplyOrders(file).some((order) => matchesExactText(order.firmUniqueNo, uniqueNo));
+  });
+}
+
 function normalizeFileTypeValue(value: string | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
@@ -1461,11 +1497,7 @@ function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
-  return (
-    !isYes(file.demandCancelled) &&
-    !isYes(order.soCancelled) &&
-    !isShortclosureNoFurtherAction(order)
-  );
+  return !isYes(file.demandCancelled) && !isYes(order.soCancelled);
 }
 
 function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
@@ -1489,7 +1521,7 @@ function isOrderActiveForCurrentMilestone(
 ) {
   return isPaymentMilestone(normalizedMilestone)
     ? isPaymentOrderActive(file, order)
-    : !isSupplyOrderCancelled(file, order) && !isYes(order.shortclosure);
+    : !isSupplyOrderCancelled(file, order);
 }
 
 function isPaymentMilestone(normalizedMilestone: string) {
@@ -1527,10 +1559,8 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery)) {
     if (!hasFilledString(order.stageDeliveryCount)) return false;
     if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
-      return false;
-    }
   }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
   return true;
 }
 
@@ -1900,12 +1930,23 @@ function compareSortValues(a: string | undefined, b: string | undefined) {
 }
 
 function isFileTenderLive(file: FileRecord) {
-  return isBiddingApplicableForFile(file) && isYes(file.tenderLive);
+  const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
+  const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  return (
+    isBiddingApplicableForFile(file) &&
+    !isYes(file.bidOpened) &&
+    !isYes(file.biddingStageOver) &&
+    hasFilledString(bidDate) &&
+    hasFilledString(bidOpeningDate) &&
+    !isDateAfterToday(bidDate) &&
+    !isDateBeforeToday(bidOpeningDate)
+  );
 }
 
 function isBiddingInProgressFile(file: FileRecord) {
   return (
     isBiddingApplicableForFile(file) &&
+    !isYes(file.refloat) &&
     hasFilledString(file.cfaDate) &&
     !isYes(file.biddingStageOver)
   );
@@ -1943,8 +1984,7 @@ function isLiveSupplyOrder(file: FileRecord) {
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isShortclosureNoFurtherAction(order),
+      !isSupplyOrderCancelled(file, order),
   );
 }
 
@@ -1954,8 +1994,7 @@ function isBgToBeReceived(file: FileRecord, category = "bankguarantee") {
       isBgCategoryApplicable(file, order, category) &&
       isBgCurrentOrder(file, order, category) &&
       !isBgReceivedOrder(order, category) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isYes(order.shortclosure),
+      !isSupplyOrderCancelled(file, order),
   );
 }
 
@@ -2170,7 +2209,6 @@ function isJobCompletionDone(order: SupplyOrderDetail) {
 }
 
 function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
-  if (isYes(order.shortclosure)) return false;
   if (hasFilledString(order.billPreparationDate)) return false;
   if (isDeliveryInspectionApplicable(file)) {
     return isYes(file.ir) && hasFilledString(order.irReceiptDate);
@@ -2408,6 +2446,13 @@ function isPaymentPending(file: FileRecord) {
   return finalPaymentOrders(file).some((order) => isNormalPaymentOpenOrder(file, order));
 }
 
+function hasAnalyticsPaymentPending(file: FileRecord) {
+  return (
+    getFinancePaymentLiabilityEntries(file).some((entry) => entry.pending) ||
+    hasAdvancePaymentPending(file)
+  );
+}
+
 function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
   return (
     hasFilledString(order.billPreparationDate) ||
@@ -2429,6 +2474,18 @@ function isPaymentCompleted(file: FileRecord) {
 
 function finalPaymentOrders(file: FileRecord) {
   return filePaymentOrders(file).filter((order) => order.stageDeliveryLabel !== "Advance Payment");
+}
+
+function isFinanceMainPaymentLiabilityRelevant(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isYes(order.shortclosure)) return true;
+  return (
+    hasPaymentWorkflowStarted(file, order) ||
+    hasFilledString(order.paymentDate) ||
+    hasFilledString(order.actualPaymentCapital) ||
+    hasFilledString(order.actualPaymentRevenue) ||
+    hasFilledString(order.billAmountCapital) ||
+    hasFilledString(order.billAmountRevenue)
+  );
 }
 
 function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
@@ -2475,6 +2532,7 @@ function getFinancePaymentLiabilityEntries(file: FileRecord) {
     if (isSupplyOrderCancelled(file, baseOrder)) return [];
     const mainEntries = finalPaymentOrders({ ...file, supplyOrders: [baseOrder] })
       .filter((order) => isPaymentOrderActive(file, order))
+      .filter((order) => isFinanceMainPaymentLiabilityRelevant(file, order))
       .map((order) => ({
         sourceDate: order.soDate || baseOrder.soDate,
         paymentDate: order.paymentDate,
@@ -2704,8 +2762,7 @@ function isIrPreparationPending(file: FileRecord) {
         hasSupplyOrderDate(order) &&
         hasFilledString(order.materialReceiptDate) &&
         !hasFilledString(order.irPreparationDate) &&
-        !isSupplyOrderCancelled(file, order) &&
-        !isYes(order.shortclosure),
+        !isSupplyOrderCancelled(file, order),
     )
   );
 }
@@ -2718,8 +2775,7 @@ function isIrReceiptPending(file: FileRecord) {
       (order) =>
         hasFilledString(order.irPreparationDate) &&
         !hasFilledString(order.irReceiptDate) &&
-        !isSupplyOrderCancelled(file, order) &&
-        !isYes(order.shortclosure),
+        !isSupplyOrderCancelled(file, order),
     )
   );
 }
@@ -2815,7 +2871,7 @@ function getBiddingDelayStatus(file: FileRecord) {
   ) {
     return { key: "rfpVettingApprovalPending", stageStartDate: file.rfpVettingInitiationDate };
   }
-  if (!isYes(file.tenderLive) && !hasFilledString(bidDate)) {
+  if (!hasFilledString(bidDate)) {
     return { key: "tenderLivePending", stageStartDate: prerequisiteDoneDate };
   }
   if (
@@ -3512,7 +3568,7 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       return orderMatches || supplementaryMatches;
     }
     if (parsed.mode === "supplementaryBillSent") {
-      if (isSupplyOrderCancelled(file, order) || isShortclosureNoFurtherAction(order)) return false;
+      if (isSupplyOrderCancelled(file, order)) return false;
       return getSupplementaryBills(order).some((bill) => {
         if (hasFilledString(bill.paymentDate) || hasOpenSupplementaryBillReturn(bill)) return false;
         const submissionDate = getActiveSupplementaryBillSubmissionDate(bill);
@@ -3537,13 +3593,6 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       parsed.mode === "returnedBillsPaid"
     ) {
       if (isSupplyOrderCancelled(file, order)) return false;
-      if (
-        (parsed.mode === "pendingReturnedBills" ||
-          parsed.mode === "returnedBillsResubmitted") &&
-        isShortclosureNoFurtherAction(order)
-      ) {
-        return false;
-      }
       const eventDate = getReturnedBillCashOutgoEventDate(order, parsed.mode);
       return rangeMatches(eventDate);
     }
@@ -3554,13 +3603,6 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       parsed.mode === "supplementaryReturnedBillsPaid"
     ) {
       if (isSupplyOrderCancelled(file, order)) return false;
-      if (
-        (parsed.mode === "supplementaryPendingReturnedBills" ||
-          parsed.mode === "supplementaryReturnedBillsResubmitted") &&
-        isShortclosureNoFurtherAction(order)
-      ) {
-        return false;
-      }
       return getSupplementaryBills(order).some((bill) =>
         rangeMatches(getSupplementaryReturnedBillCashOutgoEventDate(bill, parsed.mode)),
       );
@@ -3905,7 +3947,8 @@ function matchesStatus4CurrentMilestone(file: FileRecord, milestone: string) {
     return (
       !isCancelledFile(file) &&
       isBiddingApplicableForFile(file) &&
-      normalizeMilestoneName(file.currentMilestone) === "bidding"
+      hasFilledString(file.cfaDate) &&
+      !isYes(file.biddingStageOver)
     );
   }
   return !isCancelledFile(file) && file.currentMilestone === milestone;
@@ -4019,6 +4062,15 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
         !hasFilledString(file.refloatPostTcecMinutesDate)
       );
     }
+    if (normalized === "bidding") {
+      return (
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        hasFilledString(file.cfaDate) &&
+        !isYes(file.biddingStageOver)
+      );
+    }
     if (isSupplyOrderDrivenMilestoneName(milestone)) {
       return matchesCurrentSupplyOrderDrivenMilestone(file, milestone);
     }
@@ -4039,6 +4091,14 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
         hasFilledString(file.refloatPostTcecMinutesDate)
       );
     }
+    if (normalized === "bidding") {
+      return (
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        isYes(file.biddingStageOver)
+      );
+    }
     if (isSupplyOrderDrivenMilestoneName(milestone)) {
       return matchesCompletedSupplyOrderDrivenMilestone(file, milestone);
     }
@@ -4053,7 +4113,43 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "rqaVetting") return isYes(file.rqa);
   if (filter === "ifaConcurrence") return isYes(file.ifa);
   if (filter === "liveBids") return isBiddingInProgressFile(file) && isFileTenderLive(file);
-  if (filter === "bidOverdue") return isBidOverdue(file);
+  if (filter === "bidOverdue") return isBiddingInProgressFile(file) && isBidOverdue(file);
+  if (filter.startsWith("preBidMeetingCombined:")) {
+    const [, state = "all", monthKey = ""] = filter.split(":");
+    if (state === "all") {
+      return (
+        isPreBidMeetingStatus(file, false, "due", monthKey) ||
+        isPreBidMeetingStatus(file, false, "completed", monthKey) ||
+        isPreBidMeetingStatus(file, true, "due", monthKey) ||
+        isPreBidMeetingStatus(file, true, "completed", monthKey)
+      );
+    }
+    if (state === "due" || state === "completed") {
+      return (
+        isPreBidMeetingStatus(file, false, state, monthKey) ||
+        isPreBidMeetingStatus(file, true, state, monthKey)
+      );
+    }
+    return false;
+  }
+  if (filter.startsWith("preBidMeetingCombinedFy:")) {
+    const [, state = "all", fiscalYear = ""] = filter.split(":");
+    if (state === "all") {
+      return (
+        isPreBidMeetingStatus(file, false, "due", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, false, "completed", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, "due", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, "completed", "", fiscalYear)
+      );
+    }
+    if (state === "due" || state === "completed") {
+      return (
+        isPreBidMeetingStatus(file, false, state, "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, state, "", fiscalYear)
+      );
+    }
+    return false;
+  }
   if (filter === "supplyOrders") return isSupplyOrderPlaced(file);
   if (filter === "liveSupplyOrders") return isLiveSupplyOrder(file);
   if (filter === "bgReceived") return isBgReceived(file);
@@ -4090,10 +4186,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
+  if (filter === "deliveryPeriodLive")
+    return isDeliveryPeriodValid(file) || isDeliveryPeriodExtended(file);
   if (filter === "irPreparationPending") return isIrPreparationPending(file);
   if (filter === "irReceiptPending") return isIrReceiptPending(file);
   if (filter === "irCompleted") return isIrCompleted(file);
   if (filter === "paymentDue") return isPaymentDue(file);
+  if (filter === "analyticsPaymentPending") return hasAnalyticsPaymentPending(file);
   if (filter === "paymentDueOnly") return hasPaymentDueOnly(file);
   if (filter === "paymentInProcess") return hasPaymentInProcess(file);
   if (filter === "paymentSubmitted") return hasPaymentSubmitted(file);
@@ -4152,7 +4251,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestoneUnderProcess:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(22));
     if (milestone?.key === "refloatPostTcec") {
-      return isYes(file.refloat) && !isYes(file.biddingStageOver);
+      return isYes(file.refloat) && isYes(file.tcec) && !isYes(file.biddingStageOver);
     }
     if (milestone?.key === "refloatBidding") return false;
     return milestone ? isAtPreviousStageFile(file, milestone) : true;
@@ -4160,6 +4259,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestoneActive:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(16));
     if (!milestone) return true;
+    if (milestone.key === "bidding") {
+      return (
+        isBiddingInProgressFile(file) &&
+        !isFileTenderLive(file) &&
+        !isBidOverdue(file)
+      );
+    }
     if (milestone.key === "refloatBidding") {
       return (
         isRefloatBiddingInProgressFile(file) &&
@@ -4336,6 +4442,8 @@ function isInactiveHistoryDashboardFilter(filter: string) {
   return (
     filter === "divisionTurnaroundSample" ||
     filter.startsWith("mode:") ||
+    filter.startsWith("preBidMeetingCombined:") ||
+    filter.startsWith("preBidMeetingCombinedFy:") ||
     filter.startsWith("preBidMeeting:") ||
     filter.startsWith("refloatPreBidMeeting:") ||
     filter.startsWith("preBidMeetingFy:") ||
@@ -4354,6 +4462,7 @@ function isInactiveHistoryDashboardFilter(filter: string) {
 function shouldAllowInactiveDashboardFilter(filter: string) {
   return (
     filter.startsWith("fileIds:") ||
+    filter.startsWith("snapshotFileIds:") ||
     filter === "totalFiles" ||
     filter.startsWith("attribute:") ||
     filter.startsWith("fileType:") ||
@@ -4372,7 +4481,15 @@ function shouldAllowInactiveDashboardFilter(filter: string) {
 }
 
 function shouldAllowDemandCancelledDashboardFilter(filter: string) {
-  return filter === "miscDemandCancelled" || filter.startsWith("fileIds:");
+  return (
+    filter === "miscDemandCancelled" ||
+    filter.startsWith("fileIds:") ||
+    filter.startsWith("snapshotFileIds:")
+  );
+}
+
+function isFileIdsDashboardFilter(filter: string) {
+  return filter.startsWith("fileIds:") || filter.startsWith("snapshotFileIds:");
 }
 
 function isDivisionTurnaroundSample(file: FileRecord) {
@@ -4424,12 +4541,19 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
       return matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder");
     if (stageKey === "live") return hasLiveSupplyOrderRow(file);
     if (stageKey === "pending") return hasCurrentSupplyOrderMilestoneRow(file);
+    if (stageKey === "atpreviousstage") {
+      return (
+        matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction") &&
+        !matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder")
+      );
+    }
   }
 
   if (milestoneKey === "financialsanction") {
     const completed = matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
     const pending = matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction");
     if (stageKey === "total" || stageKey === "totalfiles") return completed;
+    if (stageKey === "atpreviousstage") return isFinancialSanctionPreviousStageFile(file);
     if (stageKey === "pending") return pending;
   }
 
@@ -4438,19 +4562,29 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending") return hasAdvancePaymentPending(file);
   }
 
-  if (milestoneKey === "billreturnedforcorrection") {
-    const orders = filePaymentOrders(file).filter((order) => isPaymentOrderActive(file, order));
-    if (stageKey === "total") return orders.some(hasReturnedBill);
-    if (stageKey === "pending") return orders.some(hasOpenBillReturn);
-    if (stageKey === "completed") return orders.some(hasCompletedBillReturn);
+  if (milestoneKey === "billreturnedforcorrection" || milestoneKey === "returnedbills") {
+    const orders = normalizedFilePaymentOrders(file).filter((order) =>
+      isPaymentOrderActive(file, order),
+    );
+    if (stageKey === "total" || stageKey === "billsreturned") return orders.some(hasReturnedBill);
+    if (stageKey === "pending" || stageKey === "returnpending")
+      return orders.some(hasOpenBillReturn);
+    if (stageKey === "completed" || stageKey === "resubmitted")
+      return orders.some(hasCompletedBillReturn);
     if (stageKey === "returnedpaid") return orders.some(hasReturnedBillPaid);
   }
 
-  if (milestoneKey === "supplementarybills") {
-    if (stageKey === "submitted") return hasSupplementaryBillPending(file);
-    if (stageKey === "returned") return hasSupplementaryBillReturned(file);
-    if (stageKey === "resubmitted") return hasSupplementaryBillResubmitted(file);
-    if (stageKey === "paid") return hasSupplementaryBillPaid(file);
+  if (milestoneKey === "supplementarybill" || milestoneKey === "supplementarybills") {
+    if (stageKey === "submittedtotal" || stageKey === "submitted")
+      return hasSupplementaryBillSubmitted(file);
+    if (stageKey === "returnedtotal" || stageKey === "returned")
+      return hasSupplementaryBillReturnHistoryFile(file);
+    if (stageKey === "returnpending") return hasSupplementaryBillReturned(file);
+    if (stageKey === "resubmittedtotal" || stageKey === "resubmitted")
+      return hasSupplementaryBillResubmitted(file);
+    if (stageKey === "returnedpaid") return hasReturnedSupplementaryBillPaid(file);
+    if (stageKey === "normalpaid" || stageKey === "paid") return hasSupplementaryBillPaid(file);
+    if (stageKey === "pending") return hasSupplementaryBillPending(file);
   }
 
   if (milestoneKey === "bankguarantee") {
@@ -4496,6 +4630,8 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
   if (milestoneKey === "payment") {
     if (stageKey === "completed") return isPaymentCompleted(file);
     if (stageKey === "pending") return isPaymentPending(file);
+    if (stageKey === "due") return hasPaymentDueOnly(file);
+    if (stageKey === "inprocess") return hasPaymentInProcess(file);
     if (stageKey === "submitted" || stageKey === "submittedandunpaid")
       return hasPaymentSubmitted(file);
     if (stageKey === "total" || stageKey === "totalfiles") {
@@ -4543,6 +4679,16 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "atpreviousstage" || stageKey === "atpreviousstages") return false;
   }
 
+  if (milestone.key === "bidding") {
+    const biddingInProgress = isBiddingInProgressFile(file);
+    if (stageKey === "live") return biddingInProgress && isFileTenderLive(file);
+    if (stageKey === "inprocess") {
+      return biddingInProgress && !isFileTenderLive(file) && !isBidOverdue(file);
+    }
+    if (stageKey === "openingoverdue") return biddingInProgress && isBidOverdue(file);
+    if (stageKey === "completed") return inProcess && isMilestoneComplete(file, milestone);
+  }
+
   if (stageKey === "total" || stageKey === "totalfiles" || stageKey === "totalcases") {
     return applicable;
   }
@@ -4573,6 +4719,17 @@ function normalizeStatusStage(value: string | undefined) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function isFinancialSanctionPreviousStageFile(file: FileRecord) {
+  if (isCancelledFile(file)) return false;
+  if (matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction")) return false;
+  if (matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction")) return false;
+  const current = normalizeMilestoneName(file.currentMilestone);
+  if (isYes(file.tcec)) return current === "cnc" && !hasFilledString(file.cncApprovalDate);
+  return isBiddingApplicableForFile(file)
+    ? current === "bidding" && !isYes(file.biddingStageOver)
+    : current === "cfa" && !hasFilledString(file.cfaDate);
+}
+
 function hasPlacedSupplyOrder(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) => isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
@@ -4588,13 +4745,23 @@ function hasLiveSupplyOrderRow(file: FileRecord) {
   );
 }
 
-function isPreBidMeetingStatus(file: FileRecord, refloat: boolean, state: "due" | "completed") {
+function isPreBidMeetingStatus(
+  file: FileRecord,
+  refloat: boolean,
+  state: "due" | "completed",
+  monthKey = "",
+  fiscalYear = "",
+) {
   if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
     ? isYes(file.refloat) && isYes(file.refloatPreBidMeeting)
     : isYes(file.preBidMeeting);
   const date = refloat ? file.refloatPreBidMeetingDate : file.preBidMeetingDate;
   if (!applies || !hasFilledString(date)) return false;
+  if (monthKey && getMonthKey(date) !== monthKey) return false;
+  if (fiscalYear && fiscalYear !== "all" && getFinancialYearForDate(date) !== fiscalYear) {
+    return false;
+  }
   return state === "completed" ? isDateBeforeToday(date) : !isDateBeforeToday(date);
 }
 

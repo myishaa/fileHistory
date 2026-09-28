@@ -994,6 +994,16 @@ settingsRouter.get(
   }),
 );
 
+settingsRouter.post(
+  "/verify-deletion-password",
+  asyncHandler(async (request, response) => {
+    requireAuth(request as AuthRequest);
+    const body = requireObjectBody(request.body);
+    await verifyDeletionPassword(body.deletionPassword);
+    response.json({ valid: true });
+  }),
+);
+
 settingsRouter.get(
   "/report-preferences/:reportKey",
   asyncHandler(async (request, response) => {

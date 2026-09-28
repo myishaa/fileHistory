@@ -287,6 +287,7 @@ export type FirmDetail = {
 export type MasterFirm = {
   id: string;
   firmName?: string;
+  firmType?: string;
   emailId?: string;
   city?: string;
   address?: string;

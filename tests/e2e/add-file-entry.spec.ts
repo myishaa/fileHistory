@@ -62,10 +62,10 @@ async function authenticate(page: Page, token: string) {
 }
 
 async function selectedYear() {
-  const result = await pool.query<{ selected_year: string }>(
-    "select selected_year from app_settings where id = true",
+  const result = await pool.query<{ financial_year: string }>(
+    "select financial_year from app_settings where id = true",
   );
-  return result.rows[0]?.selected_year ?? "2026-27";
+  return result.rows[0]?.financial_year ?? "2026-27";
 }
 
 function scenarioFor(index: number): AddScenario {
@@ -218,6 +218,15 @@ async function fillSupplyOrderBase(page: Page, code: string, scenario: AddScenar
     if (scenario.stagePayment) {
       await clickRadio(page, "add-field-supplyOrder-0-advancePayment", scenario.advancePayment ? "Yes" : "No");
     }
+  }
+  if (index === 0) {
+    await expect(page.getByTestId("add-field-supplyOrder-0-advancePayment-yes")).toBeVisible();
+  }
+  if (index === 0) {
+    await expect(page.getByTestId("add-field-supplyOrder-0-advancePayment-yes")).toBeVisible();
+    await page.getByTestId("add-so-tab-payment").click();
+    await openSupplyOrder(page);
+    await expect(page.getByTestId("add-field-supplyOrder-0-billAmountCapital")).toHaveValue("");
   }
 }
 

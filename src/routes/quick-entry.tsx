@@ -6,6 +6,7 @@ import {
   FileText,
   FolderOpen,
   Pencil,
+  RotateCcw,
   Save,
   ScanLine,
   Search,
@@ -13,7 +14,7 @@ import {
 import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
 import {
   createFileStatusUpdate,
-  fetchFilesByUniqueCode,
+  fetchFilesByIdentifier,
   fetchQuickStatusContext,
   lookupQuickStatusFiles,
   updateFileStatusUpdate,
@@ -109,13 +110,14 @@ function QuickEntryEditor() {
     activeUser?.role === "division_user";
   const canOpenCurrentStage = canEditFiles || isReadOnlyQuickEntry;
   const canCreateFileStatus = canEditFiles || activeUser?.role === "universal_viewer";
-  const [uniqueCode, setUniqueCode] = useState("");
+  const [entryIdentifier, setEntryIdentifier] = useState("");
   const [message, setMessage] = useState<QuickEntryError | null>(null);
   const [milestoneFileId, setMilestoneFileId] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [controlNo, setControlNo] = useState("");
+  const [fileIdentifier, setFileIdentifier] = useState("");
   const [description, setDescription] = useState("");
+  const [descriptionAutoFilled, setDescriptionAutoFilled] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupMessage, setLookupMessage] = useState<QuickEntryError | null>(null);
   const [matches, setMatches] = useState<QuickStatusFileSummary[]>([]);
@@ -125,14 +127,14 @@ function QuickEntryEditor() {
   const [editingStatusText, setEditingStatusText] = useState("");
 
   const findFile = async () => {
-    const code = normalizeQuickEntryCode(uniqueCode);
+    const code = normalizeQuickEntryCode(entryIdentifier);
     if (!code) {
-      setMessage({ tone: "error", text: "Scan or enter the Unique code first." });
+      setMessage({ tone: "error", text: "Scan or enter the Unique Code / Control No. first." });
       return undefined;
     }
 
     setLoading(true);
-    const found = await fetchFilesByUniqueCode(code)
+    const found = await fetchFilesByIdentifier(code)
       .then((result) => result.files)
       .catch((error) => {
         console.error(error);
@@ -143,14 +145,14 @@ function QuickEntryEditor() {
     if (found.length === 0) {
       setMessage({
         tone: "error",
-        text: "No accessible file was found for this Unique code.",
+        text: "No accessible file was found for this Unique Code / Control No.",
       });
       return undefined;
     }
     if (found.length > 1) {
       setMessage({
         tone: "error",
-        text: "More than one accessible file has this Unique code. Please correct duplicate codes before using Quick Entry.",
+        text: "More than one accessible file matches this identifier. Use a different identifier or correct the duplicate before using Quick Entry.",
       });
       return undefined;
     }
@@ -190,8 +192,8 @@ function QuickEntryEditor() {
   const loadStatusContext = async (fileId: string) => {
     const loaded = await fetchQuickStatusContext(fileId);
     setContext(loaded);
-    setControlNo(loaded.file.imms ?? "");
     setDescription(loaded.file.demandDescription ?? "");
+    setDescriptionAutoFilled(true);
     setStatusDraft("");
     setEditingStatusId("");
     setEditingStatusText("");
@@ -199,17 +201,17 @@ function QuickEntryEditor() {
   };
 
   const lookupFile = async () => {
-    const cleanControl = controlNo.trim();
+    const cleanIdentifier = fileIdentifier.trim();
     const cleanDescription = description.trim();
-    if (!cleanControl && !cleanDescription) {
-      setLookupMessage({ tone: "error", text: "Enter Control No. or Item description." });
+    if (!cleanIdentifier && !cleanDescription) {
+      setLookupMessage({ tone: "error", text: "Enter Unique Code / Control No. or Item description." });
       return;
     }
     setLookupLoading(true);
     setLookupMessage(null);
     setContext(undefined);
     const result = await lookupQuickStatusFiles({
-      controlNo: cleanControl,
+      controlNo: cleanIdentifier,
       description: cleanDescription,
     })
       .catch((error) => {
@@ -231,10 +233,22 @@ function QuickEntryEditor() {
     setLookupMessage({ tone: "success", text: "Multiple files matched. Select one." });
   };
 
+  const resetLookup = () => {
+    setFileIdentifier("");
+    setDescription("");
+    setDescriptionAutoFilled(false);
+    setLookupMessage(null);
+    setMatches([]);
+    setContext(undefined);
+    setStatusDraft("");
+    setEditingStatusId("");
+    setEditingStatusText("");
+  };
+
   const saveStatus = async () => {
     if (!context) return;
     if (!canCreateFileStatus) {
-      setLookupMessage({ tone: "error", text: "Universal Viewer can view File Status only." });
+      setLookupMessage({ tone: "error", text: "Your account cannot add File Status." });
       return;
     }
     if (countWords(statusDraft) > 50) {
@@ -294,7 +308,7 @@ function QuickEntryEditor() {
             <div>
               <h2 className="text-base font-semibold">Quick Entry</h2>
               <p className="text-xs text-muted-foreground">
-                Scan or enter the Unique code to open the file's current stage.
+                Scan or enter the Unique Code / Control No. to open the file's current stage.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Viewers open it read-only. Quick Entry opens exact files only; it does not change
@@ -305,11 +319,11 @@ function QuickEntryEditor() {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
             <label className="block">
-              <div className="mb-1.5 text-xs font-medium">Unique code</div>
+              <div className="mb-1.5 text-xs font-medium">Unique Code / Control No.</div>
               <input
-                value={uniqueCode}
+                value={entryIdentifier}
                 onChange={(event) => {
-                  setUniqueCode(event.target.value);
+                  setEntryIdentifier(event.target.value);
                   setMessage(null);
                   setMilestoneFileId("");
                 }}
@@ -320,7 +334,7 @@ function QuickEntryEditor() {
                   }
                 }}
                 autoFocus
-                placeholder="Scan barcode or type Unique code"
+                placeholder="Scan barcode or type Unique Code / Control No."
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
@@ -384,16 +398,25 @@ function QuickEntryEditor() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(180px,0.9fr)_minmax(260px,1.4fr)_auto]">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(180px,0.9fr)_minmax(260px,1.4fr)_auto_auto]">
           <label>
-            <div className="mb-1.5 text-xs font-medium">Control No.</div>
+            <div className="mb-1.5 text-xs font-medium">Unique Code / Control No.</div>
             <input
-              value={controlNo}
-              onChange={(event) => setControlNo(event.target.value)}
+              value={fileIdentifier}
+              onChange={(event) => {
+                setFileIdentifier(event.target.value);
+                if (descriptionAutoFilled) {
+                  setDescription("");
+                  setDescriptionAutoFilled(false);
+                }
+                setContext(undefined);
+                setMatches([]);
+                setLookupMessage(null);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void lookupFile();
               }}
-              placeholder="Enter Control No."
+              placeholder="Enter Unique Code or Control No."
               className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
@@ -401,7 +424,13 @@ function QuickEntryEditor() {
             <div className="mb-1.5 text-xs font-medium">Item description</div>
             <input
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
+              onChange={(event) => {
+                setDescription(event.target.value);
+                setDescriptionAutoFilled(false);
+                setContext(undefined);
+                setMatches([]);
+                setLookupMessage(null);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void lookupFile();
               }}
@@ -417,6 +446,20 @@ function QuickEntryEditor() {
           >
             <Search className="size-4" />
             {lookupLoading ? "Finding..." : "Find"}
+          </button>
+          <button
+            type="button"
+            onClick={resetLookup}
+            disabled={
+              lookupLoading ||
+              (!fileIdentifier && !description && !lookupMessage && matches.length === 0 && !context)
+            }
+            title="Reset identifier and Item Description"
+            aria-label="Reset identifier and Item Description"
+            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RotateCcw className="size-4" />
+            Reset
           </button>
         </div>
 
@@ -442,7 +485,12 @@ function QuickEntryEditor() {
                 onClick={() => void loadStatusContext(file.id)}
                 className="grid w-full grid-cols-1 gap-1 border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent md:grid-cols-[10rem_1fr_9rem_10rem]"
               >
-                <span className="font-medium">{file.controlNo || file.uniqueCode || "File"}</span>
+                <span className="font-medium">
+                  {getQuickStatusMatchedIdentifier(file, fileIdentifier)?.value ||
+                    file.controlNo ||
+                    file.uniqueCode ||
+                    "File"}
+                </span>
                 <span className="truncate">{file.itemDescription || "-"}</span>
                 <span className="text-muted-foreground">{file.division || "-"}</span>
                 <span className="text-muted-foreground">{formatDate(file.receivedDate)}</span>
@@ -455,6 +503,7 @@ function QuickEntryEditor() {
           <div className="mt-5 space-y-5">
             <FileConfirmation
               file={context.file}
+              matchedIdentifier={getQuickStatusMatchedIdentifier(context.file, fileIdentifier)}
               onOpenFullFile={() => openFullFile(navigate, context.file.id)}
             />
             {canCreateFileStatus ? (
@@ -491,15 +540,33 @@ function QuickEntryEditor() {
   );
 }
 
+function getQuickStatusMatchedIdentifier(
+  file: { uniqueCode?: string; controlNo?: string; imms?: string },
+  query: string,
+) {
+  const identifier = query.trim().toLowerCase();
+  if (!identifier) return undefined;
+  const values = [
+    { label: "Unique Code", value: file.uniqueCode?.trim() || "" },
+    { label: "Control No.", value: (file.controlNo || file.imms)?.trim() || "" },
+  ];
+  return (
+    values.find((item) => item.value.toLowerCase() === identifier) ||
+    values.find((item) => item.value.toLowerCase().includes(identifier))
+  );
+}
+
 function FileConfirmation({
   file,
+  matchedIdentifier,
   onOpenFullFile,
 }: {
   file: FileRecord;
+  matchedIdentifier: { label: string; value: string } | undefined;
   onOpenFullFile: () => void;
 }) {
   const details = [
-    ["Control No.", file.imms],
+    ...(matchedIdentifier ? [[matchedIdentifier.label, matchedIdentifier.value]] : []),
     ["Item description", file.demandDescription],
     ["Division", file.division],
     ["Indentor", file.indentor],

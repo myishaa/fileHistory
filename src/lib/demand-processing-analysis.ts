@@ -45,6 +45,7 @@ export type DemandProcessingAnalysisRow = {
   valueCapital: number;
   valueRevenue: number;
   paymentMode?: string;
+  paymentObjectKey?: string;
 };
 
 type DateFieldConfig = {
@@ -172,7 +173,7 @@ export function getDemandProcessingFieldGroups() {
 export function normalizeDemandProcessingPresets(value: unknown): DemandProcessingPreset[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map((item): DemandProcessingPreset | undefined => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
       const record = item as Record<string, unknown>;
       const id = String(record.id ?? "").trim();
@@ -219,6 +220,7 @@ export function buildDemandProcessingRows(
       orderIndex?: number,
       stageIndex?: number,
       paymentMode?: string,
+      paymentObjectKey?: string,
     ) => {
       if (!isIsoDate(fromDate) || !isIsoDate(toDate)) return;
       rows.push({
@@ -235,6 +237,7 @@ export function buildDemandProcessingRows(
         valueCapital,
         valueRevenue,
         paymentMode,
+        paymentObjectKey,
       });
     };
 
@@ -252,6 +255,7 @@ export function buildDemandProcessingRows(
             orderIndex,
             event.stageIndex,
             event.paymentMode,
+            event.paymentObjectKey,
           );
         });
       });
@@ -328,6 +332,7 @@ type UnifiedPaymentEvent = {
   paymentMode?: string;
   valueCapital: number;
   valueRevenue: number;
+  paymentObjectKey: string;
 };
 
 function isUnifiedPaymentField(fieldId: string) {
@@ -358,6 +363,7 @@ function getUnifiedPaymentEvents(
       basis: "S.O.",
       orderRef,
       orderIndex,
+      paymentObjectKey: `order:${orderIndex}:regular`,
       paymentObject: order,
       fallbackValue: orderValue,
     }),
@@ -370,6 +376,7 @@ function getUnifiedPaymentEvents(
         orderRef: `${orderRef} / Stage ${stageIndex + 1}`,
         orderIndex,
         stageIndex,
+        paymentObjectKey: `order:${orderIndex}:stage:${stageIndex}`,
         paymentObject: stage,
         fallbackValue: orderValue,
         amountCapital: stage.stageAmountCapital,
@@ -385,6 +392,7 @@ function getUnifiedPaymentEvents(
         basis: "Advance",
         orderRef: `${orderRef} / Advance`,
         orderIndex,
+        paymentObjectKey: `order:${orderIndex}:advance`,
         paymentObject: order.advancePaymentDetail,
         fallbackValue: orderValue,
         amountCapital:
@@ -404,6 +412,7 @@ function getUnifiedPaymentEvents(
         basis: "S.O.",
         orderRef: `${orderRef} / Supplementary bill ${billIndex + 1}`,
         orderIndex,
+        paymentObjectKey: `order:${orderIndex}:supplementary:${billIndex}`,
         paymentObject: bill,
         fallbackValue: orderValue,
         amountCapital: bill.actualPaymentCapital || bill.billAmountCapital,
@@ -439,6 +448,7 @@ function buildUnifiedPaymentEventsForPaymentObject({
   orderRef,
   orderIndex,
   stageIndex,
+  paymentObjectKey,
   paymentObject,
   fallbackValue,
   amountCapital,
@@ -449,6 +459,7 @@ function buildUnifiedPaymentEventsForPaymentObject({
   orderRef: string;
   orderIndex: number;
   stageIndex?: number;
+  paymentObjectKey: string;
   paymentObject: PaymentLike;
   fallbackValue: { capital: number; revenue: number };
   amountCapital?: string;
@@ -459,28 +470,44 @@ function buildUnifiedPaymentEventsForPaymentObject({
     capital: file ? (getInrAmount(amountCapital, file) ?? fallbackValue.capital) : fallbackValue.capital,
     revenue: file ? (getInrAmount(amountRevenue, file) ?? fallbackValue.revenue) : fallbackValue.revenue,
   };
+  const cycles = normalizeBillReturnCycles(paymentObject.billReturnCycles);
+  const finalPaymentDate = paymentObject.paymentDate;
+  const paymentDateLimit = finalPaymentDate?.trim() || undefined;
+  const beforePayment = (date: string | undefined) => {
+    const normalizedDate = date?.trim();
+    return Boolean(normalizedDate && (!paymentDateLimit || normalizedDate <= paymentDateLimit));
+  };
+  const lastSubmissionCycle = cycles
+    .filter((cycle) => beforePayment(cycle.resubmittedDate))
+    .sort((left, right) => left.resubmittedDate!.localeCompare(right.resubmittedDate!))
+    .at(-1);
+  const lastReturnCycle = cycles
+    .filter((cycle) => beforePayment(cycle.returnedDate))
+    .sort((left, right) => left.returnedDate!.localeCompare(right.returnedDate!))
+    .at(-1);
+  const hasReturnHistory = cycles.some(
+    (cycle) => hasFilledString(cycle.returnedDate) || hasFilledString(cycle.resubmittedDate),
+  );
   const base = {
     basis,
     orderRef,
     orderIndex,
     stageIndex,
-    paymentDate: paymentObject.paymentDate,
+    paymentObjectKey,
+    paymentDate: finalPaymentDate,
     paymentMode: cleanPaymentModeValue(paymentObject.paymentMode),
     valueCapital: value.capital,
     valueRevenue: value.revenue,
+    submissionDate: hasReturnHistory
+      ? lastSubmissionCycle?.resubmittedDate
+      : paymentObject.billSentForPaymentDate,
+    returnDate: lastReturnCycle?.returnedDate,
   };
-  const cycles = normalizeBillReturnCycles(paymentObject.billReturnCycles);
-  const returnedEvents = cycles
-    .filter((cycle) => hasFilledString(cycle.returnedDate))
-    .map((cycle) => ({
-      ...base,
-      returnDate: cycle.returnedDate,
-      submissionDate: cycle.resubmittedDate,
-    }));
-  if (returnedEvents.length) return returnedEvents;
-  if (hasFilledString(paymentObject.billSentForPaymentDate) || hasFilledString(paymentObject.paymentDate)) {
-    return [{ ...base, submissionDate: paymentObject.billSentForPaymentDate }];
-  }
+  if (
+    hasFilledString(base.submissionDate) ||
+    hasFilledString(base.returnDate) ||
+    hasFilledString(base.paymentDate)
+  ) return [base];
   return [];
 }
 
@@ -542,7 +569,7 @@ function getAnalysisScope(
   return "file";
 }
 
-function isIsoDate(value: string | undefined) {
+function isIsoDate(value: string | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }
 

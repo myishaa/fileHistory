@@ -316,7 +316,7 @@ function expandSupplyOrderStageEntries(
 }
 
 function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | undefined {
-  if (!isYes(order.stageDelivery) || !isYes(order.stagePayment) || !isYes(order.advancePayment)) {
+  if (!isYes(order.advancePayment)) {
     return undefined;
   }
   const advance = order.advancePaymentDetail;
@@ -338,8 +338,8 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     billReturnCycles: advance.billReturnCycles ?? [],
     paymentDate: advance.paymentDate ?? "",
     paymentMode: advance.paymentMode ?? "",
-    actualPaymentCapital: advance.actualPaymentCapital || "",
-    actualPaymentRevenue: advance.actualPaymentRevenue || "",
+    actualPaymentCapital: advance.actualPaymentCapital || advance.stageAmountCapital || "",
+    actualPaymentRevenue: advance.actualPaymentRevenue || advance.stageAmountRevenue || "",
     currentMilestone: "",
     completedMilestones: [],
     stageDeliveries: undefined,

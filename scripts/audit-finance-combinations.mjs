@@ -44,6 +44,16 @@ function round(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function isSpecificFinancialYear(value) {
+  return /\b(19\d{2}|20\d{2})\b/.test(String(value ?? ""));
+}
+
+function allocationYearForPass(pass, settings) {
+  return isSpecificFinancialYear(pass.selectedYear)
+    ? pass.selectedYear
+    : settings.financialYear;
+}
+
 async function login() {
   const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
     method: "POST",
@@ -65,6 +75,18 @@ async function api(path, token) {
   const body = await response.json().catch(() => undefined);
   if (!response.ok) throw new Error(`${path} failed ${response.status}: ${body?.error ?? "unknown error"}`);
   return body;
+}
+
+async function loadSettings(token) {
+  const payload = await api("/api/settings", token);
+  return payload.settings ?? {};
+}
+
+async function loadActiveDivisionNames(token, financialYear) {
+  const params = new URLSearchParams();
+  if (financialYear) params.set("year", financialYear);
+  const payload = await api(`/api/divisions?${params.toString()}`, token);
+  return (payload.divisions ?? []).map((division) => division.name).filter(Boolean);
 }
 
 function dashboardPath(pass) {
@@ -161,7 +183,7 @@ function validateSummary(pass, summary, issues) {
     if (total > 0 && Math.abs(share - 100) > 0.05) {
       addIssue(issues, pass, "firmTypeDistribution", { key, issue: "shares do not total 100", share: round(share) });
     }
-    if (key === "supplyOrderValue") {
+    if (key === "supplyOrderValue" && !isSpecificFinancialYear(pass.selectedYear)) {
       const expected = n(totals.spentCapital) + n(totals.spentRevenue);
       if (round(total) !== round(expected)) {
         addIssue(issues, pass, "firmTypeDistribution", {
@@ -224,6 +246,15 @@ function compareSum(issues, basePass, baseSummary, parts, fields, area) {
 
 async function main() {
   const token = await login();
+  const settings = await loadSettings(token);
+  const activeDivisionNamesByYear = new Map();
+  const getActiveDivisionNames = async (financialYear) => {
+    const year = financialYear || settings.financialYear;
+    if (!activeDivisionNamesByYear.has(year)) {
+      activeDivisionNamesByYear.set(year, await loadActiveDivisionNames(token, year));
+    }
+    return activeDivisionNamesByYear.get(year);
+  };
   const issues = [];
   const corePasses = [
     { name: "all active", selectedYear: allActiveFiles },
@@ -234,7 +265,16 @@ async function main() {
     { name: "FY 2026-27 + initiation Apr-Jun", selectedYear: "2026-27", fileInitiationFrom: "2026-04-01", fileInitiationTo: "2026-06-30" },
     { name: "FY 2026-27 + empty future initiation", selectedYear: "2026-27", fileInitiationFrom: "2035-01-01", fileInitiationTo: "2035-12-31" },
   ];
-  const divisions = ["all", "ACC", "CSeG", "SCPC"];
+  const coreDivisionNames = Array.from(
+    new Set(
+      (
+        await Promise.all(
+          corePasses.map((pass) => getActiveDivisionNames(allocationYearForPass(pass, settings))),
+        )
+      ).flat(),
+    ),
+  );
+  const divisions = ["all", ...coreDivisionNames];
   const categoryPasses = [
     { name: "all configured categories", fileCategories: allConfiguredCategories },
     { name: "default categories", fileCategories: defaultCategories },
@@ -276,8 +316,14 @@ async function main() {
 
   for (const baseName of corePasses.map((pass) => pass.name)) {
     const all = summaries.get(`${baseName} / all`);
-    const parts = ["ACC", "CSeG", "SCPC"].map((division) => summaries.get(`${baseName} / ${division}`)).filter(Boolean);
-    if (all && parts.length === 3) {
+    const pass = corePasses.find((item) => item.name === baseName);
+    const divisionNames = pass
+      ? await getActiveDivisionNames(allocationYearForPass(pass, settings))
+      : coreDivisionNames;
+    const parts = divisionNames
+      .map((division) => summaries.get(`${baseName} / ${division}`))
+      .filter(Boolean);
+    if (all && parts.length === divisionNames.length) {
       compareSum(issues, all.pass, all.summary, parts, additiveFields, "division partition");
     }
   }

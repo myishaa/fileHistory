@@ -50,6 +50,28 @@ const nav = [
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
+const specificFyOlderFileRule =
+  "Older files are included if they were still open when the selected FY began. If formally closed later, they remain in that FY's file set.";
+
+function getAnomalyFilterQuery(userId: string, selectedYear: string, financialYear: string) {
+  if (typeof window !== "undefined") {
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(`recordkeeper:anomaly-filter-scope:${userId}`) ?? "null",
+      );
+      if (saved?.selectedYear === selectedYear && typeof saved.query === "string") {
+        return saved.query as string;
+      }
+    } catch {
+      // Use the current default scope when saved Dashboard filters are unavailable.
+    }
+  }
+  const params = new URLSearchParams({ selectedYear });
+  const defaultFileYear = normalizeFinancialYearLabel(selectedYear) || financialYear;
+  if (defaultFileYear) params.set("fileYear", defaultFileYear);
+  return params.toString();
+}
+
 export function TopBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const locationSearch = useRouterState({ select: (s) => s.location.search });
@@ -69,6 +91,7 @@ export function TopBar() {
   const canSelectYear = Boolean(activeUser);
   const canViewUserSettings = Boolean(activeUser);
   const dashboardTab = typeof locationSearch.tab === "string" ? locationSearch.tab : undefined;
+  const reportMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
   const isFinanceSnapshotContext = pathname === "/dashboard" && dashboardTab === "finance1";
   const effectiveSelectedYear = isFinanceSnapshotContext
     ? normalizeFinancialYearLabel(settings.selectedYear) || settings.financialYear
@@ -78,11 +101,13 @@ export function TopBar() {
   const recommendedFilterLabel = getRecommendedFilterLabel(
     pathname,
     dashboardTab,
+    reportMode,
     settings.financialYear,
   );
   const globalFilterActive = isGlobalFilterNonSuggested(
     pathname,
     dashboardTab,
+    reportMode,
     effectiveSelectedYear,
     settings.financialYear,
   );
@@ -131,8 +156,9 @@ export function TopBar() {
       return;
     }
     const selectedYear = settings.selectedYear || settings.financialYear;
+    const query = getAnomalyFilterQuery(activeUser.id, selectedYear, settings.financialYear);
     void store
-      .countSuspectedAnomalies(selectedYear)
+      .countSuspectedAnomalies(query)
       .then((count) => {
         setAnomalyWarningCount(count);
         setAnomalyWarningError(false);
@@ -151,8 +177,9 @@ export function TopBar() {
     let cancelled = false;
     const selectedYear = settings.selectedYear || settings.financialYear;
     const loadAnomalyCount = () => {
+      const query = getAnomalyFilterQuery(activeUser.id, selectedYear, settings.financialYear);
       void store
-        .countSuspectedAnomalies(selectedYear)
+        .countSuspectedAnomalies(query)
         .then((count) => {
           if (!cancelled) {
             setAnomalyWarningCount(count);
@@ -167,10 +194,12 @@ export function TopBar() {
     loadAnomalyCount();
     const intervalId = window.setInterval(loadAnomalyCount, 60_000);
     window.addEventListener("focus", loadAnomalyCount);
+    window.addEventListener("recordkeeper:anomaly-scope-changed", loadAnomalyCount);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
       window.removeEventListener("focus", loadAnomalyCount);
+      window.removeEventListener("recordkeeper:anomaly-scope-changed", loadAnomalyCount);
     };
   }, [activeUser, settings.financialYear, settings.selectedYear]);
   useEffect(() => {
@@ -374,7 +403,7 @@ export function TopBar() {
                       <span className="block text-xs text-muted-foreground">
                         {anomalyWarningError
                           ? "Could not refresh anomaly count"
-                          : "Open suspected anomaly"}
+                          : "Count follows Dashboard anomaly filters"}
                       </span>
                     </span>
                     <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
@@ -540,6 +569,13 @@ function FilterCombinationGuideDialog({
   meaningRows: FilterMeaningRow[];
   rows: FilterCombinationGuideRow[];
 }) {
+  const currentStartYear = readFinancialYearStart(currentFinancialYear);
+  const previousFyLabel =
+    currentStartYear !== undefined
+      ? `${currentStartYear - 1}-${String(currentStartYear % 100).padStart(2, "0")}`
+      : "previous FY";
+  const previousFyStartLabel =
+    currentStartYear !== undefined ? String(currentStartYear - 1) : "previous FY start";
   const exportPdf = () => {
     const tables: ExportTable[] = [
       {
@@ -548,67 +584,62 @@ function FilterCombinationGuideDialog({
         rows: [
           [
             "Specific FY",
-            "A selected FY is an activity context. It can include files started in that FY, older files open/continued in that FY, and older files with reportable work in that FY.",
-            `File started in ${displayFinancialYearLabel(currentFinancialYear)}; older file open/continued in ${displayFinancialYearLabel(currentFinancialYear)}; older file with work recorded in ${displayFinancialYearLabel(currentFinancialYear)}.`,
+            "FY record set. Includes files started in that FY and can include cancelled/all-S.O.-cancelled files belonging to that FY.",
+            `For ${displayFinancialYearLabel(currentFinancialYear)}: files started in that FY are included. ${specificFyOlderFileRule} Files closed during that FY are included. Active + current FY closed excludes cancelled/all-S.O.-cancelled files.`,
           ],
           [
             "File Initiation Year",
-            "The financial year in which the file was received/started. It narrows the file group after the Global Filter is selected.",
+            "The FY in which the file was received/started. It narrows the file set after Global Filter.",
             `Global Filter ${displayFinancialYearLabel(currentFinancialYear)} + Subfilter 2025-26 means files started in 2025-26 that are visible in the ${displayFinancialYearLabel(currentFinancialYear)} context.`,
           ],
         ],
         columnWidths: [90, 210, 280],
       },
       {
-        title: "Specific FY vs All Active Files vs All Files",
+        title: "Global Filter Inclusion Rules",
         headers: [
           "Filter option",
-          "Basic meaning",
-          "Older file active/continued or with activity in current FY",
-          "Closed file",
-          "Open old file with no activity in current FY",
-          "Demand cancelled",
-          "S.O. cancelled / fully S.O.-cancelled",
+          "Basic rule",
+          "Old active file",
+          "File closed in selected/current FY",
+          "File closed before selected/current FY",
+          "Cancelled demand / all S.O.s cancelled",
         ],
         rows: [
           [
             "Specific FY",
-            "Shows files connected with the selected FY.",
-            "Included if the file was open/continued in the selected FY or had relevant work recorded in that FY.",
-            "Can be included if it was closed in the selected FY or had relevant work recorded in that FY.",
-            "Included if it remained open/continued in the selected FY, even if no specific event is recorded yet.",
-            "Excluded from normal working/statistical panels; available through cancellation-specific filters.",
-            "Not treated as an active working file. Can remain visible in history/statistical panels if it belongs to the selected FY scope.",
+            "FY record set.",
+            specificFyOlderFileRule,
+            "Included.",
+            "Excluded, unless specifically marked active in that FY.",
+            "Can be included when the file belongs to that FY; panels may still exclude cancelled rows by their own rules.",
           ],
           [
             "All files",
-            "Shows the full accessible database, irrespective of FY or current open/closed status.",
-            "Included because All files does not restrict by activity year or open status.",
-            "Included, because closed files remain part of the full database.",
-            "Included, because All files includes old/open files also.",
-            "Still excluded from normal working/statistical panels; use cancellation filters to review it.",
-            "Can appear in full-database history/statistical views; value/liability panels normally exclude cancelled S.O. rows.",
+            "Full accessible database.",
+            "Included.",
+            "Included.",
+            "Included.",
+            "Included in full database, but many working/value panels still exclude cancelled rows by their own rules.",
           ],
           [
             "All active files",
-            "Shows files that are open today, irrespective of FY.",
-            "Included only if the file is still open today.",
-            "Not included, because it is no longer active.",
-            "Included because it is open today.",
-            "Not included as active work.",
-            "Fully S.O.-cancelled files are not active. Partly cancelled files can remain if another S.O. is still active.",
+            "Active files today.",
+            "Included if still active today.",
+            "Excluded.",
+            "Excluded.",
+            "Excluded.",
           ],
           [
-            "Active files + current FY closed",
-            "Shows files open today plus files closed during the current FY.",
-            "Included if the file is still open today or was closed during the current FY.",
-            "Included only if it was closed during the current FY.",
-            "Included because it is open today.",
-            "Not included as active/current FY closed work.",
-            "Fully S.O.-cancelled files are not active. They appear only in cancellation/history/statistical views where allowed.",
+            "Active + current FY closed",
+            "Active files today plus files closed in current FY.",
+            "Included if still active today.",
+            "Included.",
+            "Excluded.",
+            "Excluded. This is the main difference from Specific FY.",
           ],
         ],
-        columnWidths: [80, 95, 120, 85, 105, 95, 120],
+        columnWidths: [95, 105, 100, 115, 125, 170],
       },
       {
         title: "Global Filter Examples",
@@ -681,30 +712,39 @@ function FilterCombinationGuideDialog({
           <div className="mb-4 rounded-md border border-primary/25 bg-primary/5 px-4 py-3">
             <div className="text-sm font-bold text-foreground">How Specific FY Works</div>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              When you select a specific FY in Global Filter, it is not only the file start year.
-              It also covers older files that remained open/continued in that FY or had relevant
-              work recorded in that FY.
+              Specific FY is an FY record set. Active + current FY closed is an operational set
+              that excludes cancelled demands and all-S.O.-cancelled files.
             </p>
-            <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
-              <div className="rounded-md border border-border bg-card px-3 py-2">
-                <div className="font-semibold text-foreground">Example: Global Filter 2026-27</div>
-                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
-                  <li>File started in FY 2026-27.</li>
-                  <li>Older file remained open/continued in FY 2026-27.</li>
-                  <li>Older file had reportable work recorded in FY 2026-27.</li>
-                  <li>
-                    Event-date reports then use their own event date, such as S.O. date, payment
-                    date, meeting date, BG expiry, delivery, or job completion.
-                  </li>
-                </ul>
-              </div>
-              <div className="rounded-md border border-border bg-card px-3 py-2">
+	            <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
+	              <div className="rounded-md border border-border bg-card px-3 py-2">
+	                <div className="font-semibold text-foreground">
+	                  Example: Global Filter {displayFinancialYearLabel(currentFinancialYear)}
+	                </div>
+	                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+	                  <li>File started in FY {displayFinancialYearLabel(currentFinancialYear)}.</li>
+	                  <li>{specificFyOlderFileRule}</li>
+	                  <li>File was closed during FY {displayFinancialYearLabel(currentFinancialYear)}.</li>
+	                  <li>Event-date reports still use their own date rules.</li>
+	                </ul>
+	              </div>
+	              <div className="rounded-md border border-border bg-card px-3 py-2">
+	                <div className="font-semibold text-foreground">
+	                  Example: Global Filter {previousFyLabel}
+	                </div>
+	                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+	                  <li>File started in FY {previousFyLabel}.</li>
+	                  <li>{specificFyOlderFileRule}</li>
+	                  <li>File closed during FY {previousFyLabel}.</li>
+	                  <li>Files closed before FY {previousFyLabel} are excluded.</li>
+	                </ul>
+	              </div>
+	              <div className="rounded-md border border-border bg-card px-3 py-2">
                 <div className="font-semibold text-foreground">Example: File Initiation Year</div>
                 <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
                   <li>File received/started in FY 2025-26.</li>
                   <li>
-                    If Global Filter is 2026-27, that 2025-26 file can still appear only when it is
-                    visible in the 2026-27 context.
+                    With Global Filter 2026-27, Subfilter 2025-26 shows only those 2025-26 files
+                    that are visible in the 2026-27 working set.
                   </li>
                   <li>Choosing All file years keeps every initiation year eligible.</li>
                 </ul>
@@ -712,14 +752,14 @@ function FilterCombinationGuideDialog({
             </div>
           </div>
           <div className="mb-4 overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[1580px] border-collapse text-sm">
+            <table className="w-full min-w-[1120px] border-collapse text-sm">
               <thead className="bg-secondary text-muted-foreground">
                 <tr>
                   <th
                     className="border-b border-border px-3 py-2 text-left text-sm font-bold text-foreground"
-                    colSpan={7}
+                    colSpan={6}
                   >
-                    Specific FY vs All Files vs All Active Files
+                    Global Filter Inclusion Rules
                   </th>
                 </tr>
                 <tr>
@@ -727,89 +767,68 @@ function FilterCombinationGuideDialog({
                     Filter Option
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Basic Meaning
+                    Basic Rule
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Older File Active/Continued or with Activity in Current FY
+                    Old Active File
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Closed File
+                    File Closed in Selected/Current FY
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Open Old File with No Activity in Current FY
+                    File Closed Before Selected/Current FY
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Demand Cancelled
-                  </th>
-                  <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    S.O. Cancelled / Fully S.O.-cancelled
+                    Cancelled Demand / All S.O.s Cancelled
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {[
-                  {
-                    filter: "Specific FY",
-                    meaning:
-                      "Shows files connected with the selected FY.",
-                    older:
-                      "Included if the file was open/continued in the selected FY or had relevant work recorded in that FY.",
-                    closed:
-                      "Can be included if it was closed in the selected FY or had relevant work recorded in that FY.",
-                    oldOpen:
-                      "Included if it remained open/continued in selected FY, even if no specific event is recorded yet.",
-                    demandCancelled:
-                      "Excluded from normal working/statistical panels; available through cancellation-specific filters.",
-                    soCancelled:
-                      "Not treated as an active working file. Can remain visible in history/statistical panels if it belongs to the selected FY scope.",
-                  },
-                  {
-                    filter: "All files",
-                    meaning:
-                      "Shows the full accessible database, irrespective of FY or current open/closed status.",
-                    older:
-                      "Included because All files does not restrict by activity year or open status.",
-                    closed: "Included, because closed files remain part of the full database.",
-                    oldOpen: "Included, because All files includes old/open files also.",
-                    demandCancelled:
-                      "Still excluded from normal working/statistical panels; use cancellation filters to review it.",
-                    soCancelled:
-                      "Can appear in full-database history/statistical views; value/liability panels normally exclude cancelled S.O. rows.",
-                  },
-                  {
-                    filter: "All active files",
-                    meaning: "Shows files that are open today, irrespective of FY.",
-                    older: "Included only if the file is still open today.",
-                    closed: "Not included, because it is no longer active.",
-                    oldOpen: "Included because it is open today.",
-                    demandCancelled: "Not included as active work.",
-                    soCancelled:
-                      "Fully S.O.-cancelled files are not active. Partly cancelled files can remain if another S.O. is still active.",
-                  },
-                  {
-                    filter: "Active files + current FY closed",
-                    meaning: "Shows files open today plus files closed during the current FY.",
-                    older:
-                      "Included if the file is still open today or was closed during the current FY.",
-                    closed: "Included only if it was closed during the current FY.",
-                    oldOpen: "Included because it is open today.",
-                    demandCancelled: "Not included as active/current FY closed work.",
-                    soCancelled:
-                      "Fully S.O.-cancelled files are not active. They appear only in cancellation/history/statistical views where allowed.",
-                  },
-                ].map((row) => (
+	                  {
+	                    filter: "Specific FY",
+	                    meaning: "FY record set.",
+	                    older: specificFyOlderFileRule,
+	                    closed: "Included.",
+	                    oldOpen: "Excluded, unless specifically marked active in that FY.",
+	                    cancelled:
+	                      "Can be included when the file belongs to that FY; panels may still exclude cancelled rows by their own rules.",
+	                  },
+	                  {
+	                    filter: "All files",
+	                    meaning: "Full accessible database.",
+	                    older: "Included.",
+	                    closed: "Included.",
+	                    oldOpen: "Included.",
+	                    cancelled:
+	                      "Included in full database, but many working/value panels still exclude cancelled rows by their own rules.",
+	                  },
+	                  {
+	                    filter: "All active files",
+	                    meaning: "Active files today.",
+	                    older: "Included if still active today.",
+	                    closed: "Excluded.",
+	                    oldOpen: "Excluded.",
+	                    cancelled: "Excluded.",
+	                  },
+	                  {
+	                    filter: "Active + current FY closed",
+	                    meaning: "Active files today plus files closed in current FY.",
+	                    older: "Included if still active today.",
+	                    closed: "Included.",
+	                    oldOpen: "Excluded.",
+	                    cancelled: "Excluded. This is the main difference from Specific FY.",
+	                  },
+	                ].map((row) => (
                   <tr key={row.filter} className="border-t border-border">
                     <td className="px-3 py-2 align-top font-semibold">{row.filter}</td>
                     <td className="px-3 py-2 align-top text-muted-foreground">{row.meaning}</td>
                     <td className="px-3 py-2 align-top text-muted-foreground">{row.older}</td>
-                    <td className="px-3 py-2 align-top text-muted-foreground">{row.closed}</td>
-                    <td className="px-3 py-2 align-top text-muted-foreground">{row.oldOpen}</td>
-                    <td className="px-3 py-2 align-top text-muted-foreground">
-                      {row.demandCancelled}
-                    </td>
-                    <td className="px-3 py-2 align-top text-muted-foreground">{row.soCancelled}</td>
-                  </tr>
-                ))}
+	                    <td className="px-3 py-2 align-top text-muted-foreground">{row.closed}</td>
+	                    <td className="px-3 py-2 align-top text-muted-foreground">{row.oldOpen}</td>
+	                    <td className="px-3 py-2 align-top text-muted-foreground">{row.cancelled}</td>
+	                  </tr>
+	                ))}
               </tbody>
             </table>
           </div>
@@ -922,6 +941,13 @@ function FilterCombinationGuideDialog({
 
 function getFilterCombinationGuide(currentFinancialYear: string) {
   const currentFyLabel = displayFinancialYearLabel(currentFinancialYear);
+  const currentStartYear = readFinancialYearStart(currentFinancialYear);
+  const previousFyLabel =
+    currentStartYear !== undefined
+      ? `${currentStartYear - 1}-${String(currentStartYear % 100).padStart(2, "0")}`
+      : "previous FY";
+  const previousFyStartLabel =
+    currentStartYear !== undefined ? String(currentStartYear - 1) : "previous FY start";
   const softwareDefault = "Active + current FY closed";
   const currentFy = `Current FY ${currentFyLabel}`;
   const allFileYears = "All file years";
@@ -930,56 +956,57 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
     meaningRows: [
       {
         filter: `Specific FY, e.g. ${currentFyLabel}`,
-        useWhen: "You want one FY context.",
+        useWhen: "You want one FY working set.",
         shows:
-          "Files started in that FY plus older files visible in that FY context.",
+          `Files started in that FY; ${specificFyOlderFileRule} Files closed during that FY are included.`,
         examples: [
-          `Use ${currentFyLabel} to see work connected with that FY.`,
-          `A file started in ${currentFyLabel} is included.`,
-          `An older file can appear if it remained open/continued in ${currentFyLabel}.`,
-          `Event reports count their own event dates inside ${currentFyLabel}.`,
+          `File started in ${currentFyLabel}: included.`,
+          `Older file still open on 01 Apr ${currentStartYear ?? ""}, then formally closed in a later FY: included in ${currentFyLabel}.`,
+          `File closed during ${currentFyLabel}: included.`,
+          `If ${previousFyLabel} is selected, the same rule applies using 01 Apr ${previousFyStartLabel}.`,
+          "Event-date reports may further restrict rows by their own event date.",
         ],
       },
       {
         filter: "All files",
-        useWhen: "You want a cumulative or full database view.",
-        shows: "All accessible files, including active, closed, and cancelled files.",
+        useWhen: "You want the full accessible database.",
+        shows: "All accessible files, irrespective of FY or open/closed status.",
         examples: [
-          "A closed old file is included.",
-          "A cancelled file is included unless the specific card/report excludes it by rule.",
-          "Use this for full-database cumulative review.",
-          "Avoid this for selected-FY activity questions.",
+          "Old open file: included.",
+          "Old closed file: included.",
+          "Cancelled file: included in the file set, unless a specific panel excludes it.",
+          "Use for cumulative review.",
         ],
       },
       {
         filter: "All active files",
-        useWhen: "You want only files that are still open today.",
-        shows: "Currently open, non-cancelled files across all initiation years.",
+        useWhen: "You want active files only.",
+        shows: "Active, non-cancelled files across all initiation years.",
         examples: [
-          "A 2024-25 file still open today is included.",
-          "A file closed yesterday is not included.",
-          "A cancelled file is not included.",
-          "Use this when only today's open file list matters.",
+          "Old file still active today: included.",
+          "File closed today or earlier: excluded.",
+          "Cancelled file: excluded.",
+          "Use for today's live active-file list.",
         ],
       },
       {
         filter: "Active + current FY closed",
-        useWhen: "You want current monitoring, including files closed during this FY.",
-        shows: `All active files plus files closed during current FY ${currentFyLabel}; cancelled files are excluded.`,
+        useWhen: "You want active files plus files closed this FY.",
+        shows: `Active, non-cancelled files plus files closed during ${currentFyLabel}.`,
         examples: [
-          "A 2024-25 file still open today is included.",
-          `A file closed during ${currentFyLabel} is also included.`,
-          `A file closed before ${currentFyLabel} is excluded.`,
-          "Use this for normal operational monitoring.",
+          "Old file still active today: included.",
+          `File closed during ${currentFyLabel}: included.`,
+          `File closed before ${currentFyLabel}: excluded.`,
+          "Cancelled file: excluded.",
         ],
       },
       {
         filter: "File Initiation Year subfilter",
-        useWhen: "You want to narrow the selected global filter to files started in one FY.",
-        shows: "Only files whose initiation/received date belongs to the chosen file initiation FY.",
+        useWhen: "You want only files started in one FY.",
+        shows: "Applies after Global Filter and keeps only that initiation year.",
         examples: [
-          `Global Filter ${currentFyLabel} + Subfilter 2025-26 shows only files started in 2025-26 within the ${currentFyLabel} context.`,
-          `Global Filter ${currentFyLabel} + Subfilter All file years keeps all initiation years eligible.`,
+          `Global Filter ${currentFyLabel} + Subfilter 2025-26: only 2025-26 files visible in ${currentFyLabel}.`,
+          `Global Filter ${currentFyLabel} + All file years: all initiation years remain eligible.`,
           "FY Snapshot locks this subfilter to the same selected FY.",
         ],
       },
@@ -998,11 +1025,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         ],
       },
       {
-        page: "Status-1",
-        activityYear: softwareDefault,
-        fileInitiationYear: allFileYears,
-        useFor: "Day-to-day current monitoring.",
-        note: "Shows active files plus files closed during the current FY.",
+	        page: "Status-1",
+	        activityYear: softwareDefault,
+	        fileInitiationYear: allFileYears,
+	        useFor: "Day-to-day current monitoring.",
+	        note: "Operational set: excludes cancelled demands and all-S.O.-cancelled files.",
         examples: [
           "Best starting point for today's pending and recently completed work.",
           "Shows the files your team is still handling, plus files closed during the current FY.",
@@ -1014,8 +1041,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Status-2",
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
-        useFor: "Current operational status view.",
-        note: "Use the same operational default as Status-1.",
+	        useFor: "Current operational status view.",
+	        note: "Use the same operational set as Status-1.",
         examples: [
           "Use this to review the present stage-wise position of the working file set.",
           "Good for checking where files are pending right now.",
@@ -1027,8 +1054,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Status-3",
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
-        useFor: "Current milestone/status breakup.",
-        note: "Best for present workflow counters.",
+	        useFor: "Current milestone/status breakup.",
+	        note: "Best for present workflow counters; cancelled/all-S.O.-cancelled files stay out.",
         examples: [
           "Use this when you want Status-1 information in a compact table form.",
           "Good for comparing S.O., delivery, payment, and related workflow positions together.",
@@ -1040,8 +1067,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Status-4",
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
-        useFor: "Pre-SO Live Status.",
-        note: "Best for current live flow rather than historical FY activity.",
+	        useFor: "Pre-SO Live Status.",
+	        note: "Best for current live flow; cancelled demand cases stay out.",
         examples: [
           "Use this for files before S.O. placement.",
           "Good for seeing demand, approval, vetting, bidding, and pre-S.O. movement.",
@@ -1053,8 +1080,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Analytics",
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
-        useFor: "FY activity such as S.O., CNC, TCEC, pre-bid, BG expiry, delivery, and inflow.",
-        note: "Use specific File Initiation Year only when studying one initiation batch.",
+	        useFor: "FY activity such as S.O., CNC, TCEC, pre-bid, BG expiry, delivery, and inflow.",
+	        note: "FY record set; cancelled cases can belong to the FY even if individual panels exclude them.",
         examples: [
           "Use this to study activity that happened during the selected FY, even for older files.",
           "Good for FY-wise S.O., meeting, BG, delivery, payment-pending, and workload analysis.",
@@ -1066,8 +1093,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Finance",
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
-        useFor: "Current FY payment, carry-forward movement, and firm-type activity.",
-        note: "Best default for current FY finance monitoring.",
+	        useFor: "Current FY payment, carry-forward movement, and firm-type activity.",
+	        note: "FY finance view; use Status pages for the operational non-cancelled set.",
         examples: [
           "Use this for current FY finance movement across all file years.",
           "Good for payments, carry-forward, cleared carry-forward, and firm-type finance analysis.",
@@ -1091,8 +1118,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Reports",
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
-        useFor: "FY reports and event-date based report rows.",
-        note: "Rows should reflect activity inside the selected FY irrespective of initiation year.",
+	        useFor: "FY reports and event-date based report rows.",
+	        note: "FY/event-date view; individual reports may exclude cancelled rows by their own rules.",
         examples: [
           "Use this for FY-wise report rows based on the report's event date.",
           "Good for month-wise S.O., delivery, BG expiry, meetings, and similar schedules.",
@@ -1104,15 +1131,28 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Cash Out Go Reports",
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
-        useFor: "Current FY cash outgo and payment monitoring.",
-        note: "For selected month reports, rows should stay within FY start to selected month.",
+	        useFor: "Current FY cash outgo and payment monitoring.",
+	        note: "For selected month reports, rows should stay within FY start to selected month.",
         examples: [
           "Use this for actual and expected cash movement during the selected FY.",
           "Good for month-wise payment, pending bills, due payments, and cash-out planning.",
           "Older files can appear when their payment or cash-out event belongs to the selected FY.",
         ],
-        emphasis: "reports",
-      },
+	        emphasis: "reports",
+	      },
+	      {
+	        page: "Pre-S.O. expected cash outgo",
+	        activityYear: "All active files",
+	        fileInitiationYear: allFileYears,
+	        useFor: "Live planning for files where S.O. is not yet placed.",
+	        note: "Fixed live-planning view; closed/cancelled files should not drive expected cash outgo.",
+	        examples: [
+	          "Use this for active pre-S.O. files only.",
+	          "Good for tentative S.O. date, tentative payment date, and month-wise expected cash outgo.",
+	          "This report intentionally does not use Specific FY as its main scope.",
+	        ],
+	        emphasis: "reports",
+	      },
       {
         page: "Quick Entry",
         activityYear: "No change",
@@ -1150,12 +1190,12 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
     ] satisfies FilterCombinationGuideRow[],
     notes: [
-      "Global Filter controls the FY context: files initiated in that FY, older files active/continued in that FY, and files with activity in that FY. Subfilter narrows the file pool by initiation year.",
+      "Global Filter first decides the file set. Subfilter then narrows it by file initiation year.",
       "Do not auto-switch filters when entering Finance, Reports, Search, or Quick Entry.",
-      "For current day-to-day operations, use Active + current FY closed with All file years.",
+      "For current day-to-day operations, use the recommended combination shown below the Global Filter.",
       `For Finance and Reports, the most useful default is Global Filter = Current FY ${currentFyLabel} with Subfilter = All file years.`,
       "FY Snapshot shows only FY options in Global Filter and locks Subfilter to the same FY.",
-      "Specific initiation FY is useful for batch/cohort analysis, not for general current FY reporting.",
+      "Specific File Initiation Year is for studying files started in one FY.",
     ],
   };
 }
@@ -1163,22 +1203,29 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 function getRecommendedFilterLabel(
   pathname: string,
   dashboardTab: string | undefined,
+  reportMode: string | undefined,
   currentFinancialYear: string,
 ) {
   const currentFyLabel = `Current FY ${displayFinancialYearLabel(currentFinancialYear)}`;
   if (pathname === "/quick-entry") {
     return {
-      activityYear: "No filter change",
-      fileYear: "Exact file only",
+      activityYear: "No change",
+      fileYear: "No change",
     };
   }
   if (pathname === "/search") {
     return {
-      activityYear: "Selected context",
-      fileYear: "Selected file year",
+      activityYear: "User's current selection",
+      fileYear: "User's current selection",
     };
   }
   if (pathname === "/reports") {
+    if (reportMode === "preSoExpectedCashOutgo") {
+      return {
+        activityYear: "All active files",
+        fileYear: "All file years",
+      };
+    }
     return {
       activityYear: currentFyLabel,
       fileYear: "All file years",
@@ -1199,8 +1246,8 @@ function getRecommendedFilterLabel(
     }
     if (dashboardTab === "finance1") {
       return {
-        activityYear: "Selected FY",
-        fileYear: "Same FY",
+        activityYear: "Select any FY",
+        fileYear: "Locked to same FY",
       };
     }
     return {
@@ -1217,10 +1264,14 @@ function getRecommendedFilterLabel(
 function isGlobalFilterNonSuggested(
   pathname: string,
   dashboardTab: string | undefined,
+  reportMode: string | undefined,
   selectedYear: string | undefined,
   currentFinancialYear: string,
 ) {
-  if (pathname === "/reports") return selectedYear !== currentFinancialYear;
+  if (pathname === "/reports") {
+    if (reportMode === "preSoExpectedCashOutgo") return selectedYear !== ALL_ACTIVE_FILES_YEAR;
+    return selectedYear !== currentFinancialYear;
+  }
   if (pathname !== "/dashboard") return false;
   if (dashboardTab === "finance1") return false;
   if (dashboardTab === "finance" || dashboardTab === "analytics") {
@@ -1242,14 +1293,14 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
         : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
           ? "Active + current FY closed"
           : `FY ${selectedFyLabel}`;
-  const description =
-    normalizedSelected === ALL_FILES_YEAR
-      ? "Shows the full accessible file universe. Use the File Initiation Year subfilter to restrict this to files initiated in a particular FY."
-      : normalizedSelected === ALL_ACTIVE_FILES_YEAR
-        ? "Shows files that are not closed and not cancelled, across all file initiation years unless the File Initiation Year subfilter narrows them."
-        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
-          ? `Shows all active files, plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
-          : `Shows FY ${selectedFyLabel} context: files initiated in that FY, plus older files active/continued in that FY or having activity in that FY.`;
+	  const description =
+	    normalizedSelected === ALL_FILES_YEAR
+	      ? "Shows all accessible files. Use File Initiation Year to restrict by start FY."
+	      : normalizedSelected === ALL_ACTIVE_FILES_YEAR
+	        ? "Shows active, non-cancelled files. Use File Initiation Year to restrict by start FY."
+	        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
+	          ? `Shows active files plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
+	          : `Shows FY ${selectedFyLabel} working set: files started in that FY; ${specificFyOlderFileRule} Files closed during that FY are included.`;
 
   return {
     title,
@@ -1270,11 +1321,11 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
         filePool: `Active files + files closed during ${currentFyLabel}`,
         reportFy: `Current FY from Settings: ${currentFyLabel}`,
       },
-      {
-        filter: `Specific FY, e.g. ${selectedFyLabel}`,
-        filePool: "Files initiated in that FY, older active/continued files, and files with activity in that FY",
-        reportFy: `Same selected FY, e.g. ${selectedFyLabel}`,
-      },
+	      {
+	        filter: `Specific FY, e.g. ${selectedFyLabel}`,
+	        filePool: `Files started in that FY; ${specificFyOlderFileRule}`,
+	        reportFy: `Same selected FY, e.g. ${selectedFyLabel}`,
+	      },
     ],
     options: [
       {
@@ -1293,6 +1344,11 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
         className: "text-sky-700 dark:text-sky-300",
       },
       {
+        label: "Specific FY vs operational set",
+        description:
+          "Specific FY is the FY record set and can include cancelled/all-S.O.-cancelled files belonging to that FY. Active + current FY closed is the operational set and excludes them.",
+      },
+      {
         label: "All files",
         description:
           "Shows all accessible database files, including active, closed, and cancelled. Use File Initiation Year = Entire database for no initiation-year restriction, or select one FY for files initiated in that FY.",
@@ -1304,18 +1360,18 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       },
       {
         label: "Active + current FY closed",
-        description: `Shows currently open files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
+	        description: `Shows currently active files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
       },
-      {
-        label: "FY Activity: specific FY",
-        description:
-          "Shows files initiated in that FY plus older files that remained active/continued in that FY or had activity in that FY. It is not only initiation year.",
-      },
-      {
-        label: "File Initiation Year subfilter",
-        description:
-          "Narrows the already selected Global Filter by file initiation year. Example: Global Filter 2026-27 + Subfilter 2025-26 shows old files active in 2026-27 but initiated in 2025-26.",
-      },
+	      {
+	        label: "FY Activity: specific FY",
+	        description:
+	          `Shows files started in that FY. ${specificFyOlderFileRule} It is not only the initiation year.`,
+	      },
+	      {
+	        label: "File Initiation Year subfilter",
+	        description:
+	          "Narrows the already selected Global Filter by file start year. Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files visible in the 2026-27 file set.",
+	      },
       {
         label: "Value Reports",
         description:

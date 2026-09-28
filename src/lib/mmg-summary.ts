@@ -2461,10 +2461,8 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery)) {
     if (!hasFilledString(order.stageDeliveryCount)) return false;
     if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
-      return false;
-    }
   }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
   return true;
 }
 

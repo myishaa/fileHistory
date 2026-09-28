@@ -22,7 +22,6 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "receivedDate", label: "Demand received date" },
       { key: "imms", label: "Control number" },
       { key: "immsDate", label: "Control date" },
-      { key: "fileNo", label: "File no" },
       { key: "indentor", label: "Indentor" },
       { key: "demandDescription", label: "Demand description" },
       { key: "valueCapital", label: "Value (Capital)" },
@@ -242,7 +241,6 @@ export const defaultTableFieldPresets: TableFieldPreset[] = [
     fieldKeys: [
       "division",
       "imms",
-      "fileNo",
       "indentor",
       "demandDescription",
       "receivedDate",

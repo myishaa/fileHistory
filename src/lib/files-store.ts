@@ -410,6 +410,7 @@ export type IndentorSearchResult = {
 export type MasterFirm = {
   id: string;
   firmName?: string;
+  firmType?: string;
   emailId?: string;
   city?: string;
   address?: string;
@@ -456,6 +457,7 @@ export type IndentorTransferScope = "active" | "financialYear" | "all";
 export type IndentorTransferPreviewFile = {
   id: string;
   uniqueCode?: string;
+  imms?: string;
   fileNo?: string;
   title?: string;
   division?: string;
@@ -948,6 +950,12 @@ export const store = {
     const financialYear = state.settings.financialYear ?? defaultSettings.financialYear;
     return normalizeSettingsYears({ ...defaultSettings, ...state.settings, financialYear });
   },
+  verifyDeletionPassword(deletionPassword: string) {
+    return request<{ valid: boolean }>("/api/settings/verify-deletion-password", {
+      method: "POST",
+      body: JSON.stringify({ deletionPassword }),
+    });
+  },
   getUsers(): AppUser[] {
     ensureLoaded();
     return state.users;
@@ -1095,10 +1103,9 @@ export const store = {
       }>;
     }>(`/api/dashboard/suspected-anomalies?${params.toString()}`);
   },
-  async countSuspectedAnomalies(selectedYear: string) {
-    const params = new URLSearchParams({ selectedYear });
+  async countSuspectedAnomalies(query: string) {
     const payload = await request<{ rows: Array<{ signature: string }> }>(
-      `/api/dashboard/suspected-anomalies?${params.toString()}`,
+      `/api/dashboard/suspected-anomalies?${query}`,
       { cache: "no-store" },
     );
     return payload.rows.length;
@@ -1119,52 +1126,6 @@ export const store = {
     return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances/clear-history", {
       method: "POST",
       body: JSON.stringify({ password, signatures }),
-    });
-  },
-  listAnomalyRules() {
-    return request<{
-      rules: Array<{
-        id: string;
-        name: string;
-        description: string;
-        ruleType: string;
-        fieldA: string;
-        operator: string;
-        fieldB?: string;
-        fixedValue?: string;
-        thresholdDays?: number;
-        severity: string;
-        scope: string;
-        enabled: boolean;
-        createdByName?: string;
-        createdAt?: string;
-        updatedAt?: string;
-      }>;
-      fields: Array<{ key: string; label: string; scope: string }>;
-    }>("/api/dashboard/suspected-anomalies/rules");
-  },
-  createAnomalyRule(rule: {
-    name?: string;
-    description?: string;
-    ruleType?: string;
-    fieldA?: string;
-    operator?: string;
-    fieldB?: string;
-    fixedValue?: string;
-    thresholdDays?: number;
-    severity?: string;
-    scope?: string;
-    enabled?: boolean;
-  }) {
-    return request<{ rule: unknown }>("/api/dashboard/suspected-anomalies/rules", {
-      method: "POST",
-      body: JSON.stringify(rule),
-    });
-  },
-  updateAnomalyRule(id: string, patch: { enabled: boolean }) {
-    return request<{ ok: true }>(`/api/dashboard/suspected-anomalies/rules/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
     });
   },
   viewerLogin(divisionId: string, password: string) {
@@ -1683,6 +1644,10 @@ export function fetchFile(id: string) {
 
 export function fetchFilesByUniqueCode(code: string) {
   return request<{ files: FileRecord[] }>(`/api/files/by-unique-code/${encodeURIComponent(code)}`);
+}
+
+export function fetchFilesByIdentifier(code: string) {
+  return request<{ files: FileRecord[] }>(`/api/files/by-identifier/${encodeURIComponent(code)}`);
 }
 
 export function fetchFilesForYear(year: string) {

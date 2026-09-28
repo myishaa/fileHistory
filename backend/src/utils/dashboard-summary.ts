@@ -85,6 +85,7 @@ type Finance1AmountMetric = {
 type Finance1FileTypeDistributionRow = {
   fileType: string;
   files: number;
+  filesWithSo: number;
   activeAtFyEnd: number;
   closedByFyEnd: number;
   cancelledByFyEnd: number;
@@ -104,6 +105,7 @@ type Finance1FirmTypeDistributionRow = {
 type Finance1Summary = {
   fiscalYear: string;
   cutoffDate: string;
+  drillFileIds: Record<string, string[]>;
   fileGroup: Finance1AmountMetric;
   fileTypeDistribution: Finance1FileTypeDistributionRow[];
   firmTypeDistribution: Finance1FirmTypeDistributionRow[];
@@ -265,7 +267,8 @@ const milestoneDefinitions = [
     label: "Bidding",
     totalLabel: "Total files",
     current: "biddingStageOver",
-    applies: (file: FileRecord) => isBiddingApplicableForFile(file),
+    applies: (file: FileRecord) =>
+      isBiddingApplicableForFile(file) && !isYes(file.refloat),
   },
   {
     key: "postTcec",
@@ -1174,6 +1177,16 @@ function getManualMilestoneCurrentCount(files: FileRecord[], name: string) {
         !hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
+  if (normalized === "bidding") {
+    return files.filter(
+      (file) =>
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        hasFilledString(file.cfaDate) &&
+        !isYes(file.biddingStageOver),
+    ).length;
+  }
   if (isSupplyOrderDrivenMilestoneName(name)) {
     return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
   }
@@ -1452,6 +1465,7 @@ function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string)
       (file) =>
         !isCancelledFile(file) &&
         isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
         hasFilledString(file.cfaDate) &&
         !isYes(file.biddingStageOver),
     ).length;
@@ -1710,8 +1724,13 @@ function getMilestoneFlow(files: FileRecord[]) {
         totalLabel: milestone.totalLabel ?? "Total",
         pendingLabel: milestone.pendingLabel ?? getMilestonePendingLabel(milestone),
         total: applicableFiles.length,
-        underProcess: files.filter((file) => isYes(file.refloat) && !isYes(file.biddingStageOver))
-          .length,
+        underProcess: files.filter(
+          (file) =>
+            !isCancelledFile(file) &&
+            isYes(file.refloat) &&
+            isYes(file.tcec) &&
+            !isYes(file.biddingStageOver),
+        ).length,
         active: pendingRefloatPostTcec.length,
         pending: pendingRefloatPostTcec.length,
         reviewed: reviewedRefloatPostTcec.length,
@@ -2263,7 +2282,7 @@ function getDivisionTurnaroundRanking(files: FileRecord[]) {
 function getTopFirmSupplyOrders(files: FileRecord[]) {
   const totals = new Map<string, number>();
   files.forEach((file) => {
-    fileSupplyOrders(file).forEach((order) => {
+    rawSupplyOrders(file).forEach((order) => {
       const name = getAnalyticsName(order.firm, "Unassigned firm");
       const value = getSupplyOrderTotalValue(file, order);
       if (value <= 0) return;
@@ -2385,7 +2404,7 @@ function getSupplyOrderValueDistributionByFirmType(
   const totals = new Map<string, number>();
   const configured = getConfiguredFirmTypes(configuredFirmTypes);
   const activityYearRange = getFinancialYearDateRange(activityYear);
-  effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
+  rawSupplyOrderEntries(files).forEach(({ file, order }) => {
     if (isSupplyOrderCancelled(file, order)) return;
     if (activityYearRange && !isDateWithinRange(order.soDate, activityYearRange)) return;
     const value = getSupplyOrderTotalValue(file, order);
@@ -2446,6 +2465,13 @@ function addFinance1Amount(
   metric.total += capital + revenue;
 }
 
+function getFinance1LiabilityDate(entry: FinancePaymentLiabilityEntry) {
+  if (entry.kind === "main" && hasFilledString(entry.order.stageDeliveryLabel)) {
+    return entry.order.revisedDp || entry.order.dpDate;
+  }
+  return entry.sourceDate;
+}
+
 function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Summary {
   const range = getFinancialYearDateRange(fiscalYear);
   const cutoffDate = range?.end ?? "";
@@ -2453,9 +2479,16 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   const fileGroupFiles = range
     ? files.filter((file) => isDateWithinRange(file.receivedDate, range))
     : [];
+  const drillFileIds = new Map<string, Set<string>>();
+  const addDrillFile = (key: string, file: FileRecord) => {
+    const ids = drillFileIds.get(key) ?? new Set<string>();
+    ids.add(file.id);
+    drillFileIds.set(key, ids);
+  };
   const summary: Finance1Summary = {
     fiscalYear,
     cutoffDate,
+    drillFileIds: {},
     fileGroup: createFinance1Metric(),
     fileTypeDistribution: [],
     firmTypeDistribution: [],
@@ -2494,6 +2527,7 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     const row: Finance1FileTypeDistributionRow = {
       fileType: label,
       files: 0,
+      filesWithSo: 0,
       activeAtFyEnd: 0,
       closedByFyEnd: 0,
       cancelledByFyEnd: 0,
@@ -2521,6 +2555,7 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   };
 
   fileGroupFiles.forEach((file) => {
+    addDrillFile("fileGroup", file);
     const demandCapital = getInrAmount(file.valueCapital, file) ?? 0;
     const demandRevenue = getInrAmount(file.valueRevenue, file) ?? 0;
     addFinance1Amount(summary.fileGroup, demandCapital, demandRevenue);
@@ -2528,9 +2563,18 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     const cancelledByFyEnd =
       isYes(file.demandCancelled) && isDateOnOrBefore(file.demandCancelledDate, cutoffDate);
     const closedByFyEnd = isDateOnOrBefore(file.fileClosureDate, cutoffDate);
-    if (cancelledByFyEnd) summary.cancelledByFyEnd += 1;
-    if (closedByFyEnd) summary.closedByFyEnd += 1;
-    if (!cancelledByFyEnd && !closedByFyEnd) summary.activeAtFyEnd += 1;
+    if (cancelledByFyEnd) {
+      summary.cancelledByFyEnd += 1;
+      addDrillFile("cancelledByFyEnd", file);
+    }
+    if (closedByFyEnd) {
+      summary.closedByFyEnd += 1;
+      addDrillFile("closedByFyEnd", file);
+    }
+    if (!cancelledByFyEnd && !closedByFyEnd) {
+      summary.activeAtFyEnd += 1;
+      addDrillFile("activeAtFyEnd", file);
+    }
 
     const fileTypeRow = getFileTypeRow(file.fileType ?? "");
     fileTypeRow.files += 1;
@@ -2540,6 +2584,11 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     if (cancelledByFyEnd) fileTypeRow.cancelledByFyEnd += 1;
     else if (closedByFyEnd) fileTypeRow.closedByFyEnd += 1;
     else fileTypeRow.activeAtFyEnd += 1;
+    const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
+    addDrillFile(`${fileTypeKey}:files`, file);
+    if (cancelledByFyEnd) addDrillFile(`${fileTypeKey}:cancelled`, file);
+    if (closedByFyEnd) addDrillFile(`${fileTypeKey}:closed`, file);
+    if (!cancelledByFyEnd && !closedByFyEnd) addDrillFile(`${fileTypeKey}:active`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
     const soRowsByFyEnd = normalizedFileSupplyOrders(file).filter(
@@ -2548,39 +2597,71 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
         isDateOnOrBefore(order.soDate, cutoffDate) &&
         !isSupplyOrderCancelledByCutoff(file, order, cutoffDate),
     );
-    const hasSoByFyEnd = soRowsByFyEnd.length > 0;
+    const supplyOrderRowsByFyEnd = normalizedRawSupplyOrders(file).filter(
+      (order) =>
+        hasFilledString(order.soDate) &&
+        isDateOnOrBefore(order.soDate, cutoffDate) &&
+        !isSupplyOrderCancelledByCutoff(file, order, cutoffDate),
+    );
+    const hasSoByFyEnd = supplyOrderRowsByFyEnd.length > 0;
+    if (hasSoByFyEnd) {
+      fileTypeRow.filesWithSo += 1;
+      addDrillFile(`${fileTypeKey}:withSo`, file);
+    }
 
     if (!cancelledByFyEnd && !immsDoneByFyEnd && !hasSoByFyEnd) {
       summary.noImmsByFyEnd += 1;
       addFinance1Amount(summary.intendedAtFyEnd, demandCapital, demandRevenue);
+      addDrillFile("intendedAtFyEnd", file);
     }
     if (!cancelledByFyEnd && immsDoneByFyEnd && !hasSoByFyEnd) {
       summary.immsDoneSoNotPlacedByFyEnd += 1;
       addFinance1Amount(summary.bookedAtFyEnd, demandCapital, demandRevenue);
+      addDrillFile("bookedAtFyEnd", file);
     }
     if (!cancelledByFyEnd && hasSoByFyEnd) {
       summary.soPlacedByFyEnd += 1;
-      soRowsByFyEnd.forEach((order) => {
+      addDrillFile("committedAtFyEnd", file);
+      addDrillFile("soPlacedByFyEnd", file);
+      supplyOrderRowsByFyEnd.forEach((order) => {
         const soCapital = getInrAmount(order.soValueCapital, file) ?? 0;
         const soRevenue = getInrAmount(order.soValueRevenue, file) ?? 0;
         addFinance1Amount(
           summary.committedAtFyEnd,
           soCapital,
           soRevenue,
+          0,
         );
         const firmTypeRow = getFirmTypeRow(getEffectiveFirmType(order));
-        firmTypeRow.supplyOrders += 1;
         firmTypeRow.capital += soCapital;
         firmTypeRow.revenue += soRevenue;
         firmTypeRow.total += soCapital + soRevenue;
+        addDrillFile(`firmType:${firmTypeRow.firmType.toLowerCase()}`, file);
+      });
+      summary.committedAtFyEnd.count += supplyOrderRowsByFyEnd.length;
+      supplyOrderRowsByFyEnd.forEach((order) => {
+        const firmTypeRow = getFirmTypeRow(getEffectiveFirmType(order));
+        firmTypeRow.supplyOrders += 1;
+        addDrillFile(`firmType:${firmTypeRow.firmType.toLowerCase()}`, file);
       });
     }
 
-    if (soRowsByFyEnd.some((order) => isOrderDeliveryOrJobDoneByCutoff(order, cutoffDate))) {
+    const deliveryJobDoneByFyEnd = soRowsByFyEnd.some((order) =>
+      isOrderDeliveryOrJobDoneByCutoff(order, cutoffDate),
+    );
+    const billSentByFyEnd = soRowsByFyEnd.some((order) =>
+      isOrderBillSentByCutoff(order, cutoffDate),
+    );
+    if (deliveryJobDoneByFyEnd) {
       summary.deliveryJobDoneByFyEnd += 1;
+      addDrillFile("deliveryJobDoneByFyEnd", file);
     }
-    if (soRowsByFyEnd.some((order) => isOrderBillSentByCutoff(order, cutoffDate))) {
+    if (soRowsByFyEnd.length && !deliveryJobDoneByFyEnd) {
+      addDrillFile("deliveryJobPendingByFyEnd", file);
+    }
+    if (billSentByFyEnd) {
       summary.billSentByFyEnd += 1;
+      addDrillFile("billSentByFyEnd", file);
     }
     const paymentLiabilityEntries = getFinancePaymentLiabilityEntries([file]);
     const hasRegularPaymentByFyEnd = paymentLiabilityEntries.some((entry) =>
@@ -2593,22 +2674,36 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     );
     if (hasRegularPaymentByFyEnd || hasAdvancePaymentByFyEnd) {
       summary.paymentCompletedByFyEnd += 1;
+      addDrillFile("paymentCompletedByFyEnd", file);
+    }
+    if (billSentByFyEnd && !hasRegularPaymentByFyEnd) {
+      addDrillFile("billsSubmittedButUnpaid", file);
+    }
+    if (deliveryJobDoneByFyEnd && !billSentByFyEnd) {
+      addDrillFile("paymentDueButBillNotSubmitted", file);
     }
 
     paymentLiabilityEntries.forEach((entry) => {
-      if (!isDateOnOrBefore(entry.sourceDate, cutoffDate)) return;
       if (isDateOnOrBefore(entry.paymentDate, cutoffDate)) {
-        addFinance1Amount(summary.paidByFyEnd, entry.capital, entry.revenue);
+        if (isDateOnOrBefore(entry.sourceDate, cutoffDate)) {
+          addFinance1Amount(summary.paidByFyEnd, entry.capital, entry.revenue);
+          addDrillFile("paidByFyEnd", file);
+        }
         return;
       }
-      addFinance1Amount(summary.unpaidLiabilityAtFyEnd, entry.capital, entry.revenue);
+      if (isDateOnOrBefore(getFinance1LiabilityDate(entry), cutoffDate)) {
+        addFinance1Amount(summary.unpaidLiabilityAtFyEnd, entry.capital, entry.revenue);
+        addDrillFile("unpaidLiabilityAtFyEnd", file);
+      }
     });
 
     paymentLiabilityEntries.forEach((entry) => {
-      if (hasFilledString(entry.paymentDate)) {
+      if (isDateOnOrBefore(entry.paymentDate, todayDate)) {
         addFinance1Amount(summary.paidTillDate, entry.capital, entry.revenue);
+        addDrillFile("paidTillDate", file);
       } else if (isDateOnOrBefore(entry.sourceDate, todayDate)) {
         addFinance1Amount(summary.balanceUnpaidToday, entry.capital, entry.revenue);
+        addDrillFile("balanceUnpaidToday", file);
       }
     });
 
@@ -2623,15 +2718,20 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       if (capital + revenue <= 0) return;
       if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
         addFinance1Amount(summary.paidByFyEnd, capital, revenue);
+        addDrillFile("paidByFyEnd", file);
       } else if (isDateOnOrBefore(order.soDate, cutoffDate)) {
         summary.advancePendingByFyEnd += 1;
         addFinance1Amount(summary.unpaidLiabilityAtFyEnd, capital, revenue);
+        addDrillFile("advancePendingByFyEnd", file);
+        addDrillFile("unpaidLiabilityAtFyEnd", file);
       }
 
-      if (hasFilledString(order.advancePaymentDetail?.paymentDate)) {
+      if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, todayDate)) {
         addFinance1Amount(summary.paidTillDate, capital, revenue);
+        addDrillFile("paidTillDate", file);
       } else if (!isSupplyOrderCancelled(file, order) && isDateOnOrBefore(order.soDate, todayDate)) {
         addFinance1Amount(summary.balanceUnpaidToday, capital, revenue);
+        addDrillFile("balanceUnpaidToday", file);
       }
       if (isDateAfterDate(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
         hasPaymentMadeLater = true;
@@ -2647,10 +2747,20 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       )
     ) {
       summary.soPlacedLater += 1;
+      addDrillFile("soPlacedLater", file);
     }
-    if (hasPaymentMadeLater) summary.paymentMadeLater += 1;
-    if (isDateAfterDate(file.fileClosureDate, cutoffDate)) summary.fileClosedLater += 1;
-    if (!isCancelledFile(file) && !isFileClosed(file)) summary.stillPendingToday += 1;
+    if (hasPaymentMadeLater) {
+      summary.paymentMadeLater += 1;
+      addDrillFile("paymentMadeLater", file);
+    }
+    if (isDateAfterDate(file.fileClosureDate, cutoffDate)) {
+      summary.fileClosedLater += 1;
+      addDrillFile("fileClosedLater", file);
+    }
+    if (!isCancelledFile(file) && !isFileClosed(file)) {
+      summary.stillPendingToday += 1;
+      addDrillFile("stillPendingToday", file);
+    }
   });
 
   summary.fileClosedByFyEnd = summary.closedByFyEnd;
@@ -2659,6 +2769,9 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   );
   summary.firmTypeDistribution = Array.from(firmTypeDistribution.values()).sort((a, b) =>
     b.total !== a.total ? b.total - a.total : a.firmType.localeCompare(b.firmType),
+  );
+  summary.drillFileIds = Object.fromEntries(
+    Array.from(drillFileIds, ([key, ids]) => [key, Array.from(ids)]),
   );
   return summary;
 }
@@ -3056,7 +3169,6 @@ function isJobCompletionDone(order: SupplyOrderDetail) {
 }
 
 function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
-  if (isYes(order.shortclosure)) return false;
   if (hasFilledString(order.billPreparationDate)) return false;
   if (isDeliveryInspectionApplicable(file)) {
     return isYes(file.ir) && hasFilledString(order.irReceiptDate);
@@ -3278,9 +3390,14 @@ function getRiskRowCount(file: FileRecord) {
 
 function getPaymentPendingRowCount(file: FileRecord) {
   if (isYes(file.demandCancelled)) return 0;
-  return normalizedFilePaymentOrders(file)
-    .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
-    .filter((order) => isNormalPaymentOpenOrder(file, order)).length;
+  const liabilityPendingCount = getFinancePaymentLiabilityEntries([file]).filter(
+    (entry) => entry.pending,
+  ).length;
+  const advancePendingCount = advancePaymentEntries([file]).filter(
+    ({ file: entryFile, order }) =>
+      isAdvancePaymentPending(order) && isPaymentOrderActive(entryFile, order),
+  ).length;
+  return liabilityPendingCount + advancePendingCount;
 }
 
 const milestoneClearingDefinitions = [
@@ -3444,11 +3561,7 @@ function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
-  return (
-    !isYes(file.demandCancelled) &&
-    !isYes(order.soCancelled) &&
-    !isShortclosureNoFurtherAction(order)
-  );
+  return !isYes(file.demandCancelled) && !isYes(order.soCancelled);
 }
 
 function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
@@ -3472,7 +3585,7 @@ function isOrderActiveForCurrentMilestone(
 ) {
   return isPaymentMilestone(normalizedMilestone)
     ? isPaymentOrderActive(file, order)
-    : !isSupplyOrderCancelled(file, order) && !isYes(order.shortclosure);
+    : !isSupplyOrderCancelled(file, order);
 }
 
 function isPaymentMilestone(normalizedMilestone: string) {
@@ -3510,10 +3623,8 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery)) {
     if (!hasFilledString(order.stageDeliveryCount)) return false;
     if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
-      return false;
-    }
   }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
   return true;
 }
 
@@ -3542,8 +3653,7 @@ function countLiveSupplyOrders(files: FileRecord[]) {
     ({ file, order }) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isShortclosureNoFurtherAction(order),
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -3721,7 +3831,6 @@ function isBgPendingOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     !isBgReceivedOrder(order, category) &&
     !isSupplyOrderCancelled(file, order) &&
-    !isYes(order.shortclosure) &&
     (normalized === "psb" || normalized === "psbpwb"
       ? isFinancialSanctionCompletedOrder(order)
       : isPwbDueForWorkflow(file, order))
@@ -3878,8 +3987,7 @@ function countIrPreparationPendingOrders(files: FileRecord[]) {
       hasSupplyOrderDate(order) &&
       hasFilledString(order.materialReceiptDate) &&
       !hasFilledString(order.irPreparationDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isYes(order.shortclosure),
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -3890,8 +3998,7 @@ function countIrReceiptPendingOrders(files: FileRecord[]) {
       isYes(file.ir) &&
       hasFilledString(order.irPreparationDate) &&
       !hasFilledString(order.irReceiptDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isYes(order.shortclosure),
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -4022,16 +4129,20 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
-  if (orders.length)
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
+  const rawOrders = rawSupplyOrders(file);
+  if (rawOrders.length)
+    return rawOrders
+      .filter((order) => !isYes(order.soCancelled))
+      .reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0);
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
-  if (orders.length)
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
+  const rawOrders = rawSupplyOrders(file);
+  if (rawOrders.length)
+    return rawOrders
+      .filter((order) => !isYes(order.soCancelled))
+      .reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0);
 }
 
@@ -4043,14 +4154,40 @@ function getSupplyOrderTotalValue(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function getFinancePaymentCapital(file: FileRecord, order: SupplyOrderDetail) {
+  if (isYes(order.shortclosure)) {
+    return (
+      getInrAmount(order.actualPaymentCapital, file) ??
+      getInrAmount(order.billAmountCapital, file) ??
+      0
+    );
+  }
   return (
     getInrAmount(order.actualPaymentCapital, file) ?? getInrAmount(order.soValueCapital, file) ?? 0
   );
 }
 
 function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
+  if (isYes(order.shortclosure)) {
+    return (
+      getInrAmount(order.actualPaymentRevenue, file) ??
+      getInrAmount(order.billAmountRevenue, file) ??
+      0
+    );
+  }
   return (
     getInrAmount(order.actualPaymentRevenue, file) ?? getInrAmount(order.soValueRevenue, file) ?? 0
+  );
+}
+
+function isFinanceMainPaymentLiabilityRelevant(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isYes(order.shortclosure)) return true;
+  return (
+    hasPaymentWorkflowStarted(file, order) ||
+    hasFilledString(order.paymentDate) ||
+    hasFilledString(order.actualPaymentCapital) ||
+    hasFilledString(order.actualPaymentRevenue) ||
+    hasFilledString(order.billAmountCapital) ||
+    hasFilledString(order.billAmountRevenue)
   );
 }
 
@@ -4062,6 +4199,7 @@ function getFinancePaymentLiabilityEntries(files: FileRecord[]): FinancePaymentL
       const mainEntries = normalizedFilePaymentOrders({ ...file, supplyOrders: [baseOrder] })
         .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
         .filter((order) => isPaymentOrderActive(file, order))
+        .filter((order) => isFinanceMainPaymentLiabilityRelevant(file, order))
         .map(
           (order): FinancePaymentLiabilityEntry => ({
             kind: "main",
@@ -4433,12 +4571,23 @@ function isNo(value: string | undefined) {
 }
 
 function isFileTenderLive(file: FileRecord) {
-  return isBiddingApplicableForFile(file) && isYes(file.tenderLive);
+  const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
+  const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  return (
+    isBiddingApplicableForFile(file) &&
+    !isYes(file.bidOpened) &&
+    !isYes(file.biddingStageOver) &&
+    hasFilledString(bidDate) &&
+    hasFilledString(bidOpeningDate) &&
+    !isDateAfterToday(bidDate) &&
+    !isDateBeforeToday(bidOpeningDate)
+  );
 }
 
 function isBiddingInProgressFile(file: FileRecord) {
   return (
     isBiddingApplicableForFile(file) &&
+    !isYes(file.refloat) &&
     hasFilledString(file.cfaDate) &&
     !isYes(file.biddingStageOver)
   );

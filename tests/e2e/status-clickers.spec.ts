@@ -51,11 +51,11 @@ async function ensureQaUser() {
 }
 
 async function selectedYear() {
-  const result = await pool.query<{ selected_year: string }>(
-    "select selected_year from app_settings where id = true",
+  const result = await pool.query<{ financial_year: string }>(
+    "select financial_year from app_settings where id = true",
   );
-  const year = result.rows[0]?.selected_year;
-  if (!year) throw new Error("Settings selected year not found.");
+  const year = result.rows[0]?.financial_year;
+  if (!year) throw new Error("Settings financial year not found.");
   return year;
 }
 
@@ -117,7 +117,7 @@ const counterTargets: CounterTarget[] = [
   },
   {
     name: "Supply Order / Placed",
-    testId: "status-counter-supply-order-placed",
+    testId: "status-counter-supply-order-completed",
     buildOrder: () => ({}),
   },
   {
@@ -131,7 +131,7 @@ const counterTargets: CounterTarget[] = [
   },
   {
     name: "Payment / Pending",
-    testId: "status-counter-payment-pending",
+    testId: "status-counter-payment-due",
     filePatch: { ir: "Yes" },
     buildOrder: () => ({
       currentMilestone: "Payment",
@@ -211,7 +211,7 @@ const counterTargets: CounterTarget[] = [
   },
   {
     name: "Advance Payment / Pending",
-    testId: "status-counter-advance-payment-pending",
+    testId: "status-counter-advance-payment-advance-pending",
     buildOrder: () => ({
       stageDelivery: "Yes",
       stagePayment: "Yes",
@@ -313,7 +313,7 @@ async function authenticate(page: Page, token: string) {
 
 test.describe("dashboard status clickers", () => {
   let counterGroups: SeededCounterGroup[];
-  let excludedShortclosedPaymentFile: FileRecord;
+  let shortclosedPaidFile: FileRecord;
   let browserSessionToken: string;
 
   test.beforeAll(async () => {
@@ -323,11 +323,11 @@ test.describe("dashboard status clickers", () => {
     const seedToken = await saveUserSession(userId);
     try {
       const year = await selectedYear();
-      excludedShortclosedPaymentFile = await seedFile(
+      shortclosedPaidFile = await seedFile(
         seedToken,
         year,
         {
-          name: "Payment / Completed shortclosed no further action exclusion",
+          name: "Payment / Completed shortclosed paid inclusion",
           testId: "status-counter-payment-completed",
           buildOrder: () => ({
             materialReceiptDate: "2026-07-20",
@@ -407,9 +407,9 @@ test.describe("dashboard status clickers", () => {
           checkedFiles += 1;
         }
         if (group.name === "Payment / Completed") {
-          const excludedCode = excludedShortclosedPaymentFile.uniqueCode ?? "";
-          await page.getByPlaceholder("Free search").fill(excludedCode);
-          await expect(page.getByTestId(`search-result-${slug(excludedCode)}`)).toHaveCount(0);
+          const shortclosedCode = shortclosedPaidFile.uniqueCode ?? "";
+          await page.getByPlaceholder("Free search").fill(shortclosedCode);
+          await expect(page.getByTestId(`search-result-${slug(shortclosedCode)}`)).toBeVisible();
         }
       });
     }

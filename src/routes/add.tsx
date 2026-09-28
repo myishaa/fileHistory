@@ -59,6 +59,7 @@ import {
 import { fileSupplyOrders as expandedFileSupplyOrders } from "@/lib/effective-deliveries";
 import { displayFinancialYearLabel } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fileTypeGroupOptions,
   getConfiguredFileTypeGroup,
@@ -661,6 +662,7 @@ type ExtraField<K extends string = FieldKey> = {
   placeholder?: string;
   helper?: string;
   typeahead?: boolean;
+  onSearchChange?: (query: string) => void;
   min?: number;
 };
 
@@ -946,14 +948,26 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
     label: "No Further Action",
     options: yesNo,
     helper:
-      "Default is No. Use Yes only with Shortclosure when the S.O. balance/workflow is closed and no delivery, job completion, payment, BG, advance, or stage action should remain open. It still counts as Shortclosure.",
+      "No: shortclosure follow-up remains open, so pending delivery / job / payment / advance / stage / BG return warnings may continue.\nYes: select only after verifying that no payable or return action remains.\nImportant: Yes stops shortclosure follow-up warnings, but it does not cancel the S.O. or delete historical payment / BG records. If a BG was received and return date is blank, BG return tracking can still apply.",
   },
   { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
   { key: "stageDelivery", label: "Stage Delivery", control: "radio", options: yesNo },
   { key: "stageDeliveryCount", label: "No. of stage deliveries", type: "number" },
-  { key: "stagePayment", label: "Stage payment", control: "radio", options: yesNo },
-  { key: "advancePayment", label: "Advance Payment", control: "radio", options: yesNo },
+  {
+    key: "stagePayment",
+    label: "Stage payment",
+    control: "radio",
+    options: yesNo,
+    helper: "Controls payment allocations by delivery stage. Advance Payment is separate.",
+  },
+  {
+    key: "advancePayment",
+    label: "Advance Payment",
+    control: "radio",
+    options: yesNo,
+    helper: "An S.O.-level payment option, independent of Stage Delivery and Stage Payment.",
+  },
 ];
 
 const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
@@ -997,8 +1011,6 @@ const supplyOrderSubviewFields = {
     "soValueCapital",
     "firm",
     "firmUniqueNo",
-    "firmType",
-    "firmTypeOther",
     "stageDelivery",
     "stageDeliveryCount",
     "stagePayment",
@@ -1072,7 +1084,7 @@ const supplyOrderFieldPrerequisites = {
   stageDelivery: ["firm"],
   stageDeliveryCount: ["stageDelivery"],
   stagePayment: ["stageDelivery"],
-  advancePayment: ["stagePayment"],
+  advancePayment: ["soDate"],
   psbApplicable: ["financialSanctionDate"],
   bgCoverageType: ["financialSanctionDate"],
   psbBgNo: ["bgCoverageType"],
@@ -1294,7 +1306,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "bidNumber", label: "Bid number" },
       { key: "bidDate", label: "Bid date", type: "date" },
       { key: "bidOpeningDate", label: "Bid closing", type: "date" },
-      { key: "tenderLive", label: "Tender live", options: yesNo },
+      { key: "tenderLive", label: "Bid Live", options: yesNo },
       { key: "bidOpened", label: "Bid opened", options: yesNoCaps },
       { key: "refloat", label: "Refloat (Yes/No)", options: yesNo },
       { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting (Yes/No)", options: yesNo },
@@ -1442,6 +1454,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [demandCancelledUnlocked, setDemandCancelledUnlocked] = useState(false);
   const [paidStageUnfreezeKeys, setPaidStageUnfreezeKeys] = useState<Set<string>>(() => new Set());
+  const [paidAdvanceUnfreezeKeys, setPaidAdvanceUnfreezeKeys] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
   const [focusedMilestone, setFocusedMilestone] = useState(milestone ?? "");
   const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -1468,6 +1483,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       setFileLoadStatus("idle");
       setDemandCancelledUnlocked(false);
       setPaidStageUnfreezeKeys(new Set());
+      setPaidAdvanceUnfreezeKeys(new Set());
       return;
     }
 
@@ -1480,6 +1496,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setFileLoadStatus("loaded");
         setDemandCancelledUnlocked(false);
         setPaidStageUnfreezeKeys(new Set());
+        setPaidAdvanceUnfreezeKeys(new Set());
       })
       .catch((error) => {
         if (cancelled) return;
@@ -1488,6 +1505,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setFileLoadStatus("error");
         setDemandCancelledUnlocked(false);
         setPaidStageUnfreezeKeys(new Set());
+        setPaidAdvanceUnfreezeKeys(new Set());
       });
 
     return () => {
@@ -1508,6 +1526,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       next.add(stageFreezeKey(orderIndex, stageIndex));
       return next;
     });
+  };
+  const unlockPaidAdvance = async (orderIndex: number) => {
+    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    const allowed = await requestDeletionPassword(`unfreeze paid Advance Payment`);
+    if (!allowed) return;
+    setPaidAdvanceUnfreezeKeys((current) => new Set(current).add(orderIndex));
   };
   const savedFormForLocks = useMemo(
     () =>
@@ -1666,6 +1690,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     [effectiveFinancialYear, settings.financialYears, settings.yearSelectionLocked],
   );
   const [indentorOptions, setIndentorOptions] = useState<string[]>([]);
+  const [indentorSearch, setIndentorSearch] = useState("");
   useEffect(() => {
     if (!selectedDivision) {
       setIndentorOptions([]);
@@ -1675,7 +1700,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const timeoutId = window.setTimeout(() => {
       fetchIndentors({
         divisionId: selectedDivision.id,
-        q: formWithLockedYear.indentor,
+        q: indentorSearch || formWithLockedYear.indentor,
         page: 1,
         pageSize: 50,
       })
@@ -1695,7 +1720,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [selectedDivision, formWithLockedYear.indentor]);
+  }, [selectedDivision, formWithLockedYear.indentor, indentorSearch]);
   const tcecIsNo = isNo(formWithLockedYear.tcec);
   const gemIsNo = isNo(formWithLockedYear.gem);
   const highValueIsNo = isNo(formWithLockedYear.highValue);
@@ -2058,6 +2083,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       }
       if (k === "refloat" && isYes(v)) {
         patch.biddingStageOver = "No";
+        patch.bidOpened = "NO";
       }
       if (k === "biddingStageOver" && isYes(v)) {
         patch.tenderLive = "No";
@@ -2669,6 +2695,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                     ? "Type or select indentor"
                     : "Select division first",
                   typeahead: true,
+                  onSearchChange: setIndentorSearch,
                 }
               : field.key === "fileType"
                 ? {
@@ -2910,6 +2937,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const stageAutofilledSupplyOrders = autoFillStageDeliveriesForSave(
       cleanedSupplyOrders,
       formForSave,
+      savedSupplyOrdersForLocks,
     );
     const supplyOrdersForSave = useSupplyOrderMilestonesForSave
       ? stageAutofilledSupplyOrders
@@ -2982,6 +3010,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const paymentBlockedByBgErrors = getPaymentBlockedByBgErrors(
       supplyOrdersForSave,
       formForSave,
+      savedSupplyOrdersForLocks,
     );
     const milestonesForValidation = fileLevelMilestoneOptions;
     const milestoneErrors = [
@@ -3050,6 +3079,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       );
       setUnlockedSections(new Set());
       setPaidStageUnfreezeKeys(new Set());
+      setPaidAdvanceUnfreezeKeys(new Set());
       setSaved(true);
       if (options?.returnToQuickEntry) {
         setTimeout(() => {
@@ -3298,6 +3328,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   bgDisabled={bgIsNo}
                   irDisabled={irIsNo}
                   paidStageUnfreezeKeys={paidStageUnfreezeKeys}
+                  paidAdvanceUnfreezeKeys={paidAdvanceUnfreezeKeys}
                   quickFocus={Boolean(
                     quickFocus && activeSection.title === "Supply order and payment",
                   )}
@@ -3320,6 +3351,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onStageDeliveryChange={updateStageDelivery}
                   onStageDeliveryBillReturnsChange={updateStageDeliveryBillReturns}
                   onPaidStageUnfreeze={unlockPaidStage}
+                  onPaidAdvanceUnfreeze={unlockPaidAdvance}
                 />
               ) : (
                 <>
@@ -4394,6 +4426,8 @@ function FirmDetailsBlock({
                       }
                     }}
                     options={firmNameOptions}
+                    deferChangeUntilSelect
+                    typeAheadOnly
                     placeholder="Firm name"
                     disabled={firmNameDisabled}
                     className={inputCls + disabledCls(firmNameDisabled)}
@@ -4415,6 +4449,8 @@ function FirmDetailsBlock({
                       }
                     }}
                     options={firmUniqueNoOptions}
+                    deferChangeUntilSelect
+                    typeAheadOnly
                     placeholder={firmUniqueNoLabel}
                     disabled={firmUniqueNoDisabled}
                     className={inputCls + disabledCls(firmUniqueNoDisabled)}
@@ -4613,6 +4649,7 @@ function SupplyOrdersBlock({
   bgDisabled,
   irDisabled,
   paidStageUnfreezeKeys,
+  paidAdvanceUnfreezeKeys,
   quickFocus,
   focusTarget,
   renderUpdateButton,
@@ -4629,6 +4666,7 @@ function SupplyOrdersBlock({
   onStageDeliveryChange,
   onStageDeliveryBillReturnsChange,
   onPaidStageUnfreeze,
+  onPaidAdvanceUnfreeze,
 }: {
   form: FormState;
   lockedForm: FormState;
@@ -4645,6 +4683,7 @@ function SupplyOrdersBlock({
   bgDisabled: boolean;
   irDisabled: boolean;
   paidStageUnfreezeKeys: Set<string>;
+  paidAdvanceUnfreezeKeys: Set<number>;
   quickFocus?: boolean;
   focusTarget?: string;
   renderUpdateButton?: (dirty?: boolean) => ReactNode;
@@ -4681,6 +4720,7 @@ function SupplyOrdersBlock({
     billReturnCycles: BillReturnCycle[],
   ) => void;
   onPaidStageUnfreeze: (orderIndex: number, stageIndex: number) => void;
+  onPaidAdvanceUnfreeze: (orderIndex: number) => void;
 }) {
   const orderFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const focusBlockRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -4838,6 +4878,9 @@ function SupplyOrdersBlock({
       if (!hasFilledValue(order.firmUniqueNo) && selectedFirm.firmUniqueNo) {
         patch.firmUniqueNo = selectedFirm.firmUniqueNo;
       }
+      if (!hasFilledValue(order.firmType) && selectedFirm.firmType) {
+        patch.firmType = selectedFirm.firmType;
+      }
       if (Object.keys(patch).length) onOrderPatch(index, patch);
     });
   }, [disabled, masterFirms, onOrderPatch, orders]);
@@ -4868,6 +4911,7 @@ function SupplyOrdersBlock({
       firmUniqueNo: firm.firmUniqueNo ?? "",
       firmContactNo: firm.contactNo ?? "",
       firmCity: firm.city ?? "",
+      firmType: firm.firmType ?? "",
     });
   };
 
@@ -4877,6 +4921,7 @@ function SupplyOrdersBlock({
       firmUniqueNo: "",
       firmContactNo: "",
       firmCity: "",
+      firmType: "",
     });
   };
 
@@ -4927,6 +4972,7 @@ function SupplyOrdersBlock({
       firmUniqueNo: key === "firmUniqueNo" ? value : "",
       firmContactNo: "",
       firmCity: "",
+      firmType: "",
     });
   };
 
@@ -5156,7 +5202,6 @@ function SupplyOrdersBlock({
             );
             const showAdvancePaymentBlock =
               activeSubview === "payment" &&
-              isYes(order.stagePayment ?? "") &&
               isYes(order.advancePayment ?? "");
             const showOrderMilestoneControls = useOrderMilestones || activeSubview === "bg";
             const orderMilestones = showOrderMilestoneControls
@@ -5220,6 +5265,11 @@ function SupplyOrdersBlock({
               isDownstreamSubview(activeSubview) &&
               !downstreamOverrideUnlocked &&
               !isSupplyOrderAndDpComplete(order, form);
+            const paidAdvanceFrozen =
+              hasPaidAdvancePayment(order.advancePaymentDetail) &&
+              !paidAdvanceUnfreezeKeys.has(index);
+            const advanceControlDisabled = disabled || downstreamLocked || paidAdvanceFrozen;
+            const advanceLockFilledFields = lockFilledFields && !paidAdvanceUnfreezeKeys.has(index);
 
             return (
               <details
@@ -5307,157 +5357,138 @@ function SupplyOrdersBlock({
                     />
                   ) : null}
 
-                  {useStageCards ? (
-                    <div className="space-y-4">
-                      {showAdvancePaymentBlock ? (
-                        <div
-                          ref={(element) => {
-                            focusBlockRefs.current[`advance:${index}`] = element;
-                          }}
-                          className={
-                            "rounded-md border border-border bg-background/70 p-4" +
-                            (focusBlockKeySet.has(`advance:${index}`)
-                              ? " border-primary bg-primary/5 ring-2 ring-primary/40"
-                              : "")
-                          }
-                        >
-                          <div className="mb-4 text-sm font-semibold">Advance Payment</div>
-                          <AdvancePaymentMilestonesBlock advance={advancePaymentDetail} />
-                          <div className="grid grid-cols-1 gap-4">
-                            {advancePaymentFields.map((field) => {
-                              const key = field.key;
-                              const lockedValue = lockedOrder?.advancePaymentDetail?.[key];
-                              if (key === "stageAmountCapital") {
-                                return (
-                                  <AmountByValueTypeField
-                                    key={key}
-                                    label="Advance amount"
-                                    capitalSelected={form.valueCapitalSelected === "Yes"}
-                                    revenueSelected={form.valueRevenueSelected === "Yes"}
-                                    capitalValue={advancePaymentDetail.stageAmountCapital ?? ""}
-                                    revenueValue={advancePaymentDetail.stageAmountRevenue ?? ""}
-                                    disabled={disabled || downstreamLocked}
-                                    lockFilledFields={lockFilledFields}
-                                    testId={`add-field-supplyOrder-${index}-advance-stageAmountCapital`}
-                                    lockedValueFilled={
-                                      hasFilledValue(
-                                        lockedOrder?.advancePaymentDetail?.stageAmountCapital,
-                                      ) ||
-                                      hasFilledValue(
-                                        lockedOrder?.advancePaymentDetail?.stageAmountRevenue,
-                                      )
-                                    }
-                                    onChange={(patch) => {
-                                      if ("capital" in patch) {
-                                        onAdvancePaymentChange(
-                                          index,
-                                          "stageAmountCapital",
-                                          patch.capital ?? "",
-                                        );
-                                      }
-                                      if ("revenue" in patch) {
-                                        onAdvancePaymentChange(
-                                          index,
-                                          "stageAmountRevenue",
-                                          patch.revenue ?? "",
-                                        );
-                                      }
-                                    }}
-                                  />
-                                );
-                              }
-                              if (key === "actualPaymentCapital") {
-                                return (
-                                  <AmountByValueTypeField
-                                    key={key}
-                                    label="Actual payment amount"
-                                    capitalSelected={form.valueCapitalSelected === "Yes"}
-                                    revenueSelected={form.valueRevenueSelected === "Yes"}
-                                    capitalValue={advancePaymentDetail.actualPaymentCapital ?? ""}
-                                    revenueValue={advancePaymentDetail.actualPaymentRevenue ?? ""}
-                                    disabled={disabled || downstreamLocked}
-                                    lockFilledFields={lockFilledFields}
-                                    testId={`add-field-supplyOrder-${index}-advance-actualPaymentCapital`}
-                                    lockedValueFilled={
-                                      hasFilledValue(
-                                        lockedOrder?.advancePaymentDetail?.actualPaymentCapital,
-                                      ) ||
-                                      hasFilledValue(
-                                        lockedOrder?.advancePaymentDetail?.actualPaymentRevenue,
-                                      )
-                                    }
-                                    onChange={(patch) => {
-                                      if ("capital" in patch) {
-                                        onAdvancePaymentChange(
-                                          index,
-                                          "actualPaymentCapital",
-                                          patch.capital ?? "",
-                                        );
-                                      }
-                                      if ("revenue" in patch) {
-                                        onAdvancePaymentChange(
-                                          index,
-                                          "actualPaymentRevenue",
-                                          patch.revenue ?? "",
-                                        );
-                                      }
-                                    }}
-                                  />
-                                );
-                              }
-                              if (key === "billReturnCycles") {
-                                return (
-                                  <BillReturnCyclesBlock
-                                    key={key}
-                                    cycles={advancePaymentDetail.billReturnCycles}
-                                    lockedCycles={
-                                      lockedOrder?.advancePaymentDetail?.billReturnCycles
-                                    }
-                                    disabled={
-                                      disabled ||
-                                      downstreamLocked ||
-                                      (lockFilledFields &&
-                                        hasFilledValue(
-                                          String(
-                                            lockedOrder?.advancePaymentDetail?.billReturnCycles ??
-                                              "",
-                                          ),
-                                        ))
-                                    }
-                                    lockFilledFields={lockFilledFields}
-                                    testIdPrefix={`add-field-supplyOrder-${index}-advance-billReturnCycles`}
-                                    onChange={(cycles) =>
-                                      onAdvancePaymentBillReturnsChange(index, cycles)
-                                    }
-                                  />
-                                );
-                              }
-                              return (
-                                <DynamicField
-                                  key={key}
-                                  field={field}
-                                  value={String(advancePaymentDetail[key] ?? "")}
-                                  radioName={`supplyOrder-${index}-advance-${key}`}
-                                  disabled={
-                                    disabled ||
-                                    downstreamLocked ||
-                                    (lockFilledFields && hasFilledValue(String(lockedValue ?? "")))
-                                  }
-                                  onChange={(value) => onAdvancePaymentChange(index, key, value)}
-                                  inputRef={(element) => {
-                                    orderFieldRefs.current[`${index}:advance:${key}`] = element;
-                                  }}
-                                />
-                              );
-                            })}
-                          </div>
-                          {renderUpdateButton ? (
-                            <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
-                              {renderUpdateButton(advancePaymentDirty)}
-                            </div>
-                          ) : null}
+                  {showAdvancePaymentBlock ? (
+                    <div
+                      ref={(element) => {
+                        focusBlockRefs.current[`advance:${index}`] = element;
+                      }}
+                      className={
+                        "rounded-md border border-border bg-background/70 p-4" +
+                        (focusBlockKeySet.has(`advance:${index}`)
+                          ? " border-primary bg-primary/5 ring-2 ring-primary/40"
+                          : "")
+                      }
+                    >
+                      <div className="mb-4 text-sm font-semibold">Advance Payment</div>
+                      {paidAdvanceFrozen ? (
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                          <span className="font-medium">
+                            Paid advance locked to protect payment data.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onPaidAdvanceUnfreeze(index)}
+                            disabled={disabled || downstreamLocked}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Lock className="size-3.5" /> Unfreeze with password
+                          </button>
                         </div>
                       ) : null}
+                      <AdvancePaymentMilestonesBlock advance={advancePaymentDetail} />
+                      <div className="grid grid-cols-1 gap-4">
+                        {advancePaymentFields.map((field) => {
+                          const key = field.key;
+                          const lockedValue = lockedOrder?.advancePaymentDetail?.[key];
+                          if (key === "stageAmountCapital" || key === "actualPaymentCapital") {
+                            const isActual = key === "actualPaymentCapital";
+                            const capitalValue = isActual
+                              ? advancePaymentDetail.actualPaymentCapital ?? ""
+                              : advancePaymentDetail.stageAmountCapital ?? "";
+                            const revenueValue = isActual
+                              ? advancePaymentDetail.actualPaymentRevenue ?? ""
+                              : advancePaymentDetail.stageAmountRevenue ?? "";
+                            return (
+                              <AmountByValueTypeField
+                                key={key}
+                                label={isActual ? "Actual payment amount" : "Advance amount"}
+                                capitalSelected={form.valueCapitalSelected === "Yes"}
+                                revenueSelected={form.valueRevenueSelected === "Yes"}
+                                capitalValue={capitalValue}
+                                revenueValue={revenueValue}
+                                disabled={advanceControlDisabled}
+                                lockFilledFields={advanceLockFilledFields}
+                                testId={`add-field-supplyOrder-${index}-advance-${key}`}
+                                lockedValueFilled={
+                                  hasFilledValue(
+                                    isActual
+                                      ? lockedOrder?.advancePaymentDetail?.actualPaymentCapital
+                                      : lockedOrder?.advancePaymentDetail?.stageAmountCapital,
+                                  ) ||
+                                  hasFilledValue(
+                                    isActual
+                                      ? lockedOrder?.advancePaymentDetail?.actualPaymentRevenue
+                                      : lockedOrder?.advancePaymentDetail?.stageAmountRevenue,
+                                  )
+                                }
+                                onChange={(patch) => {
+                                  const capitalKey = isActual
+                                    ? "actualPaymentCapital"
+                                    : "stageAmountCapital";
+                                  const revenueKey = isActual
+                                    ? "actualPaymentRevenue"
+                                    : "stageAmountRevenue";
+                                  if ("capital" in patch) {
+                                    onAdvancePaymentChange(index, capitalKey, patch.capital ?? "");
+                                  }
+                                  if ("revenue" in patch) {
+                                    onAdvancePaymentChange(index, revenueKey, patch.revenue ?? "");
+                                  }
+                                }}
+                              />
+                            );
+                          }
+                          if (key === "billReturnCycles") {
+                            return (
+                              <BillReturnCyclesBlock
+                                key={key}
+                                cycles={advancePaymentDetail.billReturnCycles}
+                                lockedCycles={lockedOrder?.advancePaymentDetail?.billReturnCycles}
+                                disabled={
+                                  advanceControlDisabled ||
+                                  (advanceLockFilledFields &&
+                                    hasFilledValue(
+                                      String(
+                                        lockedOrder?.advancePaymentDetail?.billReturnCycles ?? "",
+                                      ),
+                                    ))
+                                }
+                                lockFilledFields={advanceLockFilledFields}
+                                testIdPrefix={`add-field-supplyOrder-${index}-advance-billReturnCycles`}
+                                onChange={(cycles) =>
+                                  onAdvancePaymentBillReturnsChange(index, cycles)
+                                }
+                              />
+                            );
+                          }
+                          return (
+                            <DynamicField
+                              key={key}
+                              field={field}
+                              value={String(advancePaymentDetail[key] ?? "")}
+                              radioName={`supplyOrder-${index}-advance-${key}`}
+                              disabled={
+                                advanceControlDisabled ||
+                                (advanceLockFilledFields && hasFilledValue(String(lockedValue ?? "")))
+                              }
+                              onChange={(value) => onAdvancePaymentChange(index, key, value)}
+                              inputRef={(element) => {
+                                orderFieldRefs.current[`${index}:advance:${key}`] = element;
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                      {renderUpdateButton ? (
+                        <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
+                          {renderUpdateButton(advancePaymentDirty)}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {useStageCards ? (
+                    <div className="space-y-4">
                       {stageDeliveries.map((stage, stageIndex) => {
                         const stageMilestones = getStageDeliveryMilestonesForSubview(
                           activeSubview,
@@ -5832,12 +5863,22 @@ function SupplyOrdersBlock({
                         );
                         const cancellationControlLocked =
                           lockFilledFields && isCancellationSupplyOrderField(key);
+                        const linkedLockedFirm = lockedOrder
+                          ? findLinkedMasterFirm(masterFirms, lockedOrder)
+                          : undefined;
+                        const lockedFieldValue =
+                          key === "firmUniqueNo"
+                            ? lockedOrder?.firmUniqueNo || linkedLockedFirm?.firmUniqueNo || ""
+                            : key === "firmType"
+                              ? lockedOrder?.firmType || linkedLockedFirm?.firmType || ""
+                              : lockedOrder?.[key] ?? "";
                         const fieldDisabled =
                           disabled ||
                           downstreamLocked ||
                           sequentiallyLocked ||
                           cancellationControlLocked ||
-                          (lockFilledFields && hasFilledValue(String(lockedOrder?.[key] ?? ""))) ||
+                          (lockFilledFields &&
+                            hasFilledValue(String(lockedFieldValue))) ||
                           (gemDisabled && key === "gemSoNo") ||
                           (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
                           (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
@@ -5904,6 +5945,13 @@ function SupplyOrdersBlock({
                                   updateOrderFirmLookup(index, key, nextValue, optionMap);
                                 }}
                                 options={options}
+                                deferChangeUntilSelect
+                                typeAheadOnly
+                                placeholder={
+                                  key === "firm"
+                                    ? "Select Firm Name"
+                                    : `Select ${firmUniqueNoLabel}`
+                                }
                                 disabled={fieldDisabled}
                                 data-testid={`add-field-supplyOrder-${index}-${key}`}
                                 className={inputCls + disabledCls(fieldDisabled)}
@@ -6447,7 +6495,6 @@ function getSupplyOrderFocusKeys(
     }
 
     if (
-      isYes(order.stagePayment ?? "") &&
       isYes(order.advancePayment ?? "") &&
       isAdvancePaymentFocusMatch(advancePaymentDetail, config, form)
     ) {
@@ -7163,6 +7210,20 @@ function getSupplyOrderSubviewCompletion({
     };
   }
 
+  const advanceCompletion =
+    activeSubview === "payment" && isYes(order.advancePayment ?? "")
+      ? advancePaymentFields.reduce<CompletionCount>(
+          (current, field) =>
+            addNestedPaymentFieldCompletion(
+              current,
+              field.key,
+              applyAdvancePaymentRules(order.advancePaymentDetail ?? {}, true),
+              form,
+              "advance",
+            ),
+          { filled: 0, total: 0 },
+        )
+      : { filled: 0, total: 0 };
   const counts = useStageCards
     ? getStageCompletionCount({
         activeSubview,
@@ -7182,7 +7243,7 @@ function getSupplyOrderSubviewCompletion({
             bgDisabled,
             irDisabled,
           }),
-        { filled: 0, total: 0 },
+        advanceCompletion,
       );
 
   const status = getCompletionStatus(counts);
@@ -8844,11 +8905,7 @@ function getAdvancePaymentTimelineItems(
   orderIndex: number,
   startOrder: number,
 ) {
-  if (
-    !isYes(order.stageDelivery ?? "") ||
-    !isYes(order.stagePayment ?? "") ||
-    !isYes(order.advancePayment ?? "")
-  ) {
+  if (!isYes(order.advancePayment ?? "")) {
     return [];
   }
   const advance = applyAdvancePaymentRules(order.advancePaymentDetail ?? {}, true);
@@ -8960,11 +9017,8 @@ function getRemarkTime(value: string) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function getFormDescriptionWithUniqueCode(form: FormState) {
-  const uniqueCode = form.uniqueCode.trim();
-  const description = form.demandDescription.trim();
-  if (uniqueCode && description) return `${uniqueCode} — ${description}`;
-  return description || uniqueCode;
+function getFormDemandDescription(form: FormState) {
+  return form.demandDescription.trim();
 }
 
 function exportTimelineReport(
@@ -8976,7 +9030,7 @@ function exportTimelineReport(
   const details = [
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
-    { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
+    { label: "Description", value: getFormDemandDescription(form) },
     { label: "Indentor", value: form.indentor },
   ];
   const exportItems = showAllDates
@@ -9111,7 +9165,7 @@ function exportRemarksReport(
     { label: "Control number", value: form.imms },
     { label: "Division", value: form.division },
     { label: "Indentor", value: form.indentor },
-    { label: "Description", value: getFormDescriptionWithUniqueCode(form) },
+    { label: "Description", value: getFormDemandDescription(form) },
   ];
   void downloadBackendExport({
     format,
@@ -9970,8 +10024,6 @@ const requiredSupplyOrderTabFields = [
   "soDate",
   "soValueCapital",
   "firm",
-  "firmType",
-  "firmTypeOther",
   "stageDelivery",
   "stageDeliveryCount",
   "stagePayment",
@@ -10197,24 +10249,16 @@ function getStageDeliveryWarnings(
 
     if (
       !stageDeliveryEnabled &&
-      hasFilledObjectValue({
-        ...(order.advancePaymentDetail ?? {}),
-        ...(order.stageDeliveries ?? []),
-      })
+      hasFilledObjectValue({ stageDeliveries: order.stageDeliveries ?? [] })
     ) {
-      warnings.push(`${orderLabel}: Stage Delivery is No, but hidden stage/advance data exists.`);
+      warnings.push(`${orderLabel}: Stage Delivery is No, but hidden stage delivery data exists.`);
     }
 
     if (stageDeliveryEnabled && !stagePaymentEnabled && hasAnyStagePaymentData(stages)) {
       warnings.push(`${orderLabel}: Stage Payment is No, but hidden stage payment data exists.`);
     }
 
-    if (
-      stageDeliveryEnabled &&
-      stagePaymentEnabled &&
-      !advancePaymentEnabled &&
-      hasFilledObjectValue(order.advancePaymentDetail ?? {})
-    ) {
+    if (!advancePaymentEnabled && hasFilledObjectValue(order.advancePaymentDetail ?? {})) {
       warnings.push(
         `${orderLabel}: Advance Payment is No, but hidden advance payment data exists.`,
       );
@@ -10241,7 +10285,7 @@ function getStageDeliveryWarnings(
       });
     }
 
-    if (stageDeliveryEnabled && stagePaymentEnabled && advancePaymentEnabled) {
+    if (advancePaymentEnabled) {
       const advance = order.advancePaymentDetail ?? {};
       warnings.push(...getAdvancePaymentChronologyWarnings(advance, order, orderLabel, form));
       if (hasWrongAmountSide(advance.stageAmountCapital, advance.stageAmountRevenue, form)) {
@@ -10264,7 +10308,11 @@ function getStageDeliveryWarnings(
   return warnings;
 }
 
-function getPaymentBlockedByBgErrors(rows: SupplyOrderDetail[], form: Pick<FormState, "bg">) {
+function getPaymentBlockedByBgErrors(
+  rows: SupplyOrderDetail[],
+  form: Pick<FormState, "bg">,
+  savedRows: SupplyOrderDetail[],
+) {
   const errors: string[] = [];
   rows.forEach((order, orderIndex) => {
     if (isYes(order.soCancelled) || areRequiredBankGuaranteesReceived(order, form)) return;
@@ -10274,7 +10322,14 @@ function getPaymentBlockedByBgErrors(rows: SupplyOrderDetail[], form: Pick<FormS
         `${orderLabel}: Payment cannot be marked/current/paid until required PSB/PWB is received.`,
       );
     }
-    if (hasAdvancePaymentProgress(order.advancePaymentDetail)) {
+    const previousAdvance = savedRows[orderIndex]?.advancePaymentDetail;
+    const advancePaymentJustStarted =
+      (normalizeMilestoneName(order.advancePaymentDetail?.currentMilestone ?? "") ===
+        "advancepayment" &&
+        normalizeMilestoneName(previousAdvance?.currentMilestone ?? "") !== "advancepayment") ||
+      (hasFilledValue(order.advancePaymentDetail?.paymentDate) &&
+        !hasFilledValue(previousAdvance?.paymentDate));
+    if (advancePaymentJustStarted && hasAdvancePaymentProgress(order.advancePaymentDetail)) {
       errors.push(
         `${orderLabel}: Advance payment cannot be paid until required PSB/PWB is received.`,
       );
@@ -11211,8 +11266,6 @@ function applySupplyOrderRules(
       ...next,
       stageDeliveryCount: "",
       stagePayment: "No",
-      advancePayment: "No",
-      advancePaymentDetail: {},
       stageDeliveries: [],
     };
   }
@@ -11232,8 +11285,6 @@ function applySupplyOrderRules(
   if (isNo(next.stagePayment ?? "")) {
     next = {
       ...next,
-      advancePayment: "No",
-      advancePaymentDetail: {},
       stageDeliveries: (next.stageDeliveries ?? []).map((stage) =>
         applyStageDeliveryRules({
           ...stage,
@@ -11652,19 +11703,102 @@ function applyAdvancePaymentValueTypeRules(
 function autoFillStageDeliveries(
   order: SupplyOrderDetail,
   form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected" | "fileType"> | undefined,
+  lockedOrder?: SupplyOrderDetail,
 ) {
-  const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
+  const stageCount = isYes(order.stageDelivery ?? "")
+    ? getStageDeliveryCount(order.stageDeliveryCount)
+    : 0;
   const soDate = parseLocalDate(order.soDate ?? "");
-  if (!stageCount || !soDate) return { order, changed: false };
+  if (!soDate) return { order, changed: false };
 
   const useCapital = hasNonZeroAmount(order.soValueCapital);
   const useRevenue = !useCapital && hasNonZeroAmount(order.soValueRevenue);
   const baseStages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
+  const advancePaymentActive = isYes(order.advancePayment ?? "");
+  const advancePaymentPaid = hasPaidAdvancePayment(order.advancePaymentDetail);
+  const advance = { ...emptyAdvancePayment, ...(order.advancePaymentDetail ?? {}) };
+  const lockedAdvance = { ...emptyAdvancePayment, ...(lockedOrder?.advancePaymentDetail ?? {}) };
+  let nextAdvance = advance;
+  let advanceAllocation = 0;
+  let preserveStageAllocations = false;
+  if (advancePaymentActive && useCapital) {
+    const total = parseMoneyAmount(order.soValueCapital);
+    if (total !== undefined && total > 0) {
+      const paidStageAmount = getPaidStageAllocationTotal(baseStages, "capital");
+      const advanceAmountWasEdited =
+        parseMoneyAmount(advance.stageAmountCapital) !==
+        parseMoneyAmount(lockedAdvance.stageAmountCapital);
+      preserveStageAllocations ||= advanceAmountWasEdited && !advancePaymentPaid;
+      advanceAllocation = advancePaymentPaid
+        ? (parseMoneyAmount(advance.stageAmountCapital) ??
+            parseMoneyAmount(advance.actualPaymentCapital) ??
+            0)
+        : advanceAmountWasEdited
+          ? Math.max(0, parseMoneyAmount(advance.stageAmountCapital) ?? 0)
+          : Math.min(Math.round(total * 0.3), Math.max(0, total - paidStageAmount));
+      if (!advancePaymentPaid) {
+        nextAdvance = applyAdvancePaymentValueTypeRules(
+          {
+            ...advance,
+            stageAmountCapital:
+              advanceAmountWasEdited && !hasFilledValue(advance.stageAmountCapital)
+                ? ""
+                : String(advanceAllocation),
+            stageAmountRevenue: "",
+          },
+          form,
+          true,
+        );
+      }
+    }
+  } else if (advancePaymentActive && useRevenue) {
+    const total = parseMoneyAmount(order.soValueRevenue);
+    if (total !== undefined && total > 0) {
+      const paidStageAmount = getPaidStageAllocationTotal(baseStages, "revenue");
+      const advanceAmountWasEdited =
+        parseMoneyAmount(advance.stageAmountRevenue) !==
+        parseMoneyAmount(lockedAdvance.stageAmountRevenue);
+      preserveStageAllocations ||= advanceAmountWasEdited && !advancePaymentPaid;
+      advanceAllocation = advancePaymentPaid
+        ? (parseMoneyAmount(advance.stageAmountRevenue) ??
+            parseMoneyAmount(advance.actualPaymentRevenue) ??
+            0)
+        : advanceAmountWasEdited
+          ? Math.max(0, parseMoneyAmount(advance.stageAmountRevenue) ?? 0)
+          : Math.min(Math.round(total * 0.3), Math.max(0, total - paidStageAmount));
+      if (!advancePaymentPaid) {
+        nextAdvance = applyAdvancePaymentValueTypeRules(
+          {
+            ...advance,
+            stageAmountCapital: "",
+            stageAmountRevenue:
+              advanceAmountWasEdited && !hasFilledValue(advance.stageAmountRevenue)
+                ? ""
+                : String(advanceAllocation),
+          },
+          form,
+          true,
+        );
+      }
+    }
+  }
   const capitalAmounts = useCapital
-    ? getRedistributedStageAmounts(order.soValueCapital, baseStages, "capital")
+    ? getRedistributedStageAmounts(
+        String(Math.max(0, (parseMoneyAmount(order.soValueCapital) ?? 0) - advanceAllocation)),
+        baseStages,
+        "capital",
+        lockedOrder?.stageDeliveries,
+        preserveStageAllocations,
+      )
     : [];
   const revenueAmounts = useRevenue
-    ? getRedistributedStageAmounts(order.soValueRevenue, baseStages, "revenue")
+    ? getRedistributedStageAmounts(
+        String(Math.max(0, (parseMoneyAmount(order.soValueRevenue) ?? 0) - advanceAllocation)),
+        baseStages,
+        "revenue",
+        lockedOrder?.stageDeliveries,
+        preserveStageAllocations,
+      )
     : [];
   let previousEndDate: string | undefined;
   const stages = baseStages.map((stage, index) => {
@@ -11700,7 +11834,10 @@ function autoFillStageDeliveries(
   });
 
   return {
-    order: applySupplyOrderRules({ ...order, stageDeliveries: stages }, form),
+    order: applySupplyOrderRules(
+      { ...order, advancePaymentDetail: nextAdvance, stageDeliveries: stages },
+      form,
+    ),
     changed: true,
   };
 }
@@ -11708,9 +11845,12 @@ function autoFillStageDeliveries(
 function autoFillStageDeliveriesForSave(
   orders: SupplyOrderDetail[],
   form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected" | "fileType"> | undefined,
+  lockedOrders: SupplyOrderDetail[] = [],
 ) {
-  return orders.map((order) =>
-    isYes(order.stageDelivery ?? "") ? autoFillStageDeliveries(order, form).order : order,
+  return orders.map((order, index) =>
+    isYes(order.stageDelivery ?? "") || isYes(order.advancePayment ?? "")
+      ? autoFillStageDeliveries(order, form, lockedOrders[index]).order
+      : order,
   );
 }
 
@@ -11747,9 +11887,11 @@ function getRedistributedStageAmounts(
   value: string | undefined,
   stages: StageDeliveryDetail[],
   valueType: "capital" | "revenue",
+  lockedStages: StageDeliveryDetail[] = [],
+  preserveAllocations = false,
 ) {
   const totalAmount = parseMoneyAmount(value);
-  if (totalAmount === undefined || totalAmount === 0 || !stages.length) return [];
+  if (totalAmount === undefined || !stages.length) return [];
   const stageAmountKey = valueType === "capital" ? "stageAmountCapital" : "stageAmountRevenue";
   const actualPaymentKey =
     valueType === "capital" ? "actualPaymentCapital" : "actualPaymentRevenue";
@@ -11767,6 +11909,13 @@ function getRedistributedStageAmounts(
   );
   if (!unpaidStageIndexes.length) return [];
 
+  const manuallyEditedStageIndexes = unpaidStageIndexes.filter((index) => {
+    const currentAmount = parseMoneyAmount(stages[index]?.[stageAmountKey]);
+    const previousAmount = parseMoneyAmount(lockedStages[index]?.[stageAmountKey]);
+    return currentAmount !== previousAmount;
+  });
+  if (preserveAllocations || manuallyEditedStageIndexes.length > 0) return [];
+
   const currentTotal = stages.reduce(
     (total, stage) => total + (parseMoneyAmount(stage[stageAmountKey]) ?? 0),
     0,
@@ -11778,10 +11927,21 @@ function getRedistributedStageAmounts(
   if (!hasBlankUnpaidStage && !totalMismatch) return [];
 
   const remainingAmount = Math.max(0, totalAmount - paidTotal);
-  const redistributed = getProportionalStageAmounts(
-    String(Math.round(remainingAmount)),
-    unpaidStageIndexes.length,
+  const existingUnpaidWeights = unpaidStageIndexes
+    .map((stageIndex) => parseMoneyAmount(stages[stageIndex]?.[stageAmountKey]))
+    .filter((weight): weight is number => weight !== undefined && weight > 0);
+  const fallbackWeight = existingUnpaidWeights.length
+    ? existingUnpaidWeights.reduce((total, weight) => total + weight, 0) /
+      existingUnpaidWeights.length
+    : 1;
+  const weights = unpaidStageIndexes.map(
+    (stageIndex) =>
+      parseMoneyAmount(stages[stageIndex]?.[stageAmountKey]) || fallbackWeight,
   );
+  const redistributed =
+    remainingAmount === 0
+      ? weights.map(() => "0")
+      : getProportionalStageAmounts(String(Math.round(remainingAmount)), weights);
   const amounts: string[] = [];
   unpaidStageIndexes.forEach((stageIndex, redistributionIndex) => {
     amounts[stageIndex] = redistributed[redistributionIndex] ?? "";
@@ -11789,17 +11949,49 @@ function getRedistributedStageAmounts(
   return amounts;
 }
 
-function getProportionalStageAmounts(value: string | undefined, stageCount: number) {
+function getPaidStageAllocationTotal(
+  stages: StageDeliveryDetail[],
+  valueType: "capital" | "revenue",
+) {
+  const stageAmountKey = valueType === "capital" ? "stageAmountCapital" : "stageAmountRevenue";
+  const actualPaymentKey =
+    valueType === "capital" ? "actualPaymentCapital" : "actualPaymentRevenue";
+  return stages.reduce((total, stage) => {
+    if (!hasPaidStagePayment(stage)) return total;
+    return (
+      total +
+      (parseMoneyAmount(stage[stageAmountKey]) ??
+        parseMoneyAmount(stage[actualPaymentKey]) ??
+        0)
+    );
+  }, 0);
+}
+
+function getProportionalStageAmounts(value: string | undefined, weights: number[]) {
   const amount = parseMoneyAmount(value);
-  if (amount === undefined || amount === 0 || stageCount <= 0) return [];
+  if (amount === undefined || amount === 0 || !weights.length) return [];
   const totalRupees = Math.round(amount);
-  const initialStageRupees = Math.round(totalRupees / stageCount);
-  let remainingRupees = totalRupees;
-  return Array.from({ length: stageCount }, (_, index) => {
-    const stageRupees = index === stageCount - 1 ? remainingRupees : initialStageRupees;
-    remainingRupees -= stageRupees;
-    return formatDecimalInput(String(stageRupees));
-  });
+  const positiveWeights = weights.map((weight) => (weight > 0 ? weight : 0));
+  const totalWeight = positiveWeights.reduce((total, weight) => total + weight, 0);
+  if (totalWeight <= 0) return [];
+  const shares = positiveWeights.map((weight) => (totalRupees * weight) / totalWeight);
+  const amounts = shares.map(Math.floor);
+  let remainder = totalRupees - amounts.reduce((total, share) => total + share, 0);
+  const remainderOrder = shares
+    .map((share, index) => ({ index, fraction: share - amounts[index] }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let index = 0; index < remainder; index += 1) {
+    amounts[remainderOrder[index % remainderOrder.length].index] += 1;
+  }
+  return amounts.map((stageAmount) => formatDecimalInput(String(stageAmount)));
+}
+
+function hasPaidAdvancePayment(advance: AdvancePaymentDetail | undefined) {
+  return Boolean(
+    hasFilledValue(advance?.paymentDate) ||
+      hasNonZeroAmount(advance?.actualPaymentCapital) ||
+      hasNonZeroAmount(advance?.actualPaymentRevenue),
+  );
 }
 
 function applyStageDeliveryRules(
@@ -11880,19 +12072,11 @@ function getSupplyOrderPatch(
     return applySupplyOrderRules({ ...order, [key]: amount }, undefined);
   }
   if (key === "soValueCapital" || key === "soValueRevenue") {
-    const billKey = key === "soValueCapital" ? "billAmountCapital" : "billAmountRevenue";
-    const oldSoAmount = order[key];
-    const oldBillAmount = order[billKey];
-    const shouldMirrorToBillAmount =
-      !hasFilledValue(oldBillAmount) ||
-      formatDecimalInput(String(oldBillAmount ?? "")) ===
-        formatDecimalInput(String(oldSoAmount ?? ""));
     const pairedKey = key === "soValueCapital" ? "soValueRevenue" : "soValueCapital";
     const pairedBillKey = key === "soValueCapital" ? "billAmountRevenue" : "billAmountCapital";
     return {
       ...order,
       [key]: amount,
-      ...(shouldMirrorToBillAmount ? { [billKey]: amount } : {}),
       ...(hasNonZeroAmount(amount) ? { [pairedKey]: "", [pairedBillKey]: "" } : {}),
     };
   }
@@ -12096,9 +12280,6 @@ function shouldShowSupplyOrderField(key: SupplyOrderKey, order: SupplyOrderDetai
   if (key === "stageDeliveryCount" || key === "stagePayment") {
     return isYes(order.stageDelivery ?? "");
   }
-  if (key === "advancePayment") {
-    return isYes(order.stageDelivery ?? "") && isYes(order.stagePayment ?? "");
-  }
   if (key === "shortclosureDate") {
     return isYes(order.shortclosure ?? "");
   }
@@ -12184,7 +12365,7 @@ function getAutoTenderLive(form: FormState) {
     return "No";
   }
 
-  if (hasDate(form.refloatBiddingDate) && hasDate(form.refloatBidOpeningDate)) {
+  if (isYes(form.refloat)) {
     return isTenderLiveOnCalendarDate(form.refloatBiddingDate, form.refloatBidOpeningDate)
       ? "Yes"
       : "No";
@@ -12594,6 +12775,9 @@ function DynamicField({
           value={value}
           onChange={onChange}
           options={field.options}
+          onSearchChange={field.onSearchChange}
+          deferChangeUntilSelect
+          typeAheadOnly
           disabled={disabled}
           placeholder={field.placeholder}
           inputRef={inputRef as (element: HTMLInputElement | null) => void}
@@ -12741,26 +12925,40 @@ function StageDeliveryAutofillHelper() {
                 </td>
               </tr>
               <tr>
-                <td className="border border-sky-200 px-3 py-2">Increasing stage count</td>
+                <td className="border border-sky-200 px-3 py-2">Advance Payment allocation</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  Paid stages stay fixed. Remaining S.O. balance is split equally among unpaid
-                  stages. The user may manually edit unpaid stage details later.
+                  Advance Payment is independent of Stage Delivery and Stage Payment. When
+                  Advance Payment is Yes, an untouched unpaid advance defaults to 30% of the S.O.
+                  value. A manually edited advance amount is preserved; other unpaid stage amounts
+                  are not automatically rebalanced. Paid advance details require password unfreeze
+                  to edit, and paid stage allocations remain fixed.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
-                  S.O. 100, Delivery-1 paid 40, stage count changed to 4: remaining 60 is split as
-                  20, 20, 20 across unpaid stages.
+                  S.O. 100, manually set advance 25: other stage amounts remain as entered.
+                </td>
+              </tr>
+              <tr>
+                <td className="border border-sky-200 px-3 py-2">Increasing stage count</td>
+                <td className="border border-sky-200 px-3 py-2">
+                  Paid stages stay fixed. The remaining stage balance, after the advance
+                  allocation, is distributed by the unpaid stages' existing amount proportions.
+                  If no unpaid stage weights exist, it is split equally.
+                </td>
+                <td className="border border-sky-200 px-3 py-2">
+                  S.O. 100, advance 30, Delivery-1 paid 20: remaining stage balance 50 is
+                  distributed across unpaid stages by their relative amounts.
                 </td>
               </tr>
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Manual unpaid amounts</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  If unpaid stage amounts are manually edited and their total matches the S.O. value,
-                  save preserves them. If any unpaid amount is blank or total does not match, the
-                  unpaid balance is rebalanced equally.
+                  A manually edited unpaid stage amount is preserved. Other unpaid stage amounts
+                  are left unchanged; the software does not rebalance them to match the S.O. total.
+                  Paid allocations stay fixed.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
-                  S.O. 100 with paid 40: unpaid manual 25, 35 is preserved. Blank or wrong total is
-                  rebalanced.
+                  S.O. 100 with advance 30: if one unpaid stage is manually set to 25, the other
+                  unpaid stages keep their existing amounts.
                 </td>
               </tr>
               <tr>
@@ -12983,24 +13181,48 @@ function Field({
   helper?: string;
   children: React.ReactNode;
 }) {
+  const helperLines = helper
+    ? helper
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+    : [];
+
   return (
     <div className="grid grid-cols-1 gap-2 md:grid-cols-[240px_minmax(0,1fr)] md:items-start">
       <div className="flex min-h-10 items-center justify-between md:justify-start md:pt-0">
         <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
           {label}
           {helper ? (
-            <span className="group relative inline-flex">
-              <button
-                type="button"
-                className="inline-flex size-5 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
-                aria-label={`${label} help`}
-              >
-                <Info className="size-3" />
-              </button>
-              <span className="pointer-events-none absolute left-0 top-6 z-20 hidden w-[min(30rem,calc(100vw-2rem))] rounded-md border border-border bg-popover p-3 text-xs font-normal leading-relaxed text-popover-foreground shadow-lg group-hover:block">
-                {helper}
-              </span>
-            </span>
+            <TooltipProvider delayDuration={150}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex size-5 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                    aria-label={`${label} help`}
+                  >
+                    <Info className="size-3" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  align="start"
+                  className="w-[min(34rem,calc(100vw-2rem))] border border-border bg-popover p-3 text-[13px] font-normal leading-relaxed text-popover-foreground shadow-lg"
+                >
+                  <div className="space-y-2">
+                    {helperLines.map((line, index) => (
+                      <div
+                        key={`${label}-helper-${index}`}
+                        className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm"
+                      >
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           ) : null}
         </span>
         {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}

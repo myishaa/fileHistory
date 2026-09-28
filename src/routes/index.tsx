@@ -76,6 +76,8 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { HelperContent } from "@/components/helper-content";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fileMatchesInitiationDateRange,
@@ -214,24 +216,19 @@ type HelperExamples = {
   title: string;
   items: string[];
 };
+type HelperDetails = {
+  title: string;
+  items: string[];
+  buttonLabel?: string;
+};
 
 const fileYearSubfilterHelper = [
-  "Subfilter is applied after the Global Filter.",
-  "Global Filter decides the main file scope: All files, All active files, Active + current FY closed, or a specific FY.",
-  "File Initiation Year then narrows that scope by the year in which files were started.",
-  "For normal day-to-day monitoring, use Active + current FY closed with All file years.",
-  "That keeps open files visible and also keeps files closed during the current FY available for review.",
-  "In Finance, Active + current FY closed is treated as an operational workload view; FY movement boxes and Firm Type Distribution are hidden there.",
-  "A specific FY in Global Filter is not the same as All active files.",
-  "Specific FY does not mean Active files.",
-  "A specific FY in this Subfilter means files started in that FY only.",
-  "All file years means no extra initiation-year restriction inside the selected Global Filter.",
-  "When Global Filter is a specific FY, later initiation years are hidden from this subfilter.",
-  "When Global Filter is All files, the no-restriction option is labelled Entire database.",
-  "All files + Entire database shows every accessible database file.",
-  "All files + a specific File Initiation Year shows every accessible file started in that FY.",
-  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows files started in 2025-26 within the 2026-27 context.",
-  "After you change File Initiation Year, that choice stays for the current tab session.",
+  "Global Filter first decides the file set.",
+  "File Initiation Year then keeps only files started in the selected FY.",
+  "All file years means no extra initiation-year restriction.",
+  "When Global Filter is All files, the no-restriction option is called Entire database.",
+  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files visible in the 2026-27 file set.",
+  "This selection stays for the current browser tab session.",
 ];
 
 const fileYearLockHelper = [
@@ -296,8 +293,9 @@ const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
   ],
   finance1: [
     "Select an FY to see files started in that FY, their value, payments, pending liabilities, and present status.",
-    "For a running FY, figures are live and provisional.",
-    "Global Filter shows only FY options here; Subfilter is locked to the same FY.",
+    "Select any FY. Subfilter is locked to the same FY for this page.",
+    "For a running FY, FY-end cards are provisional because they use the selected FY-end cutoff and the data entered so far.",
+    "Today cards remain live and show the latest stored payment/liability position.",
   ],
 };
 
@@ -371,6 +369,7 @@ type SuspectedAnomalyRow = {
   signature: string;
   fileId: string;
   fileRef: string;
+  controlNo: string;
   division: string;
   indentor: string;
   description: string;
@@ -415,24 +414,6 @@ type AnomalyAcceptanceRow = {
   revokedAt?: string;
   adminMessage?: string;
 };
-type AnomalyRuleRow = {
-  id: string;
-  name: string;
-  description: string;
-  ruleType: string;
-  fieldA: string;
-  operator: string;
-  fieldB?: string;
-  fixedValue?: string;
-  thresholdDays?: number;
-  severity: string;
-  scope: string;
-  enabled: boolean;
-  createdByName?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-type AnomalyRuleField = { key: string; label: string; scope: string };
 type SummaryStat = {
   label: string;
   value: SummaryMetricValue;
@@ -447,11 +428,11 @@ function hasAnomalyAdminAccess(role?: string) {
 const statusFileExportHelpers = {
   pdf: [
     "Exports the complete Status-1 file-status table as a PDF.",
-    "The export uses the same Global filter, File Year Subfilter, initiation date range, division, and File Category context visible on Dashboard.",
+    "The export uses the same Global Filter, File Initiation Year subfilter, initiation date range, division, and File Type filter visible on Dashboard.",
   ],
   excel: [
     "Exports the complete Status-1 file-status table as an Excel file.",
-    "The export uses the same Global filter, File Year Subfilter, initiation date range, division, and File Category context visible on Dashboard.",
+    "The export uses the same Global Filter, File Initiation Year subfilter, initiation date range, division, and File Type filter visible on Dashboard.",
   ],
 } as const;
 
@@ -460,7 +441,7 @@ const dashboardSectionRuleHelpers = {
     "Main workflow view. Use it as the reference for all status counts.",
     "Live numbers mean action is still pending now. Completed/cleared numbers mean the stage is already crossed.",
     "Cancelled demand is excluded, except from its own cancellation counter.",
-    "File Closed is shown or hidden as per the selected Global filter.",
+    "File Closed is shown or hidden as per the selected Global Filter.",
     "D.P. Valid and D.P. Extended are separate here.",
   ],
   status2: [
@@ -487,8 +468,8 @@ const dashboardSectionRuleHelpers = {
   snapshot: [
     "Snapshot is statistical, not live workflow liability.",
     "Cancelled demand files are excluded from normal snapshot numbers.",
-    "Cancelled S.O. files remain included for file attributes and S.O. statistics such as PSB/Firm Type/File Type.",
-    "File Closed follows the selected Global filter.",
+    "Cancelled S.O. history can remain visible in statistical views such as PSB, Firm Type, and File Type.",
+    "File Closed follows the selected Global Filter.",
     "Clickers open the same statistical set represented by the number.",
   ],
   finance: [
@@ -499,11 +480,11 @@ const dashboardSectionRuleHelpers = {
     "Files may belong to an earlier FY by initiation year but still contribute here if the finance activity/date rule matches this Finance view.",
     "Cancelled demand files are excluded.",
     "Cancelled S.O. rows are excluded from value calculations and finance liability.",
-    "Shortclosed S.O. rows remain included unless specifically marked no further action.",
-    "File Closed follows the selected Global filter.",
+    "Shortclosed S.O. rows remain included for completed/history views. In liability, balance, and carry-forward views, only real pending payable items are counted; the old full S.O. value is not treated as payable by itself.",
+    "File Closed follows the selected Global Filter.",
   ],
   analytics: [
-    "Analytics uses the same Dashboard Global filter, File Year Subfilter, initiation date, division, and file category context.",
+    "Analytics uses the same Dashboard Global Filter, File Initiation Year subfilter, initiation date, division, and File Type filter.",
     "Cancelled demand files are excluded from normal analytics.",
     "Cancelled S.O. treatment depends on the panel: value/liability panels exclude cancelled S.O. rows; statistical/history panels may include them.",
     "Clicking an analytics number opens Search with the same panel logic.",
@@ -516,12 +497,12 @@ const deliveryPeriodMetricHelpers = {
     "S.O. exists and the original D.P. date is today or later.",
     "No revised D.P. is present; revised/extended cases are not counted here.",
     "Material receipt/job completion must still be pending.",
-    "Cancelled demand, cancelled S.O., and shortclosed S.O. are excluded.",
+    "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
   ],
   expired: [
     "S.O. exists and the effective D.P. date is before today.",
     "Material receipt/job completion must still be pending.",
-    "Cancelled demand, cancelled S.O., and shortclosed S.O. are excluded.",
+    "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
   ],
   extended: [
     "Revised D.P. exists and the revised/effective D.P. date is today or later.",
@@ -627,6 +608,27 @@ type DashboardSummaryPayload = {
   finance1Summary?: Finance1Summary;
 };
 
+type CoBiddingFirmRow = {
+  key: string;
+  uniqueNumber: string;
+  name: string;
+  city: string;
+  tendersParticipated: number;
+  soCount: number;
+  soValue: number;
+  count: number;
+};
+
+type CoBiddingTenderRow = {
+  id: string;
+  uniqueCode: string;
+  controlNo: string;
+  itemDescription: string;
+  indentor: string;
+  soYear: string;
+  soFirm: string;
+};
+
 type StatusSummaryTableRow = {
   milestone: string;
   counts: Partial<Record<string, number | string>>;
@@ -655,6 +657,18 @@ async function fetchDashboardSummary(query: string, signal: AbortSignal) {
     throw new Error(body?.error ?? `Dashboard summary request failed: ${response.status}`);
   }
   return (await response.json()) as { summary: DashboardSummaryPayload };
+}
+
+async function fetchCoBiddingResults(query: string, signal: AbortSignal) {
+  const response = await fetch(`${API_BASE_URL}/api/dashboard/co-bidding-firms?${query}`, {
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+    throw new Error(body?.error ?? `Co-bidding request failed: ${response.status}`);
+  }
+  return (await response.json()) as { firms: CoBiddingFirmRow[]; tenders: CoBiddingTenderRow[] };
 }
 
 async function fetchMonthWiseDeliverySchedule(query: string, signal: AbortSignal) {
@@ -826,8 +840,9 @@ const status2MilestoneHelpers: Record<string, readonly string[]> = {
   ],
   deliveryperiod: [
     "Header: Delivery Period",
-    "Counts active S.O./stage rows currently within normal D.P. or valid extended D.P.",
-    "Material receipt or job completion removes the row from live Delivery Period.",
+    "Counts S.O./stage rows whose normal or revised D.P. is currently active, with delivery/job completion still pending.",
+    "Future stages that have not started, completed rows, cancelled demands, and cancelled S.O.s are excluded.",
+    "Clicking opens matching files; a file with multiple qualifying stages appears once in Search.",
   ],
   psb: [
     "Header: PSB",
@@ -882,6 +897,7 @@ const status2MilestoneHelpers: Record<string, readonly string[]> = {
   payment: [
     "Header: Payment",
     "Counts active payable S.O./stage rows where payment is due, in process, or submitted but not paid.",
+    "This is a payment-case count, not a unique-file count. One file can contribute more than one pending payment case.",
     "Bills returned for correction are tracked separately until resubmitted.",
   ],
 };
@@ -919,7 +935,16 @@ export function Dashboard() {
   const settings = useSettings();
   const activeUser = useActiveUser();
   const navigate = useNavigate();
-  const [selectedDivision, setSelectedDivision] = useState("all");
+  const divisionFilterStorageKey = `recordkeeper:division-filter:${activeUser?.id ?? "anonymous"}`;
+  const fileCategoryFilterStorageKey = `recordkeeper:file-category-filter:${activeUser?.id ?? "anonymous"}`;
+  const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
+  const fileInitiationDateRangeStorageKey = `recordkeeper:file-initiation-date-range:${
+    activeUser?.id ?? "anonymous"
+  }`;
+  const [selectedDivision, setSelectedDivision] = useState(() => {
+    if (typeof window === "undefined") return "all";
+    return window.sessionStorage.getItem(divisionFilterStorageKey) ?? "all";
+  });
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>("status");
   const [statusActionMode, setStatusActionMode] = useState<StatusActionMode>("search");
   const [activeAnalyticsPanel, setActiveAnalyticsPanel] =
@@ -951,6 +976,13 @@ export function Dashboard() {
   }, [locationSearch.analyticsPanel, locationSearch.tab]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [selectedFirmAnalysisFirm, setSelectedFirmAnalysisFirm] = useState("");
+  const [firmAnalysisView, setFirmAnalysisView] = useState<"existing" | "coParticipants">("existing");
+  const [coParticipantFirm, setCoParticipantFirm] = useState("");
+  const [selectedCoParticipantFirm, setSelectedCoParticipantFirm] = useState("");
+  const [coBiddingFirms, setCoBiddingFirms] = useState<CoBiddingFirmRow[]>([]);
+  const [coBiddingTenders, setCoBiddingTenders] = useState<CoBiddingTenderRow[]>([]);
+  const [coBiddingLoading, setCoBiddingLoading] = useState(false);
+  const [coBiddingError, setCoBiddingError] = useState<string>();
   const [firmAnalysisOperators, setFirmAnalysisOperators] = useState<
     Record<string, FirmAnalysisOperator>
   >({});
@@ -990,12 +1022,78 @@ export function Dashboard() {
   const [selectedTcecCommittee, setSelectedTcecCommittee] = useState("");
   const [selectedCncFiscalYear, setSelectedCncFiscalYear] = useState("");
   const [selectedFileCategories, setSelectedFileCategories] =
-    useState<FileCategoryKey[]>(allFileCategoryKeys);
-  const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(false);
-  const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
+    useState<FileCategoryKey[]>(() => {
+      if (typeof window === "undefined") return allFileCategoryKeys;
+      try {
+        const saved = JSON.parse(
+          window.sessionStorage.getItem(fileCategoryFilterStorageKey) ?? "null",
+        );
+        const selected = Array.isArray(saved?.selected)
+          ? saved.selected.filter((key: unknown): key is FileCategoryKey =>
+              allFileCategoryKeys.includes(key as FileCategoryKey),
+            )
+          : undefined;
+        return selected?.length ? selected : allFileCategoryKeys;
+      } catch {
+        return allFileCategoryKeys;
+      }
+    });
+  const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(fileCategoryFilterStorageKey) ?? "null",
+      );
+      return saved?.touched === true;
+    } catch {
+      return false;
+    }
+  });
+  const [selectedFileYear, setSelectedFileYear] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(fileYearFilterStorageKey) ?? "null");
+        if (typeof saved?.year === "string") return saved.year;
+      } catch {
+        // Fall through to the current FY default.
+      }
+    }
+    return settings.financialYear || "all";
+  });
   const [fileYearLocked, setFileYearLocked] = useState(false);
-  const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
-  const [fileInitiationToDate, setFileInitiationToDate] = useState("");
+  const [fileInitiationFromDate, setFileInitiationFromDate] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(fileInitiationDateRangeStorageKey) ?? "null",
+      );
+      return typeof saved?.fromDate === "string" ? saved.fromDate : "";
+    } catch {
+      return "";
+    }
+  });
+  const [fileInitiationToDate, setFileInitiationToDate] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(fileInitiationDateRangeStorageKey) ?? "null",
+      );
+      return typeof saved?.toDate === "string" ? saved.toDate : "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.sessionStorage.setItem(divisionFilterStorageKey, selectedDivision);
+  }, [divisionFilterStorageKey, selectedDivision]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.sessionStorage.setItem(
+      fileCategoryFilterStorageKey,
+      JSON.stringify({ selected: selectedFileCategories, touched: fileCategoryFilterTouched }),
+    );
+  }, [fileCategoryFilterStorageKey, fileCategoryFilterTouched, selectedFileCategories]);
   const [selectedLiveMilestones, setSelectedLiveMilestones] = useState<string[] | undefined>(
     settings.liveStatusLockedFields,
   );
@@ -1012,19 +1110,14 @@ export function Dashboard() {
   const [dashboardSummaryLoading, setDashboardSummaryLoading] = useState(false);
   const [hasLoadedDashboardSummary, setHasLoadedDashboardSummary] = useState(false);
   const [dashboardSummaryError, setDashboardSummaryError] = useState<string | undefined>();
-  const [status3Groups, setStatus3Groups] = useState<StatusSummaryTableGroup[]>([]);
   const [analyticsDelaySummary, setAnalyticsDelaySummary] = useState<DelayStatusSummary>();
   const [analyticsPreBidRows, setAnalyticsPreBidRows] = useState<PreBidMeetingRow[]>([]);
   const [suspectedAnomalyRows, setSuspectedAnomalyRows] = useState<SuspectedAnomalyRow[]>([]);
   const [suspectedAnomalyLoading, setSuspectedAnomalyLoading] = useState(false);
   const [suspectedAnomalyError, setSuspectedAnomalyError] = useState<string | undefined>();
   const [anomalyAcceptances, setAnomalyAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
-  const [anomalyRules, setAnomalyRules] = useState<AnomalyRuleRow[]>([]);
-  const [anomalyRuleFields, setAnomalyRuleFields] = useState<AnomalyRuleField[]>([]);
   const [anomalyAdminLoading, setAnomalyAdminLoading] = useState(false);
   const [anomalyAdminError, setAnomalyAdminError] = useState<string | undefined>();
-  const [status3Loading, setStatus3Loading] = useState(false);
-  const [status3Error, setStatus3Error] = useState<string | undefined>();
   const [status4Drill, setStatus4Drill] = useState<Status4DrillState>({});
   const [status4SortKey, setStatus4SortKey] = useState<Status4SortKey>("label");
   const [status4SortDirection, setStatus4SortDirection] = useState<AnalyticsSortDirection>("asc");
@@ -1112,10 +1205,6 @@ export function Dashboard() {
     settings.financialYear ||
     availableFileYearOptions[0] ||
     "";
-  const fileYearFilterStorageKey = `recordkeeper:file-year-filter:${activeUser?.id ?? "anonymous"}`;
-  const fileInitiationDateRangeStorageKey = `recordkeeper:file-initiation-date-range:${
-    activeUser?.id ?? "anonymous"
-  }`;
   const defaultFileYear =
     getFinancialYearStartNumber(settings.selectedYear) !== undefined &&
     availableFileYearOptions.includes(settings.selectedYear)
@@ -1296,6 +1385,49 @@ export function Dashboard() {
     selectedLiveMilestones,
     settings.selectedYear,
   ]);
+  const coBiddingQuery = useMemo(() => {
+    if (!coParticipantFirm.trim()) return "";
+    const params = new URLSearchParams(dashboardSummaryQuery);
+    params.set("mainFirm", coParticipantFirm.trim());
+    if (selectedCoParticipantFirm) params.set("partnerKey", selectedCoParticipantFirm);
+    return params.toString();
+  }, [coParticipantFirm, dashboardSummaryQuery, selectedCoParticipantFirm]);
+  useEffect(() => {
+    if (
+      !coBiddingQuery ||
+      activeDashboardTab !== "analytics" ||
+      activeAnalyticsPanel !== "firmAnalysis" ||
+      firmAnalysisView !== "coParticipants"
+    ) {
+      setCoBiddingFirms([]);
+      setCoBiddingTenders([]);
+      setCoBiddingError(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    setCoBiddingLoading(true);
+    setCoBiddingError(undefined);
+    fetchCoBiddingResults(coBiddingQuery, controller.signal)
+      .then((payload) => {
+        setCoBiddingFirms(payload.firms);
+        setCoBiddingTenders(payload.tenders);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setCoBiddingFirms([]);
+        setCoBiddingTenders([]);
+        setCoBiddingError(error instanceof Error ? error.message : "Could not load co-bidding data.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCoBiddingLoading(false);
+      });
+    return () => controller.abort();
+  }, [
+    activeAnalyticsPanel,
+    activeDashboardTab,
+    coBiddingQuery,
+    firmAnalysisView,
+  ]);
   const dashboardSummary =
     dashboardSummaryState?.query === dashboardSummaryQuery
       ? dashboardSummaryState.summary
@@ -1308,24 +1440,6 @@ export function Dashboard() {
         firmTypeDistribution: dashboardSummary.finance1Summary.firmTypeDistribution ?? [],
       }
     : localFinance1Summary;
-  const status3Query = useMemo(() => {
-    const params = new URLSearchParams();
-    params.set("division", activeDivision);
-    params.set("selectedYear", settings.selectedYear);
-    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
-    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
-    if (activeFileCategoriesParam) params.set("fileCategories", activeFileCategoriesParam);
-    params.set("delayDays", "5");
-    params.set("expectedCashOutgoDays", "10");
-    params.set("delayMilestone", "all");
-    return params.toString();
-  }, [
-    activeDivision,
-    activeFileYear,
-    fileInitiationDateQueryParams,
-    activeFileCategoriesParam,
-    settings.selectedYear,
-  ]);
   const analyticsDelayQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
@@ -1361,6 +1475,15 @@ export function Dashboard() {
     activeFileCategoriesParam,
     settings.selectedYear,
   ]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = `recordkeeper:anomaly-filter-scope:${activeUser?.id ?? "anonymous"}`;
+    window.sessionStorage.setItem(
+      key,
+      JSON.stringify({ selectedYear: settings.selectedYear, query: suspectedAnomalyQuery }),
+    );
+    window.dispatchEvent(new Event("recordkeeper:anomaly-scope-changed"));
+  }, [activeUser?.id, settings.selectedYear, suspectedAnomalyQuery]);
   useEffect(() => {
     const controller = new AbortController();
     const delay = hasLoadedDashboardSummaryRef.current ? 180 : 0;
@@ -1405,25 +1528,6 @@ export function Dashboard() {
 
     return () => controller.abort();
   }, [dashboardSummaryQuery]);
-
-  useEffect(() => {
-    if (activeDashboardTab !== "status3") return;
-    const controller = new AbortController();
-    setStatus3Loading(true);
-    setStatus3Error(undefined);
-    fetchDashboardStatusSummary(status3Query, controller.signal)
-      .then((payload) => setStatus3Groups(payload.summary.statusSummaryGroups))
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        console.error(error);
-        setStatus3Error(error instanceof Error ? error.message : "Status summary request failed.");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setStatus3Loading(false);
-      });
-
-    return () => controller.abort();
-  }, [activeDashboardTab, status3Query]);
 
   useEffect(() => {
     if (activeDashboardTab !== "status4") return;
@@ -1508,12 +1612,11 @@ export function Dashboard() {
     let cancelled = false;
     setAnomalyAdminLoading(true);
     setAnomalyAdminError(undefined);
-    Promise.all([store.listSuspectedAnomalyAcceptances(), store.listAnomalyRules()])
-      .then(([acceptancePayload, rulePayload]) => {
+    store
+      .listSuspectedAnomalyAcceptances()
+      .then((acceptancePayload) => {
         if (cancelled) return;
         setAnomalyAcceptances(acceptancePayload.acceptances);
-        setAnomalyRules(rulePayload.rules);
-        setAnomalyRuleFields(rulePayload.fields);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -2172,6 +2275,7 @@ export function Dashboard() {
       "Payment date is blank or after FY end.",
       `This panel shows ₹75 as Carry Forward of ${selectedFinanceYearLabel}.`,
       "It covers S.O., bill, stage, supplementary, or advance-payment liability source dates as applicable.",
+      "For shortclosed S.O.s, only real pending payable items are carried forward; the old full S.O. value is not carried forward merely because the S.O. exists.",
     ],
     futureCleared: [
       `${selectedFinanceYearLabel} liability/source-FY carry-forward at FY end: ₹75.`,
@@ -2239,14 +2343,14 @@ export function Dashboard() {
       help: [
         `Includes files where Bidding Mode is ${mode.name}.`,
         "Cancelled demand files are excluded.",
-        "File Closed follows the selected Global filter.",
-        "Cancelled S.O. and Shortclosed S.O. remain included for Snapshot statistics.",
+        "File Closed follows the selected Global Filter.",
+        "Cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
       ],
     })),
     hint: [
       "Files are grouped by bidding mode from the selected Dashboard file set.",
       "Cancelled demand files are excluded.",
-      "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+      "File Closed follows the selected Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
   };
   const gemBiddingModeSummaryStat: SummaryStat = {
@@ -2258,14 +2362,14 @@ export function Dashboard() {
       help: [
         `Includes GeM files where GeM Bidding Mode is ${mode.name}.`,
         "Cancelled demand files are excluded.",
-        "File Closed follows the selected Global filter.",
-        "Cancelled S.O. and Shortclosed S.O. remain included for Snapshot statistics.",
+        "File Closed follows the selected Global Filter.",
+        "Cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
       ],
     })),
     hint: [
       "GeM files are grouped by GeM bidding mode from the selected Dashboard file set.",
       "Cancelled demand files are excluded.",
-      "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+      "File Closed follows the selected Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
   };
 
@@ -2282,6 +2386,22 @@ export function Dashboard() {
     ...summaryStats,
   ]);
 
+  const shortclosedPayableHelper =
+    "Shortclosed S.O. value remains in committed/history views, but payable/balance/carry-forward values count only real pending payable items.";
+  const paymentPendingLogicDetails: HelperDetails = {
+    title: "Payment pending and shortclosure logic",
+    buttonLabel: "Payment logic",
+    items: [
+      "A payment is pending when a real payable workflow has started or become due, and payment date is still blank.",
+      "Main/stage payment signals include bill prepared date, bill sent for payment date, returned bill cycle, material receipt/IR path, job completion, D.P./revised D.P. trigger where applicable, or an entered bill/payment amount.",
+      "Advance Payment = Yes by itself means advance is applicable. It becomes pending only when advance bill/payment details, advance amount, or advance return/resubmission workflow exists and advance payment date is blank.",
+      "Supplementary bill becomes pending when it is submitted, returned, or resubmitted and its payment date is blank.",
+      "For shortclosed S.O.s, the old full S.O. value is not treated as payable merely because the S.O. exists. Only the real pending payable items above are counted.",
+    ],
+  };
+  const shortclosedPayableHelp = (items: string | string[]) => (
+    <HelperWithExamples items={items} details={paymentPendingLogicDetails} />
+  );
   const financeHelperText = isSameGlobalAndSubfilterFinanceFy
     ? {
         rules: [
@@ -2290,6 +2410,7 @@ export function Dashboard() {
           "Intended, Booked, Committed, and Paid Till Date are live/current values for this visible file set.",
           "Firm Type Distribution is restricted to S.O.s placed and payments made in this Global Filter FY.",
           `Payment in ${selectedFinanceYearLabel} is the only top value box restricted by actual payment/advance payment date within this FY.`,
+          shortclosedPayableHelper,
           "Percentages compare each value with the selected FY allocation.",
         ],
         allocated: [
@@ -2310,6 +2431,7 @@ export function Dashboard() {
         committed: [
           `Live committed value from effective S.O.s in the visible ${selectedFinanceYearLabel} file set.`,
           "This is current effective S.O. value, not a frozen FY-end figure.",
+          "Shortclosed S.O.s remain here as S.O. history because shortclosure is not cancellation.",
           "The percentage is against the selected FY allocation.",
         ],
         paidTillDate: [
@@ -2347,6 +2469,7 @@ export function Dashboard() {
         carryForward: [
           `Unpaid ${selectedFinanceYearLabel} liabilities remaining at FY end for this same-FY file set.`,
           "Uses liability source date, usually S.O./bill source date.",
+          shortclosedPayableHelper,
           "If paid after FY end, the same liability can appear in the cleared-later panel.",
         ],
         futureClearedCarryForward: [
@@ -2370,6 +2493,7 @@ export function Dashboard() {
             "Use this to see how older files performed in the later target FY.",
             "Intended, Booked, Committed, and Paid Till Date are live/current values for this visible earlier-file set.",
             `Firm Type Distribution is restricted to S.O.s placed and payments made in ${selectedFinanceYearLabel}.`,
+            shortclosedPayableHelper,
             `Payment in ${selectedFinanceYearLabel} and carry-forward boxes use ${selectedFinanceYearLabel} activity/liability rules.`,
           ],
           allocated: [
@@ -2390,6 +2514,7 @@ export function Dashboard() {
           committed: [
             `Live committed value from effective S.O.s for visible files initiated in ${activeFileYear}.`,
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
+            "Shortclosed S.O.s remain included as S.O. history.",
             "This is not frozen at the target FY end.",
           ],
           paidTillDate: [
@@ -2415,6 +2540,7 @@ export function Dashboard() {
           ],
           carryForward: [
             `${selectedFinanceYearLabel} liabilities within files initiated in ${activeFileYear} that are currently unpaid and would carry forward if still unpaid at FY-end.`,
+            shortclosedPayableHelper,
             "This is live/provisional before FY-end; values may reduce if payment is made before year end.",
             "After FY-end, it becomes the final carry-forward position for those liabilities.",
           ],
@@ -2438,6 +2564,7 @@ export function Dashboard() {
             "The view is focused on payment and carry-forward movement across all initiation years.",
             "Live position boxes such as Intended, Booked, Committed, and Paid Till Date are hidden here to avoid mixing current position with FY movement.",
             `Payment in ${selectedFinanceYearLabel} uses actual payment/advance payment date inside ${selectedFinanceYearLabel}.`,
+            shortclosedPayableHelper,
             "Carry-forward panels are grouped by liability/source FY.",
           ],
           allocated: [
@@ -2476,6 +2603,7 @@ export function Dashboard() {
           carryForward: [
             `${selectedFinanceYearLabel} liabilities that are currently unpaid and would carry forward if still unpaid at FY-end.`,
             "This is liability-source-FY based and covers all visible initiation years.",
+            shortclosedPayableHelper,
             "Before FY-end, this is live/provisional.",
           ],
           futureClearedCarryForward: [
@@ -2496,7 +2624,7 @@ export function Dashboard() {
           rules: [
             `Cumulative initiation-year view: Global Filter is All files and Subfilter is ${activeFileYear}.`,
             `The file set includes all accessible files initiated in FY ${activeFileYear}.`,
-            "Active, closed, and historical files from that initiation year remain in scope as permitted by access/category filters.",
+            "Active, closed, and historical files from that initiation year remain in scope as permitted by access and File Type filters.",
             "Intended, Booked, Committed, Paid Till Date, and Firm Type Distribution are cumulative/current-position values for this initiation-year file set.",
             "FY-specific movement boxes are hidden to keep this view cumulative and current-position based.",
           ],
@@ -2518,6 +2646,7 @@ export function Dashboard() {
           committed: [
             `Live committed value of all visible files initiated in FY ${activeFileYear}.`,
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
+            "Shortclosed S.O.s remain included as S.O. history.",
             "Closed files from this initiation year remain included.",
           ],
           paidTillDate: [
@@ -2584,6 +2713,7 @@ export function Dashboard() {
               ? "Live committed value of active plus current-FY-closed files across all initiation years."
               : `Live committed value of active plus current-FY-closed files initiated in FY ${activeFileYear}.`,
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
+            "Shortclosed S.O.s remain included as S.O. history.",
             "Files closed during the current FY remain included in this operational view.",
           ],
           paidTillDate: [
@@ -2619,7 +2749,7 @@ export function Dashboard() {
           rules: [
             "Active workload view: Global Filter is All active files and Subfilter is All file years.",
             "The file set includes currently active, non-cancelled files across all initiation years.",
-            "Closed files are excluded by the Global filter.",
+            "Closed files are excluded by the Global Filter.",
             "Intended, Booked, Committed, and Paid Till Date are live/current values for active workload.",
             "Firm Type Distribution is hidden here because this is an operational workload view, not an Activity-FY or cumulative All-files view.",
             "FY-specific movement boxes are hidden to keep this active workload view cumulative and current-position based.",
@@ -2632,17 +2762,18 @@ export function Dashboard() {
           intended: [
             "Live intended value of active files across all initiation years.",
             "Includes active files where Controlled/S.O. value has not replaced the estimate yet.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           booked: [
             "Live booked value of active files across all initiation years.",
             "Includes active files where Controlled/file booking exists and committed S.O. value has not replaced it yet.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           committed: [
             "Live committed value of active files across all initiation years.",
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Shortclosed S.O.s remain included as S.O. history.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           paidTillDate: [
             "Total paid till date for active files across all initiation years.",
@@ -2675,7 +2806,7 @@ export function Dashboard() {
           rules: [
             `Active initiation-year view: Global Filter is All active files and Subfilter is ${activeFileYear}.`,
             `The file set includes currently active, non-cancelled files initiated in FY ${activeFileYear}.`,
-            "Closed files are excluded by the Global filter.",
+            "Closed files are excluded by the Global Filter.",
             "Intended, Booked, Committed, and Paid Till Date are live/current values for this active initiation-year file set.",
             "Firm Type Distribution is hidden here because this is an operational workload view, not an Activity-FY or cumulative All-files view.",
             "Payment in FY and carry-forward boxes are hidden because this is an operational active-file view.",
@@ -2688,17 +2819,18 @@ export function Dashboard() {
           intended: [
             `Live intended value of active files initiated in FY ${activeFileYear}.`,
             "Includes active files where Controlled/S.O. value has not replaced the estimate yet.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           booked: [
             `Live booked value of active files initiated in FY ${activeFileYear}.`,
             "Includes active files where Controlled/file booking exists and committed S.O. value has not replaced it yet.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           committed: [
             `Live committed value of active files initiated in FY ${activeFileYear}.`,
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
-            "Closed and cancelled files are excluded by this Global filter.",
+            "Shortclosed S.O.s remain included as S.O. history.",
+            "Closed and cancelled files are excluded by this Global Filter.",
           ],
           paidTillDate: [
             `Total paid till date for active files initiated in FY ${activeFileYear}.`,
@@ -2753,6 +2885,7 @@ export function Dashboard() {
           committed: [
             "Live committed value across the entire visible database.",
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
+            "Shortclosed S.O.s remain included as S.O. history.",
             "The percentage is against total allocation across all configured FYs.",
           ],
           paidTillDate: [
@@ -2798,7 +2931,7 @@ export function Dashboard() {
           "If Controlled/S.O. is entered later, the file can move out of Intended.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
           "Shortclosed S.O. files remain included because shortclosure is not cancellation.",
-          "File Closed visibility follows the selected Global filter.",
+          "File Closed visibility follows the selected Global Filter.",
         ],
         booked: [
           "Amount booked at file level through Controlled where no S.O./committed value has replaced it yet.",
@@ -2806,7 +2939,7 @@ export function Dashboard() {
           "If S.O. value is entered later, the file can move from Booked to Committed.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
           "Shortclosed S.O. files remain included.",
-          "File Closed visibility follows the selected Global filter.",
+          "File Closed visibility follows the selected Global Filter.",
         ],
         committed: [
           "Committed value from effective supply orders.",
@@ -2815,7 +2948,8 @@ export function Dashboard() {
           "Later S.O. edits, cancellations, shortclosures, or value corrections can update it.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
           "Shortclosed S.O. rows remain included.",
-          "File Closed visibility follows the selected Global filter.",
+          shortclosedPayableHelper,
+          "File Closed visibility follows the selected Global Filter.",
         ],
         paidTillDate: [
           "Current cumulative paid amount against the visible Dashboard file set.",
@@ -2830,7 +2964,7 @@ export function Dashboard() {
           "Includes main, stage, returned, supplementary, and advance payment amounts.",
           "It can include payments for files initiated in earlier FYs if their payment date falls in the selected FY and the file is visible in the Dashboard context.",
           "If a payment/advance date or amount is edited later, this selected-FY payment value can change.",
-          "Closed Files are included when they pass the selected year/date/category filters.",
+          "Closed Files are included when they pass the selected year, date, and File Type filters.",
           "Shortclosed S.O. rows remain included.",
         ],
         previousCarryForward: [
@@ -2957,7 +3091,7 @@ export function Dashboard() {
             category: `Carry Forward from previous FYs as on ${selectedFinanceYearLabel} end`,
             capital: formatCurrency(financeTotals.previousCarryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.previousCarryForward?.revenue ?? 0),
-            notes: `${financeTotals.previousCarryForward?.count ?? 0} older liability/source-FY rows still unpaid at ${selectedFinanceYearLabel} end.`,
+            notes: `${financeTotals.previousCarryForward?.count ?? 0} older liability/source-FY rows still unpaid at ${selectedFinanceYearLabel} end. For shortclosed S.O.s, only real pending payable items are counted, not the full old S.O. value.`,
           },
           {
             category: `Cleared Carry Forward in ${selectedFinanceYearLabel}`,
@@ -2969,7 +3103,7 @@ export function Dashboard() {
             category: `Carry Forward of ${selectedFinanceYearLabel}`,
             capital: formatCurrency(financeTotals.carryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.carryForward?.revenue ?? 0),
-            notes: `${financeTotals.carryForward?.count ?? 0} ${selectedFinanceYearLabel} liability/source-FY rows unpaid by FY end.`,
+            notes: `${financeTotals.carryForward?.count ?? 0} ${selectedFinanceYearLabel} liability/source-FY rows unpaid by FY end. For shortclosed S.O.s, only real pending payable items are counted, not the full old S.O. value.`,
           },
           {
             category: `Carry Forward of ${selectedFinanceYearLabel} cleared later`,
@@ -2999,19 +3133,15 @@ export function Dashboard() {
   );
   const firmAnalysisRows = analytics.firmAnalysis ?? [];
   const selectedFirmAnalysisRow =
-    firmAnalysisRows.find((row) => row.name === selectedFirmAnalysisFirm) ?? firmAnalysisRows[0];
+    firmAnalysisRows.find((row) => row.name === selectedFirmAnalysisFirm);
   useEffect(() => {
-    if (!selectedFirmAnalysisRow) {
-      if (selectedFirmAnalysisFirm) setSelectedFirmAnalysisFirm("");
-      return;
-    }
     if (
-      !selectedFirmAnalysisFirm ||
+      selectedFirmAnalysisFirm &&
       !firmAnalysisRows.some((row) => row.name === selectedFirmAnalysisFirm)
     ) {
-      setSelectedFirmAnalysisFirm(String(selectedFirmAnalysisRow.name));
+      setSelectedFirmAnalysisFirm("");
     }
-  }, [firmAnalysisRows, selectedFirmAnalysisFirm, selectedFirmAnalysisRow]);
+  }, [firmAnalysisRows, selectedFirmAnalysisFirm]);
   const selectedFirmAnalysisDisplayRows = selectedFirmAnalysisRow
     ? [
         {
@@ -3123,7 +3253,7 @@ export function Dashboard() {
       title: "Division ranking by files",
       subtitle: "Number of files",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Count shows number of selected files under each division.",
         "This is file-level comparison, so cancellation visibility follows the selected global file set.",
       ],
@@ -3140,7 +3270,7 @@ export function Dashboard() {
       title: "Division ranking by value",
       subtitle: "",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Intended, booked, committed, and S.O. values are calculated from those selected files, not from the date the value activity happened.",
         "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
         "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
@@ -3155,7 +3285,7 @@ export function Dashboard() {
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Intended, booked, committed, and S.O. totals are calculated from those selected files, not from the date the value activity happened.",
         "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
         "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
@@ -3173,7 +3303,7 @@ export function Dashboard() {
       title: "Division turnaround ranking",
       subtitle: "Average days from Demand received date to first S.O.",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Average is calculated from Demand received date to first S.O. date inside selected files.",
         "Cancelled demand files are excluded.",
         "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
@@ -3191,7 +3321,7 @@ export function Dashboard() {
       title: "Firms ranking by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
       helper: [
-        "Division access, File Year Subfilter, initiation date range, and File Category first decide the accessible file set.",
+        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type filter first decide the accessible file set.",
         "Cancelled demand files are excluded.",
         "Because this is firm history, File Closed, cancelled S.O., and shortclosed S.O. records can still contribute when they belong to the selected file set.",
         "Ranking uses S.O. values recorded inside those selected files.",
@@ -3200,7 +3330,7 @@ export function Dashboard() {
       helperExamples: {
         title: "Firm ranking examples",
         items: [
-          "File Year FY 2025-26 selected: a file initiated in FY 2025-26 can contribute all S.O.s recorded in that file, even if one S.O. date is in FY 2026-27.",
+          "File Initiation Year FY 2025-26 selected: a file initiated in FY 2025-26 can contribute all S.O.s recorded in that file, even if one S.O. date is in FY 2026-27.",
           "Cancelled S.O. exists for a firm: it can still contribute to firm history because the firm did receive an order.",
           "File Closed selected through All files: the closed file can still contribute to firm ranking if it has S.O. firm/value history.",
           "Demand Cancelled file: it is excluded from this ranking.",
@@ -3216,7 +3346,7 @@ export function Dashboard() {
         ? `BQ, invited, tender participation, and order conversion for ${selectedFirmAnalysisRow.name}`
         : "Select a firm to see BQ, invitation, tender participation, and order conversion.",
       helper: [
-        "Division access, File Year Subfilter, initiation date range, and File Category first decide the accessible file set.",
+        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type filter first decide the accessible file set.",
         "Firm counts are taken from BQ, invitation, tender participation, and S.O. entries inside those selected files.",
         "Cancelled demand files are excluded.",
         "Because this is firm history, File Closed, cancelled S.O., and shortclosed S.O. records can still contribute when they belong to the selected file set.",
@@ -3239,7 +3369,7 @@ export function Dashboard() {
       title: "Top indentors by files",
       subtitle: "Number of files raised",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Count shows number of selected files raised by each indentor.",
         "Cancelled demand files are excluded.",
         "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
@@ -3256,7 +3386,7 @@ export function Dashboard() {
         "Total"
       } value.`,
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Capital value is the sum of demand Capital value from selected files.",
         "Revenue value is the sum of demand Revenue value from selected files.",
         "Total value is Capital value plus Revenue value, and sorting is by Total value.",
@@ -3272,7 +3402,7 @@ export function Dashboard() {
       title: "Bidding mode mix",
       subtitle: "Distribution by mode",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Count shows selected files grouped by bidding mode.",
         "Cancelled demand files are excluded.",
         "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
@@ -3285,7 +3415,7 @@ export function Dashboard() {
       title: "Count and Value analysis",
       subtitle: getCountValueAnalysisSubtitle(countValueAnalysisMode),
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Count mode groups selected files by configured value slabs.",
         "S.O. value mode uses supply order values recorded inside those selected files.",
         "Cancelled demand files are excluded.",
@@ -3308,13 +3438,16 @@ export function Dashboard() {
       title: "Payment pending by division",
       subtitle: "Delivery/job completion done but payment not completed",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Payment pending is calculated from the current payment status inside those selected files.",
-        "Normal bills, stage-wise bills, returned bills, and supplementary bills are included.",
+        "Includes main S.O. payments, stage-wise payments, returned main bills, advance payments, and supplementary bills.",
+        "This is a payment-case count, not a unique-file count. One file can contribute more than one pending payment case.",
         "For physical delivery/inspection cases, payment can become pending after material receipt.",
         "For Goods & Services where IR is No, payment can become pending after Job Completion.",
         "For AMC/MPC/CARS/CAPSI/O&M contract files, payment can become pending from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
-        "For stage-wise payments, a stage is counted when that stage is due for payment but its payment date is still blank.",
+        "Main/stage payment is counted when payment workflow has started or payment is due and Payment Date is blank.",
+        "Advance Payment is counted when Advance Payment is Yes and Advance Payment Date is blank.",
+        "Supplementary bill is counted when it is submitted, returned, or resubmitted and Supplementary Payment Date is blank.",
         "Cancelled S.O.s are excluded.",
         "Shortclosed S.O.s remain included if payment is still pending for work already delivered/completed.",
       ],
@@ -3324,8 +3457,9 @@ export function Dashboard() {
           "Material received, but Payment Date is blank.",
           "Job completion done, but Payment Date is blank.",
           "A stage delivery/job is completed, but payment date for that stage is blank.",
-          "A returned bill is still not finally resubmitted/paid.",
-          "A supplementary bill is submitted or resubmitted, but payment is still blank.",
+          "A returned main bill is still unpaid.",
+          "Advance Payment is Yes, but advance payment date is blank.",
+          "A supplementary bill is submitted, returned, or resubmitted, but payment date is blank.",
           "Cancelled S.O.: excluded.",
           "Shortclosed S.O.: payment for delivered/completed work can still keep the file pending.",
         ],
@@ -3348,8 +3482,8 @@ export function Dashboard() {
         ? `Month-wise Pre-Bid Meeting schedule for FY ${selectedPreBidFiscalYear}`
         : "FY-wise Pre-Bid Meeting schedule",
       helper: [
-        "Main filter and File Year first decide the file set.",
-        "File Year means file initiation year; FY/month rows here are grouped by Pre-Bid Meeting date.",
+        "Global Filter and File Initiation Year first decide the file set.",
+        "FY/month rows here are grouped by Pre-Bid Meeting date.",
         "Refloat Pre-Bid entries are included with Pre-Bid meeting counts where applicable.",
         "Active files excludes File Closed and all-S.O.-cancelled files.",
         "All files or a specific FY can include them if they belong to the selected set and their Pre-Bid dates exist.",
@@ -3358,7 +3492,7 @@ export function Dashboard() {
       helperExamples: {
         title: "Pre-Bid examples",
         items: [
-          "File initiated in FY 2025-26 with Pre-Bid Meeting Date 10-May-2026: File Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Pre-Bid date falls there.",
+          "File initiated in FY 2025-26 with Pre-Bid Meeting Date 10-May-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Pre-Bid date falls there.",
           "Active files selected: File Closed and all-S.O.-cancelled files with Pre-Bid date are excluded.",
           "All files or a specific FY selected: the same closed file can appear in the month/FY where its Pre-Bid date falls.",
           "Refloat Pre-Bid Date 15-Jul-2026 filled: it is counted in Refloat Pre-Bid history.",
@@ -3394,7 +3528,7 @@ export function Dashboard() {
       helperExamples: {
         title: "TCEC examples",
         items: [
-          "File initiated in FY 2025-26 with Post-TCEC Date 05-Apr-2026: File Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Post-TCEC date falls there.",
+          "File initiated in FY 2025-26 with Post-TCEC Date 05-Apr-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Post-TCEC date falls there.",
           "Active files selected: File Closed and all-S.O.-cancelled files with TCEC dates are excluded.",
           "All files or a specific FY selected: the same closed file can appear in Pre-TCEC or Post-TCEC history if the relevant TCEC date exists.",
           "Post-TCEC selected: normal Post-TCEC and Refloat Post-TCEC are counted together.",
@@ -3427,7 +3561,7 @@ export function Dashboard() {
       helperExamples: {
         title: "CNC examples",
         items: [
-          "File initiated in FY 2025-26 with CNC Date 20-Apr-2026: File Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because CNC Date falls there.",
+          "File initiated in FY 2025-26 with CNC Date 20-Apr-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because CNC Date falls there.",
           "CNC Date filled and CNC Approval Date blank: the file counts as reviewed and approval pending.",
           "CNC Approval Date filled but no non-cancelled S.O. has Financial Sanction: the file counts under Financial Sanction pending.",
           "Financial Sanction completed but no non-cancelled S.O. placed: the file counts under S.O. pending.",
@@ -3452,8 +3586,8 @@ export function Dashboard() {
               suspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
       helper: [
-        "Main filter and File Year first decide the file set.",
-        "Rows show suspected data issues detected inside those selected files.",
+        "The bell count and this list use the same file scope: Global Filter, File Initiation Year, initiation date, Division, and File Type, limited to files you are allowed to access.",
+        "Rows show suspected data issues detected inside the files selected by these filters.",
         "For anomaly detection, inactive means File Closed, Cancelled demand, or every S.O. in the file is cancelled.",
         "Inactive does not mean payment completed.",
         "Active files with required Yes/No flags left blank are shown as data-completeness anomalies.",
@@ -3481,7 +3615,7 @@ export function Dashboard() {
       title: "Delay status",
       subtitle: `Live files currently stuck for more than ${Number.parseInt(analyticsDelayDays, 10) || 0} days. Average ${analyticsDelaySummary?.averageDays ?? 0} days; longest ${analyticsDelaySummary?.longestDays ?? 0} days.`,
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Delay is calculated only from the current pending milestone/order state inside those selected files.",
         "Historical delays at milestones already cleared are excluded from Delay Status.",
         "Panel filters such as Delay days and Milestone further narrow this view.",
@@ -3510,7 +3644,7 @@ export function Dashboard() {
           ? "Milestones in chronological workflow order"
           : "Slowest milestones by average clearing time",
       helper: [
-        "Main filter and File Year first decide the file set.",
+        "Global Filter and File Initiation Year first decide the file set.",
         "Clearing duration is calculated from milestone dates inside those selected files.",
         "From Supply Order onward, each valid S.O./stage/payment row contributes one sample to the average.",
         "Cancelled S.O. rows are included for Supply Order placement clearing, but excluded from later S.O./payment-side clearing milestones.",
@@ -3677,12 +3811,49 @@ export function Dashboard() {
       },
     });
   };
+  const openFinance1Drilldown = (key: string, section: string, metric: string) => {
+    const fileIds = finance1Summary.drillFileIds?.[key] ?? [];
+    if (!fileIds.length) return;
+    const snapshotHref = `/dashboard?tab=finance1&finance1Year=${encodeURIComponent(finance1Summary.fiscalYear)}`;
+    const focus = getFinance1DrillFocus(key, section, metric);
+    const focusTargets = focus.focusTarget
+      ? fileIds
+          .map((fileId) => `${encodeURIComponent(fileId)}=${encodeURIComponent(focus.focusTarget!)}`)
+          .join(",")
+      : undefined;
+    navigate({
+      to: "/search",
+      search: {
+        dashboardFilter: `snapshotFileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        selectedYear: "__all_files__",
+        fileYear: "all",
+        division: activeDivision === "all" ? undefined : activeDivision,
+        focusSection: focus.focusSection,
+        focusMilestone: focus.focusMilestone,
+        focusTarget: focus.focusTarget,
+        focusTargets,
+        drillPath: serializeDrillPath([
+          drillItem("Dashboard", "/dashboard"),
+          drillItem("FY Snapshot", snapshotHref),
+          drillItem(finance1Summary.fiscalYear, snapshotHref),
+          drillItem(section, snapshotHref),
+          drillItem(metric),
+        ]),
+      },
+    });
+  };
+  const finance1DrillClick = (key: string, section: string, metric: string) =>
+    finance1Summary.drillFileIds?.[key]?.length
+      ? () => openFinance1Drilldown(key, section, metric)
+      : undefined;
   const openLiveStatusFilter = (division: string, milestoneName: string) => {
     const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
     const dashboardFilter =
       normalizeMilestoneName(filterMilestoneName) === "supplementarybillreturnedforcorrection"
         ? "supplementaryBill:returned"
-        : `manualMilestoneCurrent:${filterMilestoneName}`;
+        : normalizeMilestoneName(filterMilestoneName) === "deliveryperiod"
+          ? "deliveryPeriodLive"
+          : `manualMilestoneCurrent:${filterMilestoneName}`;
     navigate({
       to: "/search",
       search: {
@@ -3788,6 +3959,39 @@ export function Dashboard() {
       },
     });
   };
+  const openCoBiddingSearch = (rows: CoBiddingTenderRow[]) => {
+    if (!rows.length) return;
+    const ids = rows.map((row) => row.id);
+    navigate({
+      to: "/search",
+      search: {
+        dashboardFilter: `fileIds:${ids.join(",")}`,
+        division: activeDivision === "all" ? undefined : activeDivision,
+        fileCategories: activeFileCategoriesParam,
+        selectedYear: settings.selectedYear,
+        fileYear: activeFileYear === "all" ? undefined : activeFileYear,
+        ...fileInitiationDateQueryParams,
+        drillPath: serializeDrillPath([
+          drillItem("Dashboard", "/dashboard"),
+          drillItem("Analytics", "/dashboard?tab=analytics"),
+          drillItem("Firm Analysis", "/dashboard?tab=analytics&analyticsPanel=firmAnalysis"),
+          drillItem("Co-bidding Firms"),
+          ...(coParticipantFirm ? [drillItem(coParticipantFirm)] : []),
+          ...(selectedCoParticipantFirm
+            ? [
+                drillItem(
+                  coBiddingFirms.find((firm) => firm.key === selectedCoParticipantFirm)?.name ??
+                    "Co-bidding firm",
+                ),
+              ]
+            : []),
+          ...(rows.length === 1
+            ? [drillItem(rows[0].uniqueCode || rows[0].controlNo || "Shared tender")]
+            : []),
+        ]),
+      },
+    });
+  };
   const getAnalyticsCellSearchTarget = (
     row: Record<string, number | string>,
     column: AnalyticsTableColumn,
@@ -3824,14 +4028,11 @@ export function Dashboard() {
     if (!reason?.trim()) return;
     try {
       await store.acceptSuspectedAnomaly(signature, reason.trim());
-      const [acceptancePayload, rulePayload, anomalyPayload] = await Promise.all([
+      const [acceptancePayload, anomalyPayload] = await Promise.all([
         store.listSuspectedAnomalyAcceptances(),
-        store.listAnomalyRules(),
         fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
       ]);
       setAnomalyAcceptances(acceptancePayload.acceptances);
-      setAnomalyRules(rulePayload.rules);
-      setAnomalyRuleFields(rulePayload.fields);
       setSuspectedAnomalyRows(anomalyPayload.rows);
     } catch (error) {
       console.error(error);
@@ -3870,64 +4071,6 @@ export function Dashboard() {
     } catch (error) {
       console.error(error);
       window.alert(error instanceof Error ? error.message : "Could not clear anomaly history.");
-    }
-  }
-  async function toggleAnomalyRule(rule: AnomalyRuleRow) {
-    try {
-      await store.updateAnomalyRule(rule.id, { enabled: !rule.enabled });
-      const payload = await store.listAnomalyRules();
-      setAnomalyRules(payload.rules);
-      setAnomalyRuleFields(payload.fields);
-    } catch (error) {
-      console.error(error);
-      window.alert(error instanceof Error ? error.message : "Could not update anomaly rule.");
-    }
-  }
-  async function createAnomalyRuleFromPrompt() {
-    const name = window.prompt("Rule name:");
-    if (!name?.trim()) return;
-    const fieldA = window.prompt(
-      `Field A key:\n${anomalyRuleFields.map((field) => `${field.key} - ${field.label}`).join("\n")}`,
-    );
-    if (!fieldA?.trim()) return;
-    const ruleType = window.prompt(
-      "Rule type: date_order, required_field, delay_days",
-      "date_order",
-    );
-    if (!ruleType?.trim()) return;
-    const fieldB = window.prompt("Field B key:");
-    if (!fieldB?.trim()) return;
-    const operator =
-      ruleType === "required_field"
-        ? "requires"
-        : window.prompt("Operator: not_before or not_after", "not_before");
-    if (!operator?.trim()) return;
-    const thresholdDays =
-      ruleType === "delay_days"
-        ? Number.parseInt(window.prompt("Threshold days:", "0") ?? "", 10)
-        : undefined;
-    try {
-      await store.createAnomalyRule({
-        name: name.trim(),
-        ruleType: ruleType.trim(),
-        fieldA: fieldA.trim(),
-        operator: operator.trim(),
-        fieldB: fieldB.trim(),
-        thresholdDays,
-        severity: "Medium",
-        scope: "all",
-        enabled: true,
-      });
-      const [rulePayload, anomalyPayload] = await Promise.all([
-        store.listAnomalyRules(),
-        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
-      ]);
-      setAnomalyRules(rulePayload.rules);
-      setAnomalyRuleFields(rulePayload.fields);
-      setSuspectedAnomalyRows(anomalyPayload.rows);
-    } catch (error) {
-      console.error(error);
-      window.alert(error instanceof Error ? error.message : "Could not create anomaly rule.");
     }
   }
   const toggleFileCategory = (category: FileCategoryKey, checked: boolean) => {
@@ -4015,7 +4158,7 @@ export function Dashboard() {
                       <TooltipContent
                         side="bottom"
                         align="start"
-                        className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                        className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                       >
                         <HelperBulletList items={helper} />
                       </TooltipContent>
@@ -4051,7 +4194,7 @@ export function Dashboard() {
                       <TooltipContent
                         side="top"
                         align="start"
-                        className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                        className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                       >
                         <HelperBulletList items={fileYearSubfilterHelper} />
                       </TooltipContent>
@@ -4434,7 +4577,7 @@ export function Dashboard() {
                           help: [
                             "Includes files where IR preparation is still pending after delivery/job completion.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                         {
@@ -4444,7 +4587,7 @@ export function Dashboard() {
                           help: [
                             "Includes files where IR has been prepared but IR receipt is still pending.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                         {
@@ -4454,7 +4597,7 @@ export function Dashboard() {
                           help: [
                             "Includes files where IR receipt/completion is recorded.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                       ]}
@@ -4477,7 +4620,7 @@ export function Dashboard() {
                           help: [
                             "Includes files where Pre-bid Meeting is due and not yet completed.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                         {
@@ -4487,7 +4630,7 @@ export function Dashboard() {
                           help: [
                             "Includes files where Pre-bid Meeting completion is recorded.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                         {
@@ -4497,7 +4640,7 @@ export function Dashboard() {
                           help: [
                             "Includes refloat files where Pre-bid Meeting is due and not yet completed.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                         {
@@ -4507,7 +4650,7 @@ export function Dashboard() {
                           help: [
                             "Includes refloat files where Pre-bid Meeting completion is recorded.",
                             "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global filter.",
+                            "File Closed follows the selected Global Filter.",
                           ],
                         },
                       ]}
@@ -4536,13 +4679,13 @@ export function Dashboard() {
                     onLiveBidsClick={() => handleStatusFilter("liveBids")}
                     onBidOverdueClick={() => handleStatusFilter("bidOverdue")}
                     onRefloatLiveBidsClick={() =>
-                      handleStatusFilter(statusSummaryFilter("Refloat bidding", "Live"))
+                      handleStatusFilter(getStatusSummaryDashboardFilter("Refloat bidding", "Live"))
                     }
                     onRefloatInProcessBidsClick={() =>
-                      handleStatusFilter(statusSummaryFilter("Refloat bidding", "In process"))
+                      handleStatusFilter(getStatusSummaryDashboardFilter("Refloat bidding", "In process"))
                     }
                     onRefloatBidOverdueClick={() =>
-                      handleStatusFilter(statusSummaryFilter("Refloat bidding", "Opening overdue"))
+                      handleStatusFilter(getStatusSummaryDashboardFilter("Refloat bidding", "Opening overdue"))
                     }
                     onLiveSupplyOrdersClick={() => handleStatusFilter("liveSupplyOrders")}
                     onFinancialSanctionPendingClick={() =>
@@ -4630,7 +4773,7 @@ export function Dashboard() {
               })}
               <StatusFlowNode
                 index={statusDisplayNodeCount}
-                title="Cancellation"
+                title="Miscellaneous"
                 isLast
                 items={[
                   {
@@ -4659,7 +4802,7 @@ export function Dashboard() {
                     help: [
                       "Includes files/S.O. records where LD is applicable or recorded.",
                       "Cancelled demand files are excluded.",
-                      "File Closed follows the selected Global filter.",
+                      "File Closed follows the selected Global Filter.",
                     ],
                   },
                   {
@@ -4678,7 +4821,7 @@ export function Dashboard() {
                     help: [
                       "Includes files/S.O. rows where S.O. Cancelled is recorded.",
                       "Cancelled demand files are excluded.",
-                      "File Closed follows the selected Global filter.",
+                      "File Closed follows the selected Global Filter.",
                     ],
                   },
                   {
@@ -4688,7 +4831,7 @@ export function Dashboard() {
                     help: [
                       "Includes files/S.O. rows where Shortclosed S.O. is recorded.",
                       "Cancelled demand files are excluded.",
-                      "File Closed follows the selected Global filter.",
+                      "File Closed follows the selected Global Filter.",
                     ],
                   },
                   {
@@ -4735,9 +4878,10 @@ export function Dashboard() {
 
       {activeDashboardTab === "status3" ? (
         <DashboardStatusSummarySection
-          groups={status3Groups}
-          loading={status3Loading}
-          error={status3Error}
+          milestones={statusDisplayFlow}
+          miscellaneousCounts={miscellaneousCounts}
+          loading={dashboardSummaryLoading}
+          error={dashboardSummaryError}
           exportDescription={dashboardExportDescription}
           onOpenStatus={(milestone, stage) =>
             openSearchFilter(getStatusSummaryDashboardFilter(milestone, stage))
@@ -4814,7 +4958,7 @@ export function Dashboard() {
                             <TooltipContent
                               side="right"
                               align="start"
-                              className="w-[min(44rem,calc(100vw-2rem))] max-w-[44rem] text-xs leading-relaxed"
+                              className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                             >
                               <HelperWithExamples
                                 items={panel.helper}
@@ -4831,10 +4975,35 @@ export function Dashboard() {
             </aside>
             <div className="min-w-0">
               <AnalyticsChartCard
-                title={displayedAnalyticsPanel.title}
-                subtitle={displayedAnalyticsPanel.subtitle}
-                helper={displayedAnalyticsPanel.helper}
-                helperExamples={displayedAnalyticsPanel.helperExamples}
+                title={
+                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  firmAnalysisView === "coParticipants"
+                    ? "Co-bidding Firms"
+                    : displayedAnalyticsPanel.title
+                }
+                subtitle={
+                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  firmAnalysisView === "coParticipants"
+                    ? "Select a firm to see the other firms that co-bid with it."
+                    : displayedAnalyticsPanel.subtitle
+                }
+                helper={
+                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  firmAnalysisView === "coParticipants"
+                    ? [
+                        "Choose a main firm to list firms that bid in the same tender files.",
+                        "Count is the number of distinct files shared by the firm pair. A refloat cycle in the same file does not add another count.",
+                        "A cancelled S.O. does not by itself exclude the file from co-bidding results.",
+                        "Co-bidding results use the same filtered file set as the rest of Analytics.",
+                      ]
+                    : displayedAnalyticsPanel.helper
+                }
+                helperExamples={
+                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  firmAnalysisView === "coParticipants"
+                    ? undefined
+                    : displayedAnalyticsPanel.helperExamples
+                }
                 actions={
                   <>
                     {analyticsLimitControl ? (
@@ -4904,11 +5073,13 @@ export function Dashboard() {
                         Send to Search Files
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        printAnalyticsPanelToPdf(
-                          getAnalyticsExportPanel(displayedAnalyticsPanel, {
+                    {!(displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants") ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            printAnalyticsPanelToPdf(
+                              getAnalyticsExportPanel(displayedAnalyticsPanel, {
                             topFirmRows: topFirmRankedRows,
                             indentorsByFilesRows: topIndentorsByFilesRankedRows,
                             indentorsByValueRows: topIndentorsByValueRankedRows,
@@ -4924,19 +5095,19 @@ export function Dashboard() {
                               : analytics.cncSummary,
                             selectedCncFiscalYear,
                             tcecStage: tcecStatusStage,
-                          }),
-                          dashboardExportDescription,
-                        )
-                      }
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
-                    >
-                      Export PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        exportAnalyticsPanelToExcel(
-                          getAnalyticsExportPanel(displayedAnalyticsPanel, {
+                              }),
+                              dashboardExportDescription,
+                            )
+                          }
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                        >
+                          Export PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            exportAnalyticsPanelToExcel(
+                              getAnalyticsExportPanel(displayedAnalyticsPanel, {
                             topFirmRows: topFirmRankedRows,
                             indentorsByFilesRows: topIndentorsByFilesRankedRows,
                             indentorsByValueRows: topIndentorsByValueRankedRows,
@@ -4952,14 +5123,16 @@ export function Dashboard() {
                               : analytics.cncSummary,
                             selectedCncFiscalYear,
                             tcecStage: tcecStatusStage,
-                          }),
-                          dashboardExportDescription,
-                        )
-                      }
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
-                    >
-                      Export Excel
-                    </button>
+                              }),
+                              dashboardExportDescription,
+                            )
+                          }
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                        >
+                          Export Excel
+                        </button>
+                      </>
+                    ) : null}
                   </>
                 }
               >
@@ -5011,7 +5184,7 @@ export function Dashboard() {
                             <TooltipContent
                               side="top"
                               align="start"
-                              className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                              className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                             >
                               <HelperBulletList items="Default is 5 days. Use reset to restore the default threshold." />
                             </TooltipContent>
@@ -5066,28 +5239,117 @@ export function Dashboard() {
                   </div>
                 ) : null}
                 {displayedAnalyticsPanel.key === "firmAnalysis" ? (
-                  <FirmAnalysisControls
-                    firms={firmAnalysisRows.map((row) => String(row.name))}
-                    selectedFirm={selectedFirmAnalysisRow?.name ?? ""}
-                    operators={firmAnalysisOperators}
-                    negatedRoles={negatedFirmAnalysisRoles}
-                    selectedRoles={selectedFirmAnalysisRoles}
-                    onFirmChange={setSelectedFirmAnalysisFirm}
-                    onOperatorChange={(leftRole, rightRole, operator) =>
-                      setFirmAnalysisOperators((current) => ({
-                        ...current,
-                        [firmAnalysisOperatorKey(leftRole, rightRole)]: operator,
-                      }))
-                    }
-                    onToggleNot={(role, checked) =>
-                      setNegatedFirmAnalysisRoles((current) =>
-                        checked
-                          ? Array.from(new Set([...current, role]))
-                          : current.filter((item) => item !== role),
-                      )
-                    }
-                    onToggleRole={toggleFirmAnalysisRole}
-                  />
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-2 border-b border-border" role="tablist" aria-label="Firm Analysis views">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={firmAnalysisView === "existing"}
+                        onClick={() => setFirmAnalysisView("existing")}
+                        className={`border-b-2 px-3 py-2 text-sm font-medium ${firmAnalysisView === "existing" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                      >
+                        Firm Analysis
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={firmAnalysisView === "coParticipants"}
+                        onClick={() => setFirmAnalysisView("coParticipants")}
+                        className={`border-b-2 px-3 py-2 text-sm font-medium ${firmAnalysisView === "coParticipants" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                      >
+                        Co-bidding Firms
+                      </button>
+                    </div>
+                    {firmAnalysisView === "existing" ? (
+                      <FirmAnalysisControls
+                        firms={firmAnalysisRows.map((row) => String(row.name))}
+                        selectedFirm={selectedFirmAnalysisRow?.name ?? ""}
+                        operators={firmAnalysisOperators}
+                        negatedRoles={negatedFirmAnalysisRoles}
+                        selectedRoles={selectedFirmAnalysisRoles}
+                        onFirmChange={setSelectedFirmAnalysisFirm}
+                        onOperatorChange={(leftRole, rightRole, operator) =>
+                          setFirmAnalysisOperators((current) => ({
+                            ...current,
+                            [firmAnalysisOperatorKey(leftRole, rightRole)]: operator,
+                          }))
+                        }
+                        onToggleNot={(role, checked) =>
+                          setNegatedFirmAnalysisRoles((current) =>
+                            checked
+                              ? Array.from(new Set([...current, role]))
+                              : current.filter((item) => item !== role),
+                          )
+                        }
+                        onToggleRole={toggleFirmAnalysisRole}
+                      />
+                    ) : (
+                      <CoParticipantControls
+                        firms={firmAnalysisRows
+                          .filter((row) => row.participated > 0)
+                          .map((row) => String(row.name))}
+                        selectedFirm={coParticipantFirm}
+                        coBiddingFirms={coBiddingFirms}
+                        coBiddingTenders={coBiddingTenders}
+                        selectedPartnerName={
+                          coBiddingFirms.find((firm) => firm.key === selectedCoParticipantFirm)?.name ?? ""
+                        }
+                        loading={coBiddingLoading}
+                        onOpenAll={() => openCoBiddingSearch(coBiddingTenders)}
+                        onExport={(format) => {
+                          const partnerName = coBiddingFirms.find((firm) => firm.key === selectedCoParticipantFirm)?.name;
+                          void downloadBackendExport({
+                            format,
+                            title: "Co-bidding Firms",
+                            subtitle: coParticipantFirm
+                              ? `Selected firm: ${coParticipantFirm}${partnerName ? `; Co-bidding firm: ${partnerName}` : ""}`
+                              : undefined,
+                            description: `Each shared file is counted once per firm pair. Cancelled S.O.s do not exclude an otherwise matching file.\n${dashboardExportDescription}`,
+                            fileName: "co-bidding-firms",
+                            tables: [
+                              {
+                                title: "Co-bidding firms",
+                                headers: [
+                                  "Unique Number",
+                                  "Name",
+                                  "City",
+                                  "Bids Submitted",
+                                  "S.O. Received",
+                                  "Total S.O. Value",
+                                  "Count",
+                                ],
+                                rows: coBiddingFirms.map((firm) => [
+                                  firm.uniqueNumber,
+                                  firm.name,
+                                  firm.city,
+                                  firm.tendersParticipated,
+                                  firm.soCount,
+                                  firm.soValue,
+                                  firm.count,
+                                ]),
+                              },
+                              ...(coBiddingTenders.length ? [{
+                                title: "Shared tender details",
+                                headers: ["Unique Code", "Control No.", "Item Description", "Indentor", "S.O. Year", "S.O. Firm"],
+                                rows: coBiddingTenders.map((tender) => [
+                                  tender.uniqueCode,
+                                  tender.controlNo,
+                                  tender.itemDescription,
+                                  tender.indentor,
+                                  tender.soYear,
+                                  tender.soFirm,
+                                ]),
+                              }] : []),
+                            ],
+                          });
+                        }}
+                        onFirmChange={(firm) => {
+                          setCoParticipantFirm(firm);
+                          setSelectedCoParticipantFirm("");
+                        }}
+                      />
+                    )}
+                  </div>
                 ) : null}
                 {displayedAnalyticsPanel.key === "fileValueThresholds" ? (
                   <>
@@ -5198,7 +5460,8 @@ export function Dashboard() {
                     items={[{ label: "Analytics" }, { label: "Monitoring / Exceptions" }]}
                   />
                 ) : null}
-                {displayedAnalyticsPanel.key === "suspectedAnomaly" ? (
+                {displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants" ? null :
+                  displayedAnalyticsPanel.key === "suspectedAnomaly" ? (
                   <SuspectedAnomalyGroupedView
                     rows={suspectedAnomalyRows}
                     acceptances={anomalyAcceptances}
@@ -5224,6 +5487,31 @@ export function Dashboard() {
                     onOpenSearchTarget={openAnalyticsSearchTarget}
                   />
                 )}
+                {displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants" ? (
+                  <section className="mt-5 space-y-5">
+                    <p className="max-w-4xl border-l-2 border-border pl-3 text-xs leading-relaxed text-muted-foreground">
+                      A firm pair is counted once per file, including refloat cycles. Cancelled
+                      S.O.s do not exclude an otherwise matching file. Results use the current
+                      Analytics file scope.
+                    </p>
+                    <CoBiddingFirmTable
+                      mainFirm={coParticipantFirm}
+                      firms={coBiddingFirms}
+                      onViewTenders={setSelectedCoParticipantFirm}
+                    />
+                    <CoParticipantResultsPlaceholder
+                      mainFirm={coParticipantFirm}
+                      coBiddingFirm={selectedCoParticipantFirm}
+                      partnerName={
+                        coBiddingFirms.find((firm) => firm.key === selectedCoParticipantFirm)?.name ?? ""
+                      }
+                      tenders={coBiddingTenders}
+                      loading={coBiddingLoading}
+                      error={coBiddingError}
+                      onOpenTender={(tender) => openCoBiddingSearch([tender])}
+                    />
+                  </section>
+                ) : null}
                 {displayedAnalyticsPanel.key === "tcecStatus" && activeTcecCommittee ? (
                   <div className="mt-4 space-y-2">
                     <div>
@@ -5271,21 +5559,21 @@ export function Dashboard() {
                   </h2>
                   <p className="text-xs text-muted-foreground">
                     Select an FY to see files started in that FY, their value, payments, pending
-                    liabilities, and present status. For a running FY, figures are live and
-                    provisional.
+                    liabilities, and present status. For a running FY, FY-end cards are provisional;
+                    today cards remain live.
                   </p>
                 </div>
               </div>
               <SectionRuleToolbar
-                title="FY Snapshot rule"
-                items={[
-                  "Select an FY to review files started in that FY.",
-                  "For completed FYs, FY-end cards use dates available on or before the FY-end date.",
-                  "For a running FY, figures are live and provisional.",
-                  "Global Filter shows only FY options here; Subfilter is locked to the same FY.",
-                  "Division and File Category filters still apply.",
-                  "Paid values include regular, stage, supplementary, and advance payments.",
-                ]}
+                  title="FY Snapshot rule"
+                  items={[
+                    "Select an FY to review files started in that FY.",
+                    "For completed FYs, FY-end cards use dates available on or before the FY-end date.",
+                    "For a running FY, FY-end cards are provisional because they use the selected FY-end cutoff and the data entered so far.",
+                    "Select any FY. Subfilter is locked to the same FY for this page.",
+                    "Division and File Type filters still apply.",
+                    "Paid values include regular, stage, supplementary, and advance payments.",
+                  ]}
               />
 
               <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -5302,19 +5590,24 @@ export function Dashboard() {
                     <Finance1AmountMetricCard
                       title="Files Initiated"
                       metric={finance1Summary.fileGroup}
+                      unitLabel="files"
                       help="Files whose initiation/received date falls in the selected Snapshot FY."
+                      onClick={finance1DrillClick("fileGroup", "File Group Summary", "Files Initiated")}
                     />
                     <Finance1CountMetricCard
                       title="Cancelled by FY-end"
                       value={finance1Summary.cancelledByFyEnd}
+                      onClick={finance1DrillClick("cancelledByFyEnd", "File Group Summary", "Cancelled by FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Active at FY-end"
                       value={finance1Summary.activeAtFyEnd}
+                      onClick={finance1DrillClick("activeAtFyEnd", "File Group Summary", "Active at FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Closed by FY-end"
                       value={finance1Summary.closedByFyEnd}
+                      onClick={finance1DrillClick("closedByFyEnd", "File Group Summary", "Closed by FY-end")}
                     />
                   </div>
                 </div>
@@ -5332,34 +5625,61 @@ export function Dashboard() {
                     <Finance1AmountMetricCard
                       title="Intended at FY-end"
                       metric={finance1Summary.intendedAtFyEnd}
+                      unitLabel="files"
+                      onClick={finance1DrillClick("intendedAtFyEnd", "Financial Position at FY-end", "Intended at FY-end")}
                     />
                     <Finance1AmountMetricCard
                       title="Booked at FY-end"
                       metric={finance1Summary.bookedAtFyEnd}
+                      unitLabel="files"
+                      onClick={finance1DrillClick("bookedAtFyEnd", "Financial Position at FY-end", "Booked at FY-end")}
                     />
                     <Finance1AmountMetricCard
                       title="Committed at FY-end"
                       metric={finance1Summary.committedAtFyEnd}
+                      unitLabel="S.O.s"
+                      help={shortclosedPayableHelp([
+                        "Historical S.O. value committed by FY-end.",
+                        "Shortclosed S.O.s remain included here because shortclosure is not cancellation.",
+                      ])}
+                      onClick={finance1DrillClick("committedAtFyEnd", "Financial Position at FY-end", "Committed at FY-end")}
                     />
                     <Finance1AmountMetricCard
                       title="Paid by FY-end"
                       metric={finance1Summary.paidByFyEnd}
-                      help="Regular, stage, supplementary, and advance payments made on or before FY end."
+                      unitLabel="payment rows"
+                      help={`Payments made by FY-end (${finance1Summary.cutoffDate.split("-").reverse().join("-")}) for files started in this FY. Example: a payment dated on or before FY-end counts; a later payment does not.`}
+                      onClick={finance1DrillClick("paidByFyEnd", "Financial Position at FY-end", "Paid by FY-end")}
                     />
                     <Finance1AmountMetricCard
                       title="Unpaid liability at FY-end"
                       metric={finance1Summary.unpaidLiabilityAtFyEnd}
-                      help="Payment liability rows, including pending advance payments, still unpaid at FY end."
+                      showCount={false}
+                      help={shortclosedPayableHelp([
+                        `Unpaid amounts whose liability date was on or before ${finance1Summary.cutoffDate.split("-").reverse().join("-")}.`,
+                        "For staged S.O.s, each stage uses its revised D.P. or D.P.; stages scheduled after FY-end are excluded.",
+                        "Payments made later remain counted as unpaid at FY-end.",
+                        "For shortclosed S.O.s, only real pending payable items are counted.",
+                      ])}
+                      onClick={finance1DrillClick("unpaidLiabilityAtFyEnd", "Financial Position at FY-end", "Unpaid liability at FY-end")}
                     />
                     <Finance1AmountMetricCard
-                      title="Total paid till date"
+                      title="Total paid till today (live)"
                       metric={finance1Summary.paidTillDate}
-                      help="All recorded regular, stage, supplementary, and advance payments for this file group up to today."
+                      unitLabel="payment rows"
+                      help="Payments actually made by today for files started in this FY. Example: a payment made after FY-end appears here, but not in Paid by FY-end."
+                      onClick={finance1DrillClick("paidTillDate", "Financial Position at FY-end", "Total paid till today (live)")}
                     />
                     <Finance1AmountMetricCard
-                      title="Balance unpaid today"
+                      title="Balance unpaid till today (live)"
                       metric={finance1Summary.balanceUnpaidToday}
-                      help="Current payment liability rows, including pending advance payments, that still do not have payment dates."
+                      showCount={false}
+                      help={shortclosedPayableHelp([
+                        "Shows unpaid payable balance that is still open today.",
+                        "For normal S.O.s, this follows placed S.O./stage/advance/payment rows as applicable and reduces as payments are recorded.",
+                        "For shortclosed S.O.s, only real pending payable items are counted.",
+                      ])}
+                      onClick={finance1DrillClick("balanceUnpaidToday", "Financial Position at FY-end", "Balance unpaid till today (live)")}
                     />
                   </div>
                 </div>
@@ -5376,32 +5696,39 @@ export function Dashboard() {
                   />
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1">
                     <Finance1CountMetricCard
-                      title="No. Controlled by FY-end"
+                      title="Controlled by FY-end"
                       value={finance1Summary.noImmsByFyEnd}
+                      onClick={finance1DrillClick("intendedAtFyEnd", "Workflow Position at FY-end", "Controlled by FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Controlled done, S.O. not placed"
                       value={finance1Summary.immsDoneSoNotPlacedByFyEnd}
+                      onClick={finance1DrillClick("bookedAtFyEnd", "Workflow Position at FY-end", "Controlled done, S.O. not placed")}
                     />
                     <Finance1CountMetricCard
                       title="S.O. placed"
                       value={finance1Summary.soPlacedByFyEnd}
+                      onClick={finance1DrillClick("soPlacedByFyEnd", "Workflow Position at FY-end", "S.O. placed")}
                     />
                     <Finance1CountMetricCard
                       title="Delivery/Job completed"
                       value={finance1Summary.deliveryJobDoneByFyEnd}
+                      onClick={finance1DrillClick("deliveryJobDoneByFyEnd", "Workflow Position at FY-end", "Delivery/Job completed")}
                     />
                     <Finance1CountMetricCard
                       title="Bill sent for payment"
                       value={finance1Summary.billSentByFyEnd}
+                      onClick={finance1DrillClick("billSentByFyEnd", "Workflow Position at FY-end", "Bill sent for payment")}
                     />
                     <Finance1CountMetricCard
                       title="Payment completed"
                       value={finance1Summary.paymentCompletedByFyEnd}
+                      onClick={finance1DrillClick("paymentCompletedByFyEnd", "Workflow Position at FY-end", "Payment completed")}
                     />
                     <Finance1CountMetricCard
                       title="File closed"
                       value={finance1Summary.fileClosedByFyEnd}
+                      onClick={finance1DrillClick("closedByFyEnd", "Workflow Position at FY-end", "File closed")}
                     />
                   </div>
                 </div>
@@ -5418,35 +5745,35 @@ export function Dashboard() {
                     <Finance1AmountMetricCard
                       title="S.O. value unpaid at FY-end"
                       metric={finance1Summary.unpaidLiabilityAtFyEnd}
+                      showCount={false}
+                      onClick={finance1DrillClick("unpaidLiabilityAtFyEnd", "Pending Position at FY-end", "S.O. value unpaid at FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Bills submitted but unpaid"
-                      value={finance1Summary.billSentByFyEnd - finance1Summary.paymentCompletedByFyEnd}
+                      value={finance1Summary.drillFileIds?.billsSubmittedButUnpaid?.length ?? 0}
+                      onClick={finance1DrillClick("billsSubmittedButUnpaid", "Pending Position at FY-end", "Bills submitted but unpaid")}
                     />
                     <Finance1CountMetricCard
                       title="Payment due but bill not submitted"
-                      value={Math.max(
-                        0,
-                        finance1Summary.deliveryJobDoneByFyEnd - finance1Summary.billSentByFyEnd,
-                      )}
+                      value={finance1Summary.drillFileIds?.paymentDueButBillNotSubmitted?.length ?? 0}
+                      onClick={finance1DrillClick("paymentDueButBillNotSubmitted", "Pending Position at FY-end", "Payment due but bill not submitted")}
                     />
                     <Finance1CountMetricCard
                       title="Advance pending at FY-end"
                       value={finance1Summary.advancePendingByFyEnd}
+                      onClick={finance1DrillClick("advancePendingByFyEnd", "Pending Position at FY-end", "Advance pending at FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Delivery/Job pending"
-                      value={Math.max(
-                        0,
-                        finance1Summary.soPlacedByFyEnd - finance1Summary.deliveryJobDoneByFyEnd,
-                      )}
+                      value={finance1Summary.drillFileIds?.deliveryJobPendingByFyEnd?.length ?? 0}
+                      onClick={finance1DrillClick("deliveryJobPendingByFyEnd", "Pending Position at FY-end", "Delivery/Job pending")}
                     />
                   </div>
                 </div>
 
                 <div className="rounded-lg border border-border bg-secondary/35 p-4">
                   <FinanceSectionTitle
-                    title="Later Movement"
+                    title="Later Movement (live)"
                     help={[
                       "Later movement tracks only the same selected-FY file group.",
                       "Paid after FY-end includes regular, stage, supplementary, and advance payments.",
@@ -5457,18 +5784,22 @@ export function Dashboard() {
                     <Finance1CountMetricCard
                       title="S.O. placed after FY-end"
                       value={finance1Summary.soPlacedLater}
+                      onClick={finance1DrillClick("soPlacedLater", "Later Movement (live)", "S.O. placed after FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="Payment made after FY-end"
                       value={finance1Summary.paymentMadeLater}
+                      onClick={finance1DrillClick("paymentMadeLater", "Later Movement (live)", "Payment made after FY-end")}
                     />
                     <Finance1CountMetricCard
                       title="File closed after FY-end"
                       value={finance1Summary.fileClosedLater}
+                      onClick={finance1DrillClick("fileClosedLater", "Later Movement (live)", "File closed after FY-end")}
                     />
                     <Finance1CountMetricCard
-                      title="Still pending today"
+                      title="Active files"
                       value={finance1Summary.stillPendingToday}
+                      onClick={finance1DrillClick("stillPendingToday", "Later Movement (live)", "Active files")}
                     />
                   </div>
                 </div>
@@ -5478,13 +5809,14 @@ export function Dashboard() {
                 <FinanceSectionTitle
                   title="File Type Distribution at FY-end"
                   help={[
-                    "Frozen distribution of files initiated in the selected FY.",
+                    "Includes only files initiated in the selected FY; files initiated in earlier FYs are not included.",
+                    "Counts each included file once if it had at least one S.O. still valid at FY-end. Multiple S.O.s or delivery stages on one file still count as one file.",
                     "Status columns are evaluated as on the FY-end cutoff date.",
                     "Value is the file demand/estimated value of that selected FY file group.",
                   ]}
                 />
                 <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
-                  <table className="w-full min-w-[720px] border-collapse text-xs">
+                  <table className="w-full min-w-[760px] border-collapse text-xs">
                     <thead className="bg-secondary text-muted-foreground">
                       <tr>
                         <th className="border-b border-border px-3 py-2 text-left font-semibold">
@@ -5492,6 +5824,9 @@ export function Dashboard() {
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
                           Files
+                        </th>
+                        <th className="border-b border-border px-3 py-2 text-right font-semibold">
+                          Files with S.O.
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
                           Active at FY-end
@@ -5503,10 +5838,7 @@ export function Dashboard() {
                           Cancelled by FY-end
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Value
-                        </th>
-                        <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Share
+                          Value Share
                         </th>
                       </tr>
                     </thead>
@@ -5514,26 +5846,44 @@ export function Dashboard() {
                       {finance1Summary.fileTypeDistribution.length ? (
                         finance1Summary.fileTypeDistribution.map((row) => (
                           <tr key={row.fileType} className="border-t border-border">
-                            <td className="px-3 py-2 font-medium">{row.fileType}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{row.files}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">
-                              {row.activeAtFyEnd}
+                            <td className="px-3 py-2 font-medium">
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution at FY-end", row.fileType)}>
+                                {row.fileType}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {row.closedByFyEnd}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution at FY-end", `${row.fileType}: Files`)}>
+                                {row.files}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {row.cancelledByFyEnd}
-                            </td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                              {formatCurrency(row.total)}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:withSo`, "File Type Distribution at FY-end", `${row.fileType}: Files with S.O.`)}>
+                                {row.filesWithSo}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {formatPercent(
-                                finance1Summary.fileGroup.total
-                                  ? (row.total / finance1Summary.fileGroup.total) * 100
-                                  : 0,
-                              )}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:active`, "File Type Distribution at FY-end", `${row.fileType}: Active at FY-end`)}>
+                                {row.activeAtFyEnd}
+                              </Finance1DrillCell>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:closed`, "File Type Distribution at FY-end", `${row.fileType}: Closed by FY-end`)}>
+                                {row.closedByFyEnd}
+                              </Finance1DrillCell>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:cancelled`, "File Type Distribution at FY-end", `${row.fileType}: Cancelled by FY-end`)}>
+                                {row.cancelledByFyEnd}
+                              </Finance1DrillCell>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution at FY-end", `${row.fileType}: Value Share`)}>
+                                {formatPercent(
+                                  finance1Summary.fileGroup.total
+                                    ? (row.total / finance1Summary.fileGroup.total) * 100
+                                    : 0,
+                                )}
+                              </Finance1DrillCell>
                             </td>
                           </tr>
                         ))
@@ -5554,6 +5904,7 @@ export function Dashboard() {
                   title="Firm Type Distribution at FY-end"
                   help={[
                     "Frozen distribution of non-cancelled S.O.s placed by FY-end for files initiated in the selected FY.",
+                    "S.O.s counts actual Supply Order records; delivery stages are not counted as separate S.O.s.",
                     "Grouped by firm type recorded in S.O. details.",
                     "Value is S.O. value placed by FY-end; S.O.s cancelled by FY-end are excluded.",
                   ]}
@@ -5586,25 +5937,39 @@ export function Dashboard() {
                       {finance1Summary.firmTypeDistribution.length ? (
                         finance1Summary.firmTypeDistribution.map((row) => (
                           <tr key={row.firmType} className="border-t border-border">
-                            <td className="px-3 py-2 font-medium">{row.firmType}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">
-                              {row.supplyOrders}
+                            <td className="px-3 py-2 font-medium">
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", row.firmType)}>
+                                {row.firmType}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {formatCurrency(row.capital)}
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: S.O.s`)}>
+                                {row.supplyOrders}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {formatCurrency(row.revenue)}
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: Capital`)}>
+                                {formatCurrency(row.capital)}
+                              </Finance1DrillCell>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: Revenue`)}>
+                                {formatCurrency(row.revenue)}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                              {formatCurrency(row.total)}
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: Total S.O. Value`)}>
+                                {formatCurrency(row.total)}
+                              </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {formatPercent(
-                                finance1Summary.committedAtFyEnd.total
-                                  ? (row.total / finance1Summary.committedAtFyEnd.total) * 100
-                                  : 0,
-                              )}
+                              <Finance1DrillCell onClick={finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: Share`)}>
+                                {formatPercent(
+                                  finance1Summary.committedAtFyEnd.total
+                                    ? (row.total / finance1Summary.committedAtFyEnd.total) * 100
+                                    : 0,
+                                )}
+                              </Finance1DrillCell>
                             </td>
                           </tr>
                         ))
@@ -5835,7 +6200,7 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="Committed"
                     basis={financeLiveValueBasisLabel}
-                    help={financeHelperText.committed}
+                    help={shortclosedPayableHelp(financeHelperText.committed)}
                   />
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <FinanceAmountTile
@@ -5868,7 +6233,7 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="Paid Till Date"
                     basis={financeLiveValueBasisLabel}
-                    help={financeHelperText.paidTillDate}
+                    help={shortclosedPayableHelp(financeHelperText.paidTillDate)}
                   />
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <FinanceAmountTile
@@ -5901,7 +6266,7 @@ export function Dashboard() {
                     <FinanceSectionTitle
                       title={`Payment in ${selectedFinanceYearLabel}`}
                       basis={financePaymentInYearBasisLabel}
-                      help={financeHelperText.paymentInYear}
+                      help={shortclosedPayableHelp(financeHelperText.paymentInYear)}
                     />
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <FinanceAmountTile
@@ -5951,6 +6316,7 @@ export function Dashboard() {
                         hideRowYear={shouldHideCarryForwardRowYear}
                         emptyText={`No older unpaid carry-forward as on ${selectedFinanceYearLabel} end.`}
                         help={financeHelperText.previousCarryForward}
+                        details={paymentPendingLogicDetails}
                         examples={{
                           title: "Example",
                           items: financeCarryForwardExamples.previous,
@@ -5965,6 +6331,7 @@ export function Dashboard() {
                         hideRowYear={shouldHideCarryForwardRowYear}
                         emptyText={`No previous-year carry-forward cleared in ${selectedFinanceYearLabel}.`}
                         help={financeHelperText.clearedCarryForward}
+                        details={paymentPendingLogicDetails}
                         examples={{
                           title: "Example",
                           items: financeCarryForwardExamples.cleared,
@@ -5980,6 +6347,7 @@ export function Dashboard() {
                       rows={financeTotals.carryForwardBreakup}
                       emptyText={`No ${selectedFinanceYearLabel} payment rows carried forward.`}
                       help={financeHelperText.carryForward}
+                      details={paymentPendingLogicDetails}
                       examples={{
                         title: "Example",
                         items: financeCarryForwardExamples.carryForward,
@@ -5993,6 +6361,7 @@ export function Dashboard() {
                       rows={financeTotals.futureClearedCarryForwardBreakup}
                       emptyText={`No ${selectedFinanceYearLabel} carry-forward cleared in later FYs.`}
                       help={financeHelperText.futureClearedCarryForward}
+                      details={paymentPendingLogicDetails}
                       examples={{
                         title: "Example",
                         items: financeCarryForwardExamples.futureCleared,
@@ -6108,7 +6477,7 @@ function SummaryMetric({
                     <TooltipContent
                       side="top"
                       align="center"
-                      className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                      className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                     >
                       <HelperBulletList items={item.help} />
                     </TooltipContent>
@@ -6237,7 +6606,7 @@ function FloatingHelp({ label, children }: { label: string; children: ReactNode 
         <TooltipContent
           side="top"
           align="end"
-          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
           {content}
         </TooltipContent>
@@ -6253,7 +6622,7 @@ function FinanceSectionTitle({
 }: {
   title: string;
   basis?: string;
-  help: string | readonly string[];
+  help: ReactNode;
 }) {
   return (
     <div className="flex items-start justify-between gap-2">
@@ -6275,7 +6644,7 @@ function FinanceAmountTile({
   label: string;
   value: number;
   percentLabel?: string;
-  help: string | readonly string[];
+  help: ReactNode;
 }) {
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
@@ -6295,10 +6664,16 @@ function Finance1AmountMetricCard({
   title,
   metric,
   help,
+  unitLabel = "rows",
+  showCount = true,
+  onClick,
 }: {
   title: string;
   metric: Finance1AmountMetric;
-  help?: string | readonly string[];
+  help?: ReactNode;
+  unitLabel?: string;
+  showCount?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
@@ -6308,24 +6683,80 @@ function Finance1AmountMetricCard({
             <span>{title}</span>
             {help ? <FloatingHelp label={`${title} help`}>{help}</FloatingHelp> : null}
           </div>
-          <div className="mt-1 text-xs text-muted-foreground">{metric.count} rows/files</div>
         </div>
-        <div className="text-right text-sm font-semibold">{formatCurrency(metric.total)}</div>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-        <div>Capital {formatCurrency(metric.capital)}</div>
-        <div>Revenue {formatCurrency(metric.revenue)}</div>
-      </div>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!onClick}
+        aria-label={`Open files for ${title}`}
+        title={onClick ? `Open files for ${title}` : undefined}
+        className="mt-1 w-full rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default enabled:cursor-pointer enabled:hover:bg-accent/40"
+      >
+        <div className="flex items-center justify-between gap-2">
+          {showCount ? (
+            <div className="text-xs text-muted-foreground">
+              {metric.count}{unitLabel ? ` ${unitLabel}` : ""}
+            </div>
+          ) : <span />}
+          <div className="flex items-center gap-1.5 text-right text-sm font-semibold">
+            {formatCurrency(metric.total)}
+            {onClick ? <Search aria-hidden="true" className="h-3.5 w-3.5 text-primary" /> : null}
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+          <div>Capital {formatCurrency(metric.capital)}</div>
+          <div>Revenue {formatCurrency(metric.revenue)}</div>
+        </div>
+      </button>
     </div>
   );
 }
 
-function Finance1CountMetricCard({ title, value }: { title: string; value: number }) {
+function Finance1CountMetricCard({
+  title,
+  value,
+  onClick,
+}: {
+  title: string;
+  value: number;
+  onClick?: () => void;
+}) {
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
       <div className="text-[11px] font-semibold text-foreground">{title}</div>
-      <div className="mt-1 text-lg font-semibold tabular-nums">{Math.max(0, value)}</div>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!onClick}
+        aria-label={`Open files for ${title}`}
+        title={onClick ? `Open files for ${title}` : undefined}
+        className="mt-1 inline-flex items-center gap-1 rounded text-left text-lg font-semibold tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default enabled:cursor-pointer enabled:text-primary enabled:hover:underline"
+      >
+        {Math.max(0, value)}
+        {onClick ? <Search aria-hidden="true" className="h-3.5 w-3.5" /> : null}
+      </button>
     </div>
+  );
+}
+
+function Finance1DrillCell({
+  children,
+  onClick,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick}
+      title={onClick ? "Open matching files" : undefined}
+      className="cursor-pointer rounded px-1 py-0.5 text-primary underline decoration-dotted underline-offset-2 tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:text-inherit disabled:no-underline enabled:hover:bg-accent/60 enabled:hover:decoration-solid"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -6337,6 +6768,7 @@ function FinanceCarryForwardPanel({
   emptyText,
   help,
   examples,
+  details,
   hideRowYear = false,
   onOpenFilter,
 }: {
@@ -6348,6 +6780,7 @@ function FinanceCarryForwardPanel({
   emptyText: string;
   help: string | string[];
   examples?: HelperExamples;
+  details?: HelperDetails;
   onOpenFilter: (filter: string) => void;
 }) {
   const safeTotal = total ?? { count: 0, capital: 0, revenue: 0, total: 0 };
@@ -6366,7 +6799,7 @@ function FinanceCarryForwardPanel({
           <div className="flex items-center gap-1.5">
             <div className="text-[11px] font-semibold text-foreground">{title}</div>
             <FloatingHelp label={`${title} help`}>
-              <HelperWithExamples items={help} examples={examples} />
+              <HelperWithExamples items={help} examples={examples} details={details} />
             </FloatingHelp>
           </div>
           {basis ? (
@@ -6536,29 +6969,42 @@ function LiveStatusSection({
             {milestones.map((milestone) => {
               const checked = selectedMilestoneSet.has(milestone.name);
               const currentCount = getLiveStatusMilestoneDisplayCount(rows, milestone);
+              const helperKey = normalizeMilestoneName(milestone.label);
+              const helper =
+                status2MilestoneHelpers[
+                  helperKey === "dp" || helperKey === "deliveryperiodmilestone"
+                    ? "deliveryperiod"
+                    : helperKey
+                ];
               return (
-                <label
-                  key={milestone.name}
-                  className={
-                    "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition " +
-                    (checked
-                      ? "border-primary bg-primary/10 text-foreground"
-                      : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => onMilestoneToggle(milestone.name)}
-                    className="size-3 accent-primary"
-                  />
-                  <span className="max-w-[150px] truncate">
-                    {getWorkflowDisplayLabel(milestone.label)}
-                  </span>
-                  <span className="rounded bg-secondary px-1.5 py-0.5 tabular-nums">
-                    {currentCount}
-                  </span>
-                </label>
+                <div key={milestone.name} className="flex items-center gap-0.5">
+                  <label
+                    className={
+                      "flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition " +
+                      (checked
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onMilestoneToggle(milestone.name)}
+                      className="size-3 accent-primary"
+                    />
+                    <span className="max-w-[150px] truncate">
+                      {getWorkflowDisplayLabel(milestone.label)}
+                    </span>
+                    <span className="rounded bg-secondary px-1.5 py-0.5 tabular-nums">
+                      {currentCount}
+                    </span>
+                  </label>
+                  {helper ? (
+                    <FloatingHelp label={`${getWorkflowDisplayLabel(milestone.label)} Status-2 help`}>
+                      {helper}
+                    </FloatingHelp>
+                  ) : null}
+                </div>
               );
             })}
           </div>
@@ -6578,7 +7024,13 @@ function LiveStatusSection({
                   <th className="px-3 py-2 text-left font-medium">Division</th>
                   <th className="px-3 py-2 text-center font-medium">Total</th>
                   {displayedMilestones.map((milestone) => {
-                    const helper = status2MilestoneHelpers[normalizeMilestoneName(milestone.label)];
+                    const helperKey = normalizeMilestoneName(milestone.label);
+                    const helper =
+                      status2MilestoneHelpers[
+                        helperKey === "dp" || helperKey === "deliveryperiodmilestone"
+                          ? "deliveryperiod"
+                          : helperKey
+                      ];
                     const label = getWorkflowDisplayLabel(milestone.label);
                     return (
                       <th key={milestone.name} className="px-3 py-2 text-center font-medium">
@@ -6599,7 +7051,7 @@ function LiveStatusSection({
                                 <TooltipContent
                                   side="top"
                                   align="start"
-                                  className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                                  className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                                 >
                                   <HelperBulletList items={helper} />
                                 </TooltipContent>
@@ -7686,7 +8138,7 @@ function FileCategoryFilter({
 
   return (
     <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-muted-foreground")}>
-      <span>File category</span>
+      <span>File Type</span>
       <div className={filterControlClass(active, "rounded-md border border-input bg-background")}>
         <button
           type="button"
@@ -7760,7 +8212,7 @@ function FileInitiationDateRangeFilter({
             <TooltipContent
               side="top"
               align="start"
-              className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+              className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
             >
               <HelperBulletList items={fileInitiationDateRangeHelper} />
             </TooltipContent>
@@ -7803,21 +8255,23 @@ function FileInitiationDateRangeFilter({
 }
 
 function DashboardStatusSummarySection({
-  groups,
+  milestones,
+  miscellaneousCounts,
   loading,
   error,
   exportDescription,
   onOpenStatus,
 }: {
-  groups: StatusSummaryTableGroup[];
+  milestones: ReturnType<typeof combineJobCompletionAndIr>;
+  miscellaneousCounts: ReturnType<typeof getMiscellaneousCounts>;
   loading: boolean;
   error?: string;
   exportDescription?: string;
   onOpenStatus: (milestone: string, stage: string) => void;
 }) {
   const status3Presentation = useMemo(
-    () => getStatus3Presentation(hideStatus3PendingColumn(groups)),
-    [groups],
+    () => getStatus3Presentation(milestones, miscellaneousCounts),
+    [milestones, miscellaneousCounts],
   );
   const { groups: visibleGroups, exportGroups } = status3Presentation;
 
@@ -7864,7 +8318,7 @@ function DashboardStatusSummarySection({
           <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
           </div>
-        ) : loading && !groups.length ? (
+        ) : loading && !milestones.length ? (
           <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
             Loading status summary...
           </div>
@@ -7947,7 +8401,7 @@ function Status3TableSection({
                   {group.columns.map((column) => (
                     <td key={column} className="px-3 py-2.5 text-right tabular-nums">
                       <DashboardStatusSummaryValue
-                        value={row.counts[column]}
+                        value={row.counts[column] ?? (column === "Due" ? row.counts["In process"] : undefined)}
                         milestone={row.milestone}
                         stage={column}
                         onClick={() => {
@@ -8014,6 +8468,12 @@ function Status3MilestoneNameCell({ name }: { name: string }) {
 function getStatus3OpenTarget(milestone: string, stage: string) {
   const milestoneKey = normalizeMilestoneName(milestone);
   const stageKey = normalizeMilestoneName(stage);
+  if (
+    stageKey === "due" &&
+    ["scrutiny", "highvalue", "pretcec", "ad", "rqa", "controlling", "ifa", "cfa", "posttcec", "refloatposttcec", "cnc"].includes(milestoneKey)
+  ) {
+    return { milestone, stage: "In process" };
+  }
   if (milestoneKey === "jobcompletionir") {
     if (stageKey === "jobcompletiondue") return { milestone: "Job Completion", stage: "Due" };
     if (stageKey === "jobcompletiondone") return { milestone: "Job Completion", stage: "Done" };
@@ -8050,106 +8510,171 @@ function testIdSlug(value: string) {
     .replace(/(^-|-$)/g, "");
 }
 
-function hideStatus3PendingColumn(groups: StatusSummaryTableGroup[]) {
-  const keepPendingMilestones = new Set([
-    "Delivery",
-    "Payment",
-    "Advance Payment",
-    "PSB",
-    "PWB",
-    "PSB+PWB",
-    "Financial Sanction",
-    "Supply Order",
-  ]);
-  return groups.map((group) => ({
-    ...group,
-    columns: group.columns.filter(
-      (column) =>
-        column !== "Pending" || group.rows.some((row) => keepPendingMilestones.has(row.milestone)),
-    ),
-  }));
-}
-
-function getStatus3Presentation(groups: StatusSummaryTableGroup[]) {
-  const rowsByMilestone = getStatus3RowsByMilestone(groups);
+function getStatus3Presentation(
+  milestones: ReturnType<typeof combineJobCompletionAndIr>,
+  miscellaneousCounts: ReturnType<typeof getMiscellaneousCounts>,
+) {
+  const entries = milestones as unknown as Array<Record<string, unknown>>;
+  const byKey = new Map(entries.map((entry) => [String(entry.key ?? ""), entry]));
+  const metric = (entry: Record<string, unknown> | undefined, key: string) =>
+    typeof entry?.[key] === "number" ? (entry[key] as number) : undefined;
+  const label = (entry: Record<string, unknown> | undefined, fallback: string) =>
+    typeof entry?.label === "string" ? entry.label : fallback;
+  const makeRow = (milestone: string, counts: StatusSummaryTableRow["counts"]) => ({
+    milestone,
+    counts,
+  });
+  const flowRow = (
+    key: string,
+    columns: Array<[string, string]>,
+    rowLabel?: string,
+  ) => {
+    const entry = byKey.get(key);
+    if (!entry) return undefined;
+    return makeRow(
+      rowLabel ?? label(entry, key),
+      Object.fromEntries(columns.map(([column, field]) => [column, metric(entry, field)])),
+    );
+  };
+  const section = (
+    title: string,
+    columns: string[],
+    rows: Array<StatusSummaryTableRow | undefined>,
+  ): StatusSummaryTableGroup | undefined => {
+    const presentRows = rows.filter((row): row is StatusSummaryTableRow => Boolean(row));
+    return presentRows.length
+      ? { key: `${testIdSlug(title)}-${presentRows.map((row) => testIdSlug(row.milestone)).join("-")}`, title, columns, rows: presentRows }
+      : undefined;
+  };
+  const approvalColumns = ["Total", "Completed", "Due", "Reviewed", "Pending"];
+  const approvalRows = [
+    "scrutiny",
+    "highValue",
+    "tcec",
+    "ad",
+    "rqa",
+    "control",
+    "cfa",
+  ].flatMap((key) => {
+    const entry = byKey.get(key);
+    if (!entry) return [];
+    return [
+      makeRow(label(entry, key), {
+        Total: metric(entry, "total"),
+        Completed: metric(entry, "cleared"),
+        Due: metric(entry, "active"),
+        Reviewed: metric(entry, "reviewed"),
+        Pending: metric(entry, "pending"),
+      }),
+    ];
+  });
+  const ifa = byKey.get("ifa");
+  const dueColumns = ["Total", "Completed", "At previous stage", "Due", "Reviewed", "Pending"];
   const workflowGroups = [
     buildStatus3WorkflowGroup("up-to-cfa", "Up to CFA", [
-      buildStatus3Section(rowsByMilestone, "Approval movement", commonStatusColumnsForStatus3, [
-        "Scrutiny",
-        "High Value",
-        "Pre-TCEC",
-        "AD",
-        "R&QA",
-        "Controlling",
-        "IFA",
-        "CFA",
+      section("Approval movement", approvalColumns, approvalRows),
+      section("Approval movement", dueColumns, [
+        ifa
+          ? makeRow(label(ifa, "IFA"), {
+              Total: metric(ifa, "total"),
+              Completed: metric(ifa, "cleared"),
+              "At previous stage": metric(ifa, "underProcess"),
+              Due: metric(ifa, "active"),
+              Reviewed: metric(ifa, "reviewed"),
+              Pending: metric(ifa, "pending"),
+            })
+          : undefined,
       ]),
     ]),
     buildStatus3WorkflowGroup("cfa-to-so", "CFA to S.O.", [
-      buildStatus3Section(rowsByMilestone, "Tender movement", commonStatusColumnsForStatus3, [
-        "Bidding",
-      ]),
-      buildStatus3Section(rowsByMilestone, "Pre-Bid Meeting", [
+      section("Tender movement", [
+        "Live",
+        "In process",
+        "Opening overdue",
+        "Completed",
+        "At previous stages",
+      ], [flowRow("bidding", [
+        ["Live", "liveBids"],
+        ["In process", "inProcessBids"],
+        ["Opening overdue", "overdueBids"],
+        ["Completed", "cleared"],
+        ["At previous stages", "underProcess"],
+      ], "Bidding")]),
+      section("Pre-Bid Meeting", [
         "Due",
         "Completed",
         "Refloat Due",
         "Refloat Completed",
-      ], ["Pre-Bid Meeting"]),
-      buildStatus3Section(rowsByMilestone, "Committee / Refloat", commonStatusColumnsForStatus3, [
-        "Post-TCEC",
-        "Refloat bidding",
-        "Refloat Post-TCEC",
-        "CNC",
+      ], [makeRow("Pre-Bid Meeting", {
+        Due: byKey.get("preBidMeeting") ? metric(byKey.get("preBidMeeting"), "preBidDue") : undefined,
+        Completed: byKey.get("preBidMeeting") ? metric(byKey.get("preBidMeeting"), "preBidCompleted") : undefined,
+        "Refloat Due": byKey.get("preBidMeeting") ? metric(byKey.get("preBidMeeting"), "refloatPreBidDue") : undefined,
+        "Refloat Completed": byKey.get("preBidMeeting") ? metric(byKey.get("preBidMeeting"), "refloatPreBidCompleted") : undefined,
+      })]),
+      section("Committee / Refloat", dueColumns, [
+        flowRow("postTcec", [["Total", "total"], ["Completed", "cleared"], ["At previous stage", "underProcess"], ["Due", "active"], ["Reviewed", "reviewed"], ["Pending", "pending"]]),
       ]),
-      buildStatus3Section(rowsByMilestone, "S.O. approval", commonStatusColumnsForStatus3, [
-        "Financial Sanction",
-        "Supply Order",
+      section("Refloat bidding", [
+        "Live",
+        "In process",
+        "Opening overdue",
+        "Completed",
+      ], [flowRow("refloatBidding", [["Live", "liveBids"], ["In process", "inProcessBids"], ["Opening overdue", "overdueBids"], ["Completed", "cleared"]], "Refloat bidding")]),
+      section("Committee / Refloat", dueColumns, [
+        flowRow("refloatPostTcec", [["Total", "total"], ["Completed", "cleared"], ["At previous stage", "underProcess"], ["Due", "active"], ["Reviewed", "reviewed"], ["Pending", "pending"]]),
+        flowRow("cnc", [["Total", "total"], ["Completed", "cleared"], ["At previous stage", "underProcess"], ["Due", "active"], ["Reviewed", "reviewed"], ["Pending", "pending"]]),
+      ]),
+      section("Financial Sanction", ["Completed", "Pending", "At previous stage"], [
+        flowRow("financialSanction", [["Completed", "financialSanctionCompleted"], ["Pending", "financialSanctionPending"], ["At previous stage", "underProcess"]]),
+      ]),
+      section("Supply Order", ["Placed", "Live", "Pending", "At Previous Stage"], [
+        flowRow("supplyOrder", [["Placed", "cleared"], ["Live", "liveSupplyOrders"], ["Pending", "pending"], ["At Previous Stage", "underProcess"]]),
       ]),
     ]),
     buildStatus3WorkflowGroup("so-till-payment", "S.O. till payment", [
-      buildStatus3Section(rowsByMilestone, "Delivery Period / Milestone", [
+      section("Delivery Period / Milestone", [
         "Valid",
         "Expired",
         "Extended",
-      ], ["Delivery Period"]),
-      buildStatus3Section(rowsByMilestone, "Security / Warranty BG", [
+      ], [flowRow("deliveryPeriod", [["Valid", "valid"], ["Expired", "expired"], ["Extended", "extended"]], "Delivery Period / Milestone")]),
+      section("Security / Warranty BG", [
         "Received",
         "Pending",
         "Expired",
         "To be returned",
         "Returned",
-      ], ["PSB", "PWB", "PSB+PWB"]),
-      buildStatus3Section(rowsByMilestone, "Delivery", ["Completed", "Pending", "Overdue"], [
-        "Delivery",
+      ], ["psb", "pwb", "psbPwb"].map((key) => flowRow(key, [["Received", "cleared"], ["Pending", "pending"], ["Expired", "bgExpired"], ["To be returned", "bgToBeReturned"], ["Returned", "bgReturned"]]))),
+      section("Delivery", ["Completed", "Pending", "Overdue"], [
+        flowRow("delivery", [["Completed", "completed"], ["Pending", "due"], ["Overdue", "overdue"]]),
       ]),
-      buildStatus3Section(rowsByMilestone, "Job Completion / IR", [
+      section("Job Completion / IR", [
         "Job Completion Due",
         "Job Completion Done",
         "IR Preparation Pending",
         "IR Receipt Pending",
         "IR Completed",
-      ], ["Job Completion / IR"]),
-      buildStatus3Section(rowsByMilestone, "Bill movement", ["Completed", "Pending"], [
-        "Bill preparation",
-        "Bill sent for payment",
+      ], [flowRow("jobCompletionIr", [["Job Completion Due", "jobLive"], ["Job Completion Done", "jobCompleted"], ["IR Preparation Pending", "irPreparationPending"], ["IR Receipt Pending", "irReceiptPending"], ["IR Completed", "irCompleted"]], "Job Completion / IR")]),
+      section("Bill movement", ["Completed", "Pending"], [
+        flowRow("billPreparation", [["Completed", "cleared"], ["Pending", "pending"]], "Bill preparation"),
+        flowRow("billSentForPayment", [["Completed", "cleared"], ["Pending", "pending"]], "Bill sent for payment"),
       ]),
-      buildStatus3Section(rowsByMilestone, "Payment", [
+      section("Payment", [
         "Due",
         "In process",
         "Submitted and unpaid",
         "Completed",
-      ], ["Payment"]),
-      buildStatus3Section(rowsByMilestone, "Advance Payment", [
+      ], [flowRow("payment", [["Due", "paymentDue"], ["In process", "paymentInProcess"], ["Submitted and unpaid", "paymentSubmitted"], ["Completed", "cleared"]], "Payment")]),
+      section("Advance Payment", [
         "Advance Pending",
         "Advance Completed",
-      ], ["Advance Payment"]),
-      buildStatus3Section(rowsByMilestone, "Returned Bills", [
+      ], [flowRow("payment", [["Advance Pending", "advancePending"], ["Advance Completed", "advancePaid"]], "Advance Payment")]),
+      section("Returned Bills", [
         "Bills returned",
         "Return pending",
         "Resubmitted",
         "Returned paid",
-      ], ["Returned Bills"]),
-      buildStatus3Section(rowsByMilestone, "Supplementary Bill", [
+      ], [flowRow("payment", [["Bills returned", "billsReturnedForCorrection"], ["Return pending", "returnedBillsPending"], ["Resubmitted", "returnedBillsResubmitted"], ["Returned paid", "returnedBillsPaid"]], "Returned Bills")]),
+      section("Supplementary Bill", [
         "Submitted total",
         "Returned total",
         "Return pending",
@@ -8157,7 +8682,20 @@ function getStatus3Presentation(groups: StatusSummaryTableGroup[]) {
         "Returned paid",
         "Normal paid",
         "Pending",
-      ], ["Supplementary Bill"]),
+      ], [flowRow("payment", [["Submitted total", "supplementarySubmitted"], ["Returned total", "supplementaryReturnedForCorrection"], ["Return pending", "supplementaryReturnedPending"], ["Resubmitted total", "supplementaryReturnedResubmitted"], ["Returned paid", "supplementaryReturnedPaid"], ["Normal paid", "supplementaryNormalPaid"], ["Pending", "supplementaryPending"]], "Supplementary Bill")]),
+    ]),
+    buildStatus3WorkflowGroup("miscellaneous", "Miscellaneous", [
+      section("Miscellaneous", ["Live files", "File closed", "LD", "Demand cancelled", "S.O. cancelled", "Shortclosed S.O.", "Files with Multiple S.O."], [
+        makeRow("Miscellaneous", {
+          "Live files": miscellaneousCounts.liveFiles,
+          "File closed": miscellaneousCounts.fileClosed,
+          LD: miscellaneousCounts.ld,
+          "Demand cancelled": miscellaneousCounts.demandCancelled,
+          "S.O. cancelled": miscellaneousCounts.soCancelled,
+          "Shortclosed S.O.": miscellaneousCounts.shortclosedSo,
+          "Files with Multiple S.O.": miscellaneousCounts.multipleSupplyOrders,
+        }),
+      ]),
     ]),
   ].filter((group) => group.sections.length);
 
@@ -8165,62 +8703,6 @@ function getStatus3Presentation(groups: StatusSummaryTableGroup[]) {
     groups: workflowGroups,
     exportGroups: workflowGroups.flatMap((group) => group.sections),
   };
-}
-
-const commonStatusColumnsForStatus3 = ["Total", "In process", "Pending", "Completed"];
-
-function getStatus3RowsByMilestone(groups: StatusSummaryTableGroup[]) {
-  const rowsByMilestone = new Map<string, StatusSummaryTableRow>();
-  groups.forEach((group) => {
-    group.rows.forEach((row) => rowsByMilestone.set(row.milestone, row));
-  });
-  const jobCompletion = rowsByMilestone.get("Job Completion");
-  const irPreparation = rowsByMilestone.get("IR Preparation");
-  const irReceipt = rowsByMilestone.get("IR Receipt");
-  if (jobCompletion || irPreparation || irReceipt) {
-    rowsByMilestone.set("Job Completion / IR", {
-      milestone: "Job Completion / IR",
-      counts: {
-        "Job Completion Due": jobCompletion?.counts.Due,
-        "Job Completion Done": jobCompletion?.counts.Done ?? jobCompletion?.counts.Completed,
-        "IR Preparation Pending": irPreparation?.counts.Pending,
-        "IR Receipt Pending": irReceipt?.counts.Pending,
-        "IR Completed": irReceipt?.counts.Completed,
-      },
-    });
-  }
-  const advancePayment = rowsByMilestone.get("Advance Payment");
-  if (advancePayment) {
-    rowsByMilestone.set("Advance Payment", {
-      milestone: "Advance Payment",
-      counts: {
-        ...advancePayment.counts,
-        "Advance Pending": advancePayment.counts.Pending,
-        "Advance Completed": advancePayment.counts.Completed,
-      },
-    });
-  }
-  const payment = rowsByMilestone.get("Payment");
-  if (payment) {
-    rowsByMilestone.set("Payment", {
-      milestone: "Payment",
-      counts: {
-        ...payment.counts,
-        "Submitted and unpaid": payment.counts["Submitted and unpaid"] ?? payment.counts.Submitted,
-      },
-    });
-  }
-  const supplyOrder = rowsByMilestone.get("Supply Order");
-  if (supplyOrder) {
-    rowsByMilestone.set("Supply Order", {
-      milestone: "Supply Order",
-      counts: {
-        ...supplyOrder.counts,
-        Completed: supplyOrder.counts.Completed ?? supplyOrder.counts.Placed,
-      },
-    });
-  }
-  return rowsByMilestone;
 }
 
 function buildStatus3WorkflowGroup(
@@ -8234,25 +8716,6 @@ function buildStatus3WorkflowGroup(
     sections: sections.filter((section): section is StatusSummaryTableGroup =>
       Boolean(section?.rows.length),
     ),
-  };
-}
-
-function buildStatus3Section(
-  rowsByMilestone: Map<string, StatusSummaryTableRow>,
-  title: string,
-  columns: string[],
-  milestones: string[],
-) {
-  const rows = milestones.flatMap((milestone) => {
-    const row = rowsByMilestone.get(milestone);
-    return row ? [row] : [];
-  });
-  if (!rows.length) return undefined;
-  return {
-    key: `${testIdSlug(title)}-${testIdSlug(milestones.join("-"))}`,
-    title,
-    columns,
-    rows,
   };
 }
 
@@ -8323,17 +8786,18 @@ function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string)
         !hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
-  if (isSupplyOrderDrivenMilestoneName(milestoneName)) {
-    return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
-  }
   if (normalized === "bidding") {
     return files.filter(
       (file) =>
         !isCancelledFile(file) &&
         isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
         hasFilledString(file.cfaDate) &&
         !isYes(file.biddingStageOver),
     ).length;
+  }
+  if (isSupplyOrderDrivenMilestoneName(milestoneName)) {
+    return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
   }
   return files.filter((file) => !isCancelledFile(file) && file.currentMilestone === milestoneName)
     .length;
@@ -8668,7 +9132,7 @@ function ManualMilestoneFlowNode({
       help: [
         `Includes files currently pending at ${milestone.name}.`,
         "Cancelled demand files are excluded.",
-        "File Closed follows the selected Global filter.",
+        "File Closed follows the selected Global Filter.",
       ],
     },
     {
@@ -8679,7 +9143,7 @@ function ManualMilestoneFlowNode({
       help: [
         `Includes files where ${milestone.name} completion is recorded.`,
         "Cancelled demand files are excluded.",
-        "File Closed follows the selected Global filter.",
+        "File Closed follows the selected Global Filter.",
       ],
     },
   ];
@@ -8823,7 +9287,7 @@ function StatusSubBox({
           <TooltipContent
             side="top"
             align="center"
-            className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
             <HelperBulletList items={help} />
           </TooltipContent>
@@ -8868,14 +9332,14 @@ function getStatusMetricTooltip(metric: StatusMetric) {
     return [
       "Includes files currently pending/live for this counter.",
       "Cancelled demand files are excluded.",
-      "File Closed follows the selected Global filter.",
+      "File Closed follows the selected Global Filter.",
     ];
   }
   if (metric.statusKind === "history") {
     return [
       "Includes files where this activity is already completed/recorded.",
       "Cancelled demand files are excluded.",
-      "File Closed follows the selected Global filter.",
+      "File Closed follows the selected Global Filter.",
     ];
   }
   return undefined;
@@ -8918,7 +9382,7 @@ function StatusMetricBox({
           <TooltipContent
             side="top"
             align="center"
-            className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
             {Array.isArray(tooltip) ? <HelperBulletList items={tooltip} /> : tooltip}
           </TooltipContent>
@@ -9484,27 +9948,17 @@ function TcecStatusControls({
 
 function AnomalyGovernancePanel({
   acceptances,
-  rules,
-  fields,
   loading,
   error,
   isAdmin,
   onReview,
-  onToggleRule,
-  onCreateRule,
 }: {
   acceptances: AnomalyAcceptanceRow[];
-  rules: AnomalyRuleRow[];
-  fields: AnomalyRuleField[];
   loading: boolean;
   error?: string;
   isAdmin: boolean;
   onReview: (signature: string, action: string) => void;
-  onToggleRule: (rule: AnomalyRuleRow) => void;
-  onCreateRule: () => void;
 }) {
-  const fieldLabel = (key?: string) =>
-    fields.find((field) => field.key === key)?.label ?? key ?? "";
   const anomalySummary = (row: AnomalyAcceptanceRow) => ({
     title: row.ruleLabel || humanizeCompactAnomalyLabel(row.ruleKey) || "Anomaly exception",
     detail:
@@ -9618,72 +10072,6 @@ function AnomalyGovernancePanel({
           </table>
         </div>
       </div>
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-semibold">Custom anomaly rules</h3>
-            <p className="text-xs text-muted-foreground">
-              Admin-defined date order, required field, and delay checks.
-            </p>
-          </div>
-          {isAdmin ? (
-            <button
-              type="button"
-              onClick={onCreateRule}
-              className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-semibold hover:bg-accent"
-            >
-              Add rule
-            </button>
-          ) : null}
-        </div>
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="min-w-full text-left text-xs">
-            <thead className="bg-secondary/60 text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Rule</th>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2">Condition</th>
-                <th className="px-3 py-2">Severity</th>
-                <th className="px-3 py-2">Status</th>
-                {isAdmin ? <th className="px-3 py-2">Action</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {rules.length ? (
-                rules.map((rule) => (
-                  <tr key={rule.id} className="border-t border-border align-top">
-                    <td className="px-3 py-2 font-medium">{rule.name}</td>
-                    <td className="px-3 py-2">{rule.ruleType}</td>
-                    <td className="px-3 py-2">
-                      {fieldLabel(rule.fieldA)} {rule.operator} {fieldLabel(rule.fieldB)}
-                      {rule.thresholdDays !== undefined ? ` (${rule.thresholdDays} days)` : ""}
-                    </td>
-                    <td className="px-3 py-2">{rule.severity}</td>
-                    <td className="px-3 py-2">{rule.enabled ? "Enabled" : "Disabled"}</td>
-                    {isAdmin ? (
-                      <td className="px-3 py-2">
-                        <button
-                          className="rounded border border-border px-2 py-1 hover:bg-accent"
-                          type="button"
-                          onClick={() => onToggleRule(rule)}
-                        >
-                          {rule.enabled ? "Disable" : "Enable"}
-                        </button>
-                      </td>
-                    ) : null}
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td className="px-3 py-3 text-muted-foreground" colSpan={isAdmin ? 6 : 5}>
-                    No anomaly rule settings available.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 }
@@ -9720,18 +10108,16 @@ function FirmAnalysisControls({
     <div className="flex w-full max-w-5xl flex-col gap-2">
       <label className="flex w-72 max-w-full flex-col gap-1 text-xs text-muted-foreground">
         <span>Firm</span>
-        <select
+        <SearchableDropdown
           value={selectedFirm}
-          onChange={(event) => onFirmChange(event.target.value)}
+          onChange={onFirmChange}
+          options={firms}
+          deferChangeUntilSelect
+          typeAheadOnly
+          allowCustomValue={false}
+          placeholder={firms.length ? "Select Firm Name" : "No firm data available"}
           className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-        >
-          {firms.length ? null : <option value="">No firm data</option>}
-          {firms.map((firm) => (
-            <option key={firm} value={firm}>
-              {firm}
-            </option>
-          ))}
-        </select>
+        />
       </label>
       <div className="flex flex-wrap gap-2 rounded-md border border-border bg-secondary/20 px-3 py-2">
         {firmAnalysisRoleOptions.map((role) => {
@@ -9796,6 +10182,240 @@ function FirmAnalysisControls({
             </Fragment>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function CoParticipantControls({
+  firms,
+  selectedFirm,
+  coBiddingFirms,
+  coBiddingTenders,
+  selectedPartnerName,
+  loading,
+  onOpenAll,
+  onExport,
+  onFirmChange,
+}: {
+  firms: string[];
+  selectedFirm: string;
+  coBiddingFirms: CoBiddingFirmRow[];
+  coBiddingTenders: CoBiddingTenderRow[];
+  selectedPartnerName: string;
+  loading: boolean;
+  onOpenAll: () => void;
+  onExport: (format: "pdf" | "excel") => void;
+  onFirmChange: (firm: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex w-80 max-w-full flex-col gap-1 text-xs text-muted-foreground">
+          <span>Find firms that tendered with</span>
+          <SearchableDropdown
+            value={selectedFirm}
+            onChange={onFirmChange}
+            options={firms}
+            deferChangeUntilSelect
+            typeAheadOnly
+            allowCustomValue={false}
+            placeholder="Select Firm Name"
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring/40"
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={!coBiddingTenders.length}
+          onClick={onOpenAll}
+          title="Open the currently displayed shared files in Search Files"
+          aria-label="Open all matching results in Search Files"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+        >
+          <Search className="size-3.5" />
+          Open all results in Search Files
+        </button>
+        <button
+          type="button"
+          disabled={!coBiddingFirms.length}
+          onClick={() => onExport("pdf")}
+          aria-label="Export co-participating firms as PDF"
+          className="inline-flex h-8 items-center rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+        >
+          Export PDF
+        </button>
+        <button
+          type="button"
+          disabled={!coBiddingFirms.length}
+          onClick={() => onExport("excel")}
+          aria-label="Export co-participating firms as Excel"
+          className="inline-flex h-8 items-center rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+        >
+          Export Excel
+        </button>
+      </div>
+      {loading ? (
+        <p className="text-xs text-muted-foreground">Loading co-bidding results…</p>
+      ) : null}
+      {selectedPartnerName ? (
+        <p className="text-xs text-muted-foreground">
+          Selected pair: {selectedFirm}, {selectedPartnerName}. {coBiddingTenders.length} shared
+          file(s).
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function CoBiddingFirmTable({
+  mainFirm,
+  firms,
+  onViewTenders,
+}: {
+  mainFirm: string;
+  firms: CoBiddingFirmRow[];
+  onViewTenders: (firm: string) => void;
+}) {
+  return (
+    <section className="space-y-2">
+      <div>
+        <h3 className="text-sm font-semibold">
+          Firms that co-bid with {mainFirm || "the selected firm"}
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Results use the same filtered file set currently applied to Analytics.
+        </p>
+      </div>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[1040px] table-fixed border-collapse text-left text-sm">
+          <thead className="bg-muted/60 text-xs text-muted-foreground">
+            <tr>
+              <th className="w-28 px-2 py-2 font-semibold">Unique Number</th>
+              <th className="w-44 px-2 py-2 font-semibold">Name</th>
+              <th className="w-28 px-2 py-2 font-semibold">City</th>
+              <th className="w-32 px-2 py-2 text-right font-semibold">Bids Submitted</th>
+              <th className="w-24 px-2 py-2 text-right font-semibold">S.O. Received</th>
+              <th className="w-36 px-2 py-2 text-right font-semibold">Total S.O. Value</th>
+              <th className="w-20 px-2 py-2 text-right font-semibold">Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {firms.length ? (
+              firms.map((firm) => (
+                <tr key={firm.key} className="border-t border-border">
+                  <td className="px-3 py-2">{firm.uniqueNumber}</td>
+                  <td className="px-3 py-2">{firm.name}</td>
+                  <td className="px-3 py-2">{firm.city}</td>
+                  <td className="px-2 py-2 text-right">{firm.tendersParticipated}</td>
+                  <td className="px-2 py-2 text-right">{firm.soCount}</td>
+                  <td className="px-2 py-2 text-right">{formatCurrency(firm.soValue)}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onViewTenders(firm.key)}
+                      title={`Show ${firm.count} shared tenders`}
+                      className="text-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+                    >
+                      {firm.count}
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  Matching co-bidding firms and their shared tender counts will appear here. Click
+                  a count to load those files below.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function CoParticipantResultsPlaceholder({
+  mainFirm,
+  coBiddingFirm,
+  partnerName,
+  tenders,
+  loading,
+  error,
+  onOpenTender,
+}: {
+  mainFirm: string;
+  coBiddingFirm: string;
+  partnerName: string;
+  tenders: CoBiddingTenderRow[];
+  loading: boolean;
+  error?: string;
+  onOpenTender: (tender: CoBiddingTenderRow) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold">Shared tender details</h3>
+        <p className="text-xs text-muted-foreground">
+          {coBiddingFirm
+            ? `${mainFirm}, ${partnerName || "selected firm"}`
+            : "Click a firm's count above to show the shared file details here."}
+        </p>
+        {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      </div>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+          <thead className="bg-muted/60 text-xs text-muted-foreground">
+            <tr>
+              <th
+                className="px-3 py-2 font-semibold text-primary underline decoration-dotted underline-offset-2"
+                title="Select a result's Unique Code to open that result in Search Files"
+              >
+                Unique Code
+              </th>
+              <th className="px-3 py-2 font-semibold">Control No.</th>
+              <th className="px-3 py-2 font-semibold">Item Description</th>
+              <th className="px-3 py-2 font-semibold">Indentor</th>
+              <th className="px-3 py-2 font-semibold">S.O. Year</th>
+              <th className="px-3 py-2 font-semibold">S.O. Firm</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tenders.length ? (
+              tenders.map((tender) => (
+                <tr key={tender.id} className="border-t border-border">
+                  <td className="px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={() => onOpenTender(tender)}
+                      className="font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+                    >
+                      {tender.uniqueCode || "Open file"}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2">{tender.controlNo || "—"}</td>
+                  <td className="px-3 py-2">{tender.itemDescription || "—"}</td>
+                  <td className="px-3 py-2">{tender.indentor || "—"}</td>
+                  <td className="px-3 py-2">{tender.soYear || "—"}</td>
+                  <td className="px-3 py-2">{tender.soFirm || "—"}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  {loading
+                    ? "Loading shared tenders…"
+                    : coBiddingFirm
+                      ? "No shared tender files found in this filter scope."
+                      : "Shared tender rows will appear here. Select a row's Count above."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -9877,7 +10497,7 @@ function AnalyticsChartCard({
                 <TooltipContent
                   side="right"
                   align="start"
-                  className="w-[min(44rem,calc(100vw-2rem))] max-w-[44rem] text-xs leading-relaxed"
+                  className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                 >
                   <HelperWithExamples items={helper} examples={helperExamples} />
                 </TooltipContent>
@@ -9895,29 +10515,57 @@ function AnalyticsChartCard({
 function HelperWithExamples({
   items,
   examples,
+  details,
 }: {
   items: string[] | string;
   examples?: HelperExamples;
+  details?: HelperDetails;
 }) {
   const [showExamples, setShowExamples] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const showSidePanel = (examples && showExamples) || (details && showDetails);
 
   return (
-    <div className={showExamples ? "grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,1fr)]" : "space-y-3"}>
+    <div className={showSidePanel ? "grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,1fr)]" : "space-y-3"}>
       <div className="space-y-3">
         <HelperBulletList items={items} />
-        {examples ? (
-          <div>
+        {examples || details ? (
+          <div className="flex flex-wrap gap-2">
+            {details ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDetails((current) => !current);
+                  setShowExamples(false);
+                }}
+                className="rounded border border-primary/40 bg-background px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10"
+                aria-expanded={showDetails}
+              >
+                {showDetails ? `Hide ${details.buttonLabel ?? "details"}` : details.buttonLabel ?? "Details"}
+              </button>
+            ) : null}
+            {examples ? (
             <button
               type="button"
-              onClick={() => setShowExamples((current) => !current)}
+              onClick={() => {
+                setShowExamples((current) => !current);
+                setShowDetails(false);
+              }}
               className="rounded border border-primary/40 bg-background px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10"
               aria-expanded={showExamples}
             >
               {showExamples ? "Hide examples" : "Examples"}
             </button>
+            ) : null}
           </div>
         ) : null}
       </div>
+      {details && showDetails ? (
+        <div className="rounded-md border border-border bg-background p-3 text-popover-foreground shadow-sm">
+          <div className="mb-2 font-semibold">{details.title}</div>
+          <HelperBulletList items={details.items} />
+        </div>
+      ) : null}
       {examples && showExamples ? (
         <div className="rounded-md border border-border bg-background p-3 text-popover-foreground shadow-sm">
           <div className="mb-2 font-semibold">{examples.title}</div>
@@ -9930,13 +10578,7 @@ function HelperWithExamples({
 
 function HelperBulletList({ items }: { items: readonly string[] | string }) {
   const bullets = splitHelperText(items);
-  return (
-    <ul className="list-disc space-y-1 pl-4">
-      {bullets.map((item, index) => (
-        <li key={`${item}-${index}`}>{item}</li>
-      ))}
-    </ul>
-  );
+  return <HelperContent lines={bullets} />;
 }
 
 function splitHelperText(items: readonly string[] | string) {
@@ -10308,7 +10950,7 @@ function getSuspectedAnomalyColumns(
   onAdminReview?: (signature: string, action: string) => void,
 ): AnalyticsTableColumn[] {
   return [
-    { key: "fileRef", label: "File", align: "left" },
+    { key: "controlNo", label: "Control No.", align: "left" },
     { key: "division", label: "Division", align: "left" },
     { key: "block", label: "Block", align: "left" },
     { key: "rule", label: "Rule", align: "left" },
@@ -10580,7 +11222,7 @@ function MilestoneClearingNameCell({ name }: { name: string }) {
           <TooltipContent
             side="right"
             align="start"
-            className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
             <HelperBulletList items={helper} />
           </TooltipContent>
@@ -10964,7 +11606,7 @@ function getAnalyticsSearchTarget(
   }
   if (panelKey === "paymentPending" && columnKey === "count") {
     return {
-      dashboardFilter: "paymentDue",
+      dashboardFilter: "analyticsPaymentPending",
       division: name,
       focusSection: "Supply order and payment",
       focusTarget: "payment:pending",
@@ -10974,7 +11616,7 @@ function getAnalyticsSearchTarget(
     const fiscalYear = String(row.fiscalYear ?? "").trim();
     if (/^\d{4}-\d{2}$/.test(fiscalYear)) {
       const filterByColumn: Record<string, string> = {
-        count: `preBidMeetingFy:all:${fiscalYear}`,
+        count: `preBidMeetingCombinedFy:all:${fiscalYear}`,
         preBidDue: `preBidMeetingFy:due:${fiscalYear}`,
         preBidCompleted: `preBidMeetingFy:completed:${fiscalYear}`,
         refloatPreBidDue: `refloatPreBidMeetingFy:due:${fiscalYear}`,
@@ -10986,8 +11628,8 @@ function getAnalyticsSearchTarget(
     const monthKey = String(row.monthKey ?? row.name ?? "").trim();
     if (!/^\d{4}-\d{2}$/.test(monthKey)) return undefined;
     const filterByColumn: Record<string, string> = {
-      name: `preBidMeeting:all:${monthKey}`,
-      count: `preBidMeeting:all:${monthKey}`,
+      name: `preBidMeetingCombined:all:${monthKey}`,
+      count: `preBidMeetingCombined:all:${monthKey}`,
       preBidDue: `preBidMeeting:due:${monthKey}`,
       preBidCompleted: `preBidMeeting:completed:${monthKey}`,
       refloatPreBidDue: `refloatPreBidMeeting:due:${monthKey}`,
@@ -11226,14 +11868,14 @@ function getAnalyticsTotalSearchTarget(
     const fiscalYear = context.selectedPreBidFiscalYear;
     const filterByColumn: Record<string, string> = fiscalYear
       ? {
-          count: `preBidMeetingFy:all:${fiscalYear}`,
+          count: `preBidMeetingCombinedFy:all:${fiscalYear}`,
           preBidDue: `preBidMeetingFy:due:${fiscalYear}`,
           preBidCompleted: `preBidMeetingFy:completed:${fiscalYear}`,
           refloatPreBidDue: `refloatPreBidMeetingFy:due:${fiscalYear}`,
           refloatPreBidCompleted: `refloatPreBidMeetingFy:completed:${fiscalYear}`,
         }
       : {
-          count: "preBidMeeting:all",
+          count: "preBidMeetingCombined:all",
           preBidDue: "preBidMeeting:due",
           preBidCompleted: "preBidMeeting:completed",
           refloatPreBidDue: "refloatPreBidMeeting:due",
@@ -11445,6 +12087,85 @@ function getTcecStatusFiscalYearDashboardFilter(
     .join(":");
 }
 
+function getFinance1DrillFocus(
+  key: string,
+  section: string,
+  metric: string,
+): Pick<AnalyticsSearchTarget, "focusSection" | "focusMilestone" | "focusTarget"> {
+  const normalizedKey = key.toLowerCase();
+  const normalizedSection = section.toLowerCase();
+  const normalizedMetric = metric.toLowerCase();
+
+  if (normalizedKey.includes("filegroup")) {
+    return { focusSection: "File details", focusTarget: "receivedDate" };
+  }
+  if (normalizedKey.includes("closed") || normalizedMetric.includes("file closed")) {
+    return { focusSection: "Milestones", focusMilestone: "File Closed" };
+  }
+  if (normalizedKey.includes("cancelled") || normalizedMetric.includes("cancelled")) {
+    return { focusSection: "File details", focusTarget: "demandCancelled" };
+  }
+  if (normalizedKey.includes("booked") || normalizedMetric.includes("controlled done")) {
+    return { focusSection: "Scrutiny and control", focusTarget: "immsDate" };
+  }
+  if (normalizedKey.includes("intended") || normalizedMetric.includes("controlled by")) {
+    return { focusSection: "Scrutiny and control", focusTarget: "imms" };
+  }
+  if (normalizedKey.includes("billssubmitted") || normalizedMetric.includes("bill sent")) {
+    return { focusSection: "Supply order and payment", focusTarget: "billsentforpayment:completed" };
+  }
+  if (normalizedKey.includes("paymentduebutbillnotsubmitted")) {
+    return { focusSection: "Supply order and payment", focusTarget: "billpreparation:pending" };
+  }
+  if (normalizedKey.includes("advancepending")) {
+    return { focusSection: "Supply order and payment", focusTarget: "advancepayment:pending" };
+  }
+  if (normalizedKey.includes("deliveryjobdone")) {
+    return {
+      focusSection: "Supply order and payment",
+      focusTarget: "delivery:completed|jobcompletion:completed",
+    };
+  }
+  if (normalizedKey.includes("deliveryjobpending")) {
+    return {
+      focusSection: "Supply order and payment",
+      focusTarget: "delivery:pending|jobcompletion:pending",
+    };
+  }
+  if (
+    normalizedKey.includes("committed") ||
+    normalizedKey.includes("soplaced") ||
+    normalizedKey.includes("withso") ||
+    normalizedKey.includes("soplacedlater") ||
+    normalizedMetric.includes("s.o. placed") ||
+    normalizedMetric.includes("committed")
+  ) {
+    return { focusSection: "Supply order and payment", focusTarget: "supplyorder:placed" };
+  }
+  if (normalizedKey.includes("advance")) {
+    return { focusSection: "Supply order and payment", focusTarget: "advancepayment:pending" };
+  }
+  if (normalizedKey.includes("paymentdue") || normalizedKey.includes("unpaid")) {
+    return { focusSection: "Supply order and payment", focusTarget: "payment:pending" };
+  }
+  if (normalizedKey.includes("paid") || normalizedKey.includes("paymentmade")) {
+    return { focusSection: "Supply order and payment", focusTarget: "payment:completed" };
+  }
+  if (normalizedKey.includes("delivery") || normalizedMetric.includes("delivery")) {
+    return { focusSection: "Supply order and payment", focusTarget: "delivery:pending" };
+  }
+  if (normalizedSection.includes("firm type")) {
+    return { focusSection: "Supply order and payment", focusTarget: "firmtype:any" };
+  }
+  if (normalizedSection.includes("file type") || normalizedSection.includes("file group")) {
+    return { focusSection: "File details", focusTarget: "fileType" };
+  }
+  if (normalizedKey.includes("active") || normalizedKey.includes("stillpending")) {
+    return { focusSection: "File details" };
+  }
+  return { focusSection: "Timeline" };
+}
+
 function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget | undefined {
   const normalized = normalizeMilestoneName(name);
   if (normalized === "billpreparation") {
@@ -11531,6 +12252,10 @@ function formatAnomalyStatus(status: string) {
     .join(" ");
 }
 
+function formatAnomalyScope(scope: string | undefined) {
+  return scope === "universal" ? "Universal" : "File";
+}
+
 function groupSuspectedAnomalyRows(rows: SuspectedAnomalyRow[]) {
   const groups = new Map<string, SuspectedAnomalyRow[]>();
   rows.forEach((row) => {
@@ -11554,6 +12279,12 @@ function humanizeCompactAnomalyLabel(value?: string) {
   if (value === "fileclosedbutbgreturnpendingexists") {
     return "File is closed but BG return is still pending";
   }
+  if (
+    value ===
+    "stagedeliveryperiodsoverlapacceptableifstagesruninparallelacceptthisanomalyforthisfileifintentional"
+  ) {
+    return "Stage delivery periods overlap";
+  }
   return value
     .replace(/fileclosed/g, "File closed ")
     .replace(/bgreturn/g, " BG return ")
@@ -11572,7 +12303,8 @@ function humanizeCompactAnomalyLabel(value?: string) {
 }
 
 const anomalyWorkflowTabHelp: Record<AnomalyWorkflowTab, string> = {
-  current: "Current suspected anomalies still affecting the selected files.",
+  current:
+    "Current suspected anomalies still affecting the selected files, including rejected or revoked items if the data issue still exists.",
   sent: "Requests/messages raised for Admin review and still awaiting decision.",
   fileAccepted: "Admin accepted the exception for that specific file only.",
   universalAccepted: "Admin accepted the exception as a general rule for all matching files.",
@@ -11599,12 +12331,7 @@ function SuspectedAnomalyGroupedView({
 }) {
   const [tab, setTab] = useState<AnomalyWorkflowTab>("current");
   const [selectedDecisionSignatures, setSelectedDecisionSignatures] = useState<string[]>([]);
-  const currentRows = rows.filter(
-    (row) =>
-      row.requestStatus !== "pending" &&
-      row.requestStatus !== "rejected" &&
-      row.requestStatus !== "revoked",
-  );
+  const currentRows = rows.filter((row) => row.requestStatus !== "pending");
   const sentRows = rows.filter((row) => row.requestStatus === "pending");
   const fileAcceptedRows = acceptances.filter((row) => row.status === "approved_file");
   const universalAcceptedRows = acceptances.filter((row) => row.status === "approved_universal");
@@ -11630,6 +12357,18 @@ function SuspectedAnomalyGroupedView({
   ];
   const canClearDecisionRows = tab === "rejected" || tab === "revoked";
   const selectedDecisionSet = new Set(selectedDecisionSignatures);
+  const currentGroups = groupSuspectedAnomalyRows(currentRows);
+  const sentGroups = groupSuspectedAnomalyRows(sentRows);
+  const decisionGroups = groupAnomalyAcceptances(decisionRows);
+  const currentRowNumberBySignature = new Map(
+    currentGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
+  const sentRowNumberBySignature = new Map(
+    sentGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
+  const decisionRowNumberBySignature = new Map(
+    decisionGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
+  );
   const toggleDecisionSignature = (signature: string) => {
     setSelectedDecisionSignatures((current) =>
       current.includes(signature)
@@ -11653,7 +12392,7 @@ function SuspectedAnomalyGroupedView({
     }
     return (
       <div className="space-y-3">
-        {groupSuspectedAnomalyRows(activeRows).map((group) => (
+        {(tab === "sent" ? sentGroups : currentGroups).map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
               <h3 className="text-sm font-semibold">{group.title}</h3>
@@ -11663,8 +12402,13 @@ function SuspectedAnomalyGroupedView({
               {group.items.map((row) => (
                 <div
                   key={row.signature}
-                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.2fr_2fr_1.4fr]"
+                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[3rem_1.2fr_2fr_1.4fr]"
                 >
+                  <div className="font-semibold text-muted-foreground">
+                    {tab === "sent"
+                      ? sentRowNumberBySignature.get(row.signature)
+                      : currentRowNumberBySignature.get(row.signature)}
+                  </div>
                   <div>
                     <button
                       type="button"
@@ -11756,7 +12500,7 @@ function SuspectedAnomalyGroupedView({
     }
     return (
       <div className="space-y-3">
-        {groupAnomalyAcceptances(decisionTabRows).map((group) => (
+        {decisionGroups.map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
               <h3 className="text-sm font-semibold">{group.title}</h3>
@@ -11766,8 +12510,11 @@ function SuspectedAnomalyGroupedView({
               {group.items.map((row) => (
                 <div
                   key={row.signature}
-                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[1.1fr_2fr_1fr]"
+                  className="grid gap-3 px-3 py-3 text-xs md:grid-cols-[3rem_1.1fr_2fr_1fr]"
                 >
+                  <div className="font-semibold text-muted-foreground">
+                    {decisionRowNumberBySignature.get(row.signature)}
+                  </div>
                   <div className="flex items-start gap-2">
                     {canClearDecisionRows ? (
                       <input
@@ -11803,11 +12550,14 @@ function SuspectedAnomalyGroupedView({
                       </div>
                     ) : null}
                   </div>
-                  <div>
-                    <div className="font-medium">{formatAnomalyStatus(row.status)}</div>
-                    <div className="text-muted-foreground">
-                      {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
-                    </div>
+	                  <div>
+	                    <div className="font-medium">{formatAnomalyStatus(row.status)}</div>
+	                    <div className="text-muted-foreground">
+	                      {formatAnomalyScope(row.scope)} decision
+	                    </div>
+	                    <div className="text-muted-foreground">
+	                      {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
+	                    </div>
                     <div className="text-muted-foreground">
                       {(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}
                     </div>
@@ -11874,7 +12624,7 @@ function SuspectedAnomalyGroupedView({
                 <TooltipContent
                   side="top"
                   align="start"
-                  className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+                  className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                 >
                   {anomalyWorkflowTabHelp[item.key]}
                 </TooltipContent>
@@ -12854,7 +13604,7 @@ function MetricButton({
           <TooltipContent
             side="top"
             align="center"
-            className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
             {Array.isArray(tooltip) ? <HelperBulletList items={tooltip} /> : tooltip}
           </TooltipContent>
@@ -12941,7 +13691,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
     if (normalizedLabel === "live") {
       return [
         "S.O. exists and the effective D.P. is still today or later.",
-        "Cancelled S.O. and shortclosed S.O. rows are excluded from this live counter.",
+        "Cancelled S.O. rows are excluded. Shortclosed S.O. rows are treated like concluded S.O.s; only curtailed future delivery/payment work is ignored.",
       ];
     }
     if (normalizedLabel === "pending") {
@@ -12971,6 +13721,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
         "For physical delivery/inspection files, due starts after material receipt.",
         "For Goods & Services where IR is No, due starts after Job Completion.",
         "For AMC/MPC/CARS/CAPSI/O&M contract files, due can start from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
+        "One file can contribute more than one payment case when it has multiple payable stages.",
         "This does not mean the bill is already with payment authority; that is counted separately under Submitted and unpaid.",
       ];
     }
@@ -13564,7 +14315,7 @@ function DeliveryPeriodMetricButton({
         <TooltipContent
           side="top"
           align="center"
-          className="w-[min(34rem,calc(100vw-2rem))] max-w-[34rem] text-xs leading-relaxed"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
           <HelperBulletList items={help} />
         </TooltipContent>
@@ -13620,7 +14371,7 @@ function DeliveryFlowNode({
       help: [
         "Includes files/S.O. rows where material receipt is recorded.",
         "Cancelled demand files are excluded.",
-        "Cancelled S.O. and Shortclosed S.O. rows are excluded from delivery-progress counters.",
+        "Cancelled S.O. rows are excluded. Shortclosed S.O. rows remain included when delivery/job completion history exists.",
       ],
     },
     {
@@ -13631,7 +14382,7 @@ function DeliveryFlowNode({
       help: [
         "Includes files/S.O. rows where delivery is still pending and effective D.P. is today or later.",
         "Today is counted as valid.",
-        "Delivered material, cancelled S.O., and shortclosed S.O. rows are excluded.",
+        "Delivered material and cancelled S.O. rows are excluded. Shortclosed S.O. rows remain due only if pending delivery/work still exists.",
       ],
     },
     {
@@ -13641,7 +14392,7 @@ function DeliveryFlowNode({
       statusKind: "live",
       help: [
         "Includes files/S.O. rows where delivery is still pending and effective D.P. is before today.",
-        "Delivered material, cancelled S.O., and shortclosed S.O. rows are excluded.",
+        "Delivered material and cancelled S.O. rows are excluded. Shortclosed S.O. rows remain overdue only if pending delivery/work still exists.",
         "Cancelled demand files are excluded.",
       ],
     },
@@ -13724,7 +14475,7 @@ function JobCompletionFlowNode({
       help: [
         "Includes work/service S.O. rows where job completion is still pending and the contract/job period is valid today or later.",
         "Today is counted as valid.",
-        "Completed jobs, cancelled S.O., and shortclosed S.O. rows are excluded.",
+        "Completed jobs and cancelled S.O. rows are excluded. Shortclosed S.O. rows remain due only if pending work still exists.",
       ],
     },
     {
@@ -13735,7 +14486,7 @@ function JobCompletionFlowNode({
       help: [
         "Includes work/service S.O. rows where job completion is recorded.",
         "Cancelled demand files are excluded.",
-        "Cancelled S.O. and shortclosed S.O. rows are excluded from job-progress counters.",
+        "Cancelled S.O. rows are excluded. Shortclosed S.O. rows remain included when job completion history exists.",
       ],
     },
   ];
@@ -14025,7 +14776,7 @@ function getAttributeSummaryStats(files: ReturnType<typeof useAccessibleFiles>):
       `${attribute.yesLabel} and ${attribute.noLabel} files from the selected Dashboard file set.`,
       attribute.key === "psb"
         ? "PSB is treated as a snapshot statistic, so cancelled S.O. rows remain visible when PSB was applicable."
-        : "Cancelled demand files are excluded; File Closed follows the Global filter; Cancelled S.O. and Shortclosed S.O. remain included for snapshot statistics.",
+        : "Cancelled demand files are excluded; File Closed follows the Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
   }));
 }
@@ -14039,7 +14790,7 @@ function getSnapshotAttributeSubMetricHelp(
   const common = [
     `Includes files where ${label} is ${presence}.`,
     "Cancelled demand files are excluded.",
-    "File Closed follows the selected Global filter.",
+    "File Closed follows the selected Global Filter.",
   ];
   if (key === "psb") {
     return [
@@ -14057,7 +14808,7 @@ function getSnapshotAttributeSubMetricHelp(
   }
   return [
     ...common,
-    "Cancelled S.O. and Shortclosed S.O. remain included for Snapshot statistics.",
+    "Cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
   ];
 }
 
@@ -14087,14 +14838,14 @@ function getFileTypeSummaryStats(
       help: [
         `Includes files where File Type is ${fileType}.`,
         "Cancelled demand files are excluded.",
-        "File Closed follows the selected Global filter.",
-        "Cancelled S.O. and Shortclosed S.O. remain included for Snapshot statistics.",
+        "File Closed follows the selected Global Filter.",
+        "Cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
       ],
     })),
     hint: [
       "Files are grouped by File Type from the selected Dashboard file set.",
       "Custom file types added in Settings are included when they exist in the selected data.",
-      "Cancelled demand files are excluded; File Closed follows the Global filter; Cancelled S.O. and Shortclosed S.O. remain included for snapshot statistics.",
+      "Cancelled demand files are excluded; File Closed follows the Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
   };
 }
@@ -14135,7 +14886,7 @@ function getFirmTypeSummaryStats(
         `Includes files having at least one S.O. row with Firm Type ${firmType}.`,
         "The count is file based: one matching S.O. is enough.",
         "Cancelled demand files are excluded.",
-        "Cancelled S.O. and Shortclosed S.O. remain included for Snapshot firm statistics.",
+        "Cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot firm statistics.",
       ],
     })),
     hint: [
@@ -14558,7 +15309,7 @@ function getDivisionTurnaroundRanking(files: FileRecord[]) {
 function getTopFirmSupplyOrders(files: FileRecord[]) {
   const totals = new Map<string, number>();
   files.forEach((file) => {
-    fileSupplyOrders(file).forEach((order) => {
+    rawSupplyOrders(file).forEach((order) => {
       const name = getAnalyticsName(order.firm, "Unassigned firm");
       const value = getSupplyOrderTotalValue(file, order);
       if (value <= 0) return;
@@ -14768,6 +15519,7 @@ type Finance1AmountMetric = {
 type Finance1FileTypeDistributionRow = {
   fileType: string;
   files: number;
+  filesWithSo: number;
   activeAtFyEnd: number;
   closedByFyEnd: number;
   cancelledByFyEnd: number;
@@ -14788,6 +15540,7 @@ type Finance1Summary = {
   fiscalYear: string;
   cutoffDate: string;
   fileGroupFiles?: FileRecord[];
+  drillFileIds?: Record<string, string[]>;
   fileGroup: Finance1AmountMetric;
   fileTypeDistribution: Finance1FileTypeDistributionRow[];
   firmTypeDistribution: Finance1FirmTypeDistributionRow[];
@@ -14831,6 +15584,13 @@ function addFinance1Amount(
   metric.total += capital + revenue;
 }
 
+function getFinance1LiabilityDate(entry: FinancePaymentLiabilityEntry) {
+  if (entry.kind === "main" && hasFilledString(entry.order.stageDeliveryLabel)) {
+    return entry.order.revisedDp || entry.order.dpDate;
+  }
+  return entry.sourceDate;
+}
+
 function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Summary {
   const range = getFinancialYearDateRange(fiscalYear);
   const cutoffDate = range?.end ?? "";
@@ -14838,10 +15598,17 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   const fileGroupFiles = range
     ? files.filter((file) => isDateWithinRange(file.receivedDate, range))
     : [];
+  const drillFileIds = new Map<string, Set<string>>();
+  const addDrillFile = (key: string, file: FileRecord) => {
+    const ids = drillFileIds.get(key) ?? new Set<string>();
+    ids.add(file.id);
+    drillFileIds.set(key, ids);
+  };
   const summary: Finance1Summary = {
     fiscalYear,
     cutoffDate,
     fileGroupFiles,
+    drillFileIds: {},
     fileGroup: createFinance1Metric(),
     fileTypeDistribution: [],
     firmTypeDistribution: [],
@@ -14880,6 +15647,7 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     const row: Finance1FileTypeDistributionRow = {
       fileType: label,
       files: 0,
+      filesWithSo: 0,
       activeAtFyEnd: 0,
       closedByFyEnd: 0,
       cancelledByFyEnd: 0,
@@ -14907,15 +15675,25 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   };
 
   fileGroupFiles.forEach((file) => {
+    addDrillFile("fileGroup", file);
     const demandCapital = getInrAmount(file.valueCapital, file) ?? 0;
     const demandRevenue = getInrAmount(file.valueRevenue, file) ?? 0;
     addFinance1Amount(summary.fileGroup, demandCapital, demandRevenue);
 
     const cancelledByFyEnd = isYes(file.demandCancelled) && isDateOnOrBefore(file.demandCancelledDate, cutoffDate);
     const closedByFyEnd = isDateOnOrBefore(file.fileClosureDate, cutoffDate);
-    if (cancelledByFyEnd) summary.cancelledByFyEnd += 1;
-    if (closedByFyEnd) summary.closedByFyEnd += 1;
-    if (!cancelledByFyEnd && !closedByFyEnd) summary.activeAtFyEnd += 1;
+    if (cancelledByFyEnd) {
+      summary.cancelledByFyEnd += 1;
+      addDrillFile("cancelledByFyEnd", file);
+    }
+    if (closedByFyEnd) {
+      summary.closedByFyEnd += 1;
+      addDrillFile("closedByFyEnd", file);
+    }
+    if (!cancelledByFyEnd && !closedByFyEnd) {
+      summary.activeAtFyEnd += 1;
+      addDrillFile("activeAtFyEnd", file);
+    }
 
     const fileTypeRow = getFileTypeRow(file.fileType);
     fileTypeRow.files += 1;
@@ -14925,6 +15703,11 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     if (cancelledByFyEnd) fileTypeRow.cancelledByFyEnd += 1;
     else if (closedByFyEnd) fileTypeRow.closedByFyEnd += 1;
     else fileTypeRow.activeAtFyEnd += 1;
+    const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
+    addDrillFile(`${fileTypeKey}:files`, file);
+    if (cancelledByFyEnd) addDrillFile(`${fileTypeKey}:cancelled`, file);
+    if (closedByFyEnd) addDrillFile(`${fileTypeKey}:closed`, file);
+    if (!cancelledByFyEnd && !closedByFyEnd) addDrillFile(`${fileTypeKey}:active`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
     const soRowsByFyEnd = fileSupplyOrders(file).filter(
@@ -14933,39 +15716,71 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
         isDateOnOrBefore(order.soDate, cutoffDate) &&
         !isSupplyOrderCancelledByCutoff(file, order, cutoffDate),
     );
-    const hasSoByFyEnd = soRowsByFyEnd.length > 0;
+    const supplyOrderRowsByFyEnd = rawSupplyOrders(file).filter(
+      (order) =>
+        hasFilledString(order.soDate) &&
+        isDateOnOrBefore(order.soDate, cutoffDate) &&
+        !isSupplyOrderCancelledByCutoff(file, order, cutoffDate),
+    );
+    const hasSoByFyEnd = supplyOrderRowsByFyEnd.length > 0;
+    if (hasSoByFyEnd) {
+      fileTypeRow.filesWithSo += 1;
+      addDrillFile(`${fileTypeKey}:withSo`, file);
+    }
 
     if (!cancelledByFyEnd && !immsDoneByFyEnd && !hasSoByFyEnd) {
       summary.noImmsByFyEnd += 1;
       addFinance1Amount(summary.intendedAtFyEnd, demandCapital, demandRevenue);
+      addDrillFile("intendedAtFyEnd", file);
     }
     if (!cancelledByFyEnd && immsDoneByFyEnd && !hasSoByFyEnd) {
       summary.immsDoneSoNotPlacedByFyEnd += 1;
       addFinance1Amount(summary.bookedAtFyEnd, demandCapital, demandRevenue);
+      addDrillFile("bookedAtFyEnd", file);
     }
     if (!cancelledByFyEnd && hasSoByFyEnd) {
       summary.soPlacedByFyEnd += 1;
-      soRowsByFyEnd.forEach((order) => {
+      addDrillFile("committedAtFyEnd", file);
+      addDrillFile("soPlacedByFyEnd", file);
+      supplyOrderRowsByFyEnd.forEach((order) => {
         const soCapital = getInrAmount(order.soValueCapital, file) ?? 0;
         const soRevenue = getInrAmount(order.soValueRevenue, file) ?? 0;
         addFinance1Amount(
           summary.committedAtFyEnd,
           soCapital,
           soRevenue,
+          0,
         );
         const firmTypeRow = getFirmTypeRow(getEffectiveFirmType(order));
-        firmTypeRow.supplyOrders += 1;
         firmTypeRow.capital += soCapital;
         firmTypeRow.revenue += soRevenue;
         firmTypeRow.total += soCapital + soRevenue;
+        addDrillFile(`firmType:${firmTypeRow.firmType.toLowerCase()}`, file);
+      });
+      summary.committedAtFyEnd.count += supplyOrderRowsByFyEnd.length;
+      supplyOrderRowsByFyEnd.forEach((order) => {
+        const firmTypeRow = getFirmTypeRow(getEffectiveFirmType(order));
+        firmTypeRow.supplyOrders += 1;
+        addDrillFile(`firmType:${firmTypeRow.firmType.toLowerCase()}`, file);
       });
     }
 
-    if (soRowsByFyEnd.some((order) => isOrderDeliveryOrJobDoneByCutoff(order, cutoffDate))) {
+    const deliveryJobDoneByFyEnd = soRowsByFyEnd.some((order) =>
+      isOrderDeliveryOrJobDoneByCutoff(order, cutoffDate),
+    );
+    const billSentByFyEnd = soRowsByFyEnd.some((order) =>
+      isOrderBillSentByCutoff(order, cutoffDate),
+    );
+    if (deliveryJobDoneByFyEnd) {
       summary.deliveryJobDoneByFyEnd += 1;
+      addDrillFile("deliveryJobDoneByFyEnd", file);
     }
-    if (soRowsByFyEnd.some((order) => isOrderBillSentByCutoff(order, cutoffDate))) {
+    if (soRowsByFyEnd.length && !deliveryJobDoneByFyEnd) {
+      addDrillFile("deliveryJobPendingByFyEnd", file);
+    }
+    if (billSentByFyEnd) {
       summary.billSentByFyEnd += 1;
+      addDrillFile("billSentByFyEnd", file);
     }
     const paymentLiabilityEntries = getFinancePaymentLiabilityEntries([file]);
     const hasRegularPaymentByFyEnd = paymentLiabilityEntries.some((entry) =>
@@ -14978,22 +15793,36 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
     );
     if (hasRegularPaymentByFyEnd || hasAdvancePaymentByFyEnd) {
       summary.paymentCompletedByFyEnd += 1;
+      addDrillFile("paymentCompletedByFyEnd", file);
+    }
+    if (billSentByFyEnd && !hasRegularPaymentByFyEnd) {
+      addDrillFile("billsSubmittedButUnpaid", file);
+    }
+    if (deliveryJobDoneByFyEnd && !billSentByFyEnd) {
+      addDrillFile("paymentDueButBillNotSubmitted", file);
     }
 
     paymentLiabilityEntries.forEach((entry) => {
-      if (!isDateOnOrBefore(entry.sourceDate, cutoffDate)) return;
       if (isDateOnOrBefore(entry.paymentDate, cutoffDate)) {
-        addFinance1Amount(summary.paidByFyEnd, entry.capital, entry.revenue);
+        if (isDateOnOrBefore(entry.sourceDate, cutoffDate)) {
+          addFinance1Amount(summary.paidByFyEnd, entry.capital, entry.revenue);
+          addDrillFile("paidByFyEnd", file);
+        }
         return;
       }
-      addFinance1Amount(summary.unpaidLiabilityAtFyEnd, entry.capital, entry.revenue);
+      if (isDateOnOrBefore(getFinance1LiabilityDate(entry), cutoffDate)) {
+        addFinance1Amount(summary.unpaidLiabilityAtFyEnd, entry.capital, entry.revenue);
+        addDrillFile("unpaidLiabilityAtFyEnd", file);
+      }
     });
 
     paymentLiabilityEntries.forEach((entry) => {
-      if (hasFilledString(entry.paymentDate)) {
+      if (isDateOnOrBefore(entry.paymentDate, todayDate)) {
         addFinance1Amount(summary.paidTillDate, entry.capital, entry.revenue);
+        addDrillFile("paidTillDate", file);
       } else if (isDateOnOrBefore(entry.sourceDate, todayDate)) {
         addFinance1Amount(summary.balanceUnpaidToday, entry.capital, entry.revenue);
+        addDrillFile("balanceUnpaidToday", file);
       }
     });
 
@@ -15008,15 +15837,20 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       if (capital + revenue <= 0) return;
       if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
         addFinance1Amount(summary.paidByFyEnd, capital, revenue);
+        addDrillFile("paidByFyEnd", file);
       } else if (isDateOnOrBefore(order.soDate, cutoffDate)) {
         summary.advancePendingByFyEnd += 1;
         addFinance1Amount(summary.unpaidLiabilityAtFyEnd, capital, revenue);
+        addDrillFile("advancePendingByFyEnd", file);
+        addDrillFile("unpaidLiabilityAtFyEnd", file);
       }
 
-      if (hasFilledString(order.advancePaymentDetail?.paymentDate)) {
+      if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, todayDate)) {
         addFinance1Amount(summary.paidTillDate, capital, revenue);
+        addDrillFile("paidTillDate", file);
       } else if (!isSupplyOrderCancelled(file, order) && isDateOnOrBefore(order.soDate, todayDate)) {
         addFinance1Amount(summary.balanceUnpaidToday, capital, revenue);
+        addDrillFile("balanceUnpaidToday", file);
       }
       if (isDateAfterDate(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
         hasPaymentMadeLater = true;
@@ -15032,12 +15866,20 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       )
     ) {
       summary.soPlacedLater += 1;
+      addDrillFile("soPlacedLater", file);
     }
     if (hasPaymentMadeLater) {
       summary.paymentMadeLater += 1;
+      addDrillFile("paymentMadeLater", file);
     }
-    if (isDateAfterDate(file.fileClosureDate, cutoffDate)) summary.fileClosedLater += 1;
-    if (!isCancelledFile(file) && !isFileClosed(file)) summary.stillPendingToday += 1;
+    if (isDateAfterDate(file.fileClosureDate, cutoffDate)) {
+      summary.fileClosedLater += 1;
+      addDrillFile("fileClosedLater", file);
+    }
+    if (!isCancelledFile(file) && !isFileClosed(file)) {
+      summary.stillPendingToday += 1;
+      addDrillFile("stillPendingToday", file);
+    }
   });
 
   summary.fileClosedByFyEnd = summary.closedByFyEnd;
@@ -15046,6 +15888,9 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
   );
   summary.firmTypeDistribution = Array.from(firmTypeDistribution.values()).sort((a, b) =>
     b.total !== a.total ? b.total - a.total : a.firmType.localeCompare(b.firmType),
+  );
+  summary.drillFileIds = Object.fromEntries(
+    Array.from(drillFileIds, ([key, ids]) => [key, Array.from(ids)]),
   );
   return summary;
 }
@@ -15101,7 +15946,7 @@ function getSupplyOrderValueDistributionByFirmType(
   const totals = new Map<string, number>();
   const configured = getConfiguredFirmTypes(configuredFirmTypes);
   const activityYearRange = getFinancialYearDateRange(activityYear);
-  effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
+  rawSupplyOrderEntries(files).forEach(({ file, order }) => {
     if (isSupplyOrderCancelled(file, order)) return;
     if (activityYearRange && !isDateWithinRange(order.soDate, activityYearRange)) return;
     const value = getSupplyOrderTotalValue(file, order);
@@ -15256,7 +16101,6 @@ function getMilestoneClearingDurationRows(
             entryFile,
             order.billSentForPaymentDate,
             order.paymentDate,
-            getPaymentStagePathCumulativeDays(entryFile, order, "Payment"),
           ),
         )
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -15272,7 +16116,6 @@ function getMilestoneClearingDurationRows(
                 entryFile,
                 order.materialReceiptDate,
                 order.irPreparationDate,
-                getPaymentStagePathCumulativeDays(entryFile, order, "IR Preparation"),
               ),
             )
             .filter((row): row is MilestoneClearingDurationRow => Boolean(row))
@@ -15289,7 +16132,6 @@ function getMilestoneClearingDurationRows(
                 entryFile,
                 order.irPreparationDate,
                 order.irReceiptDate,
-                getPaymentStagePathCumulativeDays(entryFile, order, "IR Receipt"),
               ),
             )
             .filter((row): row is MilestoneClearingDurationRow => Boolean(row))
@@ -15308,7 +16150,6 @@ function getMilestoneClearingDurationRows(
             entryFile,
             getBillPreparationStartDate(file, order),
             order.billPreparationDate,
-            getPaymentStagePathCumulativeDays(entryFile, order, "Bill preparation"),
           ),
         )
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -15326,7 +16167,6 @@ function getMilestoneClearingDurationRows(
             entryFile,
             order.billPreparationDate,
             order.billSentForPaymentDate,
-            getPaymentStagePathCumulativeDays(entryFile, order, "Bill sent for payment"),
           ),
         )
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -15361,7 +16201,6 @@ function getMilestoneClearingDurationRows(
             file,
             getPreviousApplicableMilestoneCompletionDate(file, definitionIndex, order.soDate),
             order.soDate,
-            getSupplyOrderPathCumulativeDays(file, order),
           ),
         )
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -15379,7 +16218,6 @@ function getMilestoneClearingDurationRows(
           definition.getEndDate(file),
         ),
         definition.getEndDate(file),
-        getFileLevelPathCumulativeDays(file, definitionIndex, definition.getEndDate(file)),
       ),
     )
     .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
@@ -15396,103 +16234,13 @@ function getReturnedBillClearingDurationRows(
     .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
 }
 
-function getFileLevelPathCumulativeDays(
-  file: FileRecord,
-  targetIndex: number,
-  targetEndDate: string | undefined,
-) {
-  const targetEndTime = parseLocalDateTime(targetEndDate ?? "");
-  if (targetEndTime === undefined) return undefined;
-  let total = 0;
-  for (let index = 0; index <= targetIndex; index++) {
-    const definition = milestoneClearingDefinitions[index];
-    if (!definition || definition.name === "Supply Order") break;
-    if (!isMilestoneClearingDefinitionApplicable(file, definition)) continue;
-    const endDate = index === targetIndex ? targetEndDate : definition.getEndDate(file);
-    const endTime = parseLocalDateTime(endDate ?? "");
-    if (endTime === undefined || endTime > targetEndTime) continue;
-    const startDate = getPreviousApplicableMilestoneCompletionDate(file, index, endDate);
-    const stageDays = getDayDifference(startDate, endDate);
-    if (stageDays !== undefined && stageDays >= 0) total += stageDays;
-  }
-  return total;
-}
-
-function getSupplyOrderPathCumulativeDays(file: FileRecord, order: SupplyOrderDetail) {
-  const supplyOrderIndex = milestoneClearingDefinitions.findIndex(
-    (definition) => definition.name === "Supply Order",
-  );
-  if (supplyOrderIndex < 0) return undefined;
-  const previousCumulative =
-    getFileLevelPathCumulativeDays(file, supplyOrderIndex - 1, order.soDate) ?? 0;
-  const startDate = getPreviousApplicableMilestoneCompletionDate(
-    file,
-    supplyOrderIndex,
-    order.soDate,
-  );
-  const stageDays = getDayDifference(startDate, order.soDate);
-  if (stageDays === undefined || stageDays < 0) return undefined;
-  return previousCumulative + stageDays;
-}
-
-function getPaymentStagePathCumulativeDays(
-  file: FileRecord,
-  order: SupplyOrderDetail,
-  targetName: string,
-) {
-  const supplyOrderCumulative = getSupplyOrderPathCumulativeDays(file, order);
-  if (supplyOrderCumulative === undefined) return undefined;
-  let total = supplyOrderCumulative;
-  const stages = [
-    {
-      name: "IR Preparation",
-      applies: isIrClearingApplicable(file),
-      start: order.materialReceiptDate,
-      end: order.irPreparationDate,
-    },
-    {
-      name: "IR Receipt",
-      applies: isIrClearingApplicable(file),
-      start: order.irPreparationDate,
-      end: order.irReceiptDate,
-    },
-    {
-      name: "Bill preparation",
-      applies: true,
-      start: getBillPreparationStartDate(file, order),
-      end: order.billPreparationDate,
-    },
-    {
-      name: "Bill sent for payment",
-      applies: true,
-      start: order.billPreparationDate,
-      end: order.billSentForPaymentDate,
-    },
-    {
-      name: "Payment",
-      applies: true,
-      start: order.billSentForPaymentDate,
-      end: order.paymentDate,
-    },
-  ];
-  for (const stage of stages) {
-    if (!stage.applies) continue;
-    const stageDays = getDayDifference(stage.start, stage.end);
-    if (stage.name === targetName && (stageDays === undefined || stageDays < 0)) return undefined;
-    if (stageDays !== undefined && stageDays >= 0) total += stageDays;
-    if (stage.name === targetName) return total;
-  }
-  return undefined;
-}
-
 function getMilestoneClearingDurationRow(
   file: FileRecord,
   startDate: string | undefined,
   endDate: string | undefined,
-  pathCumulativeDays?: number,
 ) {
   const stageDays = getDayDifference(startDate, endDate);
-  const cumulativeDays = pathCumulativeDays ?? getDayDifference(file.receivedDate, endDate);
+  const cumulativeDays = getDayDifference(file.receivedDate, endDate);
   if (
     stageDays === undefined ||
     cumulativeDays === undefined ||
@@ -15867,14 +16615,14 @@ function getRiskRowCount(file: FileRecord) {
 
 function getPaymentPendingRowCount(file: FileRecord) {
   if (isYes(file.demandCancelled)) return 0;
-  return normalizedFilePaymentOrders(file)
-    .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
-    .filter(
-      (order) =>
-        isPaymentOrderActive(file, order) &&
-        hasPaymentWorkflowStarted(file, order) &&
-        !hasFilledString(order.paymentDate),
-    ).length;
+  const liabilityPendingCount = getFinancePaymentLiabilityEntries([file]).filter(
+    (entry) => entry.pending,
+  ).length;
+  const advancePendingCount = advancePaymentEntries([file]).filter(
+    ({ file: entryFile, order }) =>
+      isAdvancePaymentPending(order) && isPaymentOrderActive(entryFile, order),
+  ).length;
+  return liabilityPendingCount + advancePendingCount;
 }
 
 const milestoneClearingDefinitions = [
@@ -15999,17 +16747,21 @@ function getFileTotalValue(file: FileRecord) {
 }
 
 function getFileCommittedCapitalValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
-  if (orders.length) {
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
+  const rawOrders = rawSupplyOrders(file);
+  if (rawOrders.length) {
+    return rawOrders
+      .filter((order) => !isYes(order.soCancelled))
+      .reduce((sum, order) => sum + (getInrAmount(order.soValueCapital, file) ?? 0), 0);
   }
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueCapital, file) ?? 0);
 }
 
 function getFileCommittedRevenueValue(file: FileRecord) {
-  const orders = fileSupplyOrders(file).filter((order) => !isYes(order.soCancelled));
-  if (orders.length) {
-    return orders.reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
+  const rawOrders = rawSupplyOrders(file);
+  if (rawOrders.length) {
+    return rawOrders
+      .filter((order) => !isYes(order.soCancelled))
+      .reduce((sum, order) => sum + (getInrAmount(order.soValueRevenue, file) ?? 0), 0);
   }
   return isYes(file.soCancelled) ? 0 : (getInrAmount(file.soValueRevenue, file) ?? 0);
 }
@@ -16264,7 +17016,7 @@ const milestoneDefinitions = [
     label: "Bidding",
     totalLabel: "Total files",
     current: "biddingStageOver",
-    applies: (file) => isBiddingApplicableForFile(file),
+    applies: (file) => isBiddingApplicableForFile(file) && !isYes(file.refloat),
   },
   {
     key: "postTcec",
@@ -16601,6 +17353,16 @@ function getManualMilestoneCurrentCount(files: FileRecord[], name: string) {
         !hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
+  if (normalized === "bidding") {
+    return files.filter(
+      (file) =>
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        hasFilledString(file.cfaDate) &&
+        !isYes(file.biddingStageOver),
+    ).length;
+  }
   if (isSupplyOrderDrivenMilestoneName(name)) {
     return countCurrentSupplyOrderMilestoneStatuses(files, normalized);
   }
@@ -16697,8 +17459,13 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         totalLabel: milestone.totalLabel ?? "Total",
         pendingLabel: milestone.pendingLabel ?? getMilestonePendingLabel(milestone),
         total,
-        underProcess: files.filter((file) => isYes(file.refloat) && !isYes(file.biddingStageOver))
-          .length,
+        underProcess: files.filter(
+          (file) =>
+            !isCancelledFile(file) &&
+            isYes(file.refloat) &&
+            isYes(file.tcec) &&
+            !isYes(file.biddingStageOver),
+        ).length,
         active: pendingRefloatPostTcec.length,
         pending: pendingRefloatPostTcec.length,
         reviewed: reviewedRefloatPostTcec.length,
@@ -17163,15 +17930,7 @@ function isSupplyOrderCancelled(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
-  return (
-    !isYes(file.demandCancelled) &&
-    !isYes(order.soCancelled) &&
-    !isShortclosureNoFurtherAction(order)
-  );
-}
-
-function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
-  return isYes(order.shortclosure) && isYes(order.noFurtherAction);
+  return !isYes(file.demandCancelled) && !isYes(order.soCancelled);
 }
 
 function isOrderActiveForMilestone(
@@ -17229,10 +17988,8 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
   if (isYes(order.stageDelivery)) {
     if (!hasFilledString(order.stageDeliveryCount)) return false;
     if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-    if (isYes(order.stagePayment) && !isYes(order.advancePayment) && !isNo(order.advancePayment)) {
-      return false;
-    }
   }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
   return true;
 }
 
@@ -17276,8 +18033,7 @@ function countLiveSupplyOrders(files: FileRecord[]) {
     ({ file, order }) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isShortclosureNoFurtherAction(order),
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -17761,6 +18517,7 @@ function getFinancePaymentLiabilityEntries(files: FileRecord[]): FinancePaymentL
       const mainEntries = normalizedFilePaymentOrders({ ...file, supplyOrders: [baseOrder] })
         .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
         .filter((order) => isPaymentOrderActive(file, order))
+        .filter((order) => isFinanceMainPaymentLiabilityRelevant(file, order))
         .map(
           (order): FinancePaymentLiabilityEntry => ({
             kind: "main",
@@ -17811,14 +18568,40 @@ function isSupplementaryPaymentPending(bill: SupplementaryBillDetail) {
 }
 
 function getFinancePaymentCapital(file: FileRecord, order: SupplyOrderDetail) {
+  if (isYes(order.shortclosure)) {
+    return (
+      getInrAmount(order.actualPaymentCapital, file) ??
+      getInrAmount(order.billAmountCapital, file) ??
+      0
+    );
+  }
   return (
     getInrAmount(order.actualPaymentCapital, file) ?? getInrAmount(order.soValueCapital, file) ?? 0
   );
 }
 
 function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
+  if (isYes(order.shortclosure)) {
+    return (
+      getInrAmount(order.actualPaymentRevenue, file) ??
+      getInrAmount(order.billAmountRevenue, file) ??
+      0
+    );
+  }
   return (
     getInrAmount(order.actualPaymentRevenue, file) ?? getInrAmount(order.soValueRevenue, file) ?? 0
+  );
+}
+
+function isFinanceMainPaymentLiabilityRelevant(file: FileRecord, order: SupplyOrderDetail) {
+  if (!isYes(order.shortclosure)) return true;
+  return (
+    hasPaymentWorkflowStarted(file, order) ||
+    hasFilledString(order.paymentDate) ||
+    hasFilledString(order.actualPaymentCapital) ||
+    hasFilledString(order.actualPaymentRevenue) ||
+    hasFilledString(order.billAmountCapital) ||
+    hasFilledString(order.billAmountRevenue)
   );
 }
 
@@ -17913,12 +18696,23 @@ function isNo(value: string | undefined) {
 }
 
 function isFileTenderLive(file: FileRecord) {
-  return isBiddingApplicableForFile(file) && isYes(file.tenderLive);
+  const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
+  const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  return (
+    isBiddingApplicableForFile(file) &&
+    !isYes(file.bidOpened) &&
+    !isYes(file.biddingStageOver) &&
+    hasFilledField(file, isYes(file.refloat) ? "refloatBiddingDate" : "bidDate") &&
+    hasFilledField(file, isYes(file.refloat) ? "refloatBidOpeningDate" : "bidOpeningDate") &&
+    !isDateAfterToday(bidDate) &&
+    !isDateBeforeToday(bidOpeningDate)
+  );
 }
 
 function isBiddingInProgressFile(file: FileRecord) {
   return (
     isBiddingApplicableForFile(file) &&
+    !isYes(file.refloat) &&
     hasFilledString(file.cfaDate) &&
     !isYes(file.biddingStageOver)
   );
@@ -17956,6 +18750,7 @@ function isPreBidMeetingStatus(
   refloat: boolean,
   state: "due" | "completed",
   monthKey = "",
+  fiscalYear = "",
 ) {
   if (!isBiddingApplicableForFile(file)) return false;
   const applies = refloat
@@ -17964,6 +18759,9 @@ function isPreBidMeetingStatus(
   const date = refloat ? file.refloatPreBidMeetingDate : file.preBidMeetingDate;
   if (!applies || !hasFilledString(date)) return false;
   if (monthKey && getMonthKey(date) !== monthKey) return false;
+  if (fiscalYear && fiscalYear !== "all" && getFinancialYearForDate(date) !== fiscalYear) {
+    return false;
+  }
   return state === "completed" ? isDateBeforeToday(date) : !isDateBeforeToday(date);
 }
 
@@ -17972,8 +18770,7 @@ function isLiveSupplyOrder(file: FileRecord) {
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order) &&
-      !isShortclosureNoFurtherAction(order),
+      !isSupplyOrderCancelled(file, order),
   );
 }
 
@@ -18456,7 +19253,7 @@ function getDashboardExportDescription({
     }`,
     `Initiation date range: ${formatDateRangeForExport(fileInitiationDateRange)}`,
     `Division: ${division === "all" ? "All accessible divisions" : division}`,
-    `File Category: ${
+    `File Type: ${
       selectedCategoryLabels.length === visibleFileCategoryOptions.length
         ? "All visible categories"
         : selectedCategoryLabels.join(", ") || "None"
@@ -18667,6 +19464,7 @@ const dashboardFilterTitles: Record<string, string> = {
   jobCompletionDue: "Job Completion Due",
   jobCompletionLive: "Job Completion Due",
   jobCompletionPeriodOver: "Milestone Period Over",
+  deliveryPeriodLive: "Delivery Period / Milestone - Live",
   deliveryPeriodValid: "Delivery Period / Milestone - Valid",
   deliveryPeriodExpired: "Delivery Period / Milestone - Expired",
   deliveryPeriodExtended: "Delivery Period / Milestone - Extended",
@@ -18685,6 +19483,7 @@ const dashboardFilterTitles: Record<string, string> = {
   bgExpired: "PSB - Expired",
   bgToBeReturned: "PSB - To be returned",
   bgReturned: "PSB - Returned",
+  analyticsPaymentPending: "Analytics - Payment pending by division",
   paymentDueOnly: "Payment - Due",
   paymentInProcess: "Payment - In process",
   paymentSubmitted: "Payment - Submitted and unpaid",
@@ -18701,13 +19500,13 @@ const dashboardFilterTitles: Record<string, string> = {
   "supplementaryBill:resubmitted": "Payment - Supplementary resubmitted",
   "supplementaryBill:paid": "Payment - Normal supplementary paid",
   "supplementaryBill:returnPaid": "Payment - Returned supplementary paid",
-  miscLiveFiles: "Cancellation - Live files",
-  miscFileClosed: "Cancellation - File closed",
-  miscLd: "Cancellation - LD",
-  miscDemandCancelled: "Cancellation - Demand cancelled",
-  miscSoCancelled: "Cancellation - S.O. cancelled",
-  miscShortclosedSo: "Cancellation - Shortclosed S.O.",
-  miscMultipleSupplyOrders: "Cancellation - Files with Multiple S.O.",
+  miscLiveFiles: "Miscellaneous - Live files",
+  miscFileClosed: "Miscellaneous - File closed",
+  miscLd: "Miscellaneous - LD",
+  miscDemandCancelled: "Miscellaneous - Demand cancelled",
+  miscSoCancelled: "Miscellaneous - S.O. cancelled",
+  miscShortclosedSo: "Miscellaneous - Shortclosed S.O.",
+  miscMultipleSupplyOrders: "Miscellaneous - Files with Multiple S.O.",
 };
 
 function isPaymentDue(file: FileRecord) {
@@ -18815,7 +19614,21 @@ function isIrCompleted(file: FileRecord) {
 }
 
 function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
-  return `statusSummary:${encodeURIComponent(milestone)}:${encodeURIComponent(stage)}`;
+  if (milestone === "Miscellaneous") {
+    const miscFilters: Record<string, string> = {
+      "Live files": "miscLiveFiles",
+      "File closed": "miscFileClosed",
+      LD: "miscLd",
+      "Demand cancelled": "miscDemandCancelled",
+      "S.O. cancelled": "miscSoCancelled",
+      "Shortclosed S.O.": "miscShortclosedSo",
+      "Files with Multiple S.O.": "miscMultipleSupplyOrders",
+    };
+    return miscFilters[stage] ?? "miscLiveFiles";
+  }
+  const filterMilestone =
+    normalizeMilestoneName(milestone) === "deliveryperiodmilestone" ? "Delivery Period" : milestone;
+  return `statusSummary:${encodeURIComponent(filterMilestone)}:${encodeURIComponent(stage)}`;
 }
 
 function serializeDrillPath(parts: DrillPathItem[]) {
@@ -19049,6 +19862,15 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
         !hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
+    if (normalized === "bidding") {
+      return (
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        hasFilledString(file.cfaDate) &&
+        !isYes(file.biddingStageOver)
+      );
+    }
     if (isSupplyOrderDrivenMilestoneName(milestone)) {
       return matchesCurrentSupplyOrderDrivenMilestone(file, milestone);
     }
@@ -19069,6 +19891,14 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
         hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
+    if (normalized === "bidding") {
+      return (
+        !isCancelledFile(file) &&
+        isBiddingApplicableForFile(file) &&
+        !isYes(file.refloat) &&
+        isYes(file.biddingStageOver)
+      );
+    }
     if (isSupplyOrderDrivenMilestoneName(milestone)) {
       return matchesCompletedSupplyOrderDrivenMilestone(file, milestone);
     }
@@ -19083,7 +19913,43 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "rqaVetting") return isYes(file.rqa);
   if (filter === "ifaConcurrence") return isYes(file.ifa);
   if (filter === "liveBids") return isBiddingInProgressFile(file) && isFileTenderLive(file);
-  if (filter === "bidOverdue") return isBidOverdue(file);
+  if (filter === "bidOverdue") return isBiddingInProgressFile(file) && isBidOverdue(file);
+  if (filter.startsWith("preBidMeetingCombined:")) {
+    const [, state = "all", monthKey = ""] = filter.split(":");
+    if (state === "all") {
+      return (
+        isPreBidMeetingStatus(file, false, "due", monthKey) ||
+        isPreBidMeetingStatus(file, false, "completed", monthKey) ||
+        isPreBidMeetingStatus(file, true, "due", monthKey) ||
+        isPreBidMeetingStatus(file, true, "completed", monthKey)
+      );
+    }
+    if (state === "due" || state === "completed") {
+      return (
+        isPreBidMeetingStatus(file, false, state, monthKey) ||
+        isPreBidMeetingStatus(file, true, state, monthKey)
+      );
+    }
+    return false;
+  }
+  if (filter.startsWith("preBidMeetingCombinedFy:")) {
+    const [, state = "all", fiscalYear = ""] = filter.split(":");
+    if (state === "all") {
+      return (
+        isPreBidMeetingStatus(file, false, "due", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, false, "completed", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, "due", "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, "completed", "", fiscalYear)
+      );
+    }
+    if (state === "due" || state === "completed") {
+      return (
+        isPreBidMeetingStatus(file, false, state, "", fiscalYear) ||
+        isPreBidMeetingStatus(file, true, state, "", fiscalYear)
+      );
+    }
+    return false;
+  }
   if (filter.startsWith("preBidMeeting:") || filter.startsWith("refloatPreBidMeeting:")) {
     const [kind = "", state = "all", monthKey = ""] = filter.split(":");
     const refloat = kind === "refloatPreBidMeeting";
@@ -19129,6 +19995,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "deliveryPeriodValid") return isDeliveryPeriodValid(file);
   if (filter === "deliveryPeriodExpired") return isDeliveryPeriodExpired(file);
   if (filter === "deliveryPeriodExtended") return isDeliveryPeriodExtended(file);
+  if (filter === "deliveryPeriodLive")
+    return isDeliveryPeriodValid(file) || isDeliveryPeriodExtended(file);
   if (filter === "irPreparationPending") return isIrPreparationPending(file);
   if (filter === "irReceiptPending") return isIrReceiptPending(file);
   if (filter === "irCompleted") return isIrCompleted(file);
@@ -19191,7 +20059,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestoneUnderProcess:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(22));
     if (milestone?.key === "refloatPostTcec") {
-      return isYes(file.refloat) && !isYes(file.biddingStageOver);
+      return isYes(file.refloat) && isYes(file.tcec) && !isYes(file.biddingStageOver);
     }
     if (milestone?.key === "refloatBidding") return false;
     if (milestone?.key === "supplyOrder") {
@@ -19204,6 +20072,13 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter.startsWith("milestoneActive:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(16));
     if (!milestone) return true;
+    if (milestone.key === "bidding") {
+      return (
+        isBiddingInProgressFile(file) &&
+        !isFileTenderLive(file) &&
+        !isBidOverdue(file)
+      );
+    }
     if (milestone.key === "refloatBidding") {
       return (
         isRefloatBiddingInProgressFile(file) &&
@@ -19380,6 +20255,8 @@ function isInactiveHistoryDashboardFilter(filter: string) {
     filter === "divisionTurnaroundSample" ||
     filter.startsWith("mode:") ||
     filter.startsWith("gemBiddingMode:") ||
+    filter.startsWith("preBidMeetingCombined:") ||
+    filter.startsWith("preBidMeetingCombinedFy:") ||
     filter.startsWith("preBidMeeting:") ||
     filter.startsWith("refloatPreBidMeeting:") ||
     filter.startsWith("preBidMeetingFy:") ||
@@ -19454,6 +20331,12 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
       return matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder");
     if (stageKey === "live") return hasLiveSupplyOrderRow(file);
     if (stageKey === "pending") return hasCurrentSupplyOrderMilestoneRow(file);
+    if (stageKey === "atpreviousstage") {
+      return (
+        matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction") &&
+        !matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder")
+      );
+    }
   }
 
   if (milestoneKey === "financialsanction") {
@@ -19524,6 +20407,19 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "completed") return isPreBidMeetingStatus(file, false, "completed");
     if (stageKey === "refloatdue") return isPreBidMeetingStatus(file, true, "due");
     if (stageKey === "refloatcompleted") return isPreBidMeetingStatus(file, true, "completed");
+  }
+
+  if (milestoneKey === "bidding") {
+    const biddingInProgress = isBiddingInProgressFile(file);
+    if (stageKey === "live") return biddingInProgress && isFileTenderLive(file);
+    if (stageKey === "inprocess") {
+      return biddingInProgress && !isFileTenderLive(file) && !isBidOverdue(file);
+    }
+    if (stageKey === "openingoverdue") return biddingInProgress && isBidOverdue(file);
+    if (stageKey === "completed") {
+      const milestone = milestoneDefinitions.find((item) => item.key === "bidding");
+      return Boolean(milestone && !isCancelledFile(file) && isMilestoneComplete(file, milestone));
+    }
   }
 
   if (milestoneKey === "payment") {
@@ -19724,22 +20620,22 @@ function getStatusPageExportRows(
   });
 
   rows.push(
-    { section: "Cancellation", metric: "Live files", count: miscellaneousCounts.liveFiles },
-    { section: "Cancellation", metric: "File closed", count: miscellaneousCounts.fileClosed },
-    { section: "Cancellation", metric: "LD", count: miscellaneousCounts.ld },
+    { section: "Miscellaneous", metric: "Live files", count: miscellaneousCounts.liveFiles },
+    { section: "Miscellaneous", metric: "File closed", count: miscellaneousCounts.fileClosed },
+    { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
     {
-      section: "Cancellation",
+      section: "Miscellaneous",
       metric: "Demand cancelled",
       count: miscellaneousCounts.demandCancelled,
     },
-    { section: "Cancellation", metric: "S.O. cancelled", count: miscellaneousCounts.soCancelled },
+    { section: "Miscellaneous", metric: "S.O. cancelled", count: miscellaneousCounts.soCancelled },
     {
-      section: "Cancellation",
+      section: "Miscellaneous",
       metric: "Shortclosed S.O.",
       count: miscellaneousCounts.shortclosedSo,
     },
     {
-      section: "Cancellation",
+      section: "Miscellaneous",
       metric: "Files with Multiple S.O.",
       count: miscellaneousCounts.multipleSupplyOrders,
     },
@@ -20388,6 +21284,18 @@ function getDashboardFilterTitle(filter: string) {
     return `${isRefloat ? "Refloat Pre-Bid Meeting" : "Pre-Bid Meeting"} - ${stateLabel}${
       fiscalYear ? ` - FY ${fiscalYear}` : ""
     }`;
+  }
+  if (filter.startsWith("preBidMeetingCombinedFy:")) {
+    const [, state = "all", rawFy = ""] = filter.split(":");
+    const fiscalYear = decodeStatusFilterPart(rawFy);
+    const stateLabel = state === "due" ? "Due" : state === "completed" ? "Completed" : "Total";
+    return `Pre-Bid Meeting - ${stateLabel}${fiscalYear ? ` - FY ${fiscalYear}` : ""}`;
+  }
+  if (filter.startsWith("preBidMeetingCombined:")) {
+    const [, state = "all", rawMonth = ""] = filter.split(":");
+    const month = decodeStatusFilterPart(rawMonth);
+    const stateLabel = state === "due" ? "Due" : state === "completed" ? "Completed" : "Total";
+    return `Pre-Bid Meeting - ${stateLabel}${month ? ` - ${month}` : ""}`;
   }
   if (filter.startsWith("tcecStatus:")) {
     const [, rawStage = "pre", rawMetric = "reviewed", rawCommittee = "", rawDate = ""] =
