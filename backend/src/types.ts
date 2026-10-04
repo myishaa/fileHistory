@@ -93,6 +93,7 @@ export type AppSettings = {
   addEditRibbonFields?: string[];
   preSoDefaultSoOffsetDays?: number;
   preSoDefaultPaymentOffsetDays?: number;
+  bgReturnOffsetDays?: number;
 };
 
 export type FirmRatingField = {
@@ -207,6 +208,7 @@ export type SupplyOrderDetail = {
   shortclosure?: string;
   shortclosureDate?: string;
   noFurtherAction?: string;
+  noFurtherActionDate?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -238,6 +240,7 @@ export type AdvancePaymentDetail = {
   completedMilestones?: string[];
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
+  expectedPaymentDate?: string;
   billPreparationDate?: string;
   billNo?: string;
   billSentForPaymentDate?: string;
@@ -288,6 +291,7 @@ export type MasterFirm = {
   id: string;
   firmName?: string;
   firmType?: string;
+  firmTypeOther?: string;
   emailId?: string;
   city?: string;
   address?: string;

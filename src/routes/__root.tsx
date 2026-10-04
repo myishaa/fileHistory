@@ -120,6 +120,7 @@ function RootComponent() {
   const activeUser = useActiveUser();
   const storeStatus = useStoreStatus();
   const [hydrated, setHydrated] = useState(false);
+  const [filterScopeWarningActive, setFilterScopeWarningActive] = useState(false);
   const themeClass = settings.theme === "dark" ? "dark" : "";
   const tintClass = `theme-tint-${settings.themeTint}`;
   const isPublicLivePage = pathname === "/mmg-live";
@@ -130,10 +131,24 @@ function RootComponent() {
     setHydrated(true);
   }, []);
 
+  useEffect(() => {
+    const updateWarning = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setFilterScopeWarningActive(detail?.active === true);
+    };
+    window.addEventListener("recordkeeper:filter-warning-state", updateWarning);
+    return () => window.removeEventListener("recordkeeper:filter-warning-state", updateWarning);
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <div
-        className={`${themeClass} ${tintClass} min-h-screen w-full bg-background text-foreground`}
+        className={
+          `${themeClass} ${tintClass} min-h-screen w-full text-foreground ` +
+          (filterScopeWarningActive
+            ? "relative bg-destructive/10 after:pointer-events-none after:fixed after:inset-0 after:z-[60] after:bg-destructive/10"
+            : "bg-background")
+        }
       >
         {isPublicLivePage ? (
           <Outlet />

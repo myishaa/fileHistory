@@ -4,6 +4,7 @@ import type {
   SupplementaryBillDetail,
   SupplyOrderDetail,
 } from "@/lib/files-store";
+import { store } from "@/lib/files-store";
 import {
   advancePaymentEntries as normalizedAdvancePaymentEntries,
   countExpectedSupplyOrderRows,
@@ -32,6 +33,7 @@ import {
   hasCompletedBillReturn,
   hasOpenBillReturn,
   hasReturnedBillPaid,
+  latestBillReturnCycle,
 } from "@/lib/refloat-returned-bill";
 
 export type MmgSummaryFieldConfig = {
@@ -2308,15 +2310,13 @@ function hasSupplementaryBillData(bill: SupplementaryBillDetail) {
 }
 
 function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && !hasFilledString(latest.resubmittedDate));
 }
 
 function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && hasFilledString(latest.resubmittedDate));
 }
 
 function hasBillReturnCycleData(cycle: NonNullable<SupplyOrderDetail["billReturnCycles"]>[number]) {
@@ -2617,7 +2617,9 @@ function isWarrantyBgReturnPurposeComplete(
   if (category !== "pwb" && category !== "psbpwb") return false;
   if (!isBgCategoryApplicable(file, order, category)) return false;
   if (!hasFilledString(order.warrantyPeriodDate)) return false;
-  return isBeforeToday(addDays(order.warrantyPeriodDate, 60));
+  return isBeforeToday(
+    addDays(order.warrantyPeriodDate, store.getSettings().bgReturnOffsetDays ?? 60),
+  );
 }
 
 function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {

@@ -542,7 +542,9 @@ const files = [
     completedMilestones: ["Scrutiny", "Controlling", "CFA", "Bidding", "Financial Sanction"],
     extra: {
       file: { no_of_so: 1 },
-      supplyOrders: [jobCompletedOrder("260014", 2650000)],
+      supplyOrders: [
+        jobCompletedOrder("260014", 2650000, { dp_date: "2026-08-17" }),
+      ],
     },
   }),
   baseFile({
@@ -770,6 +772,7 @@ const files = [
       file: { no_of_so: 1 },
       supplyOrders: [
         completedServiceOrder("260023", 6100000, "PFMS", {
+          dp_date: "2026-08-16",
           supplementary_bills: [
             {
               billNo: "QA-SUPP-260023",
@@ -796,6 +799,7 @@ const files = [
       file: { no_of_so: 1 },
       supplyOrders: [
         completedServiceOrder("260024", 7300000, "PFMS", {
+          dp_date: "2026-08-16",
           supplementary_bills: [
             {
               billNo: "QA-SUPP-260024",
@@ -823,6 +827,7 @@ const files = [
       file: { no_of_so: 1 },
       supplyOrders: [
         completedServiceOrder("260025", 2950000, "PFMS", {
+          dp_date: "2026-08-16",
           supplementary_bills: [
             {
               billNo: "QA-SUPP-260025",

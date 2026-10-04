@@ -10,8 +10,10 @@ const configuredFileCategories = process.env.AUDIT_FILE_CATEGORIES;
 
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
+const allFilesYear = "__all_files__";
 const fixedFileCategoryKeys = ["goodsServices", "amc", "mpc", "cars", "om"];
 const defaultFileTypeLabels = new Set(["goods & services", "amc", "mpc", "cars", "o&m"]);
+let currentFinancialYear;
 
 const strictFileLevelFilters = new Set([
   "totalFiles",
@@ -62,23 +64,61 @@ function getLiveStatusDashboardFilter(milestoneName) {
   const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
   const normalized = normalizeMilestoneName(filterMilestoneName);
   if (normalized === "supplementarybillreturnedforcorrection") return "supplementaryBill:returned";
-  if (normalized === "deliveryperiod") return "deliveryPeriodLive";
+  if (normalized === "deliveryperiod") return "status2DpPending";
   return `manualMilestoneCurrent:${filterMilestoneName}`;
 }
 
-function isFileVisibleForSelectedYear(file) {
-  if (selectedYear === "__all_files__") return true;
-  if (
-    !selectedYear ||
-    selectedYear === allActiveFilesYear ||
-    selectedYear === activePlusCurrentFyClosedYear
-  ) {
-    return true;
-  }
-  return (
-    file.year === selectedYear ||
-    (Array.isArray(file.activeYears) && file.activeYears.includes(selectedYear))
+function isYes(value) {
+  return String(value ?? "").trim().toLowerCase() === "yes";
+}
+
+function isFileClosed(file) {
+  return (file.completedMilestones ?? []).some(
+    (milestone) => String(milestone ?? "").trim().toLowerCase() === "file closed",
   );
+}
+
+function isCancelledFile(file) {
+  if (isYes(file.demandCancelled)) return true;
+  const orders = file.supplyOrders ?? [];
+  if (orders.length === 0) return isYes(file.soCancelled);
+  return orders.every((order) => isYes(order.soCancelled));
+}
+
+function isInactiveFile(file) {
+  return isFileClosed(file) || isCancelledFile(file);
+}
+
+function financialYearStart(year) {
+  const match = String(year ?? "").match(/\b(19\d{2}|20\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+function isFileVisibleForSelectedYear(file) {
+  if (!selectedYear || selectedYear === allFilesYear) return true;
+  if (selectedYear === allActiveFilesYear) return !isInactiveFile(file);
+  if (selectedYear === activePlusCurrentFyClosedYear) {
+    const currentYearStart = financialYearStart(currentFinancialYear);
+    const closureDate = file.fileClosureDate;
+    const closedInCurrentYear = Boolean(
+      closureDate &&
+        currentYearStart &&
+        closureDate >= `${currentYearStart}-04-01` &&
+        closureDate <= `${currentYearStart + 1}-03-31`,
+    );
+    return !isInactiveFile(file) || closedInCurrentYear;
+  }
+
+  if (file.year === selectedYear || file.activeYears?.includes(selectedYear)) return true;
+  const fileStart = financialYearStart(file.year);
+  const selectedStart = financialYearStart(selectedYear);
+  if (fileStart === undefined || selectedStart === undefined || fileStart > selectedStart) {
+    return false;
+  }
+  if (isCancelledFile(file)) return false;
+  if (!isFileClosed(file)) return true;
+  const closureDate = file.fileClosureDate;
+  return Boolean(closureDate && closureDate >= `${selectedStart}-04-01`);
 }
 
 async function api(path, token) {
@@ -281,9 +321,9 @@ function collectStatusCounters(summary) {
       add(
         counters,
         "Status-1",
-        `${title} / Resubmitted`,
+        `${title} / Resubmitted and Unpaid`,
         row.returnedBillsResubmitted,
-        "billReturn:resubmitted",
+        "billReturn:resubmittedUnpaid",
       );
       add(
         counters,
@@ -483,6 +523,7 @@ async function main() {
   const token = await login();
   try {
     const { settings } = await api("/api/settings", token);
+    currentFinancialYear = settings?.financialYear;
     const fileCategories =
       configuredFileCategories === "__omit__"
         ? undefined

@@ -11,7 +11,12 @@ import type {
   ValueThresholdLevel,
 } from "../types.js";
 import { requireAuth, type AuthRequest } from "../utils/auth.js";
-import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
+import {
+  cacheTtl,
+  clearCachePrefix,
+  clearDashboardReportCaches,
+  getCached,
+} from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
 import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
 import {
@@ -96,6 +101,7 @@ type SettingsRow = {
   active_user_id: string | null;
   pre_so_default_so_offset_days: number;
   pre_so_default_payment_offset_days: number;
+  bg_return_offset_days: number;
 };
 
 type UserUiPreferencesRow = {
@@ -503,6 +509,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     addEditRibbonFields: normalizeAddEditRibbonFields(uiPreferences?.add_edit_ribbon_fields),
     preSoDefaultSoOffsetDays: Number(row.pre_so_default_so_offset_days ?? 30),
     preSoDefaultPaymentOffsetDays: Number(row.pre_so_default_payment_offset_days ?? 30),
+    bgReturnOffsetDays: Number(row.bg_return_offset_days ?? 60),
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -589,7 +596,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
-              pre_so_default_so_offset_days, pre_so_default_payment_offset_days
+              pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days
        from app_settings
        where id = true`,
     );
@@ -606,7 +613,9 @@ function ensurePreSoSettingsSchema() {
       `alter table app_settings
          add column if not exists pre_so_default_so_offset_days integer not null default 30;
        alter table app_settings
-         add column if not exists pre_so_default_payment_offset_days integer not null default 30`,
+         add column if not exists pre_so_default_payment_offset_days integer not null default 30;
+       alter table app_settings
+         add column if not exists bg_return_offset_days integer not null default 60`,
     )
     .then(() => undefined);
   return preSoSettingsSchemaReady;
@@ -614,6 +623,7 @@ function ensurePreSoSettingsSchema() {
 
 function clearSettingsCache() {
   clearCachePrefix("settings:");
+  clearDashboardReportCaches();
   clearCachePrefix("divisions:");
   clearCachePrefix("lookup:financial-years");
   clearCachePrefix("lookup:selected-year");
@@ -1142,6 +1152,7 @@ settingsRouter.patch(
     const preSoDefaultFields = new Set([
       "preSoDefaultSoOffsetDays",
       "preSoDefaultPaymentOffsetDays",
+      "bgReturnOffsetDays",
     ]);
     const canUpdatePreSoDefaults =
       bodyFields.length > 0 &&
@@ -1329,6 +1340,15 @@ settingsRouter.patch(
         ),
       );
     }
+    if ("bgReturnOffsetDays" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin/Sub-admin access required.");
+      }
+      addField(
+        "bg_return_offset_days",
+        readNonNegativeInteger(body.bgReturnOffsetDays, "BG return offset days"),
+      );
+    }
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",
@@ -1377,7 +1397,8 @@ settingsRouter.patch(
       !("specialFileMarkers" in body) &&
       !("firmUniqueNoLabel" in body) &&
       !("preSoDefaultSoOffsetDays" in body) &&
-      !("preSoDefaultPaymentOffsetDays" in body)
+      !("preSoDefaultPaymentOffsetDays" in body) &&
+      !("bgReturnOffsetDays" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }

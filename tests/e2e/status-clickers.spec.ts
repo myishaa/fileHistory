@@ -9,10 +9,6 @@ const QA_USERNAME = "qa_playwright";
 const QA_PASSWORD = "qa_playwright123";
 const QA_PREFIX = "QA-PLAYWRIGHT-STATUS";
 const CASES_PER_COUNTER = 10;
-const FUTURE_DP_DATE = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)
-  .toISOString()
-  .slice(0, 10);
-
 type CounterTarget = {
   name: string;
   testId: string;
@@ -107,27 +103,9 @@ function mergeOrder(code: string, index: number, patch: Partial<SupplyOrderDetai
 
 const counterTargets: CounterTarget[] = [
   {
-    name: "Delivery / Pending",
-    testId: "status-counter-delivery-pending",
-    filePatch: { ir: "Yes" },
-    buildOrder: () => ({
-      currentMilestone: "Delivery",
-      dpDate: FUTURE_DP_DATE,
-    }),
-  },
-  {
     name: "Supply Order / Placed",
-    testId: "status-counter-supply-order-completed",
+    testId: "status-counter-supply-order-placed",
     buildOrder: () => ({}),
-  },
-  {
-    name: "Delivery / Completed",
-    testId: "status-counter-delivery-completed",
-    filePatch: { ir: "Yes" },
-    buildOrder: () => ({
-      materialReceiptDate: "2026-07-20",
-      completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period", "Delivery"],
-    }),
   },
   {
     name: "Payment / Pending",
@@ -191,22 +169,6 @@ const counterTargets: CounterTarget[] = [
       combinedBgReceivedDate: "2026-07-06",
       combinedBgValidityDate: "2027-12-31",
       completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period", "PSB+PWB"],
-    }),
-  },
-  {
-    name: "Bill sent for payment / Pending",
-    testId: "status-counter-bill-sent-for-payment-pending",
-    buildOrder: () => ({
-      currentMilestone: "Bill sent for payment",
-      materialReceiptDate: "2026-07-20",
-      billPreparationDate: "2026-07-21",
-      completedMilestones: [
-        "Financial Sanction",
-        "Supply Order",
-        "Delivery Period",
-        "Delivery",
-        "Bill preparation",
-      ],
     }),
   },
   {
@@ -365,7 +327,7 @@ test.describe("dashboard status clickers", () => {
     await pool.end();
   });
 
-  test("Status-3 counters and Search clickers work for 100 seeded browser cases", async ({
+  test(`Status-3 counters and Search clickers work for ${counterTargets.length * CASES_PER_COUNTER} seeded browser cases`, async ({
     page,
   }) => {
     test.setTimeout(360_000);

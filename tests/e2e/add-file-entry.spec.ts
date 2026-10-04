@@ -6,6 +6,8 @@ import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js"
 const QA_USERNAME = "qa_playwright";
 const QA_PASSWORD = "qa_playwright123";
 const QA_PREFIX = "QA-PLAYWRIGHT-ADD";
+const QA_FIRM_NAME = "QA Playwright Add Firm";
+const QA_FIRM_UNIQUE_NO = "QA-PLAYWRIGHT-ADD-FIRM";
 const FILE_COUNT = Number(process.env.PLAYWRIGHT_ADD_FILE_COUNT ?? 50);
 
 type AddScenario = {
@@ -27,6 +29,14 @@ async function cleanupQaFiles() {
   await pool.query(
     "delete from files where unique_code like $1 or file_no like $1 or demand_description like $1",
     [`${QA_PREFIX}%`],
+  );
+}
+
+async function ensureQaFirm() {
+  await pool.query("delete from master_firms where firm_unique_no = $1", [QA_FIRM_UNIQUE_NO]);
+  await pool.query(
+    "insert into master_firms (firm_name, firm_unique_no, firm_type) values ($1, $2, 'MSE')",
+    [QA_FIRM_NAME, QA_FIRM_UNIQUE_NO],
   );
 }
 
@@ -127,9 +137,18 @@ async function openStage(page: Page, orderIndex: number, stageIndex: number) {
   if (!isOpen) await card.locator("summary").click();
 }
 
+async function openPaymentCard(page: Page, label: "Advance Payment" | "Normal Payment") {
+  const summary = page.locator("summary").filter({ has: page.getByText(label, { exact: true }) }).first();
+  const card = summary.locator("..");
+  if (!(await card.evaluate((element) => (element as HTMLDetailsElement).open))) {
+    await summary.click();
+  }
+}
+
 async function fillFileDetails(page: Page, code: string, scenario: AddScenario) {
   await page.getByTestId("add-section-file-details").click();
   await page.getByTestId("add-field-division").fill("ACC");
+  await page.getByTestId("add-field-division").press("Enter");
   await expect(page.getByTestId("add-field-uniqueCode")).not.toHaveValue("");
   await page.getByTestId("add-field-indentor").fill("Playwright Operator");
   await page.getByTestId("add-field-demandDescription").fill(`${code} field-by-field QA`);
@@ -196,7 +215,7 @@ async function fillSupplyOrderBase(page: Page, code: string, scenario: AddScenar
     await page.getByTestId("add-field-supplyOrder-0-soNo").fill(`${code}-SO-1`);
     await fillDate(page, "add-field-supplyOrder-0-soDate", "2026-07-04");
     const dialogPromise = page.waitForEvent("dialog");
-    await page.getByTestId("add-save").click();
+    await page.getByTestId("add-save-file-details").click();
     const dialog = await dialogPromise;
       expect(dialog.message()).toContain("S.O. date cannot be earlier than Financial Sanction date");
       await dialog.accept();
@@ -208,8 +227,9 @@ async function fillSupplyOrderBase(page: Page, code: string, scenario: AddScenar
 
   await page.getByTestId("add-field-supplyOrder-0-gemSoNo").fill(`${code}-GEM-1`);
   await page.getByTestId("add-field-supplyOrder-0-soValueCapital").fill("10000");
-  await page.getByTestId("add-field-supplyOrder-0-firm").fill(`Firm ${index + 1}`);
-  await page.getByTestId("add-field-supplyOrder-0-firmType").selectOption({ label: "MSE" });
+  await page.getByTestId("add-field-supplyOrder-0-firm").fill(QA_FIRM_NAME);
+  await page.getByTestId("add-field-supplyOrder-0-firm").press("Enter");
+  await expect(page.getByTestId("add-field-supplyOrder-0-firmUniqueNo")).toHaveValue(QA_FIRM_UNIQUE_NO);
 
   await clickRadio(page, "add-field-supplyOrder-0-stageDelivery", scenario.stageDelivery ? "Yes" : "No");
   if (scenario.stageDelivery) {
@@ -304,6 +324,7 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
   await page.getByTestId("add-so-tab-payment").click();
   await openSupplyOrder(page);
   if (scenario.advancePayment) {
+    await openPaymentCard(page, "Advance Payment");
     await page.getByTestId("add-field-supplyOrder-0-advance-stageAmountCapital").fill("2000");
     await fillDate(page, "add-field-supplyOrder-0-advance-billPreparationDate", "2026-07-12");
     await fillDate(page, "add-field-supplyOrder-0-advance-billSentForPaymentDate", "2026-07-13");
@@ -314,6 +335,7 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
     await fillDate(page, "add-field-supplyOrder-0-stage-0-billPreparationDate", "2026-07-23");
     await fillDate(page, "add-field-supplyOrder-0-stage-0-billSentForPaymentDate", "2026-07-24");
   } else if (!scenario.stageDelivery && scenario.fileType === "Goods & Services") {
+    await openPaymentCard(page, "Normal Payment");
     await fillDate(page, "add-field-supplyOrder-0-billPreparationDate", "2026-07-23");
     if (scenario.paymentComplete) {
       await fillDate(page, "add-field-supplyOrder-0-billSentForPaymentDate", "2026-07-24");
@@ -334,13 +356,13 @@ async function saveCurrentFile(page: Page) {
     await dialog.accept();
     return { type: "dialog" as const, message };
   });
-  await page.getByTestId("add-save").click();
+  await page.getByTestId("add-save-file-details").click();
   const result = await Promise.race([responsePromise, dialogPromise]);
   if (result.type === "dialog") {
     throw new Error(`Save was blocked by validation dialog:\n${result.message}`);
   }
   expect(result.response.ok()).toBeTruthy();
-  await expect(page.getByTestId("add-save")).toContainText(/Saved|Update|Save/);
+  await expect(page).toHaveURL(/\/search/);
 }
 
 async function verifyDateDeletionGuard(page: Page) {
@@ -348,7 +370,7 @@ async function verifyDateDeletionGuard(page: Page) {
   await openSupplyOrder(page);
   await page.getByTestId("add-field-supplyOrder-0-soDate").fill("");
   const dialogPromise = page.waitForEvent("dialog");
-  await page.getByTestId("add-save").click();
+  await page.getByTestId("add-save-file-details").click();
   const dialog = await dialogPromise;
   expect(dialog.message()).toContain("S.O. date");
   await dialog.accept();
@@ -361,6 +383,7 @@ test.describe("Add File field-by-field workflows", () => {
 
   test.beforeAll(async () => {
     await cleanupQaFiles();
+    await ensureQaFirm();
     const userId = await ensureQaUser();
     selectedFinancialYear = await selectedYear();
     browserSessionToken = await saveUserSession(userId);
@@ -369,13 +392,15 @@ test.describe("Add File field-by-field workflows", () => {
   test.afterAll(async () => {
     await deleteSession(browserSessionToken);
     await cleanupQaFiles();
+    await pool.query("delete from master_firms where firm_unique_no = $1", [QA_FIRM_UNIQUE_NO]);
     await pool.end();
   });
 
-  test("enters 50 files through Add File, including S.O. stages, BG variants, date warning, and exports", async ({
+  test(`enters ${FILE_COUNT} files through Add File, including S.O. stages, BG variants, date warning, and exports`, async ({
     page,
   }) => {
-    test.setTimeout(600_000);
+    test.setTimeout(Math.max(120_000, FILE_COUNT * 45_000));
+    page.setDefaultTimeout(15_000);
     await authenticate(page, browserSessionToken);
     const codes: string[] = [];
 
@@ -410,11 +435,11 @@ test.describe("Add File field-by-field workflows", () => {
     await expect(page.getByText(codes[codes.length - 1]).first()).toBeVisible();
 
     const excelDownload = page.waitForEvent("download");
-    await page.getByRole("button", { name: /Export Excel/ }).click();
+    await page.getByRole("button", { name: "Export all search results as Excel" }).click();
     await expect(await excelDownload).toBeTruthy();
 
     const pdfDownload = page.waitForEvent("download");
-    await page.getByRole("button", { name: /Print list/ }).click();
+    await page.getByRole("button", { name: "Export all search results as PDF" }).click();
     await expect(await pdfDownload).toBeTruthy();
   });
 });

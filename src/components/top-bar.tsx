@@ -2,7 +2,7 @@ import { useRouterState } from "@tanstack/react-router";
 import {
   BarChart3,
   CalendarDays,
-  Download,
+  FileText,
   FilePlus2,
   Info,
   LayoutDashboard,
@@ -14,15 +14,19 @@ import {
   UserRound,
   LogOut,
   Bell,
+  Lock,
+  Unlock,
 } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   store,
   useActiveUser,
   useFileProcessingNotifications,
   useMessages,
   useSettings,
+  fetchReportPreferences,
+  saveReportPreferences,
 } from "@/lib/files-store";
 import {
   ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
@@ -51,7 +55,7 @@ const nav = [
 ] as const;
 
 const specificFyOlderFileRule =
-  "Older files are included if they were still open when the selected FY began. If formally closed later, they remain in that FY's file set.";
+  "An older file is included if it was still open on 1 April of the selected FY, even if it was formally closed later.";
 
 function getAnomalyFilterQuery(userId: string, selectedYear: string, financialYear: string) {
   if (typeof window !== "undefined") {
@@ -67,7 +71,13 @@ function getAnomalyFilterQuery(userId: string, selectedYear: string, financialYe
     }
   }
   const params = new URLSearchParams({ selectedYear });
-  const defaultFileYear = normalizeFinancialYearLabel(selectedYear) || financialYear;
+  const normalizedGlobalYear = normalizeFinancialYearLabel(selectedYear);
+  const defaultFileYear =
+    selectedYear === ALL_ACTIVE_FILES_YEAR ||
+    selectedYear === ALL_FILES_YEAR ||
+    selectedYear === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
+      ? financialYear
+      : normalizedGlobalYear || financialYear;
   if (defaultFileYear) params.set("fileYear", defaultFileYear);
   return params.toString();
 }
@@ -82,9 +92,13 @@ export function TopBar() {
   const activeUser = useActiveUser();
   const [anomalyWarningCount, setAnomalyWarningCount] = useState(0);
   const [anomalyWarningError, setAnomalyWarningError] = useState(false);
+  const anomalyRequestId = useRef(0);
   const [ipAccessWarningCount, setIpAccessWarningCount] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [filterGuideOpen, setFilterGuideOpen] = useState(false);
+  const [filterWarningSuppressed, setFilterWarningSuppressed] = useState(false);
+  const [filterWarningPreferenceLoaded, setFilterWarningPreferenceLoaded] = useState(false);
+  const [filterScopeRevision, setFilterScopeRevision] = useState(0);
   const isDark = settings.theme === "dark";
   const canManageAdminSettings = activeUser?.role === "admin";
   const canUpdateAppearance = Boolean(activeUser);
@@ -111,6 +125,89 @@ export function TopBar() {
     effectiveSelectedYear,
     settings.financialYear,
   );
+  const filterCombinationActive =
+    globalFilterActive ||
+    isSubfilterNonSuggested(
+      pathname,
+      dashboardTab,
+      reportMode,
+      settings.financialYear,
+      activeUser?.id,
+    );
+  void filterScopeRevision;
+
+  useEffect(() => {
+    if (!activeUser) {
+      setFilterWarningSuppressed(false);
+      setFilterWarningPreferenceLoaded(false);
+      return;
+    }
+    setFilterWarningPreferenceLoaded(false);
+    if (activeUser.id.startsWith("viewer:")) {
+      try {
+        const stored = window.localStorage.getItem(
+          `recordkeeper:filter-warning:${activeUser.id}`,
+        );
+        setFilterWarningSuppressed(stored === "suppressed");
+      } catch {
+        setFilterWarningSuppressed(false);
+      }
+      setFilterWarningPreferenceLoaded(true);
+      return;
+    }
+    void fetchReportPreferences<{ suppressed?: boolean }>("globalFilterWarning")
+      .then(({ preferences }) => setFilterWarningSuppressed(preferences.suppressed === true))
+      .catch((error) => {
+        console.error(error);
+        setFilterWarningSuppressed(false);
+      })
+      .finally(() => setFilterWarningPreferenceLoaded(true));
+  }, [activeUser?.id]);
+
+  useEffect(() => {
+    const refreshSubfilterScope = () => setFilterScopeRevision((revision) => revision + 1);
+    window.addEventListener("recordkeeper:filter-scope-changed", refreshSubfilterScope);
+    return () => window.removeEventListener("recordkeeper:filter-scope-changed", refreshSubfilterScope);
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(
+      () => setFilterScopeRevision((revision) => revision + 1),
+      100,
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [activeUser?.id, dashboardTab, pathname, reportMode]);
+
+  useEffect(() => {
+    if (!filterWarningPreferenceLoaded) return;
+    const timeoutId = window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("recordkeeper:filter-warning-state", {
+          detail: { active: filterCombinationActive && !filterWarningSuppressed },
+        }),
+      );
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [filterCombinationActive, filterWarningPreferenceLoaded, filterWarningSuppressed]);
+
+  const toggleFilterWarningSuppression = async () => {
+    if (!activeUser) return;
+    const nextSuppressed = !filterWarningSuppressed;
+    setFilterWarningSuppressed(nextSuppressed);
+    try {
+      if (activeUser.id.startsWith("viewer:")) {
+        window.localStorage.setItem(
+          `recordkeeper:filter-warning:${activeUser.id}`,
+          nextSuppressed ? "suppressed" : "visible",
+        );
+      } else {
+        await saveReportPreferences("globalFilterWarning", { suppressed: nextSuppressed });
+      }
+    } catch (error) {
+      setFilterWarningSuppressed(!nextSuppressed);
+      window.alert(error instanceof Error ? error.message : "Could not save filter warning preference.");
+    }
+  };
   const canAddFiles =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
@@ -150,6 +247,7 @@ export function TopBar() {
   const bellCount = messageWarningCount + displayedAnomalyWarningCount + fileProcessingWarningCount;
   const adminBellCount = bellCount + ipAccessWarningCount;
   const refreshAnomalyWarningCount = useCallback(() => {
+    const requestId = ++anomalyRequestId.current;
     if (!activeUser) {
       setAnomalyWarningCount(0);
       setAnomalyWarningError(false);
@@ -160,11 +258,13 @@ export function TopBar() {
     void store
       .countSuspectedAnomalies(query)
       .then((count) => {
+        if (requestId !== anomalyRequestId.current) return;
         setAnomalyWarningCount(count);
         setAnomalyWarningError(false);
       })
       .catch((error) => {
         console.error(error);
+        if (requestId !== anomalyRequestId.current) return;
         setAnomalyWarningError(true);
       });
   }, [activeUser, settings.financialYear, settings.selectedYear]);
@@ -177,29 +277,37 @@ export function TopBar() {
     let cancelled = false;
     const selectedYear = settings.selectedYear || settings.financialYear;
     const loadAnomalyCount = () => {
+      const requestId = ++anomalyRequestId.current;
       const query = getAnomalyFilterQuery(activeUser.id, selectedYear, settings.financialYear);
       void store
         .countSuspectedAnomalies(query)
         .then((count) => {
-          if (!cancelled) {
+          if (!cancelled && requestId === anomalyRequestId.current) {
             setAnomalyWarningCount(count);
             setAnomalyWarningError(false);
           }
         })
         .catch((error) => {
           console.error(error);
-          if (!cancelled) setAnomalyWarningError(true);
+          if (!cancelled && requestId === anomalyRequestId.current) setAnomalyWarningError(true);
         });
+    };
+    const refreshFromStorage = (event: StorageEvent) => {
+      if (event.key === "recordkeeper:anomaly-data-updated") loadAnomalyCount();
     };
     loadAnomalyCount();
     const intervalId = window.setInterval(loadAnomalyCount, 60_000);
     window.addEventListener("focus", loadAnomalyCount);
     window.addEventListener("recordkeeper:anomaly-scope-changed", loadAnomalyCount);
+    window.addEventListener("recordkeeper:anomaly-data-updated", loadAnomalyCount);
+    window.addEventListener("storage", refreshFromStorage);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
       window.removeEventListener("focus", loadAnomalyCount);
       window.removeEventListener("recordkeeper:anomaly-scope-changed", loadAnomalyCount);
+      window.removeEventListener("recordkeeper:anomaly-data-updated", loadAnomalyCount);
+      window.removeEventListener("storage", refreshFromStorage);
     };
   }, [activeUser, settings.financialYear, settings.selectedYear]);
   useEffect(() => {
@@ -331,7 +439,7 @@ export function TopBar() {
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="flex w-full min-w-0 flex-wrap items-start gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap sm:items-center sm:gap-3">
           <div className="relative">
             <button
               type="button"
@@ -434,12 +542,12 @@ export function TopBar() {
               </div>
             ) : null}
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto">
             <div className="flex items-center gap-1.5">
               <label
                 className={filterControlClass(
                   globalFilterActive,
-                  "flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1",
+                  "flex min-w-0 items-center gap-2 rounded-md border border-border bg-background px-2 py-1",
                 )}
               >
                 <CalendarDays
@@ -459,10 +567,19 @@ export function TopBar() {
                 <select
                   data-testid="global-year-select"
                   value={effectiveSelectedYear}
-                  onChange={(event) => store.updateSessionSelectedYear(event.target.value)}
+                  onChange={(event) => {
+                    const selectedYear = event.target.value;
+                    store.updateSessionSelectedYear(selectedYear);
+                    if (pathname === "/search" && typeof locationSearch.selectedYear === "string") {
+                      navigate({
+                        to: "/search",
+                        search: (previous) => ({ ...previous, selectedYear }),
+                      });
+                    }
+                  }}
                   disabled={!canSelectYear}
                   className={
-                    "h-6 min-w-20 bg-transparent text-sm font-semibold outline-none " +
+                    "h-6 min-w-0 max-w-full bg-transparent text-sm font-semibold outline-none " +
                     (globalFilterActive ? "text-destructive" : "text-foreground")
                   }
                 >
@@ -492,14 +609,44 @@ export function TopBar() {
                 <Info className="size-3" />
               </button>
             </div>
-            <div
-              className="flex max-w-[24rem] items-center gap-1 truncate pl-1 text-[11px] font-semibold leading-none text-foreground"
-              title={`Recommended: ${recommendedFilterLabel.activityYear} + ${recommendedFilterLabel.fileYear}`}
-            >
-              <span>Recommended:</span>
-              <span>{recommendedFilterLabel.activityYear}</span>
-              <span>+</span>
-              <span>{recommendedFilterLabel.fileYear}</span>
+            <div className="flex min-w-0 items-center gap-1 pl-1">
+              <div
+                className="flex max-w-[24rem] min-w-0 items-center gap-1 truncate text-[11px] font-semibold leading-none text-foreground"
+                title={`Recommended: ${recommendedFilterLabel.activityYear} + ${recommendedFilterLabel.fileYear}`}
+              >
+                <span>Recommended:</span>
+                <span className="truncate">{recommendedFilterLabel.activityYear}</span>
+                <span>+</span>
+                <span className="truncate">{recommendedFilterLabel.fileYear}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void toggleFilterWarningSuppression()}
+                disabled={!filterWarningPreferenceLoaded}
+                aria-pressed={filterWarningSuppressed}
+                title={
+                  filterWarningSuppressed
+                    ? "Unlock to show the screen-wide warning for non-recommended filters"
+                    : "Lock to suppress the screen-wide warning; filter highlighting remains"
+                }
+                aria-label={
+                  filterWarningSuppressed
+                    ? "Unlock screen-wide filter warning"
+                    : "Lock screen-wide filter warning"
+                }
+                className={
+                  "grid size-7 shrink-0 place-items-center rounded border disabled:cursor-wait disabled:opacity-50 " +
+                  (filterWarningSuppressed
+                    ? "border-border bg-card text-muted-foreground hover:bg-accent"
+                    : "border-destructive/50 bg-destructive/10 text-destructive hover:bg-destructive/20")
+                }
+              >
+                {filterWarningSuppressed ? (
+                  <Lock className="size-3.5" />
+                ) : (
+                  <Unlock className="size-3.5" />
+                )}
+              </button>
             </div>
           </div>
           <button
@@ -522,6 +669,11 @@ export function TopBar() {
           </button>
         </div>
       </div>
+      {filterCombinationActive && !filterWarningSuppressed ? (
+        <div className="border-t border-destructive/40 bg-destructive/15 px-4 py-2 text-center text-sm font-semibold text-destructive">
+          Caution: Global Filter or File Initiation Year differs from this page’s recommended combination. Review the selected scope before relying on these results.
+        </div>
+      ) : null}
       <FilterCombinationGuideDialog
         open={filterGuideOpen}
         onOpenChange={setFilterGuideOpen}
@@ -584,12 +736,12 @@ function FilterCombinationGuideDialog({
         rows: [
           [
             "Specific FY",
-            "FY record set. Includes files started in that FY and can include cancelled/all-S.O.-cancelled files belonging to that FY.",
+            "Includes files started in that FY and older files that were still open when it began. Cancelled files may also appear.",
             `For ${displayFinancialYearLabel(currentFinancialYear)}: files started in that FY are included. ${specificFyOlderFileRule} Files closed during that FY are included. Active + current FY closed excludes cancelled/all-S.O.-cancelled files.`,
           ],
           [
             "File Initiation Year",
-            "The FY in which the file was received/started. It narrows the file set after Global Filter.",
+            "The FY when the file started. It narrows the Global Filter to files from that year.",
             `Global Filter ${displayFinancialYearLabel(currentFinancialYear)} + Subfilter 2025-26 means files started in 2025-26 that are visible in the ${displayFinancialYearLabel(currentFinancialYear)} context.`,
           ],
         ],
@@ -608,7 +760,7 @@ function FilterCombinationGuideDialog({
         rows: [
           [
             "Specific FY",
-            "FY record set.",
+            "Files connected with the selected FY.",
             specificFyOlderFileRule,
             "Included.",
             "Excluded, unless specifically marked active in that FY.",
@@ -693,9 +845,11 @@ function FilterCombinationGuideDialog({
               type="button"
               onClick={exportPdf}
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+              title="Export filter guide as PDF"
+              aria-label="Export filter guide PDF"
             >
-              <Download className="size-4" />
-              Export PDF
+              <FileText className="size-4" />
+              PDF
             </button>
           </div>
         </DialogHeader>
@@ -712,8 +866,9 @@ function FilterCombinationGuideDialog({
           <div className="mb-4 rounded-md border border-primary/25 bg-primary/5 px-4 py-3">
             <div className="text-sm font-bold text-foreground">How Specific FY Works</div>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              Specific FY is an FY record set. Active + current FY closed is an operational set
-              that excludes cancelled demands and all-S.O.-cancelled files.
+              A specific FY includes files started in that year and older files that were still
+              open on 1 April. Active + current FY closed shows today's active files plus files
+              closed this FY; it excludes cancelled demands and files with only cancelled S.O.s.
             </p>
 	            <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
 	              <div className="rounded-md border border-border bg-card px-3 py-2">
@@ -744,7 +899,7 @@ function FilterCombinationGuideDialog({
                   <li>File received/started in FY 2025-26.</li>
                   <li>
                     With Global Filter 2026-27, Subfilter 2025-26 shows only those 2025-26 files
-                    that are visible in the 2026-27 working set.
+                    that are included in the 2026-27 view.
                   </li>
                   <li>Choosing All file years keeps every initiation year eligible.</li>
                 </ul>
@@ -787,7 +942,7 @@ function FilterCombinationGuideDialog({
                 {[
 	                  {
 	                    filter: "Specific FY",
-	                    meaning: "FY record set.",
+	                    meaning: "Files connected with the selected FY.",
 	                    older: specificFyOlderFileRule,
 	                    closed: "Included.",
 	                    oldOpen: "Excluded, unless specifically marked active in that FY.",
@@ -956,9 +1111,9 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
     meaningRows: [
       {
         filter: `Specific FY, e.g. ${currentFyLabel}`,
-        useWhen: "You want one FY working set.",
+        useWhen: "You want to review files connected with one FY.",
         shows:
-          `Files started in that FY; ${specificFyOlderFileRule} Files closed during that FY are included.`,
+          `Files started in that FY, plus older files that were still open on 1 April. ${specificFyOlderFileRule} Files closed during that FY are also included.`,
         examples: [
           `File started in ${currentFyLabel}: included.`,
           `Older file still open on 01 Apr ${currentStartYear ?? ""}, then formally closed in a later FY: included in ${currentFyLabel}.`,
@@ -974,7 +1129,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         examples: [
           "Old open file: included.",
           "Old closed file: included.",
-          "Cancelled file: included in the file set, unless a specific panel excludes it.",
+          "Cancelled file: included here, unless the selected panel excludes it.",
           "Use for cumulative review.",
         ],
       },
@@ -1002,8 +1157,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
       {
         filter: "File Initiation Year subfilter",
-        useWhen: "You want only files started in one FY.",
-        shows: "Applies after Global Filter and keeps only that initiation year.",
+        useWhen: "You want to narrow the view to files started in one FY.",
+        shows: "It narrows the Global Filter to files started in the selected FY.",
         examples: [
           `Global Filter ${currentFyLabel} + Subfilter 2025-26: only 2025-26 files visible in ${currentFyLabel}.`,
           `Global Filter ${currentFyLabel} + All file years: all initiation years remain eligible.`,
@@ -1017,9 +1172,9 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: "User's current selection",
         fileInitiationYear: "User's current selection",
         useFor: "Investigation and drill-down from any module.",
-        note: "Search should preserve the user's chosen context and exact clicker source.",
+        note: "Search keeps the filters and source details you arrived with.",
         examples: [
-          "Opening from Payment Pending should show the payment-pending file set.",
+          "Clicking Payment Pending opens the files behind that count.",
           "Opening from Pre-bid Completed FY 2026-27 should preserve that breadcrumb context.",
           "Manual Search can use any user-selected global/subfilter combination.",
         ],
@@ -1029,7 +1184,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 	        activityYear: softwareDefault,
 	        fileInitiationYear: allFileYears,
 	        useFor: "Day-to-day current monitoring.",
-	        note: "Operational set: excludes cancelled demands and all-S.O.-cancelled files.",
+        note: "Shows active files and files closed this FY. Cancelled demands and files with only cancelled S.O.s are excluded.",
         examples: [
           "Best starting point for today's pending and recently completed work.",
           "Shows the files your team is still handling, plus files closed during the current FY.",
@@ -1042,7 +1197,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Current operational status view.",
-	        note: "Use the same operational set as Status-1.",
+        note: "Uses the same file selection as Status-1.",
         examples: [
           "Use this to review the present stage-wise position of the working file set.",
           "Good for checking where files are pending right now.",
@@ -1055,7 +1210,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Current milestone/status breakup.",
-	        note: "Best for present workflow counters; cancelled/all-S.O.-cancelled files stay out.",
+        note: "Uses the same file selection as Status-1; cancelled demands and files with only cancelled S.O.s are excluded.",
         examples: [
           "Use this when you want Status-1 information in a compact table form.",
           "Good for comparing S.O., delivery, payment, and related workflow positions together.",
@@ -1068,7 +1223,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Pre-SO Live Status.",
-	        note: "Best for current live flow; cancelled demand cases stay out.",
+        note: "Shows the pre-S.O. workflow for active files and files closed this FY. Cancelled demands are excluded.",
         examples: [
           "Use this for files before S.O. placement.",
           "Good for seeing demand, approval, vetting, bidding, and pre-S.O. movement.",
@@ -1081,7 +1236,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
 	        useFor: "FY activity such as S.O., CNC, TCEC, pre-bid, BG expiry, delivery, and inflow.",
-	        note: "FY record set; cancelled cases can belong to the FY even if individual panels exclude them.",
+        note: "Includes files connected with that FY. A panel may still exclude cancelled cases from its own count.",
         examples: [
           "Use this to study activity that happened during the selected FY, even for older files.",
           "Good for FY-wise S.O., meeting, BG, delivery, payment-pending, and workload analysis.",
@@ -1190,7 +1345,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
     ] satisfies FilterCombinationGuideRow[],
     notes: [
-      "Global Filter first decides the file set. Subfilter then narrows it by file initiation year.",
+      "Global Filter chooses which files are included. File Initiation Year can then narrow that list.",
       "Do not auto-switch filters when entering Finance, Reports, Search, or Quick Entry.",
       "For current day-to-day operations, use the recommended combination shown below the Global Filter.",
       `For Finance and Reports, the most useful default is Global Filter = Current FY ${currentFyLabel} with Subfilter = All file years.`,
@@ -1280,6 +1435,33 @@ function isGlobalFilterNonSuggested(
   return selectedYear !== ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
 }
 
+function isSubfilterNonSuggested(
+  pathname: string,
+  dashboardTab: string | undefined,
+  reportMode: string | undefined,
+  currentFinancialYear: string,
+  userId: string | undefined,
+) {
+  if (pathname === "/search" || pathname === "/quick-entry" || pathname === "/add") {
+    return false;
+  }
+  if (pathname === "/dashboard" && dashboardTab === "finance1") return false;
+  if (pathname === "/reports" && reportMode === "preSoExpectedCashOutgo") return false;
+  if (pathname !== "/dashboard" && pathname !== "/reports") return false;
+
+  const key = `recordkeeper:file-year-filter:${userId ?? "anonymous"}`;
+  let selectedFileYear = currentFinancialYear;
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(key) ?? "null");
+    if (typeof saved?.year === "string") selectedFileYear = saved.year;
+  } catch {
+    // Treat an unavailable saved subfilter as its page default.
+  }
+
+  const recommendedFileYear = "all";
+  return selectedFileYear !== recommendedFileYear;
+}
+
 function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialYear: string) {
   const normalizedSelected = normalizeFinancialYearLabel(selectedYear) || currentFinancialYear;
   const currentFyLabel = displayFinancialYearLabel(currentFinancialYear);
@@ -1300,7 +1482,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
 	        ? "Shows active, non-cancelled files. Use File Initiation Year to restrict by start FY."
 	        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
 	          ? `Shows active files plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
-	          : `Shows FY ${selectedFyLabel} working set: files started in that FY; ${specificFyOlderFileRule} Files closed during that FY are included.`;
+	          : `Shows files started in FY ${selectedFyLabel}, plus older files that were still open on 1 April. ${specificFyOlderFileRule} Files closed during that FY are also included.`;
 
   return {
     title,
@@ -1346,7 +1528,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "Specific FY vs operational set",
         description:
-          "Specific FY is the FY record set and can include cancelled/all-S.O.-cancelled files belonging to that FY. Active + current FY closed is the operational set and excludes them.",
+          "A specific FY can include cancelled demands and files whose S.O.s were all cancelled. Active + current FY closed excludes those files.",
       },
       {
         label: "All files",
@@ -1370,7 +1552,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
 	      {
 	        label: "File Initiation Year subfilter",
 	        description:
-	          "Narrows the already selected Global Filter by file start year. Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files visible in the 2026-27 file set.",
+	          "Narrows the Global Filter by the year the file started. Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files included in the 2026-27 view.",
 	      },
       {
         label: "Value Reports",

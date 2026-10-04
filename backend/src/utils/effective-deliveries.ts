@@ -1,4 +1,5 @@
 import type { FileRecord, SupplyOrderDetail } from "../types.js";
+import { latestBillReturnCycle } from "./refloat-returned-bill.js";
 import {
   isBiddingApplicableForFile,
   isContractFileType,
@@ -57,6 +58,13 @@ export function fileSupplyOrders(file: FileRecord) {
   return fileSupplyOrderEntries(file).map((entry) => entry.order);
 }
 
+export function hasUnpaidSupplyOrderPayment(order: SupplyOrderDetail) {
+  if (isYes(order.stageDelivery) && isYes(order.stagePayment) && order.stageDeliveries?.length) {
+    return order.stageDeliveries.some((stage) => !hasFilledString(stage.paymentDate));
+  }
+  return !hasFilledString(order.paymentDate);
+}
+
 export function fileSupplyOrderEntries(file: FileRecord) {
   return getEffectiveSupplyOrderRows(file).flatMap((order, orderIndex) =>
     expandSupplyOrderStageEntries(order, orderIndex),
@@ -106,6 +114,24 @@ export function advancePaymentEntries(files: FileRecord[]) {
 
 export function isAdvancePaymentApplicable(order: SupplyOrderDetail) {
   return isYes(order.advancePayment);
+}
+
+export function areRequiredAdvanceGuaranteesReceived(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+) {
+  const psbRequired =
+    isYes(order.psbApplicable) &&
+    (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately");
+  const pwbRequired =
+    isYes(file.bg) &&
+    (order.bgCoverageType === "PWB" || order.bgCoverageType === "PSB and PWB separately");
+  const combinedRequired = isYes(file.bg) && order.bgCoverageType === "PSB+PWB";
+  return (
+    (!psbRequired || hasFilledString(order.psbBgReceivedDate)) &&
+    (!pwbRequired || hasFilledString(order.pwbBgReceivedDate)) &&
+    (!combinedRequired || hasFilledString(order.combinedBgReceivedDate))
+  );
 }
 
 export function isAdvancePaymentPaid(order: SupplyOrderDetail) {
@@ -343,6 +369,7 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
     currentMilestone: "",
     completedMilestones: [],
     stageDeliveries: undefined,
+    supplementaryBills: [],
     stageDeliveryLabel: "Advance Payment",
   };
 }
@@ -670,9 +697,8 @@ function isSupplyOrderMilestoneApplicable(
 }
 
 function hasOpenBillReturn(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return normalizeBillReturnCycles(order.billReturnCycles).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(order.billReturnCycles);
+  return Boolean(latest && !hasFilledString(latest.resubmittedDate));
 }
 
 function hasBillReturnHistory(order: Pick<SupplyOrderDetail, "billReturnCycles">) {

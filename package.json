@@ -15,6 +15,7 @@
     "qa:exports": "node scripts/audit-export-parity.mjs",
     "qa:analytics": "node scripts/audit-analytics.mjs",
     "qa:snapshot": "node scripts/audit-snapshot-clickers.mjs",
+    "qa:parity": "backend/node_modules/.bin/tsx scripts/audit-search-ts-sql-parity.mjs && node scripts/audit-cash-out-go-plan.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

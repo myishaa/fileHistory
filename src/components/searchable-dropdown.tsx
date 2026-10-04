@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import {
   type ChangeEvent,
   type FocusEvent,
@@ -46,6 +46,7 @@ export function SearchableDropdown({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(false);
+  const [activeOptionIndex, setActiveOptionIndex] = useState(-1);
 
   const visibleOptions = useMemo(() => {
     const trimmedQuery = query.trim().toLowerCase();
@@ -54,7 +55,7 @@ export function SearchableDropdown({
     const uniqueOptions = Array.from(new Set(options.filter(Boolean))).sort(compareOptions);
     if (!trimmedQuery) return uniqueOptions;
     return uniqueOptions
-      .filter((option) => option.toLowerCase().includes(trimmedQuery))
+      .filter((option) => option.toLowerCase().startsWith(trimmedQuery))
       .sort((left, right) => {
         const leftExact = left.toLowerCase() === trimmedQuery;
         const rightExact = right.toLowerCase() === trimmedQuery;
@@ -78,6 +79,10 @@ export function SearchableDropdown({
     return () => document.removeEventListener("mousedown", closeOnOutsidePointer);
   }, [open]);
 
+  useEffect(() => {
+    setActiveOptionIndex(-1);
+  }, [open, query, visibleOptions.length]);
+
   function setInputRef(element: HTMLInputElement | null) {
     internalInputRef.current = element;
     if (typeof inputRef === "function") inputRef(element);
@@ -89,6 +94,7 @@ export function SearchableDropdown({
   function openFullList() {
     if (disabled) return;
     setQuery("");
+    setActiveOptionIndex(-1);
     setOpen(true);
   }
 
@@ -100,6 +106,7 @@ export function SearchableDropdown({
   function handleInputChange(event: ChangeEvent<HTMLInputElement>) {
     const next = event.target.value;
     setQuery(next);
+    setActiveOptionIndex(-1);
     onSearchChange?.(next);
     setEditing(true);
     setOpen(typeAheadOnly ? Boolean(next.trim()) : true);
@@ -120,8 +127,26 @@ export function SearchableDropdown({
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      if (typeAheadOnly) setOpen(Boolean(query.trim()));
-      else openFullList();
+      if (!open) {
+        if (typeAheadOnly) setOpen(Boolean(query.trim()));
+        else openFullList();
+        setActiveOptionIndex(0);
+      } else if (visibleOptions.length) {
+        setActiveOptionIndex((current) => Math.min(current + 1, visibleOptions.length - 1));
+      }
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (open && visibleOptions.length) {
+        setActiveOptionIndex((current) => Math.max(current - 1, 0));
+      }
+    }
+    if (event.key === "Enter" && open && visibleOptions.length) {
+      event.preventDefault();
+      selectOption(
+        visibleOptions[Math.max(0, Math.min(activeOptionIndex, visibleOptions.length - 1))],
+      );
+      return;
     }
     if (event.key === "Enter" && deferChangeUntilSelect) {
       if (typeAheadOnly && !editing) return;
@@ -154,6 +179,18 @@ export function SearchableDropdown({
     internalInputRef.current?.focus();
   }
 
+  function clearSelection() {
+    onChange("");
+    setQuery("");
+    onSearchChange?.("");
+    setEditing(false);
+    setOpen(false);
+    setActiveOptionIndex(-1);
+    internalInputRef.current?.focus();
+  }
+
+  const hasClearValue = Boolean(value.trim() || query.trim());
+
   return (
     <div ref={rootRef} className="relative w-full max-w-md">
       <input
@@ -175,7 +212,14 @@ export function SearchableDropdown({
         placeholder={placeholder}
         data-testid={testId}
         autoComplete="off"
-        className={(className ?? "") + (typeAheadOnly ? " block w-full" : " block w-full pr-9")}
+        className={
+          (className ?? "") +
+          (typeAheadOnly
+            ? hasClearValue
+              ? " block w-full pr-9"
+              : " block w-full"
+            : " block w-full pr-16")
+        }
       />
       {!typeAheadOnly && (
         <button
@@ -198,6 +242,20 @@ export function SearchableDropdown({
           <ChevronDown className="size-4" />
         </button>
       )}
+      {hasClearValue ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          disabled={disabled}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={clearSelection}
+          className={`absolute top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:pointer-events-none disabled:opacity-50 ${typeAheadOnly ? "right-1.5" : "right-9"}`}
+          aria-label="Clear field"
+          title="Clear field"
+        >
+          <X className="size-4" />
+        </button>
+      ) : null}
       {open && !disabled ? (
         <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
           {!typeAheadOnly && (
@@ -215,16 +273,20 @@ export function SearchableDropdown({
             </button>
           )}
           {visibleOptions.length ? (
-            visibleOptions.map((option) => (
+            visibleOptions.map((option, index) => (
               <button
                 key={option}
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveOptionIndex(index)}
                 onClick={() => selectOption(option)}
                 className={
                   "block w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
+                  (index === activeOptionIndex ? "bg-accent " : "") +
                   (option === value ? "font-semibold text-primary" : "")
                 }
+                role="option"
+                aria-selected={index === activeOptionIndex}
               >
                 {option}
               </button>

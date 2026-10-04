@@ -12,8 +12,10 @@ import type {
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildDashboardSummary } from "../utils/dashboard-summary.js";
 import { effectiveSupplyOrderEntries } from "../utils/effective-deliveries.js";
-import { hasOpenBillReturn } from "../utils/refloat-returned-bill.js";
+import { hasCompletedBillReturn, hasOpenBillReturn } from "../utils/refloat-returned-bill.js";
 import {
+  contractFileTypeSql,
+  isContractFileType,
   isBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
 } from "../utils/file-type-groups.js";
@@ -81,6 +83,7 @@ type SettingsRow = {
   modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
+  bg_return_offset_days: number;
   active_user_id: string | null;
 };
 
@@ -285,6 +288,7 @@ const defaultManualMilestones = [
   "Financial Sanction",
   "Supply Order",
   "Delivery Period",
+  "Material Receipt",
   "PSB",
   "PWB",
   "PSB+PWB",
@@ -337,6 +341,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     valueThresholdLevels: [],
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: fromDbJsonArray(row.table_field_presets),
+    bgReturnOffsetDays: Number(row.bg_return_offset_days ?? 60),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
 }
@@ -346,6 +351,7 @@ function getSuspectedAnomalyRows(
   suppressions: AnomalySuppressions,
   customRules: CustomAnomalyRule[] = [],
   configuredMilestones: string[] = [],
+  bgReturnOffsetDays = 60,
 ): SuspectedAnomalyRow[] {
   const rows: SuspectedAnomalyRow[] = [];
   const emittedAnomalyKeys = new Set<string>();
@@ -1004,6 +1010,62 @@ function getSuspectedAnomalyRows(
       "Demand control date",
       file.immsDate,
     );
+    if (isYes(file.highValue)) {
+      addPair(
+        "High Value",
+        "High value minutes should not be after demand control",
+        "High value minutes",
+        file.highValueMinutesDate,
+        "Demand control date",
+        file.immsDate,
+      );
+    }
+    if (isYes(file.tcec)) {
+      addPair(
+        "TCEC",
+        "Pre-TCEC minutes should not be after demand control",
+        "Pre-TCEC minutes",
+        file.preTcecMinutesDate,
+        "Demand control date",
+        file.immsDate,
+      );
+    }
+    if (isYes(file.ad)) {
+      addPair(
+        "AD",
+        "AD vetting date should not be after demand control",
+        "AD vetting date",
+        file.adVettingDate,
+        "Demand control date",
+        file.immsDate,
+      );
+      addPair(
+        "AD",
+        "AD sent date should not be after AD vetting date",
+        "AD sent date",
+        file.adSentDate,
+        "AD vetting date",
+        file.adVettingDate,
+      );
+    }
+    if (isYes(file.rqa)) {
+      addPair(
+        "R&QA",
+        "R&QA approval date should not be after demand control",
+        "R&QA approval date",
+        file.rqaApprovalDate,
+        "Demand control date",
+        file.immsDate,
+      );
+      addPair(
+        "R&QA",
+        "R&QA sent date should not be after R&QA approval date",
+        "R&QA sent date",
+        file.rqaSentDate,
+        "R&QA approval date",
+        file.rqaApprovalDate,
+      );
+    }
     addPair(
       "CFA",
       "Demand control date should not be after CFA sent date",
@@ -1258,6 +1320,20 @@ function getSuspectedAnomalyRows(
       const rawContext = `order:${rawOrder.soNo || rawOrder.gemSoNo || `S.O. ${rawIndex + 1}`}:${rawIndex}`;
       const rawLabel = rawOrder.soNo || rawOrder.gemSoNo || `S.O. ${rawIndex + 1}`;
       const hasSoDate = hasFilledString(rawOrder.soDate);
+      if (
+        hasFilledString(rawOrder.currentMilestone) &&
+        hasCompletedMilestone(rawOrder.completedMilestones, rawOrder.currentMilestone!)
+      ) {
+        addIssue(
+          "Supply Order",
+          "S.O. current milestone is also marked completed",
+          "Current milestone",
+          "Not already completed",
+          "S.O. current milestone",
+          rawOrder.currentMilestone!,
+          rawContext,
+        );
+      }
       const rawStageRows = rawOrder.stageDeliveries ?? [];
       const expectedStageCount = readPositiveInteger(rawOrder.stageDeliveryCount);
       const bgFieldsFilled = hasAnyBgField(rawOrder);
@@ -1278,6 +1354,55 @@ function getSuspectedAnomalyRows(
         "PSB+PWB",
         "PSB and PWB separately",
       ].includes(rawOrder.bgCoverageType ?? "");
+      const soHasStarted = [
+        rawOrder.soNo,
+        rawOrder.gemSoNo,
+        rawOrder.soDate,
+        rawOrder.soValueCapital,
+        rawOrder.soValueRevenue,
+        rawOrder.firm,
+        rawOrder.firmType,
+      ].some(hasFilledString) || hasLaterOrderWorkflow(rawOrder);
+      if (soHasStarted) {
+        const missingSoFields = [
+          !hasFilledString(rawOrder.soNo) ? "S.O. number" : undefined,
+          isYes(file.gem) && !hasFilledString(rawOrder.gemSoNo) ? "GeM S.O. number" : undefined,
+          !hasFilledString(rawOrder.soDate) ? "S.O. date" : undefined,
+          getExpectedOrderValue(file, rawOrder) <= 0 ? "S.O. value" : undefined,
+          !hasFilledString(rawOrder.firm) ? "Firm name" : undefined,
+          !hasFilledString(rawOrder.firmType) ? "Firm Type" : undefined,
+          rawOrder.firmType?.trim().toUpperCase() === "OTHER" &&
+          !hasFilledString(rawOrder.firmTypeOther)
+            ? "Other Firm Type"
+            : undefined,
+          !isYes(rawOrder.stageDelivery) && !isNo(rawOrder.stageDelivery)
+            ? "Stage Delivery choice"
+            : undefined,
+          isYes(rawOrder.stageDelivery) && !hasFilledString(rawOrder.stageDeliveryCount)
+            ? "Stage count"
+            : undefined,
+          isYes(rawOrder.stageDelivery) && !isYes(rawOrder.stagePayment) && !isNo(rawOrder.stagePayment)
+            ? "Stage Payment choice"
+            : undefined,
+          isYes(rawOrder.stageDelivery) &&
+          isYes(rawOrder.stagePayment) &&
+          !isYes(rawOrder.advancePayment) &&
+          !isNo(rawOrder.advancePayment)
+            ? "Advance Payment choice"
+            : undefined,
+        ].filter((field): field is string => Boolean(field));
+        if (missingSoFields.length > 0) {
+          addIssue(
+            "Supply Order",
+            "S.O. details are partially filled",
+            "Required S.O. fields",
+            "All applicable fields filled",
+            "Missing S.O. fields",
+            missingSoFields.join(", "),
+            rawContext,
+          );
+        }
+      }
       [rawOrder.soNo, rawOrder.gemSoNo]
         .map((value) => value?.trim())
         .filter((value): value is string => Boolean(value))
@@ -1294,17 +1419,6 @@ function getSuspectedAnomalyRows(
             );
           }
         });
-      if (!hasSoDate && hasLaterOrderWorkflow(rawOrder)) {
-        addIssue(
-          "Supply Order",
-          "Later S.O. workflow exists but S.O. date is blank",
-          "S.O. date",
-          "Filled before later workflow",
-          "Later workflow",
-          getLaterOrderWorkflowEvidence(rawOrder),
-          rawContext,
-        );
-      }
       if (
         !hasSoDate &&
         !hasFilledString(rawOrder.financialSanctionDate) &&
@@ -1577,6 +1691,22 @@ function getSuspectedAnomalyRows(
         rawOrder.dpDate,
         rawContext,
       );
+      if (
+        isContractFileType(file) &&
+        !isYes(rawOrder.soCancelled) &&
+        !isYes(rawOrder.shortclosure)
+      ) {
+        const effectiveDpDate = rawOrder.revisedDp || rawOrder.dpDate;
+        addPair(
+          "Delivery Period",
+          "Contract Job Completion date should not be before effective D.P.",
+          "Effective D.P.",
+          effectiveDpDate,
+          "Job Completion date",
+          rawOrder.jobCompletionDate,
+          rawContext,
+        );
+      }
 
       if (
         isYes(rawOrder.stageDelivery) &&
@@ -1617,6 +1747,39 @@ function getSuspectedAnomalyRows(
       }
       rawStageRows.forEach((stage, stageIndex) => {
         const stageContext = `${rawContext}:stage:${stageIndex + 1}`;
+        const stageMilestoneDates: Record<string, { label: string; date?: string }> = {
+          delivery: { label: "Material receipt date", date: stage.materialReceiptDate },
+          jobcompletion: { label: "Job Completion date", date: stage.jobCompletionDate },
+          irpreparation: { label: "IR preparation date", date: stage.irPreparationDate },
+          irreceipt: { label: "IR receipt date", date: stage.irReceiptDate },
+          billpreparation: { label: "Bill preparation date", date: stage.billPreparationDate },
+          billsentforpayment: {
+            label: "Bill sent for payment date",
+            date: stage.billSentForPaymentDate,
+          },
+          payment: { label: "Payment date", date: stage.paymentDate },
+        };
+        for (const completedMilestone of stage.completedMilestones ?? []) {
+          const normalizedMilestone = normalizeMilestoneName(completedMilestone);
+          const requiredDate = stageMilestoneDates[normalizedMilestone];
+          if (!requiredDate || hasFilledString(requiredDate.date)) continue;
+          const milestoneBlock = ["billpreparation", "billsentforpayment", "payment"].includes(
+            normalizedMilestone,
+          )
+            ? "Stage Payment"
+            : ["irpreparation", "irreceipt"].includes(normalizedMilestone)
+              ? "Stage IR"
+              : "Stage Delivery";
+          addIssue(
+            milestoneBlock,
+            `Stage ${completedMilestone} is marked Done but ${requiredDate.label} is blank`,
+            requiredDate.label,
+            "Filled when marked Done",
+            "Stage milestone",
+            "Marked Done",
+            stageContext,
+          );
+        }
         addPair(
           "Delivery Period",
           "Stage D.P. date should not be before stage delivery period start date",
@@ -1626,6 +1789,21 @@ function getSuspectedAnomalyRows(
           stage.dpDate,
           stageContext,
         );
+        if (
+          isContractFileType(file) &&
+          !isYes(rawOrder.soCancelled) &&
+          !isYes(rawOrder.shortclosure)
+        ) {
+          addPair(
+            "Delivery Period",
+            "Contract stage Job Completion date should not be before effective stage D.P.",
+            "Effective stage D.P.",
+            stage.revisedDp || stage.dpDate,
+            "Stage Job Completion date",
+            stage.jobCompletionDate,
+            stageContext,
+          );
+        }
         const previousStage = rawStageRows[stageIndex - 1];
         if (stageIndex > 0 && previousStage) {
           const previousStageEndDate = previousStage.revisedDp || previousStage.dpDate;
@@ -1646,14 +1824,17 @@ function getSuspectedAnomalyRows(
             );
           }
         }
-        if (isStageDone(stage) && isStageCurrent(stage)) {
+        if (
+          hasFilledString(stage.currentMilestone) &&
+          hasCompletedMilestone(stage.completedMilestones, stage.currentMilestone!)
+        ) {
           addIssue(
-            "Stage Delivery",
-            "Stage marked Done and Current at the same time",
-            "Current or Done",
-            "Only one active state",
-            "Stage status",
-            "Current and Done",
+            "Stage",
+            "Stage current milestone is also marked completed",
+            "Current milestone",
+            "Not already completed",
+            "Stage current milestone",
+            stage.currentMilestone!,
             stageContext,
           );
         }
@@ -1751,6 +1932,20 @@ function getSuspectedAnomalyRows(
       }
       if (
         isYes(rawOrder.advancePayment) &&
+        !hasFilledString(rawOrder.advancePaymentDetail?.expectedPaymentDate)
+      ) {
+        addIssue(
+          "Advance Payment",
+          "Expected Advance Payment Date is blank",
+          "Expected Advance Payment Date",
+          "Entered when Advance Payment is Yes",
+          "Expected Advance Payment Date",
+          "Blank",
+          `${rawContext}:advance`,
+        );
+      }
+      if (
+        isYes(rawOrder.advancePayment) &&
         hasAdvancePaymentDone(rawOrder) &&
         isYes(rawOrder.psbApplicable) &&
         ["PSB", "PSB and PWB separately"].includes(rawOrder.bgCoverageType ?? "") &&
@@ -1826,7 +2021,7 @@ function getSuspectedAnomalyRows(
           rawContext,
         );
       }
-      addWarrantyBufferAnomalies(file, rawOrder, rawContext, addIssue);
+      addWarrantyBufferAnomalies(file, rawOrder, rawContext, addIssue, bgReturnOffsetDays);
 
       [rawOrder.psbBgNo, rawOrder.pwbBgNo, rawOrder.combinedBgNo]
         .map((value) => value?.trim())
@@ -3404,11 +3599,6 @@ function isStageDone(
   );
 }
 
-function isStageCurrent(stage: Pick<SupplyOrderDetail, "currentMilestone">) {
-  const current = normalizeMilestoneName(stage.currentMilestone ?? "");
-  return current === "delivery" || current === "jobcompletion";
-}
-
 function hasStageCompletion(
   stage: Pick<
     SupplyOrderDetail,
@@ -3557,7 +3747,7 @@ function hasFileClosureSupplementaryBillLiability(file: FileRecord) {
 }
 
 function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
-  return isYes(order.shortclosure) && isYes(order.noFurtherAction);
+  return isYes(order.noFurtherAction);
 }
 
 function addShortclosedPendingActivityAnomalies(
@@ -3853,7 +4043,7 @@ function addPendingReturnedBillWorkflowAnomaly(
       context,
     );
   }
-  if (isShortclosureNoFurtherAction(order)) {
+  if (isYes(order.shortclosure) && isShortclosureNoFurtherAction(order)) {
     addIssue(
       block,
       "S.O. is shortclosed but returned bill workflow is pending",
@@ -3889,7 +4079,7 @@ function addSupplementaryBillAnomalies(
           context,
         );
       }
-      if (isShortclosureNoFurtherAction(order)) {
+      if (isYes(order.shortclosure) && isShortclosureNoFurtherAction(order)) {
         addIssue(
           "Supplementary bill",
           "S.O. is shortclosed but supplementary bill workflow is pending",
@@ -4078,13 +4268,7 @@ function addPaymentReturnCycleAnomalies({
 }
 
 function hasCompletedBillReturnLocal(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return (
-    Boolean(
-      order.billReturnCycles?.some(
-        (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-      ),
-    ) && !hasOpenBillReturn(order)
-  );
+  return hasCompletedBillReturn(order);
 }
 
 function hasBillReturnCycleDataLocal(
@@ -4120,8 +4304,8 @@ function addWarrantyBufferAnomalies(
   order: SupplyOrderDetail,
   context: string,
   addIssue: AddAnomalyIssue,
+  bufferDays: number,
 ) {
-  const bufferDays = 60;
   const warrantyDate = order.warrantyPeriodDate;
   if (!hasFilledString(warrantyDate)) return;
   const requiredDate = addDaysIso(warrantyDate, bufferDays);
@@ -4144,7 +4328,7 @@ function addWarrantyBufferAnomalies(
     if (hasFilledString(validityDate) && validityDate! < requiredDate) {
       addIssue(
         "Warranty / BG mismatch",
-        `${kind} validity date is earlier than Warranty Period + 60 days`,
+        `${kind} validity date is earlier than Warranty Period + ${bufferDays} days`,
         "Required validity date",
         requiredDate,
         `${kind} validity date`,
@@ -4155,7 +4339,7 @@ function addWarrantyBufferAnomalies(
     if (hasFilledString(returnDate) && returnDate! < requiredDate) {
       addIssue(
         "Warranty / BG mismatch",
-        `${kind} returned before Warranty Period + 60 days is over`,
+        `${kind} returned before Warranty Period + ${bufferDays} days is over`,
         "Earliest return date",
         requiredDate,
         `${kind} return date`,
@@ -4512,9 +4696,13 @@ async function loadAllYearAllocationTotals({
 
 async function loadSettings() {
   return getCached("settings:dashboard", cacheTtl.settingsMs, async () => {
+    await pool.query(
+      "alter table app_settings add column if not exists bg_return_offset_days integer not null default 60",
+    );
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, active_user_id
+              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
+              bg_return_offset_days, active_user_id
        from app_settings
        where id = true`,
     );
@@ -4771,6 +4959,7 @@ const protectedLiveStatusMilestones = [
   "Refloat Post-TCEC",
   "Bill returned for correction",
   "Supplementary bill returned for correction",
+  "Material Receipt",
   "Job Completion",
 ];
 
@@ -5186,7 +5375,7 @@ type StatusCounts = {
   irCompleted: number;
 };
 
-type CountAnalyticsRow = { name: string; count: number };
+type CountAnalyticsRow = { name: string; count: number; fileIds?: string };
 type MonthWiseSupplyOrderAnalyticsRow = CountAnalyticsRow & { monthKey: string };
 type MonthWiseDeliveryScheduleAnalyticsRow = {
   name: string;
@@ -5492,7 +5681,7 @@ function deliveryDueOrderExpression(extraCondition = "true") {
 }
 
 function deliveryInspectionApplicableExpression() {
-  return `${isYesExpression("f.ir")} and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`;
+  return `${isYesExpression("f.ir")} and not (${contractFileTypeSql("f")})`;
 }
 
 function effectiveOrderCancelledExpression(alias = "eso") {
@@ -5593,17 +5782,19 @@ function completedOrderMilestoneExpression(orderAlias: string, milestone: string
 function effectiveOrderLiveExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and not ${hasFilledExpression(`${alias}.material_receipt_date`)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
 function effectiveOrderPaymentDrivenExpression(alias = "eso") {
   return `(not ${isYesExpression(`${alias}.file_ir`)}
-    or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`;
+    or ${contractFileTypeSql(alias)})`;
 }
 
 function effectiveOrderDeliveryPeriodOpenExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and not ${effectiveOrderCancelledExpression(alias)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}
     and not ${isYesExpression(`${alias}.shortclosure`)}
     and (
       (${effectiveOrderPaymentDrivenExpression(alias)} and not ${effectiveOrderCompletedMilestoneExpression(
@@ -5619,13 +5810,14 @@ function effectiveOrderDeliveryPeriodOpenExpression(alias = "eso") {
 function effectiveOrderPaymentOpenExpression(alias = "eso") {
   return `${effectiveOrderTabCompleteExpression(alias)}
     and not ${hasFilledExpression(`${alias}.payment_date`)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
 function effectiveOrderDeliveryCompletedExpression(alias = "eso") {
   return `${effectiveOrderPlacedExpression(alias)}
     and ${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and ${hasFilledExpression(`${alias}.material_receipt_date`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
@@ -5633,7 +5825,7 @@ function effectiveOrderDeliveryCompletedExpression(alias = "eso") {
 function effectiveOrderDeliveryOverdueExpression(alias = "eso") {
   return `${effectiveOrderLiveExpression(alias)}
     and ${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and not (${effectiveOrderDeliveryCompletedExpression(alias)})
     and ${effectiveOrderDpDateExpression(alias)} < current_date`;
 }
@@ -5641,7 +5833,7 @@ function effectiveOrderDeliveryOverdueExpression(alias = "eso") {
 function effectiveOrderDeliveryPendingExpression(alias = "eso") {
   return `${effectiveOrderLiveExpression(alias)}
     and ${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and not (${effectiveOrderDeliveryCompletedExpression(alias)})
     and ${effectiveOrderDpDateExpression(alias)} is not null
     and ${alias}.so_date <= current_date
@@ -5650,7 +5842,7 @@ function effectiveOrderDeliveryPendingExpression(alias = "eso") {
 
 function effectiveOrderJobCompletionWorkflowExpression(alias = "eso") {
   return `(not ${isYesExpression(`${alias}.file_ir`)}
-    or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`;
+    or ${contractFileTypeSql(alias)})`;
 }
 
 function effectiveOrderJobCompletionLiveExpression(alias = "eso") {
@@ -5706,18 +5898,19 @@ function effectiveOrderPaymentPendingExpression(alias = "eso") {
   return `(
 	      (
 		        (not ${isYesExpression(`${alias}.file_ir`)}
-		          or lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+		          or ${contractFileTypeSql(alias)})
 		        and ${effectiveOrderCompletedMilestoneExpression("Job Completion", alias)}
 	      )
       or (
 	        ${isYesExpression(`${alias}.file_ir`)}
-	        and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+	        and not (${contractFileTypeSql(alias)})
 	        and ${hasFilledExpression(`${alias}.material_receipt_date`)}
       )
       or ${hasFilledExpression(`${alias}.bill_preparation_date`)}
       or ${hasFilledExpression(`${alias}.bill_sent_for_payment_date`)}
     )
     and not ${hasFilledExpression(`${alias}.payment_date`)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
@@ -5773,6 +5966,18 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
       end as bill_sent_for_payment_date,
       case
         when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then stage_row.stage ->> 'billAmountCapital'
+        when stage_row.stage is not null and stage_row.ordinality <> ${stageCount} then null::text
+        else so.bill_amount_capital::text
+      end as bill_amount_capital,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
+          then stage_row.stage ->> 'billAmountRevenue'
+        when stage_row.stage is not null and stage_row.ordinality <> ${stageCount} then null::text
+        else so.bill_amount_revenue::text
+      end as bill_amount_revenue,
+      case
+        when stage_row.stage is not null and ${isYesExpression("so.stage_payment")}
           then nullif(stage_row.stage ->> 'paymentDate', '')::date
         when stage_row.stage is not null and not ${isYesExpression("so.stage_payment")} and stage_row.ordinality = ${stageCount}
           then so.payment_date
@@ -5815,11 +6020,7 @@ function dashboardPaymentRowsSource(whereSql: string, extraConditions: string[] 
 }
 
 function paymentRowContractExpression(alias = "payment_row") {
-  const defaultGroup = `case
-    when lower(trim(coalesce(${alias}.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m') then 'contract'
-    else 'goodsservices'
-  end`;
-  return `lower(trim(coalesce(nullif(${alias}.file_type_group, ''), ${defaultGroup}))) = 'contract'`;
+  return contractFileTypeSql(alias);
 }
 
 function paymentRowPhysicalDeliveryWorkflowExpression(alias = "payment_row") {
@@ -5864,6 +6065,7 @@ function paymentRowPendingExpression(alias = "payment_row") {
   return `${alias}.payment_applicable
     and not ${hasFilledExpression(`${alias}.payment_date`)}
     and ${paymentRowReadyExpression(alias)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}
     and not ${effectiveOrderCancelledExpression(alias)}`;
 }
 
@@ -5925,22 +6127,32 @@ function supplementaryBillHasReturnHistoryExpression(alias = "supplementary_row"
   )`;
 }
 
-function supplementaryBillHasOpenReturnExpression(alias = "supplementary_row") {
+function latestReturnCycleSql(cyclesExpression: string) {
+  return `(select cycle
+    from jsonb_array_elements(coalesce(${cyclesExpression}, '[]'::jsonb)) with ordinality as cycle_rows(cycle, cycle_index)
+    where ${hasFilledExpression("cycle ->> 'returnedDate'")}
+    order by nullif(cycle ->> 'returnedDate', '')::date desc nulls last, cycle_index desc
+    limit 1)`;
+}
+
+function latestReturnCycleStateExpression(cyclesExpression: string, state: "open" | "resubmitted") {
+  const hasResubmission = hasFilledExpression("latest.cycle ->> 'resubmittedDate'");
   return `exists (
-    select 1
-    from jsonb_array_elements(coalesce(${alias}.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-      and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
+    select 1 from (${latestReturnCycleSql(cyclesExpression)}) as latest(cycle)
+    where ${state === "resubmitted" ? hasResubmission : `not ${hasResubmission}`}
   )`;
 }
 
+function hasLatestReturnCycleExpression(cyclesExpression: string) {
+  return `exists (select 1 from (${latestReturnCycleSql(cyclesExpression)}) as latest(cycle))`;
+}
+
+function supplementaryBillHasOpenReturnExpression(alias = "supplementary_row") {
+  return latestReturnCycleStateExpression(`${alias}.bill -> 'billReturnCycles'`, "open");
+}
+
 function supplementaryBillHasCompletedReturnExpression(alias = "supplementary_row") {
-  return `exists (
-    select 1
-    from jsonb_array_elements(coalesce(${alias}.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-      and ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-  )`;
+  return latestReturnCycleStateExpression(`${alias}.bill -> 'billReturnCycles'`, "resubmitted");
 }
 
 function supplementaryBillActiveExpression(alias = "supplementary_row") {
@@ -5955,7 +6167,8 @@ function supplementaryBillSubmittedExpression(alias = "supplementary_row") {
 
 function supplementaryBillPendingExpression(alias = "supplementary_row") {
   return `${supplementaryBillSubmittedExpression(alias)}
-    and not ${hasFilledExpression(`${alias}.bill ->> 'paymentDate'`)}`;
+    and not ${hasFilledExpression(`${alias}.bill ->> 'paymentDate'`)}
+    and not ${isYesExpression(`${alias}.no_further_action`)}`;
 }
 
 function supplementaryBillPaidExpression(alias = "supplementary_row") {
@@ -5975,7 +6188,7 @@ function supplementaryBillReturnedPaidExpression(alias = "supplementary_row") {
 
 function effectiveOrderIrPreparationPendingExpression(alias = "eso") {
   return `${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and ${effectiveOrderPlacedExpression(alias)}
     and (
       (
@@ -5998,7 +6211,7 @@ function effectiveOrderIrPreparationPendingExpression(alias = "eso") {
 
 function effectiveOrderIrReceiptPendingExpression(alias = "eso") {
   return `${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and ${effectiveOrderPlacedExpression(alias)}
     and (
       (
@@ -6021,7 +6234,7 @@ function effectiveOrderIrReceiptPendingExpression(alias = "eso") {
 
 function effectiveOrderIrCompletedExpression(alias = "eso") {
   return `${isYesExpression(`${alias}.file_ir`)}
-    and lower(trim(coalesce(${alias}.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+    and not (${contractFileTypeSql(alias)})
     and ${effectiveOrderPlacedExpression(alias)}
     and (
       (
@@ -7005,7 +7218,7 @@ async function loadAnalyticsSqlSlice({
     nullif(payment_stage.stage ->> 'jobCompletionDate', '')::date,
     so.job_completion_date
   ) is not null`;
-  const paymentContractFileType = `lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`;
+  const paymentContractFileType = `${contractFileTypeSql("f")}`;
   const paymentGoodsServicesIrNo = `(not ${isYesExpression("f.ir")} and not ${paymentContractFileType})`;
   const paymentClearingStart = `case
     when ${deliveryInspectionApplicableExpression()} then coalesce(
@@ -7203,12 +7416,12 @@ async function loadAnalyticsSqlSlice({
            when stage_delivery.stage is not null then (
 	             (
 		               ${isYesExpression("f.ir")}
-		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+		               and not (${contractFileTypeSql("f")})
 		               and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> ''
 		             )
 			             or (
 			               (not ${isYesExpression("f.ir")}
-			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                 or ${contractFileTypeSql("f")})
 			               and coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''
 		             )
 	             or exists (
@@ -7222,12 +7435,12 @@ async function loadAnalyticsSqlSlice({
            else (
 	             (
 		               ${isYesExpression("f.ir")}
-		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+		               and not (${contractFileTypeSql("f")})
 		               and ${hasFilledExpression("so.material_receipt_date")}
 		             )
 			             or (
 			               (not ${isYesExpression("f.ir")}
-			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                 or ${contractFileTypeSql("f")})
 			               and ${hasFilledExpression("so.job_completion_date")}
 		             )
 	             or ${completedOrderMilestoneExpression("so", "Delivery")}
@@ -7307,7 +7520,8 @@ async function loadAnalyticsSqlSlice({
          so.ld,
          so.so_cancelled,
          f.demand_cancelled,
-         f.file_type
+         f.file_type,
+         f.file_type_group
        from files f
        left join divisions d on d.id = f.division_id
        join supply_orders so on so.file_id = f.id
@@ -7325,7 +7539,8 @@ async function loadAnalyticsSqlSlice({
          f.ld,
          f.so_cancelled,
          f.demand_cancelled,
-         f.file_type
+         f.file_type,
+         f.file_type_group
        from files f
        left join divisions d on d.id = f.division_id
        ${appendDashboardWhereClause(whereSql, [...fileRankingConditions, `not ${supplyOrderRowExists()}`])}
@@ -7336,7 +7551,7 @@ async function loadAnalyticsSqlSlice({
        or ${isYesExpression("ld")}
        or ${isYesExpression("so_cancelled")}
        or (
-         lower(trim(coalesce(file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+         not (${contractFileTypeSql("effective_risk_rows")})
          and coalesce(material_receipt_date, '') = ''
          and nullif(delivery_period_start_date, '')::date <= current_date
 	         and coalesce(nullif(revised_dp, '')::date, nullif(dp_date, '')::date) is not null
@@ -7358,7 +7573,9 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'main'::text as payment_kind,
+         coalesce(stage_payment.stage ->> 'currentMilestone', so.current_milestone) as current_milestone,
          f.file_type,
+         f.file_type_group,
          f.ir as file_ir,
          coalesce(stage_payment.stage ->> 'materialReceiptDate', so.material_receipt_date::text) as material_receipt_date,
          coalesce(stage_payment.stage ->> 'jobCompletionDate', so.job_completion_date::text) as job_completion_date,
@@ -7384,7 +7601,9 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'main'::text as payment_kind,
+         f.current_milestone::text as current_milestone,
          f.file_type,
+         f.file_type_group,
          f.ir as file_ir,
          f.material_receipt_date::text as material_receipt_date,
          ''::text as job_completion_date,
@@ -7406,7 +7625,9 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'advance'::text as payment_kind,
+         so.advance_payment_detail ->> 'currentMilestone' as current_milestone,
          f.file_type,
+         f.file_type_group,
          f.ir as file_ir,
          ''::text as material_receipt_date,
          ''::text as job_completion_date,
@@ -7432,7 +7653,9 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'supplementary'::text as payment_kind,
+         ''::text as current_milestone,
          f.file_type,
+         f.file_type_group,
          f.ir as file_ir,
          ''::text as material_receipt_date,
          ''::text as job_completion_date,
@@ -7452,11 +7675,15 @@ async function loadAnalyticsSqlSlice({
        cross join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as bill(bill)
        ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
 	     )
-	     select name, count(*)::integer as count
+     select name, count(*)::integer as count,
+       string_agg(distinct file_id::text, ',' order by file_id::text) as "fileIds"
      from effective_payment_rows
      where not ${isYesExpression("so_cancelled")}
        and (
-         payment_kind = 'advance'
+         (
+           payment_kind = 'advance'
+           and ${normalizeMilestoneExpression("current_milestone")} = 'advancepayment'
+         )
          or (
            payment_kind = 'supplementary'
            and (
@@ -7474,12 +7701,12 @@ async function loadAnalyticsSqlSlice({
          or (
 			         (
 			           (not ${isYesExpression("file_ir")}
-			             or lower(trim(coalesce(file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			             or ${contractFileTypeSql("effective_payment_rows")})
 			           and coalesce(job_completion_date, '') <> ''
 		         )
          or (
 	         ${isYesExpression("file_ir")}
-	         and lower(trim(coalesce(file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+	         and not (${contractFileTypeSql("effective_payment_rows")})
 	         and coalesce(material_receipt_date, '') <> ''
          )
          or coalesce(bill_preparation_date, '') <> ''
@@ -7944,6 +8171,7 @@ async function loadAnalyticsSqlSlice({
     divisionPaymentPendingRanking: paymentPendingResult.rows.map((row) => ({
       name: row.name,
       count: Number(row.count ?? 0),
+      fileIds: row.fileIds ?? "",
     })),
   };
 }
@@ -7969,12 +8197,12 @@ async function loadMonthWiseDeliveryScheduleRows({
            when stage_delivery.stage is not null then (
 	             (
 		               ${isYesExpression("f.ir")}
-		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+		               and not (${contractFileTypeSql("f")})
 		               and coalesce(stage_delivery.stage ->> 'materialReceiptDate', '') <> ''
 		             )
 			             or (
 			               (not ${isYesExpression("f.ir")}
-			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                 or ${contractFileTypeSql("f")})
 			               and coalesce(stage_delivery.stage ->> 'jobCompletionDate', '') <> ''
 		             )
 	             or exists (
@@ -7988,12 +8216,12 @@ async function loadMonthWiseDeliveryScheduleRows({
            else (
 	             (
 		               ${isYesExpression("f.ir")}
-		               and lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+		               and not (${contractFileTypeSql("f")})
 		               and ${hasFilledExpression("so.material_receipt_date")}
 		             )
 			             or (
 			               (not ${isYesExpression("f.ir")}
-			                 or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                 or ${contractFileTypeSql("f")})
 			               and ${hasFilledExpression("so.job_completion_date")}
 		             )
 	             or ${completedOrderMilestoneExpression("so", "Delivery")}
@@ -8086,11 +8314,7 @@ async function loadMiscellaneousCounts({
          select count(*)::integer
          from ${dashboardPaymentRowsSource(whereSql, extraConditions)} payment_row
          where not ${effectiveOrderCancelledExpression("payment_row")}
-           and exists (
-             select 1
-             from jsonb_array_elements(coalesce(payment_row.bill_return_cycles, '[]'::jsonb)) as return_cycle(cycle)
-             where ${hasFilledExpression("return_cycle.cycle ->> 'returnedDate'")}
-           )
+           and ${hasLatestReturnCycleExpression("payment_row.bill_return_cycles")}
        ) + (
          select count(*)::integer
          from files advance_file
@@ -8150,7 +8374,9 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
       insertAdvancePaymentMilestone(
         insertSupplementaryBillReturnedMilestone(
           insertBillSentMilestone(
-            insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+            insertMaterialReceiptMilestone(
+              insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+            ),
           ),
         ),
       ),
@@ -8260,6 +8486,21 @@ function insertJobCompletionMilestone(milestones: string[]) {
     ...milestones.slice(0, deliveryIndex + 1),
     "Job Completion",
     ...milestones.slice(deliveryIndex + 1),
+  ];
+}
+
+function insertMaterialReceiptMilestone(milestones: string[]) {
+  const hasMaterialReceipt = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "materialreceipt",
+  );
+  const deliveryPeriodIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "deliveryperiod",
+  );
+  if (hasMaterialReceipt || deliveryPeriodIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, deliveryPeriodIndex + 1),
+    "Material Receipt",
+    ...milestones.slice(deliveryPeriodIndex + 1),
   ];
 }
 
@@ -8448,43 +8689,116 @@ async function loadManualMilestoneSqlSlice({
 	                join files f on f.id = so_current.file_id
 	                left join divisions d on d.id = f.division_id
 	                ${appendDashboardWhereClause(
-                    whereSql.replace(/^where/i, "where f.id is not null and"),
-                    [
-                      ...extraConditions,
-                      `not ${isCancelledExpression()}`,
-                      `not ${isYesExpression("so_current.so_cancelled")}`,
-                      `exists (
-                        select 1
-                        from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
-                        where not ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
-                          and exists (
-                            select 1
-                            from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-                            where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-                              and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-                          )
-                      )`,
-                    ],
-                  )}
+	                  whereSql.replace(/^where/i, "where f.id is not null and"),
+	                  [
+	                    ...extraConditions,
+	                    `not ${isCancelledExpression()}`,
+	                    `not ${isYesExpression("so_current.so_cancelled")}`,
+	                    `exists (
+	                      select 1
+	                      from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
+	                      where not ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
+	                        and ${latestReturnCycleStateExpression("supplementary_bill.bill -> 'billReturnCycles'", "open")}
+	                    )`,
+	                  ],
+	                )}
 	              )
-	              when ${normalizeMilestoneExpression("milestone.name")} = 'deliveryperiod' then (
-	                select count(*)::integer
-	                from supply_orders so_current
-	                join files f on f.id = so_current.file_id
-	                left join divisions d on d.id = f.division_id
-	                ${appendDashboardWhereClause(
+              when ${normalizeMilestoneExpression("milestone.name")} = 'deliveryperiod' then (
+                (
+                  select count(*)::integer
+                  from supply_orders so_current
+                  join files f on f.id = so_current.file_id
+                  left join divisions d on d.id = f.division_id
+                  ${appendDashboardWhereClause(
                     whereSql.replace(/^where/i, "where f.id is not null and"),
                     [
                       ...extraConditions,
                       `not ${isCancelledExpression()}`,
                       `not ${isYesExpression("so_current.so_cancelled")}`,
+                      `not ${isYesExpression("so_current.shortclosure")}`,
+                      `not ${isYesExpression("so_current.no_further_action")}`,
                       `${hasFilledExpression("so_current.so_date")}`,
                       `not ${isYesExpression("so_current.stage_delivery")}`,
                       `${effectiveDpDateExpression("so_current")} is null`,
+                      `${normalizeMilestoneExpression("so_current.current_milestone")} = 'deliveryperiod'`,
                     ],
                   )}
-	              )
-	              when ${normalizeMilestoneExpression("milestone.name")} in (${supplyOrderDrivenManualMilestoneList}) then (
+                ) + (
+                  select count(*)::integer
+                  from supply_orders so_current
+                  join files f on f.id = so_current.file_id
+                  left join divisions d on d.id = f.division_id
+                  cross join lateral jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
+                  ${appendDashboardWhereClause(
+                    whereSql.replace(/^where/i, "where f.id is not null and"),
+                    [
+                      ...extraConditions,
+                      `not ${isCancelledExpression()}`,
+                      `not ${isYesExpression("so_current.so_cancelled")}`,
+                      `not ${isYesExpression("so_current.shortclosure")}`,
+                      `not ${isYesExpression("so_current.no_further_action")}`,
+                      `${hasFilledExpression("so_current.so_date")}`,
+                      `${isYesExpression("so_current.stage_delivery")}`,
+                      `coalesce(nullif(current_stage.stage ->> 'revisedDp', '')::date, nullif(current_stage.stage ->> 'dpDate', '')::date, so_current.revised_dp, so_current.dp_date) is null`,
+                      `regexp_replace(${normalizeMilestoneExpression("current_stage.stage ->> 'currentMilestone'")}, '[0-9]+$', '') = 'deliveryperiod'`,
+                    ],
+                  )}
+                )
+              )
+              when ${normalizeMilestoneExpression("milestone.name")} = 'materialreceipt' then (
+                (
+                  select count(*)::integer
+                  from supply_orders so_current
+                  join files f on f.id = so_current.file_id
+                  left join divisions d on d.id = f.division_id
+                  ${appendDashboardWhereClause(
+                    whereSql.replace(/^where/i, "where f.id is not null and"),
+                    [
+                      ...extraConditions,
+                      `not ${isCancelledExpression()}`,
+                      `not ${isYesExpression("so_current.so_cancelled")}`,
+                      `not ${isYesExpression("so_current.shortclosure")}`,
+                      `not ${isYesExpression("so_current.no_further_action")}`,
+                      `${hasFilledExpression("so_current.so_date")}`,
+                      `not ${isYesExpression("so_current.stage_delivery")}`,
+                      `${deliveryInspectionApplicableExpression()}`,
+                      `not ${hasFilledExpression("so_current.material_receipt_date")}`,
+                      `not ${completedOrderMilestoneExpression("so_current", "Delivery")}`,
+                      `${effectiveDpDateExpression("so_current")} is not null`,
+                      `so_current.so_date <= current_date`,
+                      `${effectiveDpDateExpression("so_current")} >= current_date`,
+                    ],
+                  )}
+                ) + (
+                  select count(*)::integer
+                  from supply_orders so_current
+                  join files f on f.id = so_current.file_id
+                  left join divisions d on d.id = f.division_id
+                  cross join lateral jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
+                  ${appendDashboardWhereClause(
+                    whereSql.replace(/^where/i, "where f.id is not null and"),
+                    [
+                      ...extraConditions,
+                      `not ${isCancelledExpression()}`,
+                      `not ${isYesExpression("so_current.so_cancelled")}`,
+                      `not ${isYesExpression("so_current.shortclosure")}`,
+                      `not ${isYesExpression("so_current.no_further_action")}`,
+                      `${hasFilledExpression("so_current.so_date")}`,
+                      `${isYesExpression("so_current.stage_delivery")}`,
+                      `${deliveryInspectionApplicableExpression()}`,
+                      `coalesce(nullif(current_stage.stage ->> 'materialReceiptDate', ''), '') = ''`,
+                      `not exists (
+                        select 1
+                        from jsonb_array_elements_text(coalesce(current_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
+                        where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'delivery'
+                      )`,
+                      `coalesce(nullif(current_stage.stage ->> 'revisedDp', '')::date, nullif(current_stage.stage ->> 'dpDate', '')::date, so_current.revised_dp, so_current.dp_date) >= current_date`,
+                      `coalesce(nullif(current_stage.stage ->> 'deliveryPeriodStartDate', '')::date, so_current.so_date) <= current_date`,
+                    ],
+                  )}
+                )
+              )
+              when ${normalizeMilestoneExpression("milestone.name")} in (${supplyOrderDrivenManualMilestoneList}) then (
                 select count(*)::integer
                 from supply_orders so_current
                 join files f on f.id = so_current.file_id
@@ -8505,12 +8819,7 @@ async function loadManualMilestoneSqlSlice({
 			                          ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
 			                          or (
 			                            not ${hasFilledExpression("so_current.payment_date")}
-			                            and not exists (
-			                              select 1
-			                              from jsonb_array_elements(coalesce(so_current.bill_return_cycles, '[]'::jsonb)) as bill_return(cycle)
-			                              where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-			                                and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-			                            )
+	                            and not ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
 			                          )
 			                        )
 		                          and (
@@ -8525,12 +8834,7 @@ async function loadManualMilestoneSqlSlice({
 				                      )
 				                      or (
 				                        ${normalizeMilestoneExpression("milestone.name")} = 'billreturnedforcorrection'
-				                        and exists (
-				                          select 1
-				                          from jsonb_array_elements(coalesce(so_current.bill_return_cycles, '[]'::jsonb)) as bill_return(cycle)
-				                          where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-				                            and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-				                        )
+	                        and ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
 				                      )
 			                      or (
 			                        ${normalizeMilestoneExpression("milestone.name")} = 'billpreparation'
@@ -8538,7 +8842,7 @@ async function loadManualMilestoneSqlSlice({
 			                        and (
 			                          (${isYesExpression("f.ir")} and ${hasFilledExpression("so_current.ir_receipt_date")})
 			                          or ((not ${isYesExpression("f.ir")}
-			                            or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                            or ${contractFileTypeSql("f")})
 			                            and ${hasFilledExpression("so_current.job_completion_date")})
 			                        )
 			                      )
@@ -8546,7 +8850,7 @@ async function loadManualMilestoneSqlSlice({
 			                        ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
 			                        and ${hasFilledExpression("so_current.so_date")}
 		                        and (not ${isYesExpression("f.ir")}
-		                          or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+		                          or ${contractFileTypeSql("f")})
 		                        and not ${effectiveOrderCompletedMilestoneExpression("Job Completion", "so_current")}
 		                        and ${effectiveDpDateExpression("so_current")} is not null
 		                        and ${effectiveDpDateExpression("so_current")} < current_date
@@ -8576,14 +8880,14 @@ async function loadManualMilestoneSqlSlice({
 				                            and (
 				                              (${isYesExpression("f.ir")} and ${hasFilledExpression("current_stage.stage ->> 'irReceiptDate'")})
 				                              or ((not ${isYesExpression("f.ir")}
-				                                or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+				                                or ${contractFileTypeSql("f")})
 				                                and ${hasFilledExpression("current_stage.stage ->> 'jobCompletionDate'")})
 				                            )
 				                          )
 			                          or (
 				                            ${normalizeMilestoneExpression("milestone.name")} = 'jobcompletion'
 			                            and (not ${isYesExpression("f.ir")}
-			                              or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))
+			                              or ${contractFileTypeSql("f")})
 			                            and nullif(current_stage.stage ->> 'jobCompletionDate', '')::date is null
 		                            and coalesce(
 		                              nullif(current_stage.stage ->> 'revisedDp', '')::date,
@@ -8691,12 +8995,7 @@ async function loadManualMilestoneSqlSlice({
                   or (${normalizeMilestoneExpression("milestone.name")} = 'irreceipt' and ${hasFilledExpression("so_completed.ir_receipt_date")})
 	                  or (${normalizeMilestoneExpression("milestone.name")} = 'billpreparation' and ${hasFilledExpression("so_completed.bill_preparation_date")})
 	                  or (${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment' and ${hasFilledExpression("so_completed.bill_sent_for_payment_date")})
-	                  or (${normalizeMilestoneExpression("milestone.name")} = 'billreturnedforcorrection' and exists (
-	                    select 1
-	                    from jsonb_array_elements(coalesce(so_completed.bill_return_cycles, '[]'::jsonb)) as bill_return(cycle)
-	                    where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-	                      and ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-	                  ))
+	                  or (${normalizeMilestoneExpression("milestone.name")} = 'billreturnedforcorrection' and ${latestReturnCycleStateExpression("so_completed.bill_return_cycles", "resubmitted")})
 	                  or (${normalizeMilestoneExpression("milestone.name")} = 'payment' and ${hasFilledExpression("so_completed.payment_date")})
                   or exists (
                     select 1
@@ -8839,7 +9138,7 @@ async function loadManualMilestoneSqlSlice({
        `not ${isYesExpression("so_current.so_cancelled")}`,
        `${hasFilledExpression("so_current.so_date")}`,
        `(not ${isYesExpression("f.ir")}
-         or lower(trim(coalesce(f.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m'))`,
+         or ${contractFileTypeSql("f")})`,
        `(
 		         (
 		           ${hasFilledExpression("so_current.so_date")}
@@ -8863,31 +9162,70 @@ async function loadManualMilestoneSqlSlice({
      group by 1`,
     queryValues,
   );
-  const deliveryPeriodLiveCountsResult = await pool.query<{
+  const materialReceiptLiveCountsResult = await pool.query<{
     division: string;
     milestone: string;
     count: number;
   }>(
-    `select ${analyticsNameExpression("d.name", "Unassigned")} as division,
-            'Delivery Period'::text as milestone,
+    `select pending_receipt.division,
+            'Material Receipt'::text as milestone,
             count(*)::integer as count
-     from supply_orders so_current
-     join files f on f.id = so_current.file_id
-     left join divisions d on d.id = f.division_id
-     ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
-       ...extraConditions,
-       `not ${isCancelledExpression()}`,
-       `not ${isYesExpression("so_current.so_cancelled")}`,
-       `${hasFilledExpression("so_current.so_date")}`,
-       `not ${isYesExpression("so_current.stage_delivery")}`,
-       `${isYesExpression("f.ir")}`,
-       `lower(trim(coalesce(f.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')`,
-       `not ${completedOrderMilestoneExpression("so_current", "Delivery")}`,
-       `${effectiveDpDateExpression("so_current")} is not null`,
-       `so_current.so_date <= current_date`,
-       `${effectiveDpDateExpression("so_current")} >= current_date`,
-     ])}
-     group by 1`,
+     from (
+       select ${analyticsNameExpression("d.name", "Unassigned")} as division
+       from supply_orders so_current
+       join files f on f.id = so_current.file_id
+       left join divisions d on d.id = f.division_id
+       ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
+         ...extraConditions,
+         `not ${isCancelledExpression()}`,
+         `not ${isYesExpression("so_current.so_cancelled")}`,
+         `not ${isYesExpression("so_current.shortclosure")}`,
+         `not ${isYesExpression("so_current.no_further_action")}`,
+         `${hasFilledExpression("so_current.so_date")}`,
+         `not ${isYesExpression("so_current.stage_delivery")}`,
+         `${isYesExpression("f.ir")}`,
+         `not (${contractFileTypeSql("f")})`,
+         `not ${hasFilledExpression("so_current.material_receipt_date")}`,
+         `not ${completedOrderMilestoneExpression("so_current", "Delivery")}`,
+         `${effectiveDpDateExpression("so_current")} is not null`,
+         `so_current.so_date <= current_date`,
+         `${effectiveDpDateExpression("so_current")} >= current_date`,
+       ])}
+       union all
+       select ${analyticsNameExpression("d.name", "Unassigned")} as division
+       from supply_orders so_current
+       join files f on f.id = so_current.file_id
+       left join divisions d on d.id = f.division_id
+       cross join lateral jsonb_array_elements(coalesce(so_current.stage_deliveries, '[]'::jsonb)) as current_stage(stage)
+       ${appendDashboardWhereClause(whereSql.replace(/^where/i, "where f.id is not null and"), [
+         ...extraConditions,
+         `not ${isCancelledExpression()}`,
+         `not ${isYesExpression("so_current.so_cancelled")}`,
+         `not ${isYesExpression("so_current.shortclosure")}`,
+         `not ${isYesExpression("so_current.no_further_action")}`,
+         `${hasFilledExpression("so_current.so_date")}`,
+         `${isYesExpression("so_current.stage_delivery")}`,
+         `${isYesExpression("f.ir")}`,
+         `not (${contractFileTypeSql("f")})`,
+         `coalesce(nullif(current_stage.stage ->> 'materialReceiptDate', ''), '') = ''`,
+         `not exists (
+           select 1
+           from jsonb_array_elements_text(coalesce(current_stage.stage -> 'completedMilestones', '[]'::jsonb)) as completed_stage(milestone)
+           where ${normalizeMilestoneExpression("completed_stage.milestone")} = 'delivery'
+         )`,
+         `coalesce(
+           nullif(current_stage.stage ->> 'revisedDp', '')::date,
+           nullif(current_stage.stage ->> 'dpDate', '')::date,
+           so_current.revised_dp,
+           so_current.dp_date
+         ) >= current_date`,
+         `coalesce(
+           nullif(current_stage.stage ->> 'deliveryPeriodStartDate', '')::date,
+           so_current.so_date
+         ) <= current_date`,
+       ])}
+     ) pending_receipt
+     group by pending_receipt.division`,
     queryValues,
   );
   const advancePaymentLiveCountsResult = await pool.query<{
@@ -8935,23 +9273,13 @@ async function loadManualMilestoneSqlSlice({
            current_stage.stage is null
            and ${hasFilledExpression("so_current.bill_preparation_date")}
            and not ${hasFilledExpression("so_current.bill_sent_for_payment_date")}
-           and not exists (
-             select 1
-             from jsonb_array_elements(coalesce(so_current.bill_return_cycles, '[]'::jsonb)) as bill_return(cycle)
-             where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-               and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-           )
+	           and not ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
          )
          or (
            current_stage.stage is not null
            and ${hasFilledExpression("current_stage.stage ->> 'billPreparationDate'")}
            and not ${hasFilledExpression("current_stage.stage ->> 'billSentForPaymentDate'")}
-           and not exists (
-             select 1
-             from jsonb_array_elements(coalesce(current_stage.stage -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-             where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-               and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-           )
+	           and not ${latestReturnCycleStateExpression("current_stage.stage -> 'billReturnCycles'", "open")}
          )
        )`,
        ])}
@@ -8977,12 +9305,7 @@ async function loadManualMilestoneSqlSlice({
          select 1
          from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
          where not ${hasFilledExpression("supplementary_bill.bill ->> 'paymentDate'")}
-           and exists (
-             select 1
-             from jsonb_array_elements(coalesce(supplementary_bill.bill -> 'billReturnCycles', '[]'::jsonb)) as bill_return(cycle)
-             where ${hasFilledExpression("bill_return.cycle ->> 'returnedDate'")}
-               and not ${hasFilledExpression("bill_return.cycle ->> 'resubmittedDate'")}
-           )
+                          and ${latestReturnCycleStateExpression("supplementary_bill.bill -> 'billReturnCycles'", "open")}
        )`,
      ])}
      group by 1`,
@@ -8993,7 +9316,7 @@ async function loadManualMilestoneSqlSlice({
     ...biddingLiveCountsResult.rows,
     ...refloatBiddingLiveCountsResult.rows,
     ...refloatPostTcecLiveCountsResult.rows,
-    ...deliveryPeriodLiveCountsResult.rows,
+    ...materialReceiptLiveCountsResult.rows,
     ...jobCompletionLiveCountsResult.rows,
     ...advancePaymentLiveCountsResult.rows,
     ...billSentForPaymentLiveCountsResult.rows,
@@ -9090,12 +9413,12 @@ async function loadStatusCounts({
 	        where nullif(psb_stage.stage ->> 'jobCompletionDate', '')::date is null
 	      )`;
       const psbPurposeComplete = `(
-        (lower(trim(coalesce(eso.file_type, ''))) in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+        (${contractFileTypeSql("eso")}
           and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${effectiveOrderCompletedMilestoneExpression(
             "Job Completion",
           )})))
         or (
-          lower(trim(coalesce(eso.file_type, ''))) not in ('amc', 'mpc', 'cars', 'capsi', 'o&m')
+          not (${contractFileTypeSql("eso")})
           and (
             (${isYesExpression("eso.file_ir")} and ((${stageRowsExist} and ${allStagesHaveIrReceipt}) or (not (${stageRowsExist}) and ${hasFilledExpression("eso.ir_receipt_date")})))
             or (not ${isYesExpression("eso.file_ir")} and ((${stageRowsExist} and ${allStagesHaveJobCompletion}) or (not (${stageRowsExist}) and ${effectiveOrderCompletedMilestoneExpression(
@@ -9134,7 +9457,10 @@ async function loadStatusCounts({
               or (
                 '${normalizedBg}' <> 'psb'
                 and ${hasFilledExpression("eso.warranty_period_date")}
-                and eso.warranty_period_date + interval '60 day' < current_date
+                and eso.warranty_period_date + (
+                  coalesce((select bg_return_offset_days from app_settings where id = true), 60)
+                  * interval '1 day'
+                ) < current_date
               )
             )
           )
@@ -9172,6 +9498,7 @@ async function loadStatusCounts({
 	       select
 	         f.id as file_id,
            f.file_type,
+           f.file_type_group,
            f.gem as file_gem,
            f.value_capital as file_value_capital,
            f.value_revenue as file_value_revenue,
@@ -9229,6 +9556,7 @@ async function loadStatusCounts({
 	       select
 	         f.id as file_id,
            f.file_type,
+           f.file_type_group,
            f.gem as file_gem,
            f.value_capital as file_value_capital,
            f.value_revenue as file_value_revenue,
@@ -10342,10 +10670,7 @@ dashboardRouter.get(
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const activeDivision =
-      requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
-        ? requestedDivision
-        : "all";
+    const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -10422,6 +10747,7 @@ dashboardRouter.get(
       suppressions,
       customRules,
       settings.milestones,
+      settings.bgReturnOffsetDays ?? 60,
     ).map((row) => {
       const acceptance = acceptanceBySignature.get(row.signature);
       if (!acceptance) return row;
@@ -10463,10 +10789,7 @@ dashboardRouter.get(
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const activeDivision =
-      requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
-        ? requestedDivision
-        : "all";
+    const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -10508,10 +10831,7 @@ dashboardRouter.get(
         : selectedYear;
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
-    const activeDivision =
-      requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
-        ? requestedDivision
-        : "all";
+    const activeDivision = requestedDivision;
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -10678,10 +10998,7 @@ dashboardRouter.get(
     ]);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const activeDivision =
-      requestedDivision === "all" || divisions.some((item) => item.name === requestedDivision)
-        ? requestedDivision
-        : "all";
+    const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -10753,7 +11070,7 @@ dashboardRouter.get(
     const analyticsSliceDivision = activeDivision;
     const liveMilestones = readList(request.query.liveMilestones);
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 11,
+      version: 12,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,

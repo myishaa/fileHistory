@@ -276,6 +276,44 @@ async function checkSearchCount(token, issues, pass, area, label, expected, targ
   }
 }
 
+async function checkPaymentPendingClicker(token, issues, pass, row) {
+  const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  const expectedIds = new Set(ids);
+  const filters = [
+    { route: "panel clicker", dashboardFilter: `fileIds:${ids.map(encodeURIComponent).join(",")}` },
+    { route: "saved link", dashboardFilter: "analyticsPaymentPending" },
+  ];
+  for (const { route, dashboardFilter } of filters) {
+    const result = await api(searchPath(pass, {
+      dashboardFilter,
+      division: row.name,
+    }), token);
+    const actualIds = new Set((result.files ?? []).map((file) => file.id));
+    const missing = [...expectedIds].filter((id) => !actualIds.has(id));
+    const extra = [...actualIds].filter((id) => !expectedIds.has(id));
+    if (
+      expectedIds.size === 0 ||
+      n(row.count) < expectedIds.size ||
+      n(result.total) !== expectedIds.size ||
+      missing.length ||
+      extra.length
+    ) {
+      issues.push({
+        pass: pass.name,
+        area: "Payment pending ranking",
+        label: row.name,
+        route,
+        issue: "payment-case clicker file set mismatch",
+        cases: n(row.count),
+        expectedFiles: expectedIds.size,
+        actualFiles: n(result.total),
+        missing: missing.slice(0, 10),
+        extra: extra.slice(0, 10),
+      });
+    }
+  }
+}
+
 async function checkAnalyticsClickers(token, issues, pass, summary) {
   const analytics = summary.analytics ?? {};
   const tasks = [];
@@ -287,7 +325,7 @@ async function checkAnalyticsClickers(token, issues, pass, summary) {
     addTask(() => checkSearchCount(token, issues, pass, "Division turnaround ranking", row.name, row.sampleSize, { dashboardFilter: "divisionTurnaroundSample", division: row.name }, false));
   }
   for (const row of sampleRows(analytics.divisionPaymentPendingRanking)) {
-    addTask(() => checkSearchCount(token, issues, pass, "Payment pending ranking", row.name, row.count, { dashboardFilter: "paymentDue", division: row.name }, false));
+    addTask(() => checkPaymentPendingClicker(token, issues, pass, row));
   }
   for (const row of sampleRows(analytics.topFirmSupplyOrders)) {
     addTask(() => checkSearchCount(token, issues, pass, "Top firms by S.O. value", row.name, row.value, { analyticsType: "firm", analyticsNames: [row.name] }, false));

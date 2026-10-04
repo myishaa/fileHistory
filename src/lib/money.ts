@@ -8,6 +8,40 @@ export function parseAmount(value: string | number | undefined) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+export function normalizeAmountInput(value: string) {
+  const digitsAndDots = value.replace(/[^\d.]/g, "");
+  const [integerPart = "", ...decimalParts] = digitsAndDots.split(".");
+  return decimalParts.length ? `${integerPart}.${decimalParts.join("")}` : integerPart;
+}
+
+export function formatAmountInput(value: string) {
+  if (!value) return value;
+  const [integerPart, ...decimalParts] = normalizeAmountInput(value).split(".");
+  const lastThree = integerPart.slice(-3);
+  const beforeThousands = integerPart.slice(0, -3);
+  const formattedInteger = beforeThousands
+    ? [beforeThousands.slice(0, -2), beforeThousands.slice(-2), lastThree]
+        .filter(Boolean)
+        .join(",")
+    : integerPart;
+  return decimalParts.length ? `${formattedInteger}.${decimalParts.join("")}` : formattedInteger;
+}
+
+export function handleFormattedAmountInput(input: HTMLInputElement, onValue: (value: string) => void) {
+  const cursor = input.selectionStart ?? input.value.length;
+  const charactersBeforeCursor = normalizeAmountInput(input.value.slice(0, cursor)).length;
+  const normalizedValue = normalizeAmountInput(input.value);
+  const formattedValue = formatAmountInput(normalizedValue);
+  let nextCursor = 0;
+  let charactersSeen = 0;
+  while (nextCursor < formattedValue.length && charactersSeen < charactersBeforeCursor) {
+    if (/[\d.]/.test(formattedValue[nextCursor])) charactersSeen += 1;
+    nextCursor += 1;
+  }
+  onValue(normalizedValue);
+  requestAnimationFrame(() => input.setSelectionRange(nextCursor, nextCursor));
+}
+
 export function hasAmount(value: string | undefined) {
   return parseAmount(value) !== undefined;
 }

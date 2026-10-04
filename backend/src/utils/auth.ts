@@ -230,8 +230,8 @@ export function canAccessDivision(user: AuthUser, divisionId: string | null | un
 }
 
 export function getAllowedFileCategories(user: AuthUser): FileCategoryKey[] | undefined {
-  if (user.role !== "editor") return undefined;
-  return normalizeFileCategories(user.allowedFileCategories ?? undefined);
+  if (user.role !== "editor" || !Array.isArray(user.allowedFileCategories)) return undefined;
+  return normalizeFileCategories(user.allowedFileCategories);
 }
 
 export function hasFileCategoryRestriction(user: AuthUser) {

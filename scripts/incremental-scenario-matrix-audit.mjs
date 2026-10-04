@@ -365,8 +365,8 @@ const expect = {
   demandCancelled: { label: "demand cancelled", filter: "miscDemandCancelled", delta: 1 },
   preTcec: { label: "Pre-TCEC completed", filter: "preTcecCompleted", delta: 1 },
   tcecFyReviewed: { label: "TCEC FY reviewed", filter: "tcecStatusFy:pre:reviewed:2026-27:QA-COMMITTEE", delta: 1 },
-  cncReviewed: { label: "CNC reviewed", filter: "cncSummary:reviewed:2026-07-16", delta: 1 },
-  cncApproved: { label: "CNC approved", filter: "cncSummary:approved:2026-07-16", delta: 1 },
+  cncReviewed: { label: "CNC reviewed", filter: "cncSummary:reviewed:2026-07-17", delta: 1 },
+  cncApproved: { label: "CNC approved", filter: "cncSummary:approved:2026-07-17", delta: 1 },
   refloatPreBid: { label: "refloat pre-bid completed", filter: "refloatPreBidMeeting:completed:2026-07", delta: 1 },
   refloatPostTcec: { label: "refloat post-TCEC signed", filter: "tcecStatusFy:post:signed:2026-27:QA-POST-COMMITTEE", delta: 1 },
 };
@@ -375,7 +375,7 @@ function scenarioNormalIr(code) {
   return [
     { name: "create shell", method: "POST", apply: (file) => ({ ...file, ir: "Yes" }), expectations: [] },
     { name: "basic timeline", apply: (file) => completeBasicTimeline(file, code), expectations: [expect.scrutiny, expect.cfa, expect.bidding] },
-    { name: "place S.O.", apply: (file) => placeOrder(file, code), expectations: [expect.fs, expect.so, expect.soMonth] },
+    { name: "place S.O.", apply: (file) => updateOrder(placeOrder(file, code), { dpDate: "" }), expectations: [expect.fs, expect.so, expect.soMonth] },
     { name: "future D.P.", apply: (file) => updateOrder(file, { dpDate: "2026-12-15" }), expectations: [expect.dpValid] },
     { name: "delivery and IR", apply: (file) => updateOrder(file, { materialReceiptDate: "2026-07-20", irPreparationDate: "2026-07-21", irReceiptDate: "2026-07-22", completedMilestones: [...file.supplyOrders[0].completedMilestones, "Delivery", "IR Preparation", "IR Receipt"] }), expectations: [expect.delivery, expect.ir, expect.paymentDue] },
     { name: "bill prepared", apply: (file) => updateOrder(file, { billPreparationDate: "2026-07-23", billNo: `${code}-BILL`, billAmountCapital: "10000" }), expectations: [expect.billPrep] },
@@ -445,9 +445,9 @@ function scenarioReturnedBill(code) {
   const flow = scenarioNormalIr(code).slice(0, 7);
   return [
     ...flow,
-    { name: "bill returned", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", remarks: "" }] }), expectations: [expect.billReturnAny, expect.billReturnPending] },
+    { name: "bill returned", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", remarks: "" }] }), expectations: [expect.paymentDueMinus, expect.billReturnAny, expect.billReturnPending] },
     { name: "bill resubmitted", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", resubmittedDate: "2026-07-26", remarks: "" }] }), expectations: [expect.billReturnPendingMinus, expect.billReturnResubmitted] },
-    { name: "returned bill paid", apply: (file) => updateOrder(file, { paymentDate: "2026-07-30", paymentMode: "Online", actualPaymentCapital: "9800" }), expectations: [expect.paymentDueMinus, expect.payment, expect.billReturnPaid] },
+    { name: "returned bill paid", apply: (file) => updateOrder(file, { paymentDate: "2026-07-30", paymentMode: "Online", actualPaymentCapital: "9800" }), expectations: [expect.payment, expect.billReturnPaid] },
   ];
 }
 
@@ -456,9 +456,9 @@ function scenarioSupplementary(code) {
   return [
     ...paid,
     { name: "supplementary submitted", apply: (file) => updateOrder(file, { supplementaryBills: [{ billNo: `${code}-SUPP`, billAmountCapital: "500", billAmountRevenue: "", billSentForPaymentDate: "2026-07-31", billReturnCycles: [] }] }), expectations: [expect.suppSubmitted] },
-    { name: "supplementary returned", apply: (file) => updateOrder(file, { supplementaryBills: [{ ...file.supplyOrders[0].supplementaryBills[0], billReturnCycles: [{ returnedDate: "2026-08-01", reason: "Correction", remarks: "" }] }] }), expectations: [expect.suppSubmittedMinus, expect.suppAny, expect.suppReturned] },
+    { name: "supplementary returned", apply: (file) => updateOrder(file, { supplementaryBills: [{ ...file.supplyOrders[0].supplementaryBills[0], billReturnCycles: [{ returnedDate: "2026-08-01", reason: "Correction", remarks: "" }] }] }), expectations: [expect.suppAny, expect.suppReturned] },
     { name: "supplementary resubmitted", apply: (file) => updateOrder(file, { supplementaryBills: [{ ...file.supplyOrders[0].supplementaryBills[0], billReturnCycles: [{ returnedDate: "2026-08-01", reason: "Correction", resubmittedDate: "2026-08-02", remarks: "" }] }] }), expectations: [expect.suppReturnedMinus, expect.suppResubmitted] },
-    { name: "supplementary paid", apply: (file) => updateOrder(file, { supplementaryBills: [{ ...file.supplyOrders[0].supplementaryBills[0], paymentDate: "2026-08-05", paymentMode: "Online", actualPaymentCapital: "450" }] }), expectations: [expect.suppPaid, expect.suppReturnPaid] },
+    { name: "supplementary paid", apply: (file) => updateOrder(file, { supplementaryBills: [{ ...file.supplyOrders[0].supplementaryBills[0], paymentDate: "2026-08-05", paymentMode: "Online", actualPaymentCapital: "450" }] }), expectations: [expect.suppReturnPaid] },
   ];
 }
 

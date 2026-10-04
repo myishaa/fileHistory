@@ -254,7 +254,7 @@ function collectCashOutgo(checks, passName, summary, pass) {
     ["Supplementary bills submitted, payment pending", "supplementaryBillSent", summary.supplementaryBillSentForPaymentRows],
     ["Supplementary bills paid", "supplementaryActual", summary.supplementaryActualCashOutgoRows],
     ["Pending returned bills", "pendingReturnedBills", summary.pendingReturnedBillRows],
-    ["Returned bills resubmitted", "returnedBillsResubmitted", summary.returnedBillResubmittedRows],
+    ["Returned bills resubmitted and unpaid", "returnedBillsResubmitted", summary.returnedBillResubmittedRows],
     ["Returned bills paid", "returnedBillsPaid", summary.returnedBillPaidRows],
     ["Pending returned supplementary bills", "supplementaryPendingReturnedBills", summary.supplementaryPendingReturnedBillRows],
     ["Returned supplementary bills resubmitted", "supplementaryReturnedBillsResubmitted", summary.supplementaryReturnedBillResubmittedRows],

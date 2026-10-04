@@ -62,6 +62,20 @@ export function isContractFileType(file: {
   );
 }
 
+export function contractFileTypeSql(alias: string) {
+  const type = `lower(trim(coalesce(${alias}.file_type, '')))`;
+  const configuredGroup = `(
+    select lower(trim(group_row.value->>'group'))
+    from app_settings settings_row
+    cross join lateral jsonb_array_elements(coalesce(settings_row.file_type_groups, '[]'::jsonb)) as group_row(value)
+    where lower(trim(coalesce(group_row.value->>'fileType', ''))) = ${type}
+    limit 1
+  )`;
+  const legacyGroup = `case when ${type} in ('amc', 'mpc', 'cars', 'capsi', 'o&m') then 'contract' else 'goodsservices' end`;
+  const storedGroup = `nullif(trim(coalesce(${alias}.file_type_group, '')), '')`;
+  return `lower(trim(coalesce(${storedGroup}, ${configuredGroup}, ${legacyGroup}))) = 'contract'`;
+}
+
 export function isDeliveryInspectionApplicableByGroup(
   file: Pick<FileRecord, "fileType" | "fileTypeGroup" | "ir">,
 ): boolean {

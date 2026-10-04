@@ -32,6 +32,7 @@ import {
   hasOpenBillReturn,
   hasReturnedBill,
   hasReturnedBillPaid,
+  latestBillReturnCycle,
   normalizeBillReturnCycles,
 } from "./refloat-returned-bill.js";
 
@@ -133,7 +134,7 @@ const statusSummaryColumns = [
   "Submitted",
   "Returned",
   "Resubmitted total",
-  "Resubmitted",
+  "Resubmitted and Unpaid",
   "Paid",
   "Returned paid",
   "Normal paid",
@@ -379,8 +380,10 @@ export function buildReportsSummary({
   historicalFromDate,
   historicalToDate,
   cashOutgoAsOfDate,
+  cashOutgoPaymentCutoffDate,
   bgReceiptDelayDays = [10, 30, 60],
   warrantyBgBufferDays = 60,
+  bgReturnOffsetDays = 60,
 }: {
   files: FileRecord[];
   pendingBillingFiles?: FileRecord[];
@@ -392,8 +395,10 @@ export function buildReportsSummary({
   historicalFromDate?: string;
   historicalToDate?: string;
   cashOutgoAsOfDate?: string;
+  cashOutgoPaymentCutoffDate?: string;
   bgReceiptDelayDays?: number[];
   warrantyBgBufferDays?: number;
+  bgReturnOffsetDays?: number;
 }) {
   const divisionFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
@@ -416,7 +421,7 @@ export function buildReportsSummary({
   return {
     activeDivision: division,
     reportFileCount: reportFiles.length,
-    statusSummaryGroups: getStatusSummaryTableGroups(activeStatusFiles),
+    statusSummaryGroups: getStatusSummaryTableGroups(activeStatusFiles, bgReturnOffsetDays),
     expectedCashOutgoDpRows: getExpectedCashOutgoByDpRows(
       reportFiles,
       expectedCashOutgoDays,
@@ -442,7 +447,11 @@ export function buildReportsSummary({
       historicalRange,
       cashOutgoAsOfDate,
     ),
-    actualCashOutgoRows: getActualCashOutgoRows(reportFiles, historicalRange),
+    actualCashOutgoRows: getActualCashOutgoRows(
+      reportFiles,
+      historicalRange,
+      cashOutgoPaymentCutoffDate,
+    ),
     supplementaryBillSentForPaymentRows: getSupplementaryBillSentForPaymentRows(
       pendingBillingReportFiles,
       historicalRange,
@@ -451,6 +460,7 @@ export function buildReportsSummary({
     supplementaryActualCashOutgoRows: getSupplementaryActualCashOutgoRows(
       reportFiles,
       historicalRange,
+      cashOutgoPaymentCutoffDate,
     ),
     pendingReturnedBillRows: getReturnedBillCashOutgoRows(
       pendingBillingReportFiles,
@@ -466,6 +476,7 @@ export function buildReportsSummary({
       reportFiles,
       "returnedBillsPaid",
       historicalRange,
+      cashOutgoPaymentCutoffDate,
     ),
     supplementaryPendingReturnedBillRows: getSupplementaryReturnedBillCashOutgoRows(
       pendingBillingReportFiles,
@@ -481,6 +492,7 @@ export function buildReportsSummary({
       reportFiles,
       "supplementaryReturnedBillsPaid",
       historicalRange,
+      cashOutgoPaymentCutoffDate,
     ),
     monthlyFileInflow: getMonthlyFileInflow(nonDemandCancelledReportFiles, selectedYear),
     monthWiseSupplyOrder: getMonthWiseSupplyOrder(nonDemandCancelledReportFiles, selectedYear),
@@ -573,12 +585,18 @@ function getExpectedCashOutgoByDpRows(
     if (isDemandCancelled(file)) return;
     fileSupplyOrders(file).forEach((order) => {
       const deliveryPeriodDate = getDeliveryPeriodDate(order);
-      if (!hasFilledString(deliveryPeriodDate) || !isPaymentOrderActive(file, order)) return;
+      if (
+        !hasFilledString(deliveryPeriodDate) ||
+        !isPaymentOrderActive(file, order) ||
+        isShortclosureNoFurtherAction(order)
+      ) {
+        return;
+      }
       if (!isExpectedDpCashOutgoPending(file, order, asOfDate)) return;
       const cashOutgoDate = addDays(deliveryPeriodDate, offsetDays + 1);
       if (!cashOutgoDate) return;
 
-      addCashOutgoTotal(totals, cashOutgoDate, file, order);
+      addCashOutgoTotal(totals, cashOutgoDate, file, getDpForecastOrder(order));
     });
   });
 
@@ -870,17 +888,24 @@ function isExpectedDpCashOutgoPending(
   if (isDeliveryInspectionApplicable(file)) {
     return asOfDate
       ? isMissingOrAfter(order.materialReceiptDate, asOfDate) &&
+          isMissingOrAfter(order.billPreparationDate, asOfDate) &&
+          isMissingOrAfter(order.billSentForPaymentDate, asOfDate) &&
           isMissingOrAfter(order.paymentDate, asOfDate)
-      : !hasFilledString(order.materialReceiptDate) && !hasFilledString(order.paymentDate);
+      : !hasFilledString(order.materialReceiptDate) &&
+          !hasFilledString(order.billPreparationDate) &&
+          !hasFilledString(order.billSentForPaymentDate) &&
+          !hasFilledString(order.paymentDate);
   }
 
   return asOfDate
     ? isMissingOrAfter(order.billPreparationDate, asOfDate) &&
         isMissingOrAfter(order.billSentForPaymentDate, asOfDate) &&
-        isMissingOrAfter(order.paymentDate, asOfDate)
+        isMissingOrAfter(order.paymentDate, asOfDate) &&
+        isMissingOrAfter(order.jobCompletionDate, asOfDate)
     : !hasFilledString(order.billPreparationDate) &&
         !hasFilledString(order.billSentForPaymentDate) &&
-        !hasFilledString(order.paymentDate);
+        !hasFilledString(order.paymentDate) &&
+        !hasFilledString(order.jobCompletionDate);
 }
 
 function getExpectedCashOutgoByReceiptRows(
@@ -893,7 +918,7 @@ function getExpectedCashOutgoByReceiptRows(
   files.forEach((file) => {
     if (isDemandCancelled(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       const reportDate = getReceiptPendingBillReportDate(file, order);
       if (!hasFilledString(reportDate)) return;
       if (asOfDate) {
@@ -922,7 +947,12 @@ function getExpectedCashOutgoByReceiptPendingBillRows(
   files.forEach((file) => {
     if (isDemandCancelled(file)) return;
     fileSupplyOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+      if (
+        !isPaymentOrderActive(file, order) ||
+        isShortclosureNoFurtherAction(order)
+      ) {
+        return;
+      }
       const triggerDate = getReceiptPendingBillReportDate(file, order) ?? "";
       if (!hasFilledString(triggerDate)) return;
       if (dateRange) {
@@ -960,7 +990,7 @@ function getExpectedCashOutgoByBillPreparationRows(
     if (isYes(file.demandCancelled)) return;
     filePaymentOrders(file).forEach((order) => {
       const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
-      if (!isPaymentOrderActive(file, order)) return;
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       const reportDate = getReceiptPendingBillReportDate(file, order);
       if (!isAdvancePayment && !hasFilledString(reportDate)) return;
       if (!hasFilledString(order.billPreparationDate)) return;
@@ -996,8 +1026,8 @@ function getExpectedCashOutgoByBillPreparationRows(
       addCashOutgoTotal(totals, billPreparationDate, file, order);
     });
 
-    filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+    rawSupplyOrders(file).forEach((order) => {
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       getSupplementaryBills(order).forEach((bill) => {
         if (hasFilledString(bill.paymentDate)) return;
         const returnedDate = getSupplementaryReturnedBillCashOutgoEventDate(
@@ -1031,7 +1061,7 @@ function getBillSentForPaymentRows(
     if (isYes(file.demandCancelled)) return;
     filePaymentOrders(file).forEach((order) => {
       const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
-      if (!isPaymentOrderActive(file, order)) return;
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       const reportDate = getReceiptPendingBillReportDate(file, order);
       if (!isAdvancePayment && !hasFilledString(reportDate)) return;
       if (!hasFilledString(order.billPreparationDate)) return;
@@ -1057,8 +1087,8 @@ function getBillSentForPaymentRows(
       addCashOutgoTotal(totals, billSentForPaymentDate, file, order);
     });
 
-    filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+    rawSupplyOrders(file).forEach((order) => {
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       getSupplementaryBills(order).forEach((bill) => {
         if (hasFilledString(bill.paymentDate)) return;
         if (hasOpenSupplementaryBillReturn(bill)) return;
@@ -1088,8 +1118,8 @@ function getSupplementaryBillSentForPaymentRows(
 
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+    rawSupplyOrders(file).forEach((order) => {
+      if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return;
       getSupplementaryBills(order).forEach((bill) => {
         if (hasFilledString(bill.paymentDate)) return;
         if (hasOpenSupplementaryBillReturn(bill)) return;
@@ -1113,6 +1143,7 @@ function getSupplementaryBillSentForPaymentRows(
 function getActualCashOutgoRows(
   files: FileRecord[],
   dateRange?: { fromDate: string; toDate: string },
+  paymentCutoffDate?: string,
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
@@ -1122,18 +1153,18 @@ function getActualCashOutgoRows(
       if (!hasFilledString(order.paymentDate) || isYes(order.soCancelled)) return;
 
       const paymentDate = order.paymentDate;
-      if (!paymentDate) return;
+      if (!paymentDate || isBeyondPaymentCutoff(paymentDate, paymentCutoffDate)) return;
       if (dateRange && !isWithinDateRange(paymentDate, dateRange)) return;
 
       addCashOutgoTotal(totals, paymentDate, file, order, "actual");
     });
 
-    filePaymentOrders(file).forEach((order) => {
+    rawSupplyOrders(file).forEach((order) => {
       if (isYes(order.soCancelled)) return;
       getSupplementaryBills(order).forEach((bill) => {
         if (!hasFilledString(bill.paymentDate)) return;
         const paymentDate = bill.paymentDate;
-        if (!paymentDate) return;
+        if (!paymentDate || isBeyondPaymentCutoff(paymentDate, paymentCutoffDate)) return;
         if (dateRange && !isWithinDateRange(paymentDate, dateRange)) return;
 
         addSupplementaryBillCashOutgoTotal(totals, paymentDate, file, bill, "actual");
@@ -1147,17 +1178,18 @@ function getActualCashOutgoRows(
 function getSupplementaryActualCashOutgoRows(
   files: FileRecord[],
   dateRange?: { fromDate: string; toDate: string },
+  paymentCutoffDate?: string,
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order) => {
+    rawSupplyOrders(file).forEach((order) => {
       if (!isPaymentOrderActive(file, order)) return;
       getSupplementaryBills(order).forEach((bill) => {
         if (!hasFilledString(bill.paymentDate)) return;
         const paymentDate = bill.paymentDate;
-        if (!paymentDate) return;
+        if (!paymentDate || isBeyondPaymentCutoff(paymentDate, paymentCutoffDate)) return;
         if (dateRange && !isWithinDateRange(paymentDate, dateRange)) return;
 
         addSupplementaryBillCashOutgoTotal(totals, paymentDate, file, bill, "actual");
@@ -1172,15 +1204,23 @@ function getReturnedBillCashOutgoRows(
   files: FileRecord[],
   mode: "returnedBills" | "pendingReturnedBills" | "returnedBillsResubmitted" | "returnedBillsPaid",
   dateRange?: { fromDate: string; toDate: string },
+  paymentCutoffDate?: string,
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
     filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+      if (
+        !isPaymentOrderActive(file, order) ||
+        (mode !== "returnedBills" &&
+          mode !== "returnedBillsPaid" &&
+          isShortclosureNoFurtherAction(order))
+      ) return;
       const eventDate = getReturnedBillCashOutgoEventDate(order, mode);
       if (!eventDate) return;
+      if (mode === "returnedBillsPaid" && isBeyondPaymentCutoff(eventDate, paymentCutoffDate))
+        return;
       if (dateRange && !isWithinDateRange(eventDate, dateRange)) return;
 
       addCashOutgoTotal(
@@ -1209,16 +1249,24 @@ function getSupplementaryReturnedBillCashOutgoRows(
   files: FileRecord[],
   mode: SupplementaryReturnedBillCashOutgoMode,
   dateRange?: { fromDate: string; toDate: string },
+  paymentCutoffDate?: string,
 ): CashOutgoRow[] {
   const totals = new Map<string, CashOutgoRow>();
 
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
+    rawSupplyOrders(file).forEach((order) => {
+      if (
+        !isPaymentOrderActive(file, order) ||
+        (mode !== "supplementaryReturnedBillsPaid" && isShortclosureNoFurtherAction(order))
+      ) return;
       getSupplementaryBills(order).forEach((bill) => {
         const eventDate = getSupplementaryReturnedBillCashOutgoEventDate(bill, mode);
         if (!eventDate) return;
+        if (
+          mode === "supplementaryReturnedBillsPaid" &&
+          isBeyondPaymentCutoff(eventDate, paymentCutoffDate)
+        ) return;
         if (dateRange && !isWithinDateRange(eventDate, dateRange)) return;
 
         addSupplementaryBillCashOutgoTotal(
@@ -1235,36 +1283,27 @@ function getSupplementaryReturnedBillCashOutgoRows(
   return finalizeCashOutgoRows(totals);
 }
 
+function isBeyondPaymentCutoff(paymentDate: string, cutoffDate?: string) {
+  return Boolean(cutoffDate && paymentDate > cutoffDate);
+}
+
 function getSupplementaryReturnedBillCashOutgoEventDate(
   bill: SupplementaryBillDetail,
   mode: SupplementaryReturnedBillCashOutgoMode,
 ) {
-  const cycles = normalizeBillReturnCycles(bill.billReturnCycles);
-  const returnedDates = cycles
-    .filter((cycle) => hasFilledString(cycle.returnedDate))
-    .map((cycle) => cycle.returnedDate);
-  const openReturnedDates = cycles
-    .filter(
-      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-    )
-    .map((cycle) => cycle.returnedDate);
-  const resubmittedDates = cycles
-    .filter(
-      (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-    )
-    .map((cycle) => cycle.resubmittedDate);
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
 
   if (mode === "supplementaryPendingReturnedBills") {
     if (hasFilledString(bill.paymentDate)) return undefined;
-    return earliestDate(openReturnedDates);
+    return latest && !hasFilledString(latest.resubmittedDate) ? latest.returnedDate : undefined;
   }
   if (mode === "supplementaryReturnedBillsResubmitted") {
-    if (hasFilledString(bill.paymentDate) || openReturnedDates.length || !resubmittedDates.length) {
+    if (hasFilledString(bill.paymentDate) || !latest || !hasFilledString(latest.resubmittedDate)) {
       return undefined;
     }
-    return earliestDate(resubmittedDates);
+    return latest.resubmittedDate;
   }
-  return returnedDates.length && hasFilledString(bill.paymentDate) ? bill.paymentDate : undefined;
+  return latest && hasFilledString(bill.paymentDate) ? bill.paymentDate : undefined;
 }
 
 function addCashOutgoTotal(
@@ -1331,6 +1370,26 @@ function addSupplementaryBillCashOutgoTotal(
 
 function getPlannedCashOutgoCapital(order: SupplyOrderDetail) {
   return hasFilledString(order.billAmountCapital) ? order.billAmountCapital : order.soValueCapital;
+}
+
+function getDpForecastOrder(order: SupplyOrderDetail): SupplyOrderDetail {
+  if (order.stageDeliveryLabel || !isYes(order.advancePayment)) return order;
+  const advance = order.advancePaymentDetail;
+  const allocatedCapital =
+    parseAmount(advance?.stageAmountCapital) ?? parseAmount(advance?.actualPaymentCapital) ?? 0;
+  const allocatedRevenue =
+    parseAmount(advance?.stageAmountRevenue) ?? parseAmount(advance?.actualPaymentRevenue) ?? 0;
+  const plannedCapital = parseAmount(getPlannedCashOutgoCapital(order)) ?? 0;
+  const plannedRevenue = parseAmount(getPlannedCashOutgoRevenue(order)) ?? 0;
+  return {
+    ...order,
+    billAmountCapital: hasFilledString(order.billAmountCapital)
+      ? order.billAmountCapital
+      : String(Math.max(0, plannedCapital - allocatedCapital)),
+    billAmountRevenue: hasFilledString(order.billAmountRevenue)
+      ? order.billAmountRevenue
+      : String(Math.max(0, plannedRevenue - allocatedRevenue)),
+  };
 }
 
 function getPlannedCashOutgoRevenue(order: SupplyOrderDetail) {
@@ -1828,7 +1887,7 @@ function getSupplementaryBillReturnedDelayRows(
   }
   if (isYes(file.demandCancelled)) return [];
   return rawSupplyOrders(file).flatMap((order, orderIndex) => {
-    if (!isPaymentOrderActive(file, order)) return [];
+    if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order)) return [];
     return getSupplementaryBills(order).flatMap((bill, billIndex) => {
       if (!isSupplementaryBillReturned(bill)) return [];
       const stageStartDate = getEarliestOpenSupplementaryBillReturnDate(bill);
@@ -1864,7 +1923,7 @@ function getReturnedBillDelayRows(
   }
   if (isYes(file.demandCancelled)) return [];
   return normalizedFilePaymentEntries(file).flatMap(({ order, orderIndex, stageIndex }) => {
-    if (!isPaymentOrderActive(file, order) || !hasOpenBillReturn(order)) return [];
+    if (!isPaymentOrderActive(file, order) || isShortclosureNoFurtherAction(order) || !hasOpenBillReturn(order)) return [];
     const stageStartDate = getEarliestOpenBillReturnDate(order);
     const daysInStage = getDaysSinceDate(stageStartDate);
     if (daysInStage === undefined || daysInStage <= thresholdDays) return [];
@@ -1917,21 +1976,13 @@ function getSupplyOrderDelayReference(file: FileRecord, order: SupplyOrderDetail
 }
 
 function getEarliestOpenBillReturnDate(order: SupplyOrderDetail) {
-  return normalizeOpenReturnDates(order.billReturnCycles)[0];
+  const latest = latestBillReturnCycle(order.billReturnCycles);
+  return latest && !hasFilledString(latest.resubmittedDate) ? latest.returnedDate : undefined;
 }
 
 function getEarliestOpenSupplementaryBillReturnDate(bill: SupplementaryBillDetail) {
-  return normalizeOpenReturnDates(bill.billReturnCycles)[0];
-}
-
-function normalizeOpenReturnDates(cycles: SupplyOrderDetail["billReturnCycles"]) {
-  return (cycles ?? [])
-    .filter(
-      (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-    )
-    .map((cycle) => cycle.returnedDate)
-    .filter((date): date is string => hasFilledString(date))
-    .sort();
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return latest && !hasFilledString(latest.resubmittedDate) ? latest.returnedDate : undefined;
 }
 
 function getSupplyOrderStageStartDate(file: FileRecord) {
@@ -2167,11 +2218,14 @@ function getDelayStatusSummary(rows: DelayStatusRow[]) {
   };
 }
 
-export function getStatusSummaryTableGroups(files: FileRecord[]): StatusSummaryTableGroup[] {
+export function getStatusSummaryTableGroups(
+  files: FileRecord[],
+  bgReturnOffsetDays = 60,
+): StatusSummaryTableGroup[] {
   const byMilestone = new Map<string, StatusSummaryTableRow & { columns: StatusSummaryColumn[] }>();
 
   [
-    ...getStatusSummaryRows(files),
+    ...getStatusSummaryRows(files, bgReturnOffsetDays),
     {
       milestone: "Returned Bills",
       stage: "Bills returned",
@@ -2184,7 +2238,7 @@ export function getStatusSummaryTableGroups(files: FileRecord[]): StatusSummaryT
     },
     {
       milestone: "Returned Bills",
-      stage: "Resubmitted",
+      stage: "Resubmitted and Unpaid",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
@@ -2313,7 +2367,7 @@ function getStatusSummaryColumnsForRow(columns: StatusSummaryColumn[]): StatusSu
   }
 
   if (columns.includes("Bills returned")) {
-    return ["Bills returned", "Return pending", "Resubmitted", "Returned paid"].filter((column) =>
+    return ["Bills returned", "Return pending", "Resubmitted and Unpaid", "Returned paid"].filter((column) =>
       columns.includes(column as StatusSummaryColumn),
     ) as StatusSummaryColumn[];
   }
@@ -2368,7 +2422,7 @@ function getStatusSummaryGroupTitle(columns: StatusSummaryDisplayColumn[]) {
   if (columns.includes("Received")) return "PSB / PWB";
   if (columns.includes("Valid")) return "Delivery Period";
   if (columns.includes("Refloat Due")) return "Pre-Bid Meeting";
-  if (columns.some((column) => ["Submitted", "Returned", "Resubmitted", "Paid"].includes(column))) {
+  if (columns.some((column) => ["Submitted", "Returned", "Resubmitted and Unpaid", "Paid"].includes(column))) {
     return "Payment";
   }
   if (columns.includes("Submitted total")) return "Payment";
@@ -2385,9 +2439,9 @@ function getStatusSummaryGroupTitle(columns: StatusSummaryDisplayColumn[]) {
   return "Other milestones";
 }
 
-function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
+function getStatusSummaryRows(files: FileRecord[], bgReturnOffsetDays = 60): StatusSummaryRow[] {
   const rows = milestoneDefinitions.flatMap((milestone) =>
-    getMilestoneStatusRows(files, milestone),
+    getMilestoneStatusRows(files, milestone, bgReturnOffsetDays),
   );
 
   const supplyOrderIndex = rows.findIndex((row) => row.milestone === "Supply Order");
@@ -2459,7 +2513,10 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
       milestone: "Advance Payment",
       stage: "Pending",
       count: advancePaymentEntries(files).filter(
-        ({ file, order }) => isAdvancePaymentPending(order) && isPaymentOrderActive(file, order),
+        ({ file, order }) =>
+          isAdvancePaymentPending(order) &&
+          isPaymentOrderActive(file, order) &&
+          !isShortclosureNoFurtherAction(order),
       ).length,
     },
   ];
@@ -2476,7 +2533,7 @@ function getStatusSummaryRows(files: FileRecord[]): StatusSummaryRow[] {
     },
     {
       milestone: "Returned Bills",
-      stage: "Resubmitted",
+      stage: "Resubmitted and Unpaid",
       count: countReturnedBillResubmittedOrders(files),
     },
     {
@@ -2539,6 +2596,7 @@ function countDeliveryPeriodEntries(
 function getMilestoneStatusRows(
   files: FileRecord[],
   milestone: MilestoneDefinition,
+  bgReturnOffsetDays = 60,
 ): StatusSummaryRow[] {
   const applicableFiles = files.filter((file) => isMilestoneApplicable(file, milestone));
   const processFiles = applicableFiles.filter((file) => !isCancelledFile(file));
@@ -2554,7 +2612,10 @@ function getMilestoneStatusRows(
       base("Received", countBgReceivedOrders(processFiles, milestone.key)),
       base("Pending", countBgPendingOrders(processFiles, milestone.key)),
       base("Expired", countBgExpiredOrders(processFiles, milestone.key)),
-      base("To be returned", countBgToBeReturnedOrders(processFiles, milestone.key)),
+      base(
+        "To be returned",
+        countBgToBeReturnedOrders(processFiles, milestone.key, bgReturnOffsetDays),
+      ),
       base("Returned", countBgReturnedOrders(processFiles, milestone.key)),
     ];
   }
@@ -2911,6 +2972,7 @@ function isNormalPaymentOpenOrder(file: FileRecord, order: SupplyOrderDetail) {
     hasPaymentWorkflowStarted(file, order) &&
     !hasFilledString(order.paymentDate) &&
     isPaymentOrderActive(file, order) &&
+    !isShortclosureNoFurtherAction(order) &&
     !hasReturnedBill(order)
   );
 }
@@ -2946,7 +3008,13 @@ function countReturnedBillPendingOrders(files: FileRecord[]) {
 }
 
 function countReturnedBillResubmittedOrders(files: FileRecord[]) {
-  return countPaymentOrders(files, hasCompletedBillReturn);
+  return countPaymentOrders(
+    files,
+    (order) =>
+      hasCompletedBillReturn(order) &&
+      !hasFilledString(order.paymentDate) &&
+      !isShortclosureNoFurtherAction(order),
+  );
 }
 
 function countReturnedBillPaidOrders(files: FileRecord[]) {
@@ -2993,20 +3061,24 @@ function countReturnedSupplementaryBillPaidOrders(files: FileRecord[]) {
 }
 
 function countSupplementaryBillPendingOrders(files: FileRecord[]) {
-  return countSupplementaryBillOrders(files, isSupplementaryBillPaymentPending);
+  return countSupplementaryBillOrders(files, isSupplementaryBillPaymentPending, true);
 }
 
 function countSupplementaryBillOrders(
   files: FileRecord[],
   predicate: (bill: SupplementaryBillDetail) => boolean,
+  pendingOnly = false,
 ) {
   return files.reduce(
     (sum, file) =>
       sum +
-      filePaymentOrders(file).filter((order) => {
-        if (!isPaymentOrderActive(file, order)) return false;
-        return getSupplementaryBills(order).some(predicate);
-      }).length,
+      rawSupplyOrders(file).reduce((orderCount, order) => {
+        if (
+          !isPaymentOrderActive(file, order) ||
+          (pendingOnly && isShortclosureNoFurtherAction(order))
+        ) return orderCount;
+        return orderCount + getSupplementaryBills(order).filter(predicate).length;
+      }, 0),
     0,
   );
 }
@@ -3079,24 +3151,18 @@ function hasSupplementaryBillReturnHistory(bill: SupplementaryBillDetail) {
 }
 
 function getActiveSupplementaryBillSubmissionDate(bill: SupplementaryBillDetail) {
-  const latestResubmissionDate = (bill.billReturnCycles ?? [])
-    .map((cycle) => cycle.resubmittedDate)
-    .filter(hasFilledString)
-    .sort()
-    .at(-1);
-  return latestResubmissionDate || bill.billSentForPaymentDate;
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return latest?.resubmittedDate || bill.billSentForPaymentDate;
 }
 
 function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && !hasFilledString(latest.resubmittedDate));
 }
 
 function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && hasFilledString(latest.resubmittedDate));
 }
 
 function countCompletedDeliveryStatuses(files: FileRecord[]) {
@@ -3168,7 +3234,8 @@ function countLiveSupplyOrders(files: FileRecord[]) {
         (order) =>
           isSupplyOrderTabComplete(file, order) &&
           !hasFilledString(order.paymentDate) &&
-          !isSupplyOrderCancelled(file, order),
+          !isSupplyOrderCancelled(file, order) &&
+          !isShortclosureNoFurtherAction(order),
       ).length,
     0,
   );
@@ -3512,7 +3579,6 @@ function isPaymentPriorityDelayForContract(
 
 function isContractBillPreparationStarted(order: SupplyOrderDetail) {
   return (
-    isJobCompletionDone(order) ||
     hasDate(order.billPreparationDate) ||
     hasDate(order.billSentForPaymentDate)
   );
@@ -3520,7 +3586,10 @@ function isContractBillPreparationStarted(order: SupplyOrderDetail) {
 
 function getNonInspectionPaymentDueDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isGoodsServicesIrNo(file)) return order.jobCompletionDate;
-  return addDays(getDeliveryPeriodDate(order), 1);
+  const dpTrigger = addDays(getDeliveryPeriodDate(order), 1);
+  if (!isContractFileType(file) || !hasFilledString(order.jobCompletionDate)) return dpTrigger;
+  if (!dpTrigger) return order.jobCompletionDate;
+  return order.jobCompletionDate! < dpTrigger ? order.jobCompletionDate : dpTrigger;
 }
 
 function isSupplyOrderPlaced(file: FileRecord) {
@@ -3569,9 +3638,9 @@ function countBgPendingOrders(files: FileRecord[], category: string) {
   ).length;
 }
 
-function countBgToBeReturnedOrders(files: FileRecord[], category: string) {
+function countBgToBeReturnedOrders(files: FileRecord[], category: string, offsetDays = 60) {
   return rawSupplyOrderEntries(files).filter(({ file, order }) =>
-    isBgReturnDueOrder(file, order, category),
+    isBgReturnDueOrder(file, order, category, offsetDays),
   ).length;
 }
 
@@ -3634,7 +3703,7 @@ function isPaymentOrderActive(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function isShortclosureNoFurtherAction(order: SupplyOrderDetail) {
-  return isYes(order.shortclosure) && isYes(order.noFurtherAction);
+  return isYes(order.noFurtherAction);
 }
 
 function isOrderActiveForMilestone(
@@ -3653,7 +3722,7 @@ function isOrderActiveForCurrentMilestone(
   normalizedMilestone: string,
 ) {
   return isPaymentMilestone(normalizedMilestone)
-    ? isPaymentOrderActive(file, order)
+    ? isPaymentOrderActive(file, order) && !isShortclosureNoFurtherAction(order)
     : !isSupplyOrderCancelled(file, order);
 }
 
@@ -3777,20 +3846,26 @@ function isBgReturnedOrder(file: FileRecord, order: SupplyOrderDetail, category:
   );
 }
 
-function isBgReturnDueOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
+function isBgReturnDueOrder(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  category: string,
+  offsetDays = 60,
+) {
   if (
     !isBgCategoryApplicable(file, order, category) ||
     !isBgReceivedOrder(order, category) ||
     hasFilledString(getBgReturnDate(order, category))
   )
     return false;
-  if (isYes(order.soCancelled) || isYes(order.shortclosure)) return true;
   const normalizedCategory = normalizeMilestoneName(category);
+  if (isYes(order.soCancelled)) return true;
+  if (isYes(order.shortclosure) && normalizedCategory === "psb") return true;
   return (
     !isSupplyOrderCancelled(file, order) &&
     (normalizedCategory === "psb"
       ? isPsbReturnPurposeComplete(file, order)
-      : isWarrantyBgReturnPurposeComplete(file, order, normalizedCategory))
+      : isWarrantyBgReturnPurposeComplete(file, order, normalizedCategory, offsetDays))
   );
 }
 
@@ -3798,11 +3873,12 @@ function isWarrantyBgReturnPurposeComplete(
   file: FileRecord,
   order: SupplyOrderDetail,
   category: string,
+  offsetDays = 60,
 ) {
   if (category !== "pwb" && category !== "psbpwb") return false;
   if (!isWarrantyBgCategoryApplicable(file, order, category)) return false;
   if (!hasFilledString(order.warrantyPeriodDate)) return false;
-  return isDateBeforeToday(addDays(order.warrantyPeriodDate, 60));
+  return isDateBeforeToday(addDays(order.warrantyPeriodDate, offsetDays));
 }
 
 function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {

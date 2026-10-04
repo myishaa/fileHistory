@@ -144,11 +144,31 @@ async function exportTable(format, payload, token) {
   if (!response.ok) {
     throw new Error(`export ${format} failed ${response.status}: ${buffer.toString("utf8")}`);
   }
+  const text = format === "excel" ? readXlsxText(buffer) : buffer.toString("latin1").replaceAll("\\(", "(").replaceAll("\\)", ")");
   return {
     contentType: response.headers.get("content-type") ?? "",
     disposition: response.headers.get("content-disposition") ?? "",
-    text: buffer.toString("latin1").replaceAll("\\(", "(").replaceAll("\\)", ")"),
+    text,
   };
+}
+
+function readXlsxText(buffer) {
+  const entries = [];
+  let offset = 0;
+  while (offset + 30 <= buffer.length && buffer.readUInt32LE(offset) === 0x04034b50) {
+    const method = buffer.readUInt16LE(offset + 8);
+    const compressedSize = buffer.readUInt32LE(offset + 18);
+    const nameLength = buffer.readUInt16LE(offset + 26);
+    const extraLength = buffer.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + nameLength + extraLength;
+    const name = buffer.toString("utf8", nameStart, nameStart + nameLength);
+    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+    const content = method === 8 ? inflateRawSync(compressed) : compressed;
+    if (name.endsWith(".xml")) entries.push(content.toString("utf8"));
+    offset = dataStart + compressedSize;
+  }
+  return entries.join("\n").replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">");
 }
 
 function assertContains(issues, area, haystack, needles) {
@@ -199,7 +219,7 @@ async function main() {
     ];
     const excel = await exportTable("excel", exportPayload, token);
     const pdf = await exportTable("pdf", exportPayload, token);
-    if (!excel.contentType.includes("application/vnd.ms-excel")) {
+    if (!excel.contentType.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
       issues.push({ area: "excel", issue: "unexpected content type", contentType: excel.contentType });
     }
     if (!pdf.contentType.includes("application/pdf")) {
@@ -273,7 +293,7 @@ async function main() {
     ];
     const financeExcel = await exportTable("excel", financePayload, token);
     const financePdf = await exportTable("pdf", financePayload, token);
-    if (!financeExcel.contentType.includes("application/vnd.ms-excel")) {
+    if (!financeExcel.contentType.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
       issues.push({ area: "finance excel", issue: "unexpected content type", contentType: financeExcel.contentType });
     }
     if (!financePdf.contentType.includes("application/pdf")) {
@@ -295,3 +315,4 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+import { inflateRawSync } from "node:zlib";

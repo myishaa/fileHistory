@@ -36,6 +36,7 @@ import {
   filePaymentOrders as normalizedFilePaymentOrders,
   fileSupplyOrders as normalizedFileSupplyOrders,
   getEffectiveSupplyOrderCurrentMilestone as getCanonicalSupplyOrderCurrentMilestone,
+  hasUnpaidSupplyOrderPayment,
   isExpiredDeliveryPeriodEntry,
   isExtendedDeliveryPeriodEntry,
   getAdvancePaymentCapital,
@@ -47,7 +48,7 @@ import {
   isValidDeliveryPeriodEntry,
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
-import { downloadBackendExport, downloadBackendFileSearchExport } from "@/lib/export-download";
+import { downloadBackendExport, downloadBackendFileSearchExport, type ExportPlot } from "@/lib/export-download";
 import { promptPassword } from "@/lib/delete-password";
 import {
   allFileCategoryKeys,
@@ -66,6 +67,7 @@ import {
   hasOpenBillReturn,
   hasReturnedBill,
   hasReturnedBillPaid,
+  latestBillReturnCycle,
   normalizeBillReturnCycles,
 } from "@/lib/refloat-returned-bill";
 import {
@@ -76,9 +78,26 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
 import { HelperContent } from "@/components/helper-content";
+import { ChartCopyButton, TableChartToggle, type ResultView } from "@/components/table-chart-toggle";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  CartesianGrid,
+  Bar,
+  BarChart,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as ChartTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   fileMatchesInitiationDateRange,
   getActiveFileInitiationDateRange,
@@ -182,6 +201,7 @@ type AnalyticsPanelKey =
   | "divisionTurnaround"
   | "topFirms"
   | "firmAnalysis"
+  | "indentorFirmLinkage"
   | "indentorsByFiles"
   | "indentorsByValue"
   | "biddingMode"
@@ -193,6 +213,28 @@ type AnalyticsPanelKey =
   | "suspectedAnomaly"
   | "delayStatus"
   | "milestoneClearingTable";
+const analyticsPanelGroups: Array<{ title: string; keys: AnalyticsPanelKey[] }> = [
+  {
+    title: "Division performance",
+    keys: ["divisionFiles", "divisionValue", "divisionTotalValue", "divisionTurnaround"],
+  },
+  {
+    title: "Firm and indentor analysis",
+    keys: ["topFirms", "firmAnalysis", "indentorFirmLinkage", "indentorsByFiles", "indentorsByValue"],
+  },
+  {
+    title: "Procurement profile",
+    keys: ["biddingMode", "fileValueThresholds"],
+  },
+  {
+    title: "Workflow and meetings",
+    keys: ["preBidMeetings", "tcecStatus", "cncSummary", "milestoneClearingTable"],
+  },
+  {
+    title: "Monitoring and exceptions",
+    keys: ["paymentPending", "delayStatus", "suspectedAnomaly"],
+  },
+];
 type AnalyticsTableColumn = {
   key: string;
   label: string;
@@ -223,79 +265,72 @@ type HelperDetails = {
 };
 
 const fileYearSubfilterHelper = [
-  "Global Filter first decides the file set.",
-  "File Initiation Year then keeps only files started in the selected FY.",
-  "All file years means no extra initiation-year restriction.",
-  "When Global Filter is All files, the no-restriction option is called Entire database.",
-  "Example: Global Filter 2026-27 + Subfilter 2025-26 shows 2025-26 files visible in the 2026-27 file set.",
+  "Global Filter chooses the files you can work with; File Initiation Year can narrow that list.",
+  "Choose a year to keep files started in that FY, or All file years to include every start year in the Global Filter results.",
+  "With Global Filter = All files, the all-years choice is called Entire database.",
+  "Example: Global Filter 2026-27 + File Initiation Year 2025-26 shows 2025-26 files that are included in the 2026-27 view.",
   "This selection stays for the current browser tab session.",
 ];
 
 const fileYearLockHelper = [
-  "Locks the current File Initiation Year selection for Dashboard and Reports in this browser tab session.",
-  "It is not saved as a permanent user or admin setting.",
-  "Unlock it when you want File Initiation Year to return to the session default behavior.",
+  "Keeps the current File Initiation Year choice in place on Dashboard and Reports while this tab is open.",
+  "The lock is temporary; it is not saved to your account.",
+  "Unlock it to let the subfilter follow its usual default again.",
 ];
 
 const fileInitiationDateRangeHelper = [
-  "Further narrows the File Initiation Year subfilter using exact file initiation date.",
-  "Leave both dates blank when no initiation date restriction is required.",
+  "Use these dates to narrow the selected File Initiation Year further.",
+  "Leave both blank when you do not need an exact initiation-date range.",
 ];
 
 const analyticsMainHelper = [
-  "Analysis and ranking view for the selected dashboard file set.",
-  "Use it to compare divisions, firms, indentors, value slabs, delays, and milestone clearing.",
-  "Most numbers can be clicked to open the matching files in Search.",
-  "Cancelled demand is excluded from normal analytics.",
-  "Value/liability panels exclude cancelled S.O. rows; history/statistical panels may include them.",
+  "Explore the files selected by your Dashboard filters.",
+  "Compare divisions, firms, indentors, value bands, delays, and time to complete milestones.",
+  "Click a number to open the matching files in Search.",
+  "Cancelled demands are left out of regular analysis. Cancelled S.O.s are treated according to the panel: value and liability views leave them out, while history views may retain them.",
 ];
 
 const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
   status: [
-    "Main workflow progress view.",
-    "Shows live and completed counts for each processing stage.",
-    "Use this as the reference view for status counts.",
-    "Cancelled demand is excluded except from its own cancellation counter.",
-    "Total files is a file-scope count. Fully S.O.-cancelled files may remain in that total for history/context, but live workflow, payment, delivery, BG, and liability counters exclude them.",
-    "D.P. Valid and D.P. Extended are shown separately.",
+    "See what is still moving and what has been completed at each stage.",
+    "Use Status-1 as the main reference for workflow counts.",
+    "Cancelled demands appear only in their cancellation count.",
+    "The Total Files count can retain files whose S.O.s were all cancelled for context. Those files are left out of live work, payment, delivery, BG, and liability counts.",
+    "Valid D.P. and Extended D.P. have separate counts.",
   ],
   liveStatus: [
-    "Live division-wise status view.",
-    "Shows where files are pending right now.",
-    "Cancelled demand and File Closed are not counted as live work.",
-    "Delivery Period combines normal valid D.P. and extended valid D.P.",
-    "Delivered material or completed job is removed from live Delivery Period.",
+    "See where each division's open work is waiting now.",
+    "Cancelled demands and closed files are not live work.",
+    "D.P. counts current S.O.s or stages whose original/revised D.P. date is still missing.",
+    "Material Receipt tracks physical deliveries with a current D.P. where receipt is not yet recorded.",
+    "IR = No and Contract files use Job Completion instead of Material Receipt.",
   ],
   status3: [
-    "Tabular replica/view of Status-1.",
-    "Uses the same counter and clicker logic as Status-1.",
-    "Shows the same information in grouped table form.",
-    "A Status-3 number should match the related Status-1 counter, or the sum of related Status-1 counters.",
+    "See the Status-1 counts arranged in tables.",
+    "Status-3 uses the same counts and click-throughs as Status-1.",
+    "A table value matches its Status-1 counter, or the relevant Status-1 counters combined.",
   ],
   status4: [
-    "File-processing view up to Supply Order placement.",
-    "One file counts once, even if it has multiple S.O.s.",
-    "Applicable means the file is eligible for that stage.",
-    "Cancelled S.O. does not affect Status-4.",
+    "Follow file progress up to Supply Order placement.",
+    "Each file counts once, even if it has several S.O.s.",
+    "A stage is counted only for files that use that stage.",
+    "Cancelled S.O.s do not change Status-4 counts.",
   ],
   snapshot: [
-    "Quick statistical snapshot of the selected file set.",
-    "Use it to see file type, firm type, mode, and attribute distribution.",
-    "Cancelled demand is excluded.",
-    "Cancelled S.O. and shortclosed S.O. records can remain visible in Firm Type, File Type, PSB, and other statistical/history views when they belong to the selected Global/Subfilter scope.",
+    "Get a quick breakdown of the selected files by type, firm type, mode, and other details.",
+    "Cancelled demands are left out.",
+    "Cancelled or shortclosed S.O.s may remain in history and statistical views, such as Firm Type, File Type, and PSB, when they match your filters.",
   ],
   analytics: analyticsMainHelper,
   finance: [
-    "Finance and value/liability view.",
-    "Shows allocation, intended, booked, committed, payment, and carry-forward values.",
-    "Cancelled demand is excluded.",
-    "Cancelled S.O. rows are excluded from finance value calculations.",
+    "Review budgets, estimated and committed values, payments, and unpaid amounts.",
+    "Cancelled demands and cancelled S.O.s are left out of Finance calculations.",
   ],
   finance1: [
-    "Select an FY to see files started in that FY, their value, payments, pending liabilities, and present status.",
-    "Select any FY. Subfilter is locked to the same FY for this page.",
-    "For a running FY, FY-end cards are provisional because they use the selected FY-end cutoff and the data entered so far.",
-    "Today cards remain live and show the latest stored payment/liability position.",
+    "Choose an FY to review files started in that year, their value, payments, unpaid amounts, and status.",
+    "The File Initiation Year is fixed to the FY you choose here.",
+    "For the current FY, year-end figures are estimates based on information entered so far.",
+    "Cards marked Today update as payment and liability details change.",
   ],
 };
 
@@ -438,39 +473,36 @@ const statusFileExportHelpers = {
 
 const dashboardSectionRuleHelpers = {
   status1: [
-    "Main workflow view. Use it as the reference for all status counts.",
-    "Live numbers mean action is still pending now. Completed/cleared numbers mean the stage is already crossed.",
-    "Cancelled demand is excluded, except from its own cancellation counter.",
-    "File Closed is shown or hidden as per the selected Global Filter.",
-    "D.P. Valid and D.P. Extended are separate here.",
+    "Use this as the main view of work in progress and completed stages.",
+    "Live means work is still underway; Completed means the stage has been reached.",
+    "Cancelled demands appear only in their cancellation count.",
+    "The Global Filter decides whether closed files are included.",
+    "Valid and extended D.P.s are counted separately.",
   ],
   status2: [
-    "Live division-wise view. It shows where files are pending right now.",
-    "Cancelled demand and File Closed are not counted as live work.",
-    "Each file is counted at its current pending milestone.",
-    "Delivery Period includes both normal valid D.P. and extended valid D.P.",
-    "If material is received or job is completed, the file is no longer counted in live Delivery Period.",
+    "See where each division's work is waiting now.",
+    "Cancelled demands and closed files are not live work.",
+    "Each file appears at its current waiting stage.",
+    "Delivery Period includes valid original and extended D.P.s.",
+    "Recorded delivery or job completion removes the item from live Delivery Period.",
   ],
   status3: [
-    "Status-3 is the tabular replica/view of Status-1.",
-    "It uses the same counter logic and clicker logic as Status-1.",
-    "Counts are displayed in grouped table form.",
-    "Any Status-3 number should match the corresponding Status-1 live/history counter.",
-    "Where Status-1 splits a stage into multiple boxes, the Status-3 number may be the sum of the relevant Status-1 counters.",
+    "Status-3 shows the Status-1 counts in tables.",
+    "It uses the same counts and click-throughs as Status-1.",
+    "A table value matches its Status-1 counter, or the related counters combined.",
   ],
   status4: [
-    "File-processing view up to Supply Order placement.",
-    "It is file based: one file counts once, even if it has multiple S.O.s.",
-    "Cancelled demand is excluded.",
-    "Cancelled S.O. does not affect Status-4.",
-    "Applicable means the file is eligible for that stage.",
+    "Follow file progress up to Supply Order placement.",
+    "Each file counts once, even if it has several S.O.s.",
+    "Cancelled demands are left out; cancelled S.O.s do not change Status-4 counts.",
+    "A stage is counted only for files that use it.",
   ],
   snapshot: [
-    "Snapshot is statistical, not live workflow liability.",
-    "Cancelled demand files are excluded from normal snapshot numbers.",
-    "Cancelled S.O. history can remain visible in statistical views such as PSB, Firm Type, and File Type.",
-    "File Closed follows the selected Global Filter.",
-    "Clickers open the same statistical set represented by the number.",
+    "Snapshot shows file statistics, not live payment or liability follow-up.",
+    "Cancelled demands are left out of regular Snapshot counts.",
+    "Cancelled S.O. history may still appear in statistics such as PSB, Firm Type, and File Type.",
+    "The Global Filter decides whether closed files are included.",
+    "Click a number to see the files behind it.",
   ],
   finance: [
     "Finance is a mixed live/activity value view, not a frozen FY-end file-group report.",
@@ -480,15 +512,15 @@ const dashboardSectionRuleHelpers = {
     "Files may belong to an earlier FY by initiation year but still contribute here if the finance activity/date rule matches this Finance view.",
     "Cancelled demand files are excluded.",
     "Cancelled S.O. rows are excluded from value calculations and finance liability.",
-    "Shortclosed S.O. rows remain included for completed/history views. In liability, balance, and carry-forward views, only real pending payable items are counted; the old full S.O. value is not treated as payable by itself.",
+    "No Further Action = Yes stops pending delivery, job-completion, and payment work, including open unpaid bill-return/resubmission follow-up. BG receipt, validity, expiry, return, and warranty tracking continue; recorded history remains.",
     "File Closed follows the selected Global Filter.",
   ],
   analytics: [
-    "Analytics uses the same Dashboard Global Filter, File Initiation Year subfilter, initiation date, division, and File Type filter.",
-    "Cancelled demand files are excluded from normal analytics.",
-    "Cancelled S.O. treatment depends on the panel: value/liability panels exclude cancelled S.O. rows; statistical/history panels may include them.",
-    "Clicking an analytics number opens Search with the same panel logic.",
-    "Milestone clearing is stage/file based; finance panels are value/liability based.",
+    "Analytics uses your Dashboard Global Filter, File Initiation Year, date range, Division, and File Type choices.",
+    "Cancelled demands are left out of regular Analytics.",
+    "Cancelled S.O.s are left out of value and liability totals, but may remain in history and statistics.",
+    "Click a result to open the matching files in Search.",
+    "Milestone clearing measures stage completion; Finance panels show money and unpaid amounts.",
   ],
 } as const;
 
@@ -694,6 +726,7 @@ async function fetchSuspectedAnomalies(query: string, signal: AbortSignal) {
   const response = await fetch(`${API_BASE_URL}/api/dashboard/suspected-anomalies?${query}`, {
     credentials: "include",
     signal,
+    cache: "no-store",
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
@@ -824,81 +857,71 @@ const supplyOrderMilestoneNames = [
 ];
 const status2MilestoneHelpers: Record<string, readonly string[]> = {
   financialsanction: [
-    "Header: Financial Sanction",
-    "Counts files currently pending for Financial Sanction.",
-    "Cleared cases move out of this live Status-2 option.",
+    "Shows files still waiting for Financial Sanction.",
+    "Once the sanction is recorded, the case leaves this pending count.",
   ],
   advancepayment: [
-    "Header: Advance Payment",
-    "Counts active S.O. rows where Advance Payment is Yes, Advance Payment is the current milestone, and advance payment date is blank.",
-    "Cancelled demand, File Closed, and cancelled S.O. rows are excluded from this live count.",
+    "An S.O. counts when Advance Payment is required, it is the current step, and no payment date has been entered.",
+    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
   ],
   supplyorder: [
-    "Header: Supply Order",
-    "Counts files currently pending for S.O. placement after Financial Sanction.",
-    "S.O. already placed moves out of this pending live option.",
+    "Shows files waiting for an S.O. after Financial Sanction.",
+    "Once an S.O. is placed, the file leaves this pending count.",
   ],
   deliveryperiod: [
-    "Header: Delivery Period",
-    "Counts S.O./stage rows whose normal or revised D.P. is currently active, with delivery/job completion still pending.",
-    "Future stages that have not started, completed rows, cancelled demands, and cancelled S.O.s are excluded.",
-    "Clicking opens matching files; a file with multiple qualifying stages appears once in Search.",
+    "Shows an S.O. whose D.P. step is current but whose original or revised D.P. date has not been entered.",
+    "Once a D.P. date is entered, the S.O. leaves this counter. Material receipt is tracked separately.",
+    "Cancelled demands, cancelled or shortclosed S.O.s, and S.O.s marked No Further Action are left out.",
+  ],
+  materialreceipt: [
+    "Shows physical-delivery S.O.s with an active D.P. date where material receipt is still blank.",
+    "A recorded material receipt removes the S.O. from this counter. IR = No and Contract files use Job Completion instead.",
+    "The counter may count more than one S.O. or delivery stage in a file; Search opens each matching file once.",
   ],
   psb: [
-    "Header: PSB",
-    "Counts active S.O. rows where PSB is applicable and PSB receipt is still pending.",
-    "Cancelled demand, File Closed, and cancelled S.O. rows are excluded from this live count.",
+    "Shows S.O.s that require PSB but do not yet have a received date.",
+    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
   ],
   pwb: [
-    "Header: PWB",
-    "Counts active S.O. rows where PWB is applicable and PWB receipt is still pending.",
-    "Cancelled demand, File Closed, and cancelled S.O. rows are excluded from this live count.",
+    "Shows S.O.s that require PWB but do not yet have a received date.",
+    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
   ],
   psbpwb: [
-    "Header: PSB+PWB",
-    "Counts active S.O. rows where combined PSB+PWB is applicable and receipt is still pending.",
-    "Cancelled demand, File Closed, and cancelled S.O. rows are excluded from this live count.",
+    "Shows S.O.s that require a combined PSB+PWB but do not yet have a received date.",
+    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
   ],
   jobcompletion: [
-    "Header: Job Completion",
-    "Counts active contract/service S.O./stage rows where job completion is due and not yet done.",
-    "Completed jobs move out of this live option.",
+    "Shows contract or service work waiting for Job Completion.",
+    "Completed jobs leave this pending count.",
   ],
   irpreparation: [
-    "Header: IR Preparation",
-    "Counts active inspection cases where material is received and IR preparation is still pending.",
-    "IR prepared cases move to IR Receipt pending where applicable.",
+    "Shows inspection cases where material has arrived but IR is not yet prepared.",
+    "After IR is prepared, the case can move to IR Receipt pending.",
   ],
   irreceipt: [
-    "Header: IR Receipt",
-    "Counts active inspection cases where IR is prepared/sent and IR receipt is still pending.",
-    "IR received cases move out of this live option.",
+    "Shows inspection cases where IR was prepared or sent but receipt is not yet recorded.",
+    "Once IR is received, the case leaves this pending count.",
   ],
   billpreparation: [
-    "Header: Bill preparation",
-    "Counts active payable cases where delivery/job condition is met but bill preparation is still pending.",
-    "Returned-bill correction cases are tracked separately.",
+    "Shows payable work where delivery or job completion is recorded but bill preparation is still pending.",
+    "Bills returned for correction are tracked separately.",
   ],
   billsentforpayment: [
-    "Header: Bill sent for payment",
-    "Counts active payable cases where bill is prepared but not yet sent/submitted for payment.",
-    "Returned-bill correction cases are tracked separately.",
+    "Shows prepared bills that have not yet been sent for payment.",
+    "Bills returned for correction are tracked separately.",
   ],
   billreturnedforcorrection: [
-    "Header: Returned Bills",
-    "Counts active returned-bill cases where correction/resubmission is still pending.",
-    "Paid or resubmitted returned bills move out of this live option.",
+    "Shows returned bills still waiting for correction or resubmission.",
+    "After resubmission, an unpaid bill moves to Resubmitted and Unpaid. Paid bills remain in the returned-bill history.",
   ],
   supplementarybillreturnedforcorrection: [
-    "Header: Supplementary bill returned for correction",
-    "Counts active supplementary returned-bill cases where correction/resubmission is still pending.",
-    "Supplementary bills without an open return are not counted here.",
+    "Shows supplementary bills returned for correction and not yet resubmitted.",
+    "A bill without an open return is not included here.",
   ],
   payment: [
-    "Header: Payment",
-    "Counts active payable S.O./stage rows where payment is due, in process, or submitted but not paid.",
-    "This is a payment-case count, not a unique-file count. One file can contribute more than one pending payment case.",
-    "Bills returned for correction are tracked separately until resubmitted.",
+    "Shows S.O. and stage payments that are due, being prepared, or submitted but still unpaid.",
+    "This counts payment cases. One file can have several, but it appears once in Search results.",
+    "Returned bills are separate: they stay under Return Pending until resubmitted, then move to Resubmitted and Unpaid until paid.",
   ],
 };
 
@@ -910,6 +933,7 @@ function isAnalyticsPanelKey(value: unknown): value is AnalyticsPanelKey {
     value === "divisionTurnaround" ||
     value === "topFirms" ||
     value === "firmAnalysis" ||
+    value === "indentorFirmLinkage" ||
     value === "indentorsByFiles" ||
     value === "indentorsByValue" ||
     value === "biddingMode" ||
@@ -949,6 +973,14 @@ export function Dashboard() {
   const [statusActionMode, setStatusActionMode] = useState<StatusActionMode>("search");
   const [activeAnalyticsPanel, setActiveAnalyticsPanel] =
     useState<AnalyticsPanelKey>("divisionFiles");
+  const [analyticsResultView, setAnalyticsResultView] = useState<ResultView>("table");
+  const [analyticsExportPlot, setAnalyticsExportPlot] = useState<ExportPlot | undefined>();
+  const [snapshotResultView, setSnapshotResultView] = useState<ResultView>("table");
+  const [snapshotPieKey, setSnapshotPieKey] = useState("all");
+  const [finance1FirmTypeView, setFinance1FirmTypeView] = useState<ResultView>("table");
+  const [finance1FileTypeView, setFinance1FileTypeView] = useState<ResultView>("table");
+  const [finance1FileTypeMetric, setFinance1FileTypeMetric] = useState<"files" | "withSo" | "active" | "closed" | "cancelled">("files");
+  const [analyticsSidePanelHooked, setAnalyticsSidePanelHooked] = useState(true);
   const [divisionValueSortMode, setDivisionValueSortMode] =
     useState<DivisionValueSortMode>("value");
   const [divisionValueDisplayMode, setDivisionValueDisplayMode] =
@@ -978,6 +1010,13 @@ export function Dashboard() {
   const [selectedFirmAnalysisFirm, setSelectedFirmAnalysisFirm] = useState("");
   const [firmAnalysisView, setFirmAnalysisView] = useState<"existing" | "coParticipants">("existing");
   const [coParticipantFirm, setCoParticipantFirm] = useState("");
+  const [indentorFirmDirection, setIndentorFirmDirection] = useState<"indentor" | "firm">("indentor");
+  const [indentorFirmSelection, setIndentorFirmSelection] = useState("");
+  const [indentorFirmSortKey, setIndentorFirmSortKey] = useState<"count" | "value">("count");
+  const [indentorFirmMatchFilter, setIndentorFirmMatchFilter] = useState<"all" | "common" | "unique">("all");
+  const [indentorFirmFiles, setIndentorFirmFiles] = useState<FileRecord[]>([]);
+  const [indentorFirmFilesLoading, setIndentorFirmFilesLoading] = useState(false);
+  const [indentorFirmFilesError, setIndentorFirmFilesError] = useState("");
   const [selectedCoParticipantFirm, setSelectedCoParticipantFirm] = useState("");
   const [coBiddingFirms, setCoBiddingFirms] = useState<CoBiddingFirmRow[]>([]);
   const [coBiddingTenders, setCoBiddingTenders] = useState<CoBiddingTenderRow[]>([]);
@@ -1001,6 +1040,8 @@ export function Dashboard() {
   const [indentorsByValueSortKey, setIndentorsByValueSortKey] =
     useState<IndentorValueSortKey>("value");
   const [topFirmPage, setTopFirmPage] = useState(1);
+  const [indentorFirmPage, setIndentorFirmPage] = useState(1);
+  const [indentorFirmLimit, setIndentorFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [indentorsByFilesPage, setIndentorsByFilesPage] = useState(1);
   const [indentorsByValuePage, setIndentorsByValuePage] = useState(1);
   const [analyticsSortDirections, setAnalyticsSortDirections] = useState<
@@ -1113,6 +1154,8 @@ export function Dashboard() {
   const [analyticsDelaySummary, setAnalyticsDelaySummary] = useState<DelayStatusSummary>();
   const [analyticsPreBidRows, setAnalyticsPreBidRows] = useState<PreBidMeetingRow[]>([]);
   const [suspectedAnomalyRows, setSuspectedAnomalyRows] = useState<SuspectedAnomalyRow[]>([]);
+  const [suspectedAnomalyRowsQuery, setSuspectedAnomalyRowsQuery] = useState("");
+  const [suspectedAnomalyRefreshKey, setSuspectedAnomalyRefreshKey] = useState(0);
   const [suspectedAnomalyLoading, setSuspectedAnomalyLoading] = useState(false);
   const [suspectedAnomalyError, setSuspectedAnomalyError] = useState<string | undefined>();
   const [anomalyAcceptances, setAnomalyAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
@@ -1249,6 +1292,7 @@ export function Dashboard() {
         fileYearFilterStorageKey,
         JSON.stringify({ locked: fileYearLocked, year }),
       );
+      window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
     }
   };
   const toggleFileYearLock = () => {
@@ -1354,6 +1398,51 @@ export function Dashboard() {
     [finance1ScopedFiles, finance1Year],
   );
   const processHistoryDashboardFiles = dashboardProcessFiles;
+  useEffect(() => {
+    if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "indentorFirmLinkage") return;
+    let active = true;
+    setIndentorFirmFilesLoading(true);
+    setIndentorFirmFilesError("");
+    setIndentorFirmFiles([]);
+    fetchFilesForYear(settings.selectedYear ?? "")
+      .then(({ files: scopedFiles }) => {
+        if (active) setIndentorFirmFiles(scopedFiles);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setIndentorFirmFilesError(
+          error instanceof Error ? error.message : "S.O. relationship data could not be loaded.",
+        );
+      })
+      .finally(() => {
+        if (active) setIndentorFirmFilesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeAnalyticsPanel, activeDashboardTab, settings.selectedYear]);
+  const indentorFirmScopedFiles = useMemo(() => {
+    const divisionRows = activeDivision === "all"
+      ? indentorFirmFiles
+      : indentorFirmFiles.filter((file) => file.division === activeDivision);
+    const yearRows = activeFileYear === "all"
+      ? divisionRows
+      : divisionRows.filter((file) => file.year === activeFileYear);
+    const datedRows = yearRows.filter((file) =>
+      fileMatchesInitiationDateRange(file, activeFileInitiationDateRange),
+    );
+    const categoryRows = fileCategoryFilterActive
+      ? filterFilesByCategory(datedRows, selectedFileCategories)
+      : datedRows;
+    return categoryRows.filter((file) => !isYes(file.demandCancelled));
+  }, [
+    activeDivision,
+    activeFileInitiationDateRange,
+    activeFileYear,
+    fileCategoryFilterActive,
+    indentorFirmFiles,
+    selectedFileCategories,
+  ]);
   const dashboardDivisions = useMemo(
     () =>
       activeDivision === "all"
@@ -1475,6 +1564,8 @@ export function Dashboard() {
     activeFileCategoriesParam,
     settings.selectedYear,
   ]);
+  const displayedSuspectedAnomalyRows =
+    suspectedAnomalyRowsQuery === suspectedAnomalyQuery ? suspectedAnomalyRows : [];
   useEffect(() => {
     if (typeof window === "undefined") return;
     const key = `recordkeeper:anomaly-filter-scope:${activeUser?.id ?? "anonymous"}`;
@@ -1591,7 +1682,10 @@ export function Dashboard() {
     setSuspectedAnomalyLoading(true);
     setSuspectedAnomalyError(undefined);
     fetchSuspectedAnomalies(suspectedAnomalyQuery, controller.signal)
-      .then((payload) => setSuspectedAnomalyRows(payload.rows))
+      .then((payload) => {
+        setSuspectedAnomalyRows(payload.rows);
+        setSuspectedAnomalyRowsQuery(suspectedAnomalyQuery);
+      })
       .catch((error) => {
         if (controller.signal.aborted) return;
         console.error(error);
@@ -1599,13 +1693,39 @@ export function Dashboard() {
           error instanceof Error ? error.message : "Suspected anomaly request failed.",
         );
         setSuspectedAnomalyRows([]);
+        setSuspectedAnomalyRowsQuery(suspectedAnomalyQuery);
       })
       .finally(() => {
         if (!controller.signal.aborted) setSuspectedAnomalyLoading(false);
       });
 
     return () => controller.abort();
-  }, [activeAnalyticsPanel, activeDashboardTab, suspectedAnomalyQuery]);
+  }, [activeAnalyticsPanel, activeDashboardTab, suspectedAnomalyQuery, suspectedAnomalyRefreshKey]);
+
+  useEffect(() => {
+    const refresh = () => setSuspectedAnomalyRefreshKey((current) => current + 1);
+    const refreshFromStorage = (event: StorageEvent) => {
+      if (event.key === "recordkeeper:anomaly-data-updated") refresh();
+    };
+    window.addEventListener("recordkeeper:anomaly-data-updated", refresh);
+    window.addEventListener("storage", refreshFromStorage);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener("recordkeeper:anomaly-data-updated", refresh);
+      window.removeEventListener("storage", refreshFromStorage);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "suspectedAnomaly") return;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        setSuspectedAnomalyRefreshKey((current) => current + 1);
+      }
+    }, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [activeAnalyticsPanel, activeDashboardTab]);
 
   useEffect(() => {
     if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "suspectedAnomaly") return;
@@ -1712,6 +1832,7 @@ export function Dashboard() {
   const localFinanceYear = getFinancialYearDateRange(settings.selectedYear)
     ? settings.selectedYear
     : settings.financialYear;
+  const localFinanceToday = formatLocalDate(new Date());
   const localFinanceTotals = needsLocalDashboardFallback
     ? {
         allocatedCapital: dashboardDivisions.reduce(
@@ -1769,19 +1890,26 @@ export function Dashboard() {
         paidCapital: getFinancePaymentLiabilityEntries(activeDashboardStatusFiles).reduce(
           (sum, entry) =>
             sum +
-            (getFinancialYearForDate(entry.paymentDate) === localFinanceYear ? entry.capital : 0),
+            (isDateOnOrBefore(entry.paymentDate, localFinanceToday) &&
+            getFinancialYearForDate(entry.paymentDate) === localFinanceYear
+              ? entry.capital
+              : 0),
           0,
         ),
         paidRevenue: getFinancePaymentLiabilityEntries(activeDashboardStatusFiles).reduce(
           (sum, entry) =>
             sum +
-            (getFinancialYearForDate(entry.paymentDate) === localFinanceYear ? entry.revenue : 0),
+            (isDateOnOrBefore(entry.paymentDate, localFinanceToday) &&
+            getFinancialYearForDate(entry.paymentDate) === localFinanceYear
+              ? entry.revenue
+              : 0),
           0,
         ),
         sameYearPaidCapital: getFinancePaymentLiabilityEntries(activeDashboardStatusFiles).reduce(
           (sum, entry) =>
             sum +
             (getFinancialYearForDate(entry.sourceDate) === localFinanceYear &&
+            isDateOnOrBefore(entry.paymentDate, localFinanceToday) &&
             getFinancialYearForDate(entry.paymentDate) === localFinanceYear
               ? entry.capital
               : 0),
@@ -1791,6 +1919,7 @@ export function Dashboard() {
           (sum, entry) =>
             sum +
             (getFinancialYearForDate(entry.sourceDate) === localFinanceYear &&
+            isDateOnOrBefore(entry.paymentDate, localFinanceToday) &&
             getFinancialYearForDate(entry.paymentDate) === localFinanceYear
               ? entry.revenue
               : 0),
@@ -1800,6 +1929,7 @@ export function Dashboard() {
           (sum, { file, order }) =>
             sum +
             (isSupplyOrderCancelled(file, order) ||
+            !isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, localFinanceToday) ||
             getFinancialYearForDate(order.advancePaymentDetail?.paymentDate) !==
               localFinanceYear
               ? 0
@@ -1810,6 +1940,7 @@ export function Dashboard() {
           (sum, { file, order }) =>
             sum +
             (isSupplyOrderCancelled(file, order) ||
+            !isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, localFinanceToday) ||
             getFinancialYearForDate(order.advancePaymentDetail?.paymentDate) !==
               localFinanceYear
               ? 0
@@ -1913,6 +2044,8 @@ export function Dashboard() {
       soValueThresholds: [],
       divisionRiskRanking: [],
       divisionPaymentPendingRanking: [],
+      tcecStatus: getTcecStatusSummary([], settings.selectedYear),
+      cncSummary: getCncSummary([], settings.selectedYear),
     };
   const effectiveValueThresholdLevels = dashboardSummary?.valueThresholdLevels?.length
     ? dashboardSummary.valueThresholdLevels
@@ -2006,7 +2139,7 @@ export function Dashboard() {
   };
   const localFinancePaidTillDate = useMemo(() => {
     const paymentEntries = getFinancePaymentLiabilityEntries(activeDashboardStatusFiles).filter(
-      (entry) => hasFilledString(entry.paymentDate),
+      (entry) => isDateOnOrBefore(entry.paymentDate, formatLocalDate(new Date())),
     );
     const finalCapital = paymentEntries.reduce((sum, entry) => sum + entry.capital, 0);
     const finalRevenue = paymentEntries.reduce((sum, entry) => sum + entry.revenue, 0);
@@ -2014,7 +2147,7 @@ export function Dashboard() {
       .filter(
         ({ file, order }) =>
           !isSupplyOrderCancelled(file, order) &&
-          hasFilledString(order.advancePaymentDetail?.paymentDate),
+          isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, formatLocalDate(new Date())),
       )
       .reduce(
         (totals, { file, order }) => ({
@@ -2135,7 +2268,7 @@ export function Dashboard() {
         "Best for previous liabilities carried into or cleared during the target FY.",
         "Payment in FY uses payment or advance-payment dates inside the target FY.",
         "Firm Type Distribution uses S.O.s placed and payments made during the target FY.",
-        "Carry-forward panels are grouped by liability/source FY.",
+        "Carry-forward panels are grouped by the FY when each payment obligation began.",
         "Live cumulative boxes are hidden so this view stays focused on FY movement.",
       ],
     },
@@ -2242,17 +2375,9 @@ export function Dashboard() {
     financePaidTillDate.revenue,
     financeTotals.allocatedRevenue,
   );
-  const financePaymentInYearCapitalPercent = getPercent(
-    financePaymentInYearCapital,
-    financeTotals.allocatedCapital,
-  );
-  const financePaymentInYearRevenuePercent = getPercent(
-    financePaymentInYearRevenue,
-    financeTotals.allocatedRevenue,
-  );
   const financePreviousCarryExampleSource = isSpecificGlobalEarlierFileYearFinanceView
     ? `FY ${activeFileYear} liability`
-    : "older liability/source FY";
+        : "an older FY payment obligation";
   const financeCarryForwardExamples = {
     previous: [
       `${financePreviousCarryExampleSource}: ₹100 was unpaid before ${selectedFinanceYearLabel}.`,
@@ -2268,17 +2393,17 @@ export function Dashboard() {
       "This panel shows ₹40 as cleared carry forward.",
       isSpecificGlobalEarlierFileYearFinanceView
         ? `The row belongs to FY ${activeFileYear} source liability.`
-        : "The row belongs to the original liability/source FY.",
+        : "This amount belongs to the FY when the payment obligation began.",
     ],
     carryForward: [
-      `Liability/source date belongs to ${selectedFinanceYearLabel}: ₹75.`,
+      `The payment obligation began in ${selectedFinanceYearLabel}: ₹75.`,
       "Payment date is blank or after FY end.",
       `This panel shows ₹75 as Carry Forward of ${selectedFinanceYearLabel}.`,
       "It covers S.O., bill, stage, supplementary, or advance-payment liability source dates as applicable.",
-      "For shortclosed S.O.s, only real pending payable items are carried forward; the old full S.O. value is not carried forward merely because the S.O. exists.",
+      "No Further Action = Yes removes unresolved payment liability and stops delivery/job-completion follow-up. BG receipt, validity, expiry, return, and warranty obligations continue to be tracked.",
     ],
     futureCleared: [
-      `${selectedFinanceYearLabel} liability/source-FY carry-forward at FY end: ₹75.`,
+      `At the end of ${selectedFinanceYearLabel}, ₹75 from that FY was still unpaid.`,
       "Paid in a later FY: ₹50.",
       "This panel shows ₹50 as cleared later.",
       "The unpaid balance, if any, continues as pending carry-forward.",
@@ -2298,6 +2423,16 @@ export function Dashboard() {
   };
   const financeFirmTypeDistributionRows =
     financeFirmTypeDistributions[financeFirmTypeDistributionKey] ?? [];
+  const financeFirmTypePieColors = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#17becf",
+  ];
   const financeFirmTypeDistributionExportRows = shouldShowFinanceFirmTypeDistribution
     ? financeFirmTypeDistributionRows
     : [];
@@ -2385,9 +2520,50 @@ export function Dashboard() {
     ...compactSummaryStats,
     ...summaryStats,
   ]);
+  const snapshotPieDatasets = [
+    ...[
+      ...(fileTypeStats ? [fileTypeStats] : []),
+      ...(firmTypeStats ? [firmTypeStats] : []),
+      biddingTypeSummaryStat,
+      gemBiddingModeSummaryStat,
+      ...topSummaryStats,
+    ].flatMap((stat) =>
+      Array.isArray(stat.value)
+        ? [{
+            key: `summary:${stat.label}`,
+            label: stat.label,
+            rows: stat.value.map((item) => ({
+              label: item.label,
+              value: Number(item.value) || 0,
+              searchFilter: item.searchFilter,
+            })),
+          }]
+        : [],
+    ),
+  ].filter((dataset) => {
+    const nonZero = dataset.rows.filter((row) => row.value > 0).length;
+    return nonZero >= 2 && nonZero <= 8;
+  });
+  const selectedSnapshotPieDataset =
+    snapshotPieKey === "all"
+      ? undefined
+      : snapshotPieDatasets.find((dataset) => dataset.key === snapshotPieKey) ?? snapshotPieDatasets[0];
+  const snapshotExportPlots: ExportPlot[] = snapshotResultView !== "pie"
+    ? []
+    : (snapshotPieKey === "all"
+        ? snapshotPieDatasets
+        : selectedSnapshotPieDataset
+          ? [selectedSnapshotPieDataset]
+          : []).map((dataset) => ({
+            kind: "pie",
+            title: `Snapshot · ${dataset.label}`,
+            measure: dataset.label,
+            categories: dataset.rows.map((row) => row.label),
+            series: [{ name: dataset.label, values: dataset.rows.map((row) => row.value) }],
+          }));
 
   const shortclosedPayableHelper =
-    "Shortclosed S.O. value remains in committed/history views, but payable/balance/carry-forward values count only real pending payable items.";
+    "A shortclosed S.O.'s unpaid balance remains visible while No Further Action is No. Yes stops pending delivery, job-completion, and payment work, including open unpaid bill-return/resubmission follow-up. BG receipt, validity, expiry, return, and warranty tracking continue; recorded history remains.";
   const paymentPendingLogicDetails: HelperDetails = {
     title: "Payment pending and shortclosure logic",
     buttonLabel: "Payment logic",
@@ -2396,7 +2572,7 @@ export function Dashboard() {
       "Main/stage payment signals include bill prepared date, bill sent for payment date, returned bill cycle, material receipt/IR path, job completion, D.P./revised D.P. trigger where applicable, or an entered bill/payment amount.",
       "Advance Payment = Yes by itself means advance is applicable. It becomes pending only when advance bill/payment details, advance amount, or advance return/resubmission workflow exists and advance payment date is blank.",
       "Supplementary bill becomes pending when it is submitted, returned, or resubmitted and its payment date is blank.",
-      "For shortclosed S.O.s, the old full S.O. value is not treated as payable merely because the S.O. exists. Only the real pending payable items above are counted.",
+      "No Further Action = Yes stops pending delivery, job-completion, and payment work, including open unpaid bill-return/resubmission follow-up. BG receipt, validity, expiry, return, and warranty tracking continue; recorded history remains.",
     ],
   };
   const shortclosedPayableHelp = (items: string | string[]) => (
@@ -2450,7 +2626,7 @@ export function Dashboard() {
           ? [
               `Older-FY liabilities still unpaid in the current FY ${selectedFinanceYearLabel} view.`,
               "This is must-have current-year monitoring because unpaid liabilities from earlier years still require action now.",
-              "It includes older liability/source FYs that belong to the visible same-FY file set.",
+          "It can include payment obligations from earlier FYs for these files.",
             ]
           : [
               "Hidden in historical same-FY view to avoid confusion.",
@@ -2529,13 +2705,13 @@ export function Dashboard() {
             "This is the clean box for later-FY payment movement of earlier-FY files.",
           ],
           previousCarryForward: [
-            `FY ${activeFileYear} liability/source rows within files initiated in ${activeFileYear} that remain unpaid at ${selectedFinanceYearLabel} end.`,
+            `Payment obligations that began in FY ${activeFileYear} for files started that year and were still unpaid at the end of ${selectedFinanceYearLabel}.`,
             `This view intentionally restricts previous carry-forward to FY ${activeFileYear} source liability.`,
             "Before FY-end, this is a live/provisional unpaid position and can reduce if payment is made before year end.",
           ],
           clearedCarryForward: [
             `FY ${activeFileYear} carry-forward liabilities within files initiated in ${activeFileYear} that were paid during ${selectedFinanceYearLabel}.`,
-            `This uses payment date in ${selectedFinanceYearLabel} and liability/source FY ${activeFileYear}.`,
+            `This uses payments made in ${selectedFinanceYearLabel} against obligations that began in FY ${activeFileYear}.`,
             "Use it to see how much of that earlier-FY pending liability was cleared in the target FY.",
           ],
           carryForward: [
@@ -2565,7 +2741,7 @@ export function Dashboard() {
             "Live position boxes such as Intended, Booked, Committed, and Paid Till Date are hidden here to avoid mixing current position with FY movement.",
             `Payment in ${selectedFinanceYearLabel} uses actual payment/advance payment date inside ${selectedFinanceYearLabel}.`,
             shortclosedPayableHelper,
-            "Carry-forward panels are grouped by liability/source FY.",
+            "Carry-forward panels are grouped by the FY when each payment obligation began.",
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
@@ -2591,14 +2767,14 @@ export function Dashboard() {
             "This is the main payment box for this broad FY movement view.",
           ],
           previousCarryForward: [
-            `All liability/source FYs earlier than ${selectedFinanceYearLabel} that remain unpaid at ${selectedFinanceYearLabel} end.`,
+            `Payment obligations from before ${selectedFinanceYearLabel} that were still unpaid at that FY-end.`,
             "Because File Initiation Year is All file years, this includes all previous liability years, grouped year-wise in the panel.",
-            "Each year clicker opens only that liability/source FY within the current global/division/category context.",
+            "Each year link opens only obligations that began in that FY, within the current filters.",
           ],
           clearedCarryForward: [
             `All earlier-FY carry-forward liabilities paid during ${selectedFinanceYearLabel}.`,
             "Because File Initiation Year is All file years, this includes all previous liability years, grouped year-wise in the panel.",
-            "Each year clicker opens only that liability/source FY paid in the selected FY.",
+            "Each year link opens obligations that began in that FY and were paid during the selected FY.",
           ],
           carryForward: [
             `${selectedFinanceYearLabel} liabilities that are currently unpaid and would carry forward if still unpaid at FY-end.`,
@@ -2988,7 +3164,7 @@ export function Dashboard() {
           "Liability FY button shows the FY from which the liability came.",
         ],
         carryForward: [
-          `Liability/source rows of ${selectedFinanceYearLabel} that remain unpaid at FY end.`,
+          `Payment obligations that began in ${selectedFinanceYearLabel} and were still unpaid at FY-end.`,
           "This uses the liability source year, usually S.O./bill source date, not file initiation year.",
           "It can include visible files initiated outside the selected FY if their liability source belongs to this FY.",
           "If payment is later recorded after FY end, that row may also appear in the cleared-later panel.",
@@ -3091,26 +3267,41 @@ export function Dashboard() {
             category: `Carry Forward from previous FYs as on ${selectedFinanceYearLabel} end`,
             capital: formatCurrency(financeTotals.previousCarryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.previousCarryForward?.revenue ?? 0),
-            notes: `${financeTotals.previousCarryForward?.count ?? 0} older liability/source-FY rows still unpaid at ${selectedFinanceYearLabel} end. For shortclosed S.O.s, only real pending payable items are counted, not the full old S.O. value.`,
+            notes: `${financeTotals.previousCarryForward?.count ?? 0} payment obligations from earlier FYs still unpaid at ${selectedFinanceYearLabel} end. Shortclosed S.O. balances remain until paid or No Further Action is Yes.`,
           },
           {
             category: `Cleared Carry Forward in ${selectedFinanceYearLabel}`,
             capital: formatCurrency(financeTotals.clearedCarryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.clearedCarryForward?.revenue ?? 0),
-            notes: `${financeTotals.clearedCarryForward?.count ?? 0} older liability/source-FY rows paid in ${selectedFinanceYearLabel}.`,
+            notes: `${financeTotals.clearedCarryForward?.count ?? 0} payment obligations from earlier FYs paid in ${selectedFinanceYearLabel}.`,
           },
           {
             category: `Carry Forward of ${selectedFinanceYearLabel}`,
             capital: formatCurrency(financeTotals.carryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.carryForward?.revenue ?? 0),
-            notes: `${financeTotals.carryForward?.count ?? 0} ${selectedFinanceYearLabel} liability/source-FY rows unpaid by FY end. For shortclosed S.O.s, only real pending payable items are counted, not the full old S.O. value.`,
+            notes: `${financeTotals.carryForward?.count ?? 0} payment obligations that began in ${selectedFinanceYearLabel} and were unpaid at FY-end. Shortclosed S.O. balances remain until paid or No Further Action is Yes.`,
           },
           {
             category: `Carry Forward of ${selectedFinanceYearLabel} cleared later`,
             capital: formatCurrency(financeTotals.futureClearedCarryForward?.capital ?? 0),
             revenue: formatCurrency(financeTotals.futureClearedCarryForward?.revenue ?? 0),
-            notes: `${financeTotals.futureClearedCarryForward?.count ?? 0} ${selectedFinanceYearLabel} liability/source-FY rows paid in later FYs.`,
+            notes: `${financeTotals.futureClearedCarryForward?.count ?? 0} payment obligations that began in ${selectedFinanceYearLabel} and were paid in later FYs.`,
           },
+        ]
+      : []),
+  ];
+  const financePositionChartRows = [
+    {
+      position: "Allocated",
+      capital: financeTotals.allocatedCapital,
+      revenue: financeTotals.allocatedRevenue,
+    },
+    ...(shouldShowFinanceLivePositionCards
+      ? [
+          { position: "Intended", capital: financeTotals.projectedCapital, revenue: financeTotals.projectedRevenue },
+          { position: "Booked", capital: financeTotals.bookedCapital, revenue: financeTotals.bookedRevenue },
+          { position: "Committed", capital: financeTotals.spentCapital, revenue: financeTotals.spentRevenue },
+          { position: "Paid Till Date", capital: financePaidTillDate.capital, revenue: financePaidTillDate.revenue },
         ]
       : []),
   ];
@@ -3132,6 +3323,171 @@ export function Dashboard() {
     ),
   );
   const firmAnalysisRows = analytics.firmAnalysis ?? [];
+  const firmIndentorOrderRows = useMemo(
+    () =>
+      indentorFirmScopedFiles.flatMap((file) =>
+        normalizedRawSupplyOrders(file).flatMap((order, orderIndex, allOrders) => {
+          const placed = Boolean(order.soDate?.trim() || order.soNo?.trim() || order.gemSoNo?.trim());
+          const indentor = file.indentor?.trim() ?? "";
+          const firmName = order.firm?.trim() || file.firm?.trim() || "";
+          if (!placed || !indentor || !firmName) return [];
+          const firmUniqueNumber = order.firmUniqueNo?.trim() || file.firmUniqueNo?.trim() || "";
+          const firmCity = order.firmCity?.trim() || file.firmCity?.trim() || "";
+          const useLegacyFileValue = allOrders.length === 1 && orderIndex === 0;
+          const capital =
+            getInrAmount(order.soValueCapital, file) ??
+            (useLegacyFileValue ? getInrAmount(file.soValueCapital, file) : undefined) ??
+            0;
+          const revenue =
+            getInrAmount(order.soValueRevenue, file) ??
+            (useLegacyFileValue ? getInrAmount(file.soValueRevenue, file) : undefined) ??
+            0;
+          return [{
+            indentor,
+            firmName,
+            firmUniqueNumber,
+            firmCity,
+            fileId: file.id,
+            valueInr: capital + revenue,
+          }];
+        }),
+      ),
+    [indentorFirmScopedFiles],
+  );
+  const firmIndentorSources = useMemo(() => {
+    const indentors = new Map<string, string>();
+    const firms = new Map<string, { label: string; name: string; uniqueNumber: string; city: string }>();
+    for (const row of firmIndentorOrderRows) {
+      const indentorKey = row.indentor.toLocaleLowerCase();
+      if (!indentors.has(indentorKey)) indentors.set(indentorKey, row.indentor);
+      const firmKey = row.firmUniqueNumber
+        ? `no:${row.firmUniqueNumber.toLocaleLowerCase()}`
+        : `name:${row.firmName.toLocaleLowerCase()}`;
+      if (!firms.has(firmKey)) {
+        firms.set(firmKey, {
+          label: `${row.firmName}${row.firmUniqueNumber ? ` · ${row.firmUniqueNumber}` : ""}`,
+          name: row.firmName,
+          uniqueNumber: row.firmUniqueNumber,
+          city: row.firmCity,
+        });
+      }
+    }
+    return {
+      indentors: [...indentors.entries()].map(([key, name]) => ({ key, label: name })),
+      firms: [...firms.entries()].map(([key, firm]) => ({ key, ...firm })),
+    };
+  }, [firmIndentorOrderRows]);
+  const firmIndentorSource = indentorFirmDirection === "indentor"
+    ? firmIndentorSources.indentors
+    : firmIndentorSources.firms;
+  useEffect(() => {
+    if (indentorFirmSelection && !firmIndentorSource.some((item) => item.key === indentorFirmSelection)) {
+      setIndentorFirmSelection("");
+    }
+  }, [indentorFirmSelection, firmIndentorSource]);
+  const selectedFirmIndentorRows = useMemo(() => {
+    const selectedSource = firmIndentorSource.find((item) => item.key === indentorFirmSelection);
+    if (!selectedSource) return [];
+    const firmsByIndentor = new Map<string, Set<string>>();
+    const indentorsByFirm = new Map<string, Set<string>>();
+    for (const row of firmIndentorOrderRows) {
+      const indentorKey = row.indentor.toLocaleLowerCase();
+      const firmKey = row.firmUniqueNumber
+        ? `no:${row.firmUniqueNumber.toLocaleLowerCase()}`
+        : `name:${row.firmName.toLocaleLowerCase()}`;
+      const indentorFirms = firmsByIndentor.get(indentorKey) ?? new Set<string>();
+      indentorFirms.add(firmKey);
+      firmsByIndentor.set(indentorKey, indentorFirms);
+      const firmIndentors = indentorsByFirm.get(firmKey) ?? new Set<string>();
+      firmIndentors.add(indentorKey);
+      indentorsByFirm.set(firmKey, firmIndentors);
+    }
+    const groups = new Map<string, {
+      name: string;
+      uniqueNumber: string;
+      city: string;
+      common: boolean;
+      count: number;
+      valueInr: number;
+      fileIds: Set<string>;
+    }>();
+    for (const row of firmIndentorOrderRows) {
+      const sourceMatches = indentorFirmDirection === "indentor"
+        ? row.indentor.toLocaleLowerCase() === indentorFirmSelection
+        : (row.firmUniqueNumber
+            ? `no:${row.firmUniqueNumber.toLocaleLowerCase()}`
+            : `name:${row.firmName.toLocaleLowerCase()}`) === indentorFirmSelection;
+      if (!sourceMatches) continue;
+      const key = indentorFirmDirection === "indentor"
+        ? (row.firmUniqueNumber
+            ? `no:${row.firmUniqueNumber.toLocaleLowerCase()}`
+            : `name:${row.firmName.toLocaleLowerCase()}`)
+        : row.indentor.toLocaleLowerCase();
+      const common = indentorFirmDirection === "indentor"
+        ? (indentorsByFirm.get(key)?.size ?? 0) > 1
+        : (firmsByIndentor.get(key)?.size ?? 0) > 1;
+      const current = groups.get(key) ?? {
+        name: indentorFirmDirection === "indentor" ? row.firmName : row.indentor,
+        uniqueNumber: indentorFirmDirection === "indentor" ? row.firmUniqueNumber : "",
+        city: indentorFirmDirection === "indentor" ? row.firmCity : "",
+        common,
+        count: 0,
+        valueInr: 0,
+        fileIds: new Set<string>(),
+      };
+      current.count += 1;
+      current.valueInr += row.valueInr;
+      current.fileIds.add(row.fileId);
+      groups.set(key, current);
+    }
+    return [...groups.values()]
+      .map((row) => ({
+        relationshipKey: indentorFirmDirection === "indentor"
+          ? (row.uniqueNumber
+              ? `no:${row.uniqueNumber.toLocaleLowerCase()}`
+              : `name:${row.name.toLocaleLowerCase()}`)
+          : `indentor:${row.name.toLocaleLowerCase()}`,
+        name: row.name,
+        matchedFirm: indentorFirmDirection === "indentor" ? row.name : "",
+        matchedIndentor: indentorFirmDirection === "firm" ? row.name : "",
+        uniqueNumber: row.uniqueNumber,
+        city: row.city,
+        matchCategory: row.common ? "common" : "unique",
+        supplyOrderCount: row.count,
+        supplyOrderValue: row.valueInr,
+        fileIds: [...row.fileIds].join(","),
+      }))
+      .sort((left, right) =>
+        (indentorFirmSortKey === "count"
+          ? Number(right.supplyOrderCount) - Number(left.supplyOrderCount)
+          : Number(right.supplyOrderValue) - Number(left.supplyOrderValue)) ||
+        (indentorFirmSortKey === "count"
+          ? Number(right.supplyOrderValue) - Number(left.supplyOrderValue)
+          : Number(right.supplyOrderCount) - Number(left.supplyOrderCount)) ||
+        String(left.name).localeCompare(String(right.name)),
+      );
+  }, [indentorFirmDirection, indentorFirmSelection, firmIndentorSource, firmIndentorOrderRows, indentorFirmSortKey]);
+  const displayedFirmIndentorRows = indentorFirmMatchFilter === "all"
+    ? selectedFirmIndentorRows
+    : selectedFirmIndentorRows.filter((row) => row.matchCategory === indentorFirmMatchFilter);
+  const firmIndentorPagination = getAnalyticsPagination(
+    withAnalyticsRanks(displayedFirmIndentorRows),
+    indentorFirmLimit,
+    indentorFirmPage,
+  );
+  useEffect(() => {
+    setIndentorFirmPage(1);
+  }, [
+    indentorFirmDirection,
+    indentorFirmSelection,
+    indentorFirmMatchFilter,
+    indentorFirmSortKey,
+    activeDivision,
+    activeFileYear,
+    activeFileInitiationDateRange,
+    fileCategoryFilterActive,
+    selectedFileCategories,
+  ]);
   const selectedFirmAnalysisRow =
     firmAnalysisRows.find((row) => row.name === selectedFirmAnalysisFirm);
   useEffect(() => {
@@ -3365,6 +3721,52 @@ export function Dashboard() {
       rows: selectedFirmAnalysisDisplayRows,
     },
     {
+      key: "indentorFirmLinkage",
+      title: "Indentor–Firm",
+      subtitle: indentorFirmSelection
+        ? `${indentorFirmDirection === "indentor" ? "Firms awarded S.O.s for" : "Indentors who placed S.O.s with"} ${firmIndentorSource.find((item) => item.key === indentorFirmSelection)?.label ?? "the selected record"}`
+        : "",
+      exportNote: [
+        `Direction: ${indentorFirmDirection === "indentor" ? "Indentor to firms" : "Firm to indentors"}.`,
+        `Selected: ${firmIndentorSource.find((item) => item.key === indentorFirmSelection)?.label ?? "none"}.`,
+        `Match type: ${indentorFirmMatchFilter === "all" ? "All" : indentorFirmMatchFilter === "common" ? "Common" : "Unique"}.`,
+        `Ranked by S.O. ${indentorFirmSortKey === "count" ? "count" : "value"}.`,
+      ].join("\n"),
+      helper: [
+        "This view links the selected indentor to firms receiving S.O.s, or a selected firm to the indentors who placed S.O.s with it.",
+        "Each placed S.O. is counted once. Value uses the S.O. header amount; cancelled S.O.s remain part of award history.",
+        "The same Global Filter, File Initiation Year, Division, File Type, and access scope as Analytics apply.",
+        "Common means the firm or indentor is linked to more than one counterpart in the filtered files. Unique means it is linked only to the selected indentor or firm.",
+      ],
+      columns: [
+        { key: "rank", label: "S.No.", align: "left" },
+        ...(indentorFirmDirection === "indentor"
+          ? [
+              { key: "matchedFirm", label: "Firm", align: "left" },
+              { key: "city", label: "City", align: "left" },
+              { key: "uniqueNumber", label: "Unique No.", align: "left" },
+              { key: "supplyOrderCount", label: "S.O. Count", align: "right" },
+              {
+                key: "supplyOrderValue",
+                label: "S.O. Value",
+                align: "right",
+                format: (value) => formatLakhsValue(Number(value)),
+              },
+            ] satisfies AnalyticsTableColumn[]
+          : [
+              { key: "matchedIndentor", label: "Indentor", align: "left" },
+              { key: "supplyOrderCount", label: "S.O. Count", align: "right" },
+              {
+                key: "supplyOrderValue",
+                label: "S.O. Value",
+                align: "right",
+                format: (value) => formatLakhsValue(Number(value)),
+              },
+            ] satisfies AnalyticsTableColumn[]),
+      ],
+      rows: firmIndentorPagination.rows,
+    },
+    {
       key: "indentorsByFiles",
       title: "Top indentors by files",
       subtitle: "Number of files raised",
@@ -3444,7 +3846,7 @@ export function Dashboard() {
         "This is a payment-case count, not a unique-file count. One file can contribute more than one pending payment case.",
         "For physical delivery/inspection cases, payment can become pending after material receipt.",
         "For Goods & Services where IR is No, payment can become pending after Job Completion.",
-        "For AMC/MPC/CARS/CAPSI/O&M contract files, payment can become pending from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
+        "For File Types configured as Group B (Contract), payment can become pending from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
         "Main/stage payment is counted when payment workflow has started or payment is due and Payment Date is blank.",
         "Advance Payment is counted when Advance Payment is Yes and Advance Payment Date is blank.",
         "Supplementary bill is counted when it is submitted, returned, or resubmitted and Supplementary Payment Date is blank.",
@@ -3582,8 +3984,8 @@ export function Dashboard() {
         ? `Anomaly check unavailable: ${suspectedAnomalyError}`
         : suspectedAnomalyLoading
           ? "Checking suspected data issues..."
-          : `${suspectedAnomalyRows.length} active suspected data issue${
-              suspectedAnomalyRows.length === 1 ? "" : "s"
+          : `${displayedSuspectedAnomalyRows.length} active suspected data issue${
+              displayedSuspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
       helper: [
         "The bell count and this list use the same file scope: Global Filter, File Initiation Year, initiation date, Division, and File Type, limited to files you are allowed to access.",
@@ -3608,7 +4010,7 @@ export function Dashboard() {
         acceptSuspectedAnomaly,
         hasAnomalyAdminAccess(activeUser?.role) ? reviewSuspectedAnomaly : undefined,
       ),
-      rows: suspectedAnomalyRows.map((row) => ({ ...row, name: row.fileRef })),
+      rows: displayedSuspectedAnomalyRows.map((row) => ({ ...row, name: row.fileRef })),
     },
     {
       key: "delayStatus",
@@ -3705,14 +4107,41 @@ export function Dashboard() {
             ),
           }
         : selectedAnalyticsPanel;
+  const analyticsChartAvailable =
+    displayedAnalyticsPanel.key !== "suspectedAnomaly" &&
+    !(displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants") &&
+    !(displayedAnalyticsPanel.key === "tcecStatus" && Boolean(activeTcecCommittee)) &&
+    displayedAnalyticsPanel.columns.some(
+      (column) =>
+        column.key !== "rank" &&
+        displayedAnalyticsPanel.rows.some((row) => typeof row[column.key] === "number"),
+    );
+  const analyticsChartViews: ResultView[] = [
+    "table",
+    "bar",
+    ...(displayedAnalyticsPanel.key === "preBidMeetings" ||
+    (displayedAnalyticsPanel.key === "cncSummary" && !selectedCncFiscalYear)
+      ? ["line" as const]
+      : []),
+  ];
   const analyticsSortControlEnabled =
     displayedAnalyticsPanel.columns.some((column) => column.key === "rank") &&
+    displayedAnalyticsPanel.key !== "indentorFirmLinkage" &&
     !(
       displayedAnalyticsPanel.key === "milestoneClearingTable" &&
       milestoneClearingViewMode === "chronological"
     );
   const analyticsLimitControl =
-    selectedAnalyticsPanel.key === "topFirms"
+    selectedAnalyticsPanel.key === "indentorFirmLinkage"
+      ? {
+          value: indentorFirmLimit,
+          onChange: (value: AnalyticsResultLimitKey) => {
+            setIndentorFirmLimit(value);
+            setIndentorFirmPage(1);
+          },
+          total: displayedFirmIndentorRows.length,
+        }
+      : selectedAnalyticsPanel.key === "topFirms"
       ? {
           value: topFirmLimit,
           onChange: (value: AnalyticsResultLimitKey) => {
@@ -3741,7 +4170,12 @@ export function Dashboard() {
             }
           : undefined;
   const analyticsPagination =
-    selectedAnalyticsPanel.key === "topFirms"
+    selectedAnalyticsPanel.key === "indentorFirmLinkage"
+      ? {
+          ...firmIndentorPagination,
+          onPageChange: setIndentorFirmPage,
+        }
+      : selectedAnalyticsPanel.key === "topFirms"
       ? {
           ...topFirmPagination,
           onPageChange: setTopFirmPage,
@@ -3787,6 +4221,7 @@ export function Dashboard() {
 
   const selectAnalyticsPanel = (panel: AnalyticsPanelKey) => {
     setActiveAnalyticsPanel(panel);
+    setAnalyticsResultView("table");
     navigate({
       to: "/dashboard",
       search: {
@@ -3797,7 +4232,7 @@ export function Dashboard() {
     });
   };
 
-  const openSearchFilter = (dashboardFilter: string) => {
+  const openSearchFilter = (dashboardFilter: string, status3DisplayStage?: string) => {
     navigate({
       to: "/search",
       search: {
@@ -3807,7 +4242,9 @@ export function Dashboard() {
         ...fileInitiationDateQueryParams,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
-        drillPath: serializeDrillPath(getDashboardDrillPath(activeDashboardTab, dashboardFilter)),
+        drillPath: serializeDrillPath(
+          getDashboardDrillPath(activeDashboardTab, dashboardFilter, status3DisplayStage),
+        ),
       },
     });
   };
@@ -3849,10 +4286,14 @@ export function Dashboard() {
   const openLiveStatusFilter = (division: string, milestoneName: string) => {
     const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
     const dashboardFilter =
-      normalizeMilestoneName(filterMilestoneName) === "supplementarybillreturnedforcorrection"
+      normalizeMilestoneName(filterMilestoneName) === "advancepayment"
+        ? "status2AdvancePaymentPending"
+        : normalizeMilestoneName(filterMilestoneName) === "supplementarybillreturnedforcorrection"
         ? "supplementaryBill:returned"
         : normalizeMilestoneName(filterMilestoneName) === "deliveryperiod"
-          ? "deliveryPeriodLive"
+          ? "status2DpPending"
+          : normalizeMilestoneName(filterMilestoneName) === "materialreceipt"
+            ? "status2MaterialReceiptPending"
           : `manualMilestoneCurrent:${filterMilestoneName}`;
     navigate({
       to: "/search",
@@ -3912,7 +4353,6 @@ export function Dashboard() {
             )
             .map((name) => String(name)),
         ),
-        demandCancelledPresenceFilter: analyticsTransferType ? "exclude" : undefined,
         drillPath: serializeDrillPath([
           drillItem("Dashboard", "/dashboard"),
           drillItem("Analytics", analyticsHref),
@@ -3942,7 +4382,6 @@ export function Dashboard() {
         analyticsNames: target.analyticsNames?.length
           ? JSON.stringify(target.analyticsNames)
           : undefined,
-        demandCancelledPresenceFilter: target.analyticsType ? "exclude" : undefined,
         capitalOnly: target.capitalOnly || undefined,
         revenueOnly: target.revenueOnly || undefined,
         focusSection: target.focusSection,
@@ -3996,6 +4435,34 @@ export function Dashboard() {
     row: Record<string, number | string>,
     column: AnalyticsTableColumn,
   ): AnalyticsSearchTarget | undefined => {
+    if (
+      displayedAnalyticsPanel.key === "indentorFirmLinkage" &&
+      (column.key === "supplyOrderCount" || column.key === "supplyOrderValue")
+    ) {
+      const fileIds = String(row.fileIds ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (!fileIds.length) return undefined;
+      const selectedLabel =
+        firmIndentorSource.find((item) => item.key === indentorFirmSelection)?.label ??
+        "Selected party";
+      const counterpart = String(row.name ?? "Matching party");
+      const analyticsHref = "/dashboard?tab=analytics&analyticsPanel=indentorFirmLinkage";
+      return {
+        dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        focusSection: "Supply order and payment",
+        focusTarget: "supplyorder:any",
+        drillPath: [
+          drillItem("Dashboard", "/dashboard"),
+          drillItem("Analytics", "/dashboard?tab=analytics"),
+          drillItem("Indentor–Firm", analyticsHref),
+          drillItem(selectedLabel, analyticsHref),
+          drillItem(counterpart, analyticsHref),
+          drillItem(column.label, analyticsHref),
+        ],
+      };
+    }
     if (displayedAnalyticsPanel.key === "delayStatus" && column.key === "count") {
       const milestoneKey = String(row.key ?? "all");
       return {
@@ -4028,12 +4495,8 @@ export function Dashboard() {
     if (!reason?.trim()) return;
     try {
       await store.acceptSuspectedAnomaly(signature, reason.trim());
-      const [acceptancePayload, anomalyPayload] = await Promise.all([
-        store.listSuspectedAnomalyAcceptances(),
-        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
-      ]);
+      const acceptancePayload = await store.listSuspectedAnomalyAcceptances();
       setAnomalyAcceptances(acceptancePayload.acceptances);
-      setSuspectedAnomalyRows(anomalyPayload.rows);
     } catch (error) {
       console.error(error);
       window.alert(
@@ -4049,12 +4512,8 @@ export function Dashboard() {
     if (action === "reject" && !adminMessage?.trim()) return;
     try {
       await store.reviewSuspectedAnomaly(signature, action, adminMessage?.trim());
-      const [acceptancePayload, anomalyPayload] = await Promise.all([
-        store.listSuspectedAnomalyAcceptances(),
-        fetchSuspectedAnomalies(suspectedAnomalyQuery, new AbortController().signal),
-      ]);
+      const acceptancePayload = await store.listSuspectedAnomalyAcceptances();
       setAnomalyAcceptances(acceptancePayload.acceptances);
-      setSuspectedAnomalyRows(anomalyPayload.rows);
     } catch (error) {
       console.error(error);
       window.alert(error instanceof Error ? error.message : "Could not review anomaly.");
@@ -4124,7 +4583,8 @@ export function Dashboard() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
+        <div className="w-full min-w-0 overflow-x-auto sm:w-auto">
+          <div className="inline-flex rounded-lg border border-border bg-card p-1 shadow-[var(--shadow-card)]">
           {dashboardTabOptions.map((tab) => {
             const tabKey = tab.key;
             const helper = dashboardTabHelpers[tabKey];
@@ -4168,9 +4628,10 @@ export function Dashboard() {
               </div>
             );
           })}
+          </div>
         </div>
-        <div className="flex flex-wrap items-end justify-end gap-3">
-          <div className="flex shrink-0 items-end gap-2">
+        <div className="flex w-full min-w-0 flex-wrap items-end gap-3 sm:w-auto sm:justify-end">
+          <div className="flex min-w-0 flex-wrap items-end gap-2">
             <div className="flex items-end gap-1.5">
               <label
                 className={filterLabelClass(
@@ -4315,15 +4776,23 @@ export function Dashboard() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-bold">Snapshot</h2>
             <div className="flex flex-wrap items-center gap-2">
+              <TableChartToggle
+                value={snapshotResultView}
+                onChange={setSnapshotResultView}
+                label="Snapshot display"
+                views={["table", "pie"]}
+              />
               <button
                 type="button"
                 onClick={() =>
-                  printSnapshotRowsToPdf(snapshotExportRows, "Snapshot", dashboardExportDescription)
+                  printSnapshotRowsToPdf(snapshotExportRows, "Snapshot", dashboardExportDescription, snapshotExportPlots)
                 }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                title="Export Snapshot as PDF"
+                aria-label="Export Snapshot PDF"
               >
                 <FileText className="size-3.5" />
-                Export PDF
+                PDF
               </button>
               <button
                 type="button"
@@ -4332,16 +4801,59 @@ export function Dashboard() {
                     snapshotExportRows,
                     "Snapshot",
                     dashboardExportDescription,
+                    snapshotExportPlots,
                   )
                 }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                title="Export Snapshot as Excel"
+                aria-label="Export Snapshot Excel"
               >
                 <FileSpreadsheet className="size-3.5" />
-                Export Excel
+                Excel
               </button>
             </div>
           </div>
           <SectionRuleToolbar title="Global rules" items={dashboardSectionRuleHelpers.snapshot} />
+          {snapshotResultView === "pie" && snapshotPieDatasets.length ? (
+            <section className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold">Snapshot composition</h3>
+                  <p className="text-xs text-muted-foreground">Each pie is a separate category set; categories with no records are omitted.</p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  Category
+                  <select value={snapshotPieKey === "all" ? "all" : selectedSnapshotPieDataset?.key ?? ""} onChange={(event) => setSnapshotPieKey(event.target.value)}
+                    className="h-9 max-w-64 rounded-md border border-input bg-background px-2 text-foreground">
+                    <option value="all">All</option>
+                    {snapshotPieDatasets.map((dataset) => <option key={dataset.key} value={dataset.key}>{dataset.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              {snapshotPieKey === "all" ? (
+                <div className="grid gap-5 xl:grid-cols-2">
+                  {snapshotPieDatasets.map((dataset) => (
+                    <section key={dataset.key} className="min-w-0 border-t border-border pt-4 first:border-0 first:pt-0">
+                      <h4 className="mb-3 text-sm font-semibold">{dataset.label}</h4>
+                      <SnapshotPieChart
+                        title={dataset.label}
+                        rows={dataset.rows}
+                        chartSize={140}
+                        onSelect={(filter) => openSearchFilter(filter)}
+                      />
+                    </section>
+                  ))}
+                </div>
+              ) : selectedSnapshotPieDataset ? (
+                <SnapshotPieChart
+                  title={selectedSnapshotPieDataset.label}
+                  rows={selectedSnapshotPieDataset.rows}
+                  chartSize={140}
+                  onSelect={(filter) => openSearchFilter(filter)}
+                />
+              ) : null}
+            </section>
+          ) : (
           <div className="bg-card border border-border rounded-xl p-5 shadow-[var(--shadow-card)]">
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
               {topSummaryStats.map((stat) => {
@@ -4402,6 +4914,7 @@ export function Dashboard() {
               })}
             </div>
           </div>
+          )}
         </section>
       ) : null}
 
@@ -4429,9 +4942,11 @@ export function Dashboard() {
                         )
                       }
                       className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      title="Export Status-1 as PDF"
+                      aria-label="Export Status-1 PDF"
                     >
                       <FileText className="size-3.5" />
-                      Export PDF
+                      PDF
                     </button>
                     <FloatingHelp label="Export PDF status helper">
                       {statusFileExportHelpers.pdf}
@@ -4448,9 +4963,11 @@ export function Dashboard() {
                         )
                       }
                       className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      title="Export Status-1 as Excel"
+                      aria-label="Export Status-1 Excel"
                     >
                       <FileSpreadsheet className="size-3.5" />
-                      Export Excel
+                      Excel
                     </button>
                     <FloatingHelp label="Export Excel status helper">
                       {statusFileExportHelpers.excel}
@@ -4517,11 +5034,19 @@ export function Dashboard() {
                   );
                 }
 
-                if ("jobLive" in milestone && "irPreparationPending" in milestone) {
+                if (
+                  "jobLive" in milestone &&
+                  "irPreparationPending" in milestone &&
+                  typeof milestone.irPreparationPending === "number" &&
+                  "irReceiptPending" in milestone &&
+                  typeof milestone.irReceiptPending === "number" &&
+                  "irCompleted" in milestone &&
+                  typeof milestone.irCompleted === "number"
+                ) {
                   return (
                     <JobCompletionIrFlowNode
                       key={milestone.key}
-                      milestone={milestone}
+                      milestone={milestone as Parameters<typeof JobCompletionIrFlowNode>[0]["milestone"]}
                       index={index}
                       isLast={false}
                       onJobCompletedClick={() => handleStatusFilter("jobCompletionCompleted")}
@@ -4548,11 +5073,18 @@ export function Dashboard() {
                   );
                 }
 
-                if ("due" in milestone) {
+                if (
+                  "due" in milestone &&
+                  typeof milestone.due === "number" &&
+                  "completed" in milestone &&
+                  typeof milestone.completed === "number" &&
+                  "overdue" in milestone &&
+                  typeof milestone.overdue === "number"
+                ) {
                   return (
                     <DeliveryFlowNode
                       key={milestone.key}
-                      milestone={milestone}
+                      milestone={milestone as Parameters<typeof DeliveryFlowNode>[0]["milestone"]}
                       index={index}
                       isLast={false}
                       onCompletedClick={() => handleStatusFilter("deliveryCompleted")}
@@ -4562,7 +5094,14 @@ export function Dashboard() {
                   );
                 }
 
-                if ("irPreparationPending" in milestone) {
+                if (
+                  "irPreparationPending" in milestone &&
+                  typeof milestone.irPreparationPending === "number" &&
+                  "irReceiptPending" in milestone &&
+                  typeof milestone.irReceiptPending === "number" &&
+                  "irCompleted" in milestone &&
+                  typeof milestone.irCompleted === "number"
+                ) {
                   return (
                     <StatusFlowNode
                       key={milestone.key}
@@ -4605,7 +5144,16 @@ export function Dashboard() {
                   );
                 }
 
-                if ("preBidDue" in milestone) {
+                if (
+                  "preBidDue" in milestone &&
+                  typeof milestone.preBidDue === "number" &&
+                  "preBidCompleted" in milestone &&
+                  typeof milestone.preBidCompleted === "number" &&
+                  "refloatPreBidDue" in milestone &&
+                  typeof milestone.refloatPreBidDue === "number" &&
+                  "refloatPreBidCompleted" in milestone
+                  && typeof milestone.refloatPreBidCompleted === "number"
+                ) {
                   return (
                     <StatusFlowNode
                       key={milestone.key}
@@ -4658,10 +5206,12 @@ export function Dashboard() {
                   );
                 }
 
+                if (!("total" in milestone) || !("underProcess" in milestone)) return null;
+                const standardMilestone = milestone as Parameters<typeof MilestoneFlowNode>[0]["milestone"];
                 return (
                   <Fragment key={milestone.key}>
                   <MilestoneFlowNode
-                    milestone={milestone}
+                    milestone={standardMilestone}
                     index={index}
                     isLast={false}
                     onTotalClick={() => handleStatusFilter(`milestoneTotal:${milestone.key}`)}
@@ -4723,7 +5273,7 @@ export function Dashboard() {
                     onBillsReturnedClick={() => handleStatusFilter("billReturn:any")}
                     onReturnedBillsPendingClick={() => handleStatusFilter("billReturn:pending")}
                     onReturnedBillsResubmittedClick={() =>
-                      handleStatusFilter("billReturn:resubmitted")
+                      handleStatusFilter("billReturn:resubmittedUnpaid")
                     }
                     onReturnedBillsPaidClick={() => handleStatusFilter("billReturn:paid")}
                     onSupplementaryPendingClick={() =>
@@ -4744,7 +5294,7 @@ export function Dashboard() {
                   {milestone.key === "payment" ? (
                     <SupplementaryBillFlowNode
                       key="supplementaryBill"
-                      milestone={milestone}
+                      milestone={standardMilestone}
                       index={index + 1}
                       isLast={false}
                       onSupplementaryPendingClick={() =>
@@ -4796,22 +5346,22 @@ export function Dashboard() {
                     ],
                   },
                   {
-                    label: "LD",
-                    count: miscellaneousCounts.ld,
-                    onClick: () => handleStatusFilter("miscLd"),
-                    help: [
-                      "Includes files/S.O. records where LD is applicable or recorded.",
-                      "Cancelled demand files are excluded.",
-                      "File Closed follows the selected Global Filter.",
-                    ],
-                  },
-                  {
                     label: "Demand cancelled",
                     count: miscellaneousCounts.demandCancelled,
                     onClick: () => handleStatusFilter("miscDemandCancelled"),
                     help: [
                       "Shows only files specifically marked Demand Cancelled.",
                       "These files are excluded from other Status counters and clickers.",
+                    ],
+                  },
+                  {
+                    label: "Files with Multiple S.O.",
+                    count: miscellaneousCounts.multipleSupplyOrders,
+                    onClick: () => handleStatusFilter("miscMultipleSupplyOrders"),
+                    help: [
+                      "Counts files that have more than one S.O.; it is file based, not S.O.-row based.",
+                      "A single file with three S.O.s counts as 1.",
+                      "Cancelled demand files are excluded.",
                     ],
                   },
                   {
@@ -4835,13 +5385,13 @@ export function Dashboard() {
                     ],
                   },
                   {
-                    label: "Files with Multiple S.O.",
-                    count: miscellaneousCounts.multipleSupplyOrders,
-                    onClick: () => handleStatusFilter("miscMultipleSupplyOrders"),
+                    label: "LD",
+                    count: miscellaneousCounts.ld,
+                    onClick: () => handleStatusFilter("miscLd"),
                     help: [
-                      "Counts files that have more than one S.O.; it is file based, not S.O.-row based.",
-                      "A single file with three S.O.s counts as 1.",
+                      "Includes files/S.O. records where LD is applicable or recorded.",
                       "Cancelled demand files are excluded.",
+                      "File Closed follows the selected Global Filter.",
                     ],
                   },
                 ]}
@@ -4883,8 +5433,8 @@ export function Dashboard() {
           loading={dashboardSummaryLoading}
           error={dashboardSummaryError}
           exportDescription={dashboardExportDescription}
-          onOpenStatus={(milestone, stage) =>
-            openSearchFilter(getStatusSummaryDashboardFilter(milestone, stage))
+          onOpenStatus={(milestone, stage, displayStage) =>
+            openSearchFilter(getStatusSummaryDashboardFilter(milestone, stage), displayStage)
           }
         />
       ) : null}
@@ -4924,55 +5474,100 @@ export function Dashboard() {
             <h2 className="text-sm font-bold">Analytics</h2>
           </div>
           <SectionRuleToolbar title="Global rules" items={dashboardSectionRuleHelpers.analytics} />
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <div
+            className={
+              "grid grid-cols-1 gap-4 " +
+              (analyticsSidePanelHooked
+                ? "lg:grid-cols-[260px_minmax(0,1fr)]"
+                : "lg:grid-cols-[48px_minmax(0,1fr)]")
+            }
+          >
+            {analyticsSidePanelHooked ? (
             <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
-              <div className="space-y-1">
-                {analyticsPanels.map((panel) => {
-                  const selected = selectedAnalyticsPanel.key === panel.key;
-                  return (
-                    <div key={panel.key} className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => selectAnalyticsPanel(panel.key)}
-                        className={
-                          "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                          (selected
-                            ? "bg-primary text-primary-foreground shadow-sm"
-                            : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                        }
-                      >
-                        {panel.title}
-                      </button>
-                      {panel.helper ? (
-                        <TooltipProvider delayDuration={150}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                aria-label={`${panel.title} note`}
-                                className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
-                              >
-                                <Info className="size-3.5" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="right"
-                              align="start"
-                              className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+              <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
+                <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                  Analytics
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAnalyticsSidePanelHooked(false)}
+                  className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                  title="Unhook side panel"
+                >
+                  Unhook
+                </button>
+              </div>
+              <div className="divide-y divide-border">
+                {analyticsPanelGroups.map((group) => (
+                  <section key={group.title} className="py-2 first:pt-0 last:pb-0">
+                    <h3 className="px-3 pb-1 text-[11px] font-semibold text-muted-foreground">
+                      {group.title}
+                    </h3>
+                    <div className="space-y-0.5">
+                      {group.keys.map((key) => {
+                        const panel = analyticsPanels.find((item) => item.key === key);
+                        if (!panel) return null;
+                        const selected = selectedAnalyticsPanel.key === panel.key;
+                        return (
+                          <div key={panel.key} className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => selectAnalyticsPanel(panel.key)}
+                              className={
+                                "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                                (selected
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                              }
                             >
-                              <HelperWithExamples
-                                items={panel.helper}
-                                examples={panel.helperExamples}
-                              />
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      ) : null}
+                              {panel.title}
+                            </button>
+                            {panel.helper ? (
+                              <TooltipProvider delayDuration={150}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      aria-label={`${panel.title} note`}
+                                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                                    >
+                                      <Info className="size-3.5" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent
+                                    side="right"
+                                    align="start"
+                                    className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+                                  >
+                                    <HelperWithExamples
+                                      items={panel.helper}
+                                      examples={panel.helperExamples}
+                                    />
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  </section>
+                ))}
               </div>
             </aside>
+            ) : (
+              <aside className="rounded-xl border border-border bg-card p-2 shadow-[var(--shadow-card)]">
+                <button
+                  type="button"
+                  onClick={() => setAnalyticsSidePanelHooked(true)}
+                  className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                  title="Hook side panel"
+                  aria-label="Hook side panel"
+                >
+                  <span className="[writing-mode:vertical-rl] rotate-180">Hook panel</span>
+                </button>
+              </aside>
+            )}
             <div className="min-w-0">
               <AnalyticsChartCard
                 title={
@@ -5004,6 +5599,7 @@ export function Dashboard() {
                     ? undefined
                     : displayedAnalyticsPanel.helperExamples
                 }
+                unitNote={getAnalyticsPanelUnitNote(displayedAnalyticsPanel)}
                 actions={
                   <>
                     {analyticsLimitControl ? (
@@ -5073,7 +5669,19 @@ export function Dashboard() {
                         Send to Search Files
                       </button>
                     ) : null}
-                    {!(displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants") ? (
+                    {analyticsChartAvailable ? (
+                      <TableChartToggle
+                        value={analyticsResultView}
+                        onChange={(view) => {
+                          setAnalyticsResultView(view);
+                          if (view === "table") setAnalyticsExportPlot(undefined);
+                        }}
+                        label={`${displayedAnalyticsPanel.title} view`}
+                        views={analyticsChartViews}
+                      />
+                    ) : null}
+                    {!(displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants") &&
+                    !(displayedAnalyticsPanel.key === "indentorFirmLinkage" && (indentorFirmFilesLoading || indentorFirmFilesError)) ? (
                       <>
                         <button
                           type="button"
@@ -5097,11 +5705,15 @@ export function Dashboard() {
                             tcecStage: tcecStatusStage,
                               }),
                               dashboardExportDescription,
+                              analyticsExportPlot,
                             )
                           }
                           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                          title="Export this Analytics report as PDF"
+                          aria-label="Export Analytics PDF"
                         >
-                          Export PDF
+                          <FileText className="size-3.5" />
+                          PDF
                         </button>
                         <button
                           type="button"
@@ -5125,17 +5737,27 @@ export function Dashboard() {
                             tcecStage: tcecStatusStage,
                               }),
                               dashboardExportDescription,
+                              analyticsExportPlot,
                             )
                           }
                           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                          title="Export this Analytics report as Excel"
+                          aria-label="Export Analytics Excel"
                         >
-                          Export Excel
+                          <FileSpreadsheet className="size-3.5" />
+                          Excel
                         </button>
                       </>
                     ) : null}
                   </>
                 }
               >
+                {analyticsPagination &&
+                (analyticsPagination.totalPages > 1 ||
+                  (displayedAnalyticsPanel.key === "indentorFirmLinkage" &&
+                    displayedFirmIndentorRows.length > 0)) ? (
+                  <AnalyticsPaginationControls {...analyticsPagination} />
+                ) : null}
                 {displayedAnalyticsPanel.key === "divisionValue" ? (
                   <DivisionValueSortControls
                     mode={divisionValueSortMode}
@@ -5238,6 +5860,84 @@ export function Dashboard() {
                     </label>
                   </div>
                 ) : null}
+                {displayedAnalyticsPanel.key === "indentorFirmLinkage" ? (
+                  <div className="space-y-2">
+                    {indentorFirmFilesLoading ? <p className="text-xs text-muted-foreground">Loading S.O. relationship data...</p> : null}
+                    {indentorFirmFilesError ? <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{indentorFirmFilesError}</p> : null}
+                    <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex h-9 rounded-md border border-border bg-background p-0.5" role="group" aria-label="Relationship direction">
+                      <button
+                        type="button"
+                        onClick={() => { setIndentorFirmDirection("indentor"); setIndentorFirmSelection(""); }}
+                        className={`rounded px-3 text-xs font-medium ${indentorFirmDirection === "indentor" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                      >
+                        Indentor → Firms
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setIndentorFirmDirection("firm"); setIndentorFirmSelection(""); }}
+                        className={`rounded px-3 text-xs font-medium ${indentorFirmDirection === "firm" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                      >
+                        Firm → Indentors
+                      </button>
+                    </div>
+                    <label className="flex min-w-64 flex-col gap-1 text-xs text-muted-foreground">
+                      {indentorFirmDirection === "indentor" ? "Indentor" : "Firm"}
+                      <SearchableDropdown
+                        value={firmIndentorSource.find((item) => item.key === indentorFirmSelection)?.label ?? ""}
+                        onChange={(label) => setIndentorFirmSelection(
+                          firmIndentorSource.find((item) => item.label === label)?.key ?? "",
+                        )}
+                        options={firmIndentorSource.map((item) => item.label)}
+                        deferChangeUntilSelect
+                        typeAheadOnly
+                        allowCustomValue={false}
+                        placeholder={indentorFirmDirection === "indentor" ? "Select Indentor" : "Select Firm"}
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                      />
+                    </label>
+                    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      <span>Show</span>
+                      <div className="flex h-9 rounded-md border border-border bg-background p-0.5" role="group" aria-label="Filter common and unique relationships">
+                        {([
+                          ["all", indentorFirmDirection === "indentor" ? "All Firms" : "All Indentors"],
+                          ["common", indentorFirmDirection === "indentor" ? "Common Firms" : "Common Indentors"],
+                          ["unique", indentorFirmDirection === "indentor" ? "Unique Firms" : "Unique Indentors"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={indentorFirmMatchFilter === value}
+                            onClick={() => setIndentorFirmMatchFilter(value)}
+                            className={`rounded px-2.5 text-xs font-medium ${indentorFirmMatchFilter === value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      <span>Rank by</span>
+                      <div className="flex h-9 rounded-md border border-border bg-background p-0.5" role="group" aria-label="Rank firms or indentors by">
+                        <button
+                          type="button"
+                          onClick={() => setIndentorFirmSortKey("count")}
+                          className={`rounded px-3 text-xs font-medium ${indentorFirmSortKey === "count" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                        >
+                          S.O. Count
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIndentorFirmSortKey("value")}
+                          className={`rounded px-3 text-xs font-medium ${indentorFirmSortKey === "value" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                        >
+                          S.O. Value
+                        </button>
+                      </div>
+                    </div>
+                    </div>
+                  </div>
+                ) : null}
                 {displayedAnalyticsPanel.key === "firmAnalysis" ? (
                   <div className="space-y-4">
                     <div className="flex flex-wrap gap-2 border-b border-border" role="tablist" aria-label="Firm Analysis views">
@@ -5330,7 +6030,7 @@ export function Dashboard() {
                               },
                               ...(coBiddingTenders.length ? [{
                                 title: "Shared tender details",
-                                headers: ["Unique Code", "Control No.", "Item Description", "Indentor", "S.O. Year", "S.O. Firm"],
+                                headers: ["Unique Code", "Control No.", "Demand Description", "Indentor", "S.O. Year", "S.O. Firm"],
                                 rows: coBiddingTenders.map((tender) => [
                                   tender.uniqueCode,
                                   tender.controlNo,
@@ -5463,7 +6163,7 @@ export function Dashboard() {
                 {displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants" ? null :
                   displayedAnalyticsPanel.key === "suspectedAnomaly" ? (
                   <SuspectedAnomalyGroupedView
-                    rows={suspectedAnomalyRows}
+                    rows={displayedSuspectedAnomalyRows}
                     acceptances={anomalyAcceptances}
                     isAdmin={hasAnomalyAdminAccess(activeUser?.role)}
                     onRequest={(row) => void acceptSuspectedAnomaly(row)}
@@ -5479,13 +6179,52 @@ export function Dashboard() {
                     }}
                   />
                 ) : (
-                  <AnalyticsRankingTable
-                    columns={displayedAnalyticsPanel.columns}
-                    rows={displayedAnalyticsPanel.rows}
-                    getCellSearchTarget={getAnalyticsCellSearchTarget}
-                    getColumnTotalSearchTarget={getAnalyticsColumnTotalSearchTarget}
-                    onOpenSearchTarget={openAnalyticsSearchTarget}
-                  />
+                  analyticsChartAvailable && analyticsResultView !== "table" ? (
+                    displayedAnalyticsPanel.key === "tcecStatus" ? (
+                      <TcecStatusStackedBarChart
+                        title={displayedAnalyticsPanel.title}
+                        stage={tcecStatusStage}
+                        rows={displayedAnalyticsPanel.rows}
+                        onPlotChange={setAnalyticsExportPlot}
+                        getSearchTarget={getAnalyticsCellSearchTarget}
+                        onOpenSearchTarget={openAnalyticsSearchTarget}
+                      />
+                    ) : (
+                      <AnalyticsHorizontalBarChart
+                        view={analyticsResultView}
+                        title={displayedAnalyticsPanel.title}
+                        unit={getAnalyticsPanelUnitNote(displayedAnalyticsPanel)}
+                        columns={displayedAnalyticsPanel.columns}
+                        rows={displayedAnalyticsPanel.rows}
+                        preferValueRangeLabels={displayedAnalyticsPanel.key === "fileValueThresholds"}
+                        onPlotChange={setAnalyticsExportPlot}
+                        getSearchTarget={getAnalyticsCellSearchTarget}
+                        onOpenSearchTarget={openAnalyticsSearchTarget}
+                      />
+                    )
+                  ) : (
+                    <>
+                      {displayedAnalyticsPanel.key === "indentorFirmLinkage" ? (
+                        <div className="mb-2 text-xs text-muted-foreground">
+                          {displayedFirmIndentorRows.length}{" "}
+                          {indentorFirmDirection === "indentor" ? "firms" : "indentors"} shown
+                        </div>
+                      ) : null}
+                      <AnalyticsRankingTable
+                        columns={displayedAnalyticsPanel.columns}
+                        rows={displayedAnalyticsPanel.rows}
+                        compactRankColumn={
+                          displayedAnalyticsPanel.key === "topFirms" ||
+                          displayedAnalyticsPanel.key === "indentorsByValue" ||
+                          displayedAnalyticsPanel.key === "indentorFirmLinkage"
+                        }
+                        wideNameColumn={displayedAnalyticsPanel.key === "indentorFirmLinkage"}
+                        getCellSearchTarget={getAnalyticsCellSearchTarget}
+                        getColumnTotalSearchTarget={getAnalyticsColumnTotalSearchTarget}
+                        onOpenSearchTarget={openAnalyticsSearchTarget}
+                      />
+                    </>
+                  )
                 )}
                 {displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants" ? (
                   <section className="mt-5 space-y-5">
@@ -5539,7 +6278,10 @@ export function Dashboard() {
                     />
                   </div>
                 ) : null}
-                {analyticsPagination && analyticsPagination.totalPages > 1 ? (
+                {analyticsPagination &&
+                (analyticsPagination.totalPages > 1 ||
+                  (displayedAnalyticsPanel.key === "indentorFirmLinkage" &&
+                    displayedFirmIndentorRows.length > 0)) ? (
                   <AnalyticsPaginationControls {...analyticsPagination} />
                 ) : null}
               </AnalyticsChartCard>
@@ -5659,7 +6401,7 @@ export function Dashboard() {
                         `Unpaid amounts whose liability date was on or before ${finance1Summary.cutoffDate.split("-").reverse().join("-")}.`,
                         "For staged S.O.s, each stage uses its revised D.P. or D.P.; stages scheduled after FY-end are excluded.",
                         "Payments made later remain counted as unpaid at FY-end.",
-                        "For shortclosed S.O.s, only real pending payable items are counted.",
+                        "For shortclosed S.O.s, the remaining unpaid balance counts while No Further Action is No; Yes removes the unresolved balance.",
                       ])}
                       onClick={finance1DrillClick("unpaidLiabilityAtFyEnd", "Financial Position at FY-end", "Unpaid liability at FY-end")}
                     />
@@ -5677,7 +6419,7 @@ export function Dashboard() {
                       help={shortclosedPayableHelp([
                         "Shows unpaid payable balance that is still open today.",
                         "For normal S.O.s, this follows placed S.O./stage/advance/payment rows as applicable and reduces as payments are recorded.",
-                        "For shortclosed S.O.s, only real pending payable items are counted.",
+                        "For shortclosed S.O.s, paid amounts reduce the balance. No Further Action = Yes removes the unresolved payment balance and stops pending delivery/job-completion and payment follow-up. BG receipt, validity, expiry, return, and warranty tracking continue; recorded history remains.",
                       ])}
                       onClick={finance1DrillClick("balanceUnpaidToday", "Financial Position at FY-end", "Balance unpaid till today (live)")}
                     />
@@ -5815,6 +6557,26 @@ export function Dashboard() {
                     "Value is the file demand/estimated value of that selected FY file group.",
                   ]}
                 />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {finance1FileTypeView === "bar" ? (
+                      <select value={finance1FileTypeMetric} onChange={(event) => setFinance1FileTypeMetric(event.target.value as typeof finance1FileTypeMetric)}
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs">
+                        <option value="files">Files</option><option value="withSo">Files with S.O.</option><option value="active">Active at FY-end</option><option value="closed">Closed by FY-end</option><option value="cancelled">Cancelled by FY-end</option>
+                      </select>
+                    ) : null}
+                    <TableChartToggle value={finance1FileTypeView} onChange={setFinance1FileTypeView}
+                      label="FY-end file type display" views={["table", "bar"]} />
+                  </div>
+                </div>
+                {finance1FileTypeView === "bar" ? (
+                  <div className="mt-3">
+                    <CategoryBarChart title="File Type Distribution at FY-end" valueLabel={finance1FileTypeMetric === "withSo" ? "Files with S.O." : finance1FileTypeMetric === "active" ? "Active at FY-end" : finance1FileTypeMetric === "closed" ? "Closed by FY-end" : finance1FileTypeMetric === "cancelled" ? "Cancelled by FY-end" : "Files"} rows={finance1Summary.fileTypeDistribution.map((row) => ({
+                      label: row.fileType,
+                      value: row[finance1FileTypeMetric === "withSo" ? "filesWithSo" : finance1FileTypeMetric === "active" ? "activeAtFyEnd" : finance1FileTypeMetric === "closed" ? "closedByFyEnd" : finance1FileTypeMetric === "cancelled" ? "cancelledByFyEnd" : "files"],
+                    }))} />
+                  </div>
+                ) : (
                 <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
                   <table className="w-full min-w-[760px] border-collapse text-xs">
                     <thead className="bg-secondary text-muted-foreground">
@@ -5843,7 +6605,7 @@ export function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {finance1Summary.fileTypeDistribution.length ? (
+                {finance1Summary.fileTypeDistribution.length ? (
                         finance1Summary.fileTypeDistribution.map((row) => (
                           <tr key={row.fileType} className="border-t border-border">
                             <td className="px-3 py-2 font-medium">
@@ -5897,6 +6659,7 @@ export function Dashboard() {
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
 
               <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
@@ -5909,6 +6672,52 @@ export function Dashboard() {
                     "Value is S.O. value placed by FY-end; S.O.s cancelled by FY-end are excluded.",
                   ]}
                 />
+                <div className="mt-3 flex justify-end">
+                  <TableChartToggle value={finance1FirmTypeView} onChange={setFinance1FirmTypeView}
+                    label="FY-end firm type display" views={["table", "bar", "pie"]} />
+                </div>
+                {finance1FirmTypeView === "bar" ? (
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div className="min-w-0 rounded-md border border-border bg-card p-3">
+                      <h4 className="mb-2 text-xs font-semibold">Total S.O. value by firm type</h4>
+                      <CategoryBarChart title="Total S.O. value by firm type" valueLabel="S.O. value (Lakhs)" rows={finance1Summary.firmTypeDistribution.map((row) => ({
+                        label: row.firmType,
+                        value: row.total,
+                      }))} formatValue={formatCurrency} />
+                    </div>
+                    <div className="min-w-0 rounded-md border border-border bg-card p-3">
+                      <h4 className="mb-2 text-xs font-semibold">S.O. count by firm type</h4>
+                      <CategoryBarChart title="S.O. count by firm type" valueLabel="S.O. count" rows={finance1Summary.firmTypeDistribution.map((row) => ({
+                        label: row.firmType,
+                        value: row.supplyOrders,
+                      }))} />
+                    </div>
+                  </div>
+                ) : finance1FirmTypeView === "pie" ? (
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div className="min-w-0 rounded-md border border-border bg-card p-3">
+                      <h4 className="mb-2 text-xs font-semibold">Total S.O. value by firm type</h4>
+                      <SnapshotPieChart title="Total S.O. value by firm type"
+                        rows={finance1Summary.firmTypeDistribution.map((row) => ({ label: row.firmType, value: row.total, searchFilter: row.firmType }))}
+                        formatValue={formatCurrency}
+                        allowManyCategories
+                        onSelect={(firmType) => {
+                          const row = finance1Summary.firmTypeDistribution.find((item) => item.firmType === firmType);
+                          if (row) finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", row.firmType)?.();
+                        }} />
+                    </div>
+                    <div className="min-w-0 rounded-md border border-border bg-card p-3">
+                      <h4 className="mb-2 text-xs font-semibold">S.O. count by firm type</h4>
+                      <SnapshotPieChart title="S.O. count by firm type"
+                        rows={finance1Summary.firmTypeDistribution.map((row) => ({ label: row.firmType, value: row.supplyOrders, searchFilter: row.firmType }))}
+                        allowManyCategories
+                        onSelect={(firmType) => {
+                          const row = finance1Summary.firmTypeDistribution.find((item) => item.firmType === firmType);
+                          if (row) finance1DrillClick(`firmType:${row.firmType.toLowerCase()}`, "Firm Type Distribution at FY-end", `${row.firmType}: S.O.s`)?.();
+                        }} />
+                    </div>
+                  </div>
+                ) : (
                 <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
                   <table className="w-full min-w-[640px] border-collapse text-xs">
                     <thead className="bg-secondary text-muted-foreground">
@@ -5983,6 +6792,7 @@ export function Dashboard() {
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
             </div>
           </TooltipProvider>
@@ -6108,7 +6918,8 @@ export function Dashboard() {
                     basis={financeAllocationBasisLabel}
                     help={financeHelperText.allocated}
                   />
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-3">
+                    <div className="grid w-full max-w-full grid-cols-1 gap-3 sm:grid-cols-2">
                     <FinanceAmountTile
                       label="Capital"
                       value={financeTotals.allocatedCapital}
@@ -6127,6 +6938,7 @@ export function Dashboard() {
                         "Future file activity does not update this value unless allocation setup is edited.",
                       ]}
                     />
+                    </div>
                   </div>
                 </div>
                 {shouldShowFinanceLivePositionCards ? (
@@ -6136,7 +6948,8 @@ export function Dashboard() {
                     basis={financeLiveValueBasisLabel}
                     help={financeHelperText.intended}
                   />
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FinanceAmountTile
                       label="Capital"
                       value={financeTotals.projectedCapital}
@@ -6159,6 +6972,7 @@ export function Dashboard() {
                         "Shortclosed S.O. files remain included.",
                       ]}
                     />
+                    </div>
                   </div>
                 </div>
                 ) : null}
@@ -6169,7 +6983,8 @@ export function Dashboard() {
                     basis={financeLiveValueBasisLabel}
                     help={financeHelperText.booked}
                   />
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FinanceAmountTile
                       label="Capital"
                       value={financeTotals.bookedCapital}
@@ -6192,6 +7007,7 @@ export function Dashboard() {
                         "Shortclosed S.O. files remain included.",
                       ]}
                     />
+                    </div>
                   </div>
                 </div>
                 ) : null}
@@ -6202,7 +7018,8 @@ export function Dashboard() {
                     basis={financeLiveValueBasisLabel}
                     help={shortclosedPayableHelp(financeHelperText.committed)}
                   />
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FinanceAmountTile
                       label="Capital"
                       value={financeTotals.spentCapital}
@@ -6225,6 +7042,7 @@ export function Dashboard() {
                         "Shortclosed S.O. rows remain included.",
                       ]}
                     />
+                    </div>
                   </div>
                 </div>
                 ) : null}
@@ -6235,7 +7053,8 @@ export function Dashboard() {
                     basis={financeLiveValueBasisLabel}
                     help={shortclosedPayableHelp(financeHelperText.paidTillDate)}
                   />
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="mt-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <FinanceAmountTile
                       label="Capital"
                       value={financePaidTillDate.capital}
@@ -6258,6 +7077,7 @@ export function Dashboard() {
                         "Not restricted to the selected payment FY.",
                       ]}
                     />
+                    </div>
                   </div>
                 </div>
                 ) : null}
@@ -6268,14 +7088,13 @@ export function Dashboard() {
                       basis={financePaymentInYearBasisLabel}
                       help={shortclosedPayableHelp(financeHelperText.paymentInYear)}
                     />
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="mt-3">
+                      <div className="grid w-full max-w-full grid-cols-1 gap-3 sm:grid-cols-2">
                       <FinanceAmountTile
                         label="Capital"
                         value={financePaymentInYearCapital}
-                        percentLabel={`${formatPercent(financePaymentInYearCapitalPercent)} of allocation`}
                         help={[
                           `Capital payment total where payment/advance payment date falls in ${selectedFinanceYearLabel}.`,
-                          "Capital payment-in-FY percent equals Capital payment-in-FY divided by Capital allocation.",
                           "Includes Capital final/stage/supplementary payments and Capital advance payments.",
                           activeFileYear === "all"
                             ? "All visible initiation years are eligible."
@@ -6287,10 +7106,8 @@ export function Dashboard() {
                       <FinanceAmountTile
                         label="Revenue"
                         value={financePaymentInYearRevenue}
-                        percentLabel={`${formatPercent(financePaymentInYearRevenuePercent)} of allocation`}
                         help={[
                           `Revenue payment total where payment/advance payment date falls in ${selectedFinanceYearLabel}.`,
-                          "Revenue payment-in-FY percent equals Revenue payment-in-FY divided by Revenue allocation.",
                           "Includes Revenue final/stage/supplementary payments and Revenue advance payments.",
                           activeFileYear === "all"
                             ? "All visible initiation years are eligible."
@@ -6299,10 +7116,42 @@ export function Dashboard() {
                           "Shortclosed S.O. rows remain included.",
                         ]}
                       />
+                      </div>
                     </div>
                   </div>
                 ) : null}
               </div>
+              {!isSpecificGlobalFinanceFy ? (
+                <section data-chart-copy-area className="mt-4 max-w-5xl rounded-lg border border-border bg-secondary/20 p-3">
+                  <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-semibold">Capital and Revenue comparison</h3>
+                    <ChartCopyButton />
+                    <span className="text-xs text-muted-foreground">Values in Lakhs</span>
+                  </div>
+                  <div className="h-[210px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={financePositionChartRows}
+                        margin={{ top: 4, right: 12, bottom: 4, left: 8 }}
+                        barCategoryGap="30%"
+                      >
+                        <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="position" tick={{ fontSize: 13 }} />
+                        <YAxis
+                          width={58}
+                          tick={{ fontSize: 13 }}
+                          tickFormatter={(value: number) => formatThousandsAndLakhs(value / 100_000, 2)}
+                          label={{ value: "Lakhs", angle: -90, position: "insideLeft", fontSize: 13 }}
+                        />
+                        <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
+                        <Legend wrapperStyle={{ fontSize: 13 }} />
+                        <Bar dataKey="capital" name="Capital" fill="var(--chart-1)" radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="revenue" name="Revenue" fill="var(--chart-4)" radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+              ) : null}
               {!isCumulativeFinancePositionView ? (
                 <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
                   <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
@@ -6406,7 +7255,15 @@ export function Dashboard() {
                     ))}
                   </div>
                 </div>
-                <FinanceFirmTypeDistributionTable rows={financeFirmTypeDistributionRows} />
+                <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(540px,1.1fr)_minmax(28rem,0.9fr)]">
+                  <FinanceFirmTypeDistributionTable rows={financeFirmTypeDistributionRows} />
+                  <FinanceInlinePieChart
+                    title={selectedFinanceFirmTypeDistributionLabel}
+                    colors={financeFirmTypePieColors}
+                    rows={financeFirmTypeDistributionRows.map((row) => ({ label: row.name, value: row.value }))}
+                    formatValue={formatCurrency}
+                  />
+                </div>
               </div>
               ) : null}
                 </>
@@ -6415,6 +7272,185 @@ export function Dashboard() {
           </TooltipProvider>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+function SnapshotPieChart({
+  title,
+  rows,
+  onSelect,
+  formatValue = (value) => value.toLocaleString(),
+  allowManyCategories = false,
+  chartSize = 176,
+}: {
+  title: string;
+  rows: Array<{ label: string; value: number; searchFilter?: string }>;
+  onSelect: (filter: string) => void;
+  formatValue?: (value: number) => string;
+  allowManyCategories?: boolean;
+  chartSize?: number;
+}) {
+  const palette = ["#0f766e", "#2563eb", "#d97706", "#be123c", "#65a30d", "#7c3aed", "#0891b2", "#4d7c0f"];
+  const positiveRows = rows.filter((row) => row.value > 0);
+  const total = positiveRows.reduce((sum, row) => sum + row.value, 0);
+  const data = positiveRows.map((row) => ({
+    ...row,
+    share: total ? Math.round((row.value / total) * 100) : 0,
+  }));
+  const colors = data.length === 2 ? ["#f97316", "#2563eb"] : palette;
+  if (data.length > 8 && !allowManyCategories) {
+    return <div className="rounded-md border border-border bg-secondary/20 p-4 text-sm text-muted-foreground">This distribution has {data.length} categories. Use the bar chart or table to compare them clearly.</div>;
+  }
+  if (!data.length) {
+    return <div className="py-8 text-center text-sm text-muted-foreground">No values to chart for {title}.</div>;
+  }
+  return (
+    <div data-chart-copy-area className="relative grid items-center gap-2 pt-7" style={{ gridTemplateColumns: `${chartSize}px minmax(0, 1fr)` }}>
+      <h3 className="absolute left-0 top-0 text-sm font-semibold text-foreground">{title}</h3>
+      <div className="absolute right-0 top-0"><ChartCopyButton /></div>
+      <div className="shrink-0" style={{ width: chartSize, height: chartSize }} aria-label={`${title} pie chart`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="label"
+              innerRadius={Math.round(chartSize * (48 / 176))}
+              outerRadius={Math.round(chartSize * (76 / 176))}
+              paddingAngle={1}
+              onClick={(entry: { searchFilter?: string; payload?: { searchFilter?: string } }) => {
+                const filter = entry.payload?.searchFilter ?? entry.searchFilter;
+                if (filter) onSelect(filter);
+              }}
+            >
+              {data.map((row, index) => (
+                <Cell key={row.label} fill={colors[index % colors.length]} cursor={row.searchFilter ? "pointer" : "default"} />
+              ))}
+            </Pie>
+            <ChartTooltip
+              formatter={(value, _name, item) => {
+                const share = Number(item.payload?.share) || 0;
+                return [`${formatValue(Number(value))} (${share}%)`, item.payload?.label ?? title];
+              }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="space-y-1.5 overflow-y-auto" style={{ maxHeight: chartSize }}>
+        {data.map((row, index) => (
+          <button key={row.label} type="button" disabled={!row.searchFilter}
+            onClick={() => row.searchFilter && onSelect(row.searchFilter)}
+            className="grid w-full grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-sm py-1 text-left text-[10px] leading-tight hover:bg-accent disabled:cursor-default">
+            <span className="size-2 rounded-sm" style={{ backgroundColor: colors[index % colors.length] }} />
+            <span className="truncate">{row.label}</span>
+            <span className="whitespace-nowrap text-right tabular-nums">{formatValue(row.value)} ({row.share}%)</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FinanceInlinePieChart({
+  title,
+  rows,
+  formatValue = formatCurrency,
+  colors: colorSet,
+}: {
+  title?: string;
+  rows: Array<{ label: string; value: number }>;
+  formatValue?: (value: number) => string;
+  colors?: readonly string[];
+}) {
+  const palette = ["#0f766e", "#2563eb", "#d97706", "#be123c", "#65a30d", "#7c3aed", "#0891b2", "#4d7c0f"];
+  const total = rows.reduce((sum, row) => sum + Math.max(0, row.value), 0);
+  const data = rows.map((row) => ({
+    ...row,
+    value: Math.max(0, row.value),
+    share: total ? Math.round((Math.max(0, row.value) / total) * 100) : 0,
+  }));
+  const plottedData = data.filter((row) => row.value > 0);
+  const colors = colorSet ?? (plottedData.length === 2 ? ["#f97316", "#2563eb"] : palette);
+  const chartSize = 176;
+
+  return (
+    <div data-chart-copy-area className="min-w-0 rounded-md border border-border/70 bg-background/70 p-3">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        {title ? <div className="truncate text-[11px] font-semibold text-muted-foreground" title={title}>{title}</div> : <span />}
+        <ChartCopyButton />
+      </div>
+      {total > 0 ? (
+        <div className="grid grid-cols-[176px_minmax(0,1fr)] items-center gap-2">
+          <div className="shrink-0" style={{ width: chartSize, height: chartSize }} aria-label={`${title ?? "Finance distribution"} pie chart`}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={plottedData} dataKey="value" nameKey="label" innerRadius={48} outerRadius={76} paddingAngle={1}>
+                  {plottedData.map((row, index) => (
+                    <Cell key={row.label} fill={colors[index % colors.length]} />
+                  ))}
+                </Pie>
+                <ChartTooltip formatter={(value, _name, item) => [`${formatValue(Number(value))} (${Number(item.payload?.share) || 0}%)`, item.payload?.label ?? ""]} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="max-h-[176px] space-y-1.5 overflow-y-auto">
+            {data.map((row, index) => (
+              <div key={row.label} className="grid grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 text-[10px] leading-tight">
+                <span className="size-2 rounded-sm" style={{ backgroundColor: row.value > 0 ? colors[plottedData.findIndex((item) => item.label === row.label) % colors.length] : "#cbd5e1" }} />
+                <span className="truncate" title={row.label}>{row.label}</span>
+                <span className="whitespace-nowrap text-right tabular-nums">{formatValue(row.value)} ({row.share}%)</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ minHeight: chartSize }}>
+          No values to chart.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoryBarChart({
+  title,
+  rows,
+  formatValue = (value) => value.toLocaleString(),
+  valueLabel = "Value",
+}: {
+  title?: string;
+  rows: Array<{ label: string; value: number; onClick?: () => void; color?: string }>;
+  formatValue?: (value: number) => string;
+  valueLabel?: string;
+}) {
+  const maximum = Math.max(1, ...rows.map((row) => row.value));
+  return (
+      <div data-chart-copy-area className="rounded-md border border-border bg-background p-4">
+      <div className="mb-2 flex items-center justify-between">
+        {title ? <span className="text-sm font-semibold text-foreground">{title}</span> : <span />}
+        <span className="text-xs text-muted-foreground">{valueLabel}</span>
+        <ChartCopyButton />
+      </div>
+      <div role="group" aria-label="Category bar chart" className="space-y-3">
+      {rows.map((row) => (
+        <button
+          key={row.label}
+          type="button"
+          disabled={!row.onClick}
+          onClick={row.onClick}
+          className="grid w-full grid-cols-[minmax(8rem,14rem)_minmax(0,1fr)] items-center gap-3 rounded-sm py-2 text-left disabled:cursor-default"
+        >
+          <span className="truncate text-xs font-medium">{row.label}</span>
+          <span className="min-w-0 pt-4">
+            <span className="relative block h-5 overflow-visible rounded-sm bg-muted">
+              <span className="block h-full rounded-sm bg-primary" style={{ width: row.value > 0 ? `${Math.max(1, row.value / maximum * 100)}%` : "0%", ...(row.color ? { backgroundColor: row.color } : {}) }} />
+              <span className="absolute -top-4 -translate-x-full whitespace-nowrap text-xs font-semibold tabular-nums" style={{ left: `${row.value > 0 ? Math.max(1, row.value / maximum * 100) : 0}%` }}>{formatValue(row.value)}</span>
+            </span>
+          </span>
+        </button>
+      ))}
+      </div>
     </div>
   );
 }
@@ -7183,6 +8219,8 @@ function Status4Section({
   onSortChange: (sortKey: Status4SortKey) => void;
   onCountClick: (filter: Status4SearchFilter) => void;
 }) {
+  const [resultView, setResultView] = useState<ResultView>("table");
+  const [status4ChartFiscalYear, setStatus4ChartFiscalYear] = useState("");
   const selectedMilestoneSet = new Set(visibleMilestoneNames);
   const displayedMilestones = getStatus4Milestones(
     milestones.filter((milestone) => selectedMilestoneSet.has(milestone.name)),
@@ -7201,6 +8239,49 @@ function Status4Section({
   const breadcrumbItems = getStatus4BreadcrumbItems(drill);
   const canShowTable =
     displayedMilestones.length > 0 && (!drill.fiscalYear || drill.mode !== undefined);
+  const chartFiscalYears = Array.from(new Set(rows
+    .map((row) => row.fiscalYear)
+    .filter((year): year is string => Boolean(year && year !== "undated"))))
+    .sort((a, b) => getStatus4FySortValue(b) - getStatus4FySortValue(a));
+  const selectedChartFiscalYear = chartFiscalYears.includes(status4ChartFiscalYear)
+    ? status4ChartFiscalYear
+    : chartFiscalYears[0] ?? "";
+  const chartScopeRows = rows.filter((row) => row.fiscalYear === selectedChartFiscalYear);
+  const chartRows = displayedMilestones.map((milestone) => {
+    const metrics = chartScopeRows.reduce(
+      (total, row) => {
+        const rowMetrics = row.metrics[milestone.name];
+        if (!rowMetrics) return total;
+        total.applicable += rowMetrics.applicable;
+        total.cleared += rowMetrics.cleared;
+        total.current += rowMetrics.current;
+        return total;
+      },
+      { applicable: 0, cleared: 0, current: 0 },
+    );
+    return {
+      label: getWorkflowDisplayLabel(milestone.label),
+      milestone: milestone.name,
+      metrics,
+    };
+  });
+  const status4ChartPlot: ExportPlot | undefined =
+    resultView === "bar" && chartRows.length
+      ? {
+          kind: "bar",
+          title: `${tableLabel} · ${selectedChartFiscalYear} · Milestone comparison`,
+          measure: "Cleared, Current, and Balance counts by milestone",
+          unit: "Files",
+          xAxisTitle: "Milestone",
+          yAxisTitle: "Files",
+          categories: chartRows.map((row) => row.label),
+          series: [
+            { name: "Cleared", values: chartRows.map((row) => row.metrics.cleared) },
+            { name: "Current", values: chartRows.map((row) => row.metrics.current) },
+            { name: "Balance", values: chartRows.map((row) => Math.max(0, row.metrics.applicable - row.metrics.cleared - row.metrics.current)) },
+          ],
+        }
+      : undefined;
 
   return (
     <section className="space-y-4">
@@ -7231,11 +8312,18 @@ function Status4Section({
               ))}
             </div>
           </div>
-          <div className="flex rounded-md border border-border bg-secondary/40 p-1">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <TableChartToggle
+              value={resultView}
+              onChange={setResultView}
+              label="Status-4 result view"
+              views={["table", "bar"]}
+            />
+            <div className="flex rounded-md border border-border bg-secondary/40 p-1">
             <button
               type="button"
               onClick={() =>
-                printStatus4RowsToPdf(rows, displayedMilestones, tableLabel, exportDescription)
+                printStatus4RowsToPdf(rows, displayedMilestones, tableLabel, exportDescription, status4ChartPlot)
               }
               disabled={!canShowTable || !rows.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
@@ -7246,7 +8334,14 @@ function Status4Section({
             <button
               type="button"
               onClick={() =>
-                exportStatus4RowsToExcel(rows, displayedMilestones, tableLabel, exportDescription)
+                exportStatus4RowsToExcel(
+                  rows,
+                  displayedMilestones,
+                  tableLabel,
+                  getStatus4RowHeaderLabel(drill),
+                  exportDescription,
+                  status4ChartPlot,
+                )
               }
               disabled={!canShowTable || !rows.length}
               className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
@@ -7254,6 +8349,7 @@ function Status4Section({
               <FileSpreadsheet className="size-3.5" />
               Excel
             </button>
+          </div>
           </div>
         </div>
 
@@ -7301,7 +8397,39 @@ function Status4Section({
           </div>
         ) : null}
 
-        {canShowTable ? (
+        {canShowTable && resultView === "bar" ? (
+          <div className="space-y-3">
+            {chartFiscalYears.length ? (
+              <div role="tablist" aria-label="Status-4 chart year" className="flex flex-wrap gap-1 border-b border-border">
+                {chartFiscalYears.map((year) => (
+                  <button key={year} type="button" role="tab" aria-selected={selectedChartFiscalYear === year}
+                    onClick={() => setStatus4ChartFiscalYear(year)}
+                    className={`border-b-2 px-3 py-2 text-xs font-medium ${selectedChartFiscalYear === year ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+                    {year}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2.5 rounded-sm border border-border bg-white" />
+                Balance
+              </span>
+              {(["cleared", "current"] as const).map((metric) => (
+                <span key={metric} className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-sm" style={{ backgroundColor: getStatus4MetricColor(metric) }} />
+                  {getStatus4MetricLabel(metric)}
+                </span>
+              ))}
+            </div>
+            <Status4MilestoneComparisonChart
+              rows={chartRows}
+              onCountClick={(milestone, metric) =>
+                onCountClick({ milestone, metric, fiscalYear: selectedChartFiscalYear, monthKey: drill.monthKey })
+              }
+            />
+          </div>
+        ) : canShowTable ? (
           <Status4Table
             rows={rows}
             milestones={displayedMilestones}
@@ -7427,6 +8555,78 @@ function Status4Table({
       No Status-4 data available for the selected scope.
     </div>
   );
+}
+
+function Status4MilestoneComparisonChart({
+  rows,
+  onCountClick,
+}: {
+  rows: Array<{ label: string; milestone: string; metrics: Status4MilestoneMetrics }>;
+  onCountClick: (milestone: string, metric: Status4MetricKey) => void;
+}) {
+  const maximum = Math.max(1, ...rows.map((row) => Math.max(row.metrics.applicable, row.metrics.cleared + row.metrics.current)));
+
+  return (
+    <div data-chart-copy-area className="rounded-md border border-border bg-background p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">Files</span>
+        <ChartCopyButton />
+      </div>
+      <div role="group" aria-label="Status-4 milestone comparison chart" className="space-y-2">
+      {rows.map((row) => (
+        <div key={row.milestone} className="grid grid-cols-[minmax(8rem,13rem)_minmax(0,1fr)] items-center gap-3 border-b border-border/60 py-3 last:border-0">
+          <span className="text-xs font-medium">{row.label}</span>
+          <div className="min-w-0 pt-4">
+            <div className="relative h-3 min-w-0">
+              <div className="flex h-full overflow-hidden rounded-sm border-2" style={{ width: `${(row.metrics.applicable / maximum) * 100}%`, borderColor: getStatus4MetricColor("applicable") }}>
+              {([
+                { key: "cleared", label: "Cleared", value: row.metrics.cleared, color: getStatus4MetricColor("cleared") },
+                { key: "current", label: "Current", value: row.metrics.current, color: getStatus4MetricColor("current") },
+                { key: "balance", label: "Balance", value: Math.max(0, row.metrics.applicable - row.metrics.cleared - row.metrics.current), color: "#ffffff" },
+              ] as const).map((segment) => {
+                const width = row.metrics.applicable > 0 ? (segment.value / row.metrics.applicable) * 100 : 0;
+                const segmentContent = <span className="block h-full w-full" style={{ backgroundColor: segment.color }} />;
+                const trigger = segment.key === "balance" ? (
+                  <span className="block h-full shrink-0" aria-label={`Balance: ${segment.value}`} style={{ width: `${width}%` }}>{segmentContent}</span>
+                ) : (
+                  <button type="button" disabled={segment.value === 0}
+                    onClick={() => onCountClick(row.milestone, segment.key)}
+                    aria-label={`${segment.label}: ${segment.value}`}
+                    className="block h-full min-w-0 shrink-0 disabled:cursor-default"
+                    style={{ width: `${width}%` }}>{segmentContent}</button>
+                );
+                return (
+                  <TooltipProvider key={segment.key} delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        {trigger}
+                      </TooltipTrigger>
+                      <TooltipContent>{segment.label}: {segment.value}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                );
+              })}
+              </div>
+              <button type="button" disabled={row.metrics.applicable === 0}
+            onClick={() => onCountClick(row.milestone, "applicable")}
+            className="absolute -top-4 -translate-x-full whitespace-nowrap text-xs tabular-nums text-muted-foreground hover:text-foreground disabled:cursor-default"
+            style={{ left: `${(row.metrics.applicable / maximum) * 100}%` }}
+            aria-label={`Applicable: ${row.metrics.applicable}`}>
+            {row.metrics.applicable}
+          </button>
+            </div>
+          </div>
+        </div>
+      ))}
+      </div>
+    </div>
+  );
+}
+
+function getStatus4MetricColor(metric: Status4MetricKey) {
+  if (metric === "applicable") return "#0f766e";
+  if (metric === "cleared") return "#2563eb";
+  return "#c2410c";
 }
 
 function Status4SortableHeader({
@@ -7583,38 +8783,37 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
     {
       label: "Total",
       items: [
-        "Total is the number of Demand-Cancelled-excluded files in that row.",
-        "It is file count, not number of stages or number of supply orders.",
-        "Cancelled S.O. does not reduce Status-4 Total because Status-4 is up to order placement.",
+        "Shows the number of files in this row; it does not count stages or S.O.s.",
+        "Cancelled demands are left out. Cancelling an S.O. does not remove the file from this total.",
       ],
     },
     {
       label: "Applicable",
       items: [
-        "Files for which that milestone is relevant/applicable.",
-        "Example: IFA applies only where IFA is marked Yes; TCEC stages apply only to TCEC files.",
+        "Shows files that need to pass through this stage.",
+        "Example: IFA applies when IFA is marked Yes; TCEC stages apply to TCEC files.",
       ],
     },
     {
       label: "Cleared",
       items: [
-        "Applicable files where that milestone has already been completed/cleared.",
-        "For Supply Order, cancelled S.O. still counts as cleared/placed because placement happened before cancellation.",
-        "Click a non-zero cleared count to open matching files in Search.",
+        "Shows applicable files that have completed this stage.",
+        "A cancelled S.O. still counts as placed because it was placed before it was cancelled.",
+        "Click a non-zero count to see the matching files.",
       ],
     },
     {
       label: "Current",
       items: [
-        "Files currently pending/live at that milestone.",
-        "This is live current position, not historical delay or past stuck position.",
+        "Shows files waiting at this stage now.",
+        "It is the current position, not a record of an earlier delay.",
       ],
     },
     {
       label: "Milestone columns",
       items: [
-        "Columns come from selected Status-2 milestones.",
-        "Status-4 shows stages up to Supply Order and excludes later delivery/payment milestones.",
+        "The columns follow the milestones selected in Status-2.",
+        "Status-4 stops at Supply Order; delivery and payment stages come later.",
       ],
     },
   ];
@@ -7624,8 +8823,8 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
       {
         label: "FY",
         items: [
-          "Rows are grouped by file initiation/received financial year.",
-          "Click an FY row to choose Value Threshold or Monthwise drill-down for that FY.",
+          "Each row shows files started/received in one FY.",
+          "Click an FY to view its value bands or month-by-month breakdown.",
         ],
       },
       ...common,
@@ -7637,17 +8836,17 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
       {
         label: "Value Threshold",
         items: [
-          "Shows value-range rows for the selected FY.",
-          "Value range uses Demand Capital + Demand Revenue for the file.",
-          "Use it to see milestone progress by demand-value slab.",
+          "Breaks the selected FY into demand-value bands.",
+          "Each file's band uses its Capital and Revenue demand values together.",
+          "Use this to compare stage progress across demand sizes.",
         ],
       },
       {
         label: "Monthwise",
         items: [
-          "Shows month rows inside the selected FY.",
-          "Month is file initiation/received month, not S.O. month or delivery month.",
-          "Click a month to see value-threshold breakup inside that month.",
+          "Shows the months within the selected FY.",
+          "Months are based on when files were started/received, not when an S.O. was placed or items were delivered.",
+          "Click a month to see its demand-value bands.",
         ],
       },
     ];
@@ -7658,8 +8857,8 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
       {
         label: "Month",
         items: [
-          "Rows are grouped by file initiation/received month within the selected FY.",
-          "Click a month to drill into value-threshold rows for only that month.",
+          "Each row shows files started/received in that month of the selected FY.",
+          "Click a month to see its demand-value bands.",
         ],
       },
       ...common,
@@ -7981,7 +9180,7 @@ function getStatus4MilestoneMetrics(
   if (normalized === "billreturnedforcorrection") {
     return {
       applicable: countBillsReturnedForCorrection(files),
-      cleared: countReturnedBillsResubmitted(files),
+      cleared: countReturnedBillOrders(files, hasCompletedBillReturn),
       current: countReturnedBillsPending(files),
     };
   }
@@ -8049,7 +9248,7 @@ function isStatus4MetricMatch(file: FileRecord, milestoneName: string, metric: S
   }
   if (normalized === "billreturnedforcorrection") {
     if (metric === "applicable") return countBillsReturnedForCorrection([file]) > 0;
-    if (metric === "cleared") return countReturnedBillsResubmitted([file]) > 0;
+    if (metric === "cleared") return countReturnedBillOrders([file], hasCompletedBillReturn) > 0;
     return countReturnedBillsPending([file]) > 0;
   }
   const milestone = milestoneDefinitions.find(
@@ -8267,7 +9466,7 @@ function DashboardStatusSummarySection({
   loading: boolean;
   error?: string;
   exportDescription?: string;
-  onOpenStatus: (milestone: string, stage: string) => void;
+  onOpenStatus: (milestone: string, stage: string, displayStage?: string) => void;
 }) {
   const status3Presentation = useMemo(
     () => getStatus3Presentation(milestones, miscellaneousCounts),
@@ -8344,7 +9543,7 @@ function Status3WorkflowSection({
   onOpenStatus,
 }: {
   group: Status3WorkflowGroup;
-  onOpenStatus: (milestone: string, stage: string) => void;
+  onOpenStatus: (milestone: string, stage: string, displayStage?: string) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -8365,7 +9564,7 @@ function Status3TableSection({
   onOpenStatus,
 }: {
   group: StatusSummaryTableGroup;
-  onOpenStatus: (milestone: string, stage: string) => void;
+  onOpenStatus: (milestone: string, stage: string, displayStage?: string) => void;
 }) {
   return (
     <div className="overflow-hidden rounded-lg border border-border">
@@ -8402,11 +9601,26 @@ function Status3TableSection({
                     <td key={column} className="px-3 py-2.5 text-right tabular-nums">
                       <DashboardStatusSummaryValue
                         value={row.counts[column] ?? (column === "Due" ? row.counts["In process"] : undefined)}
+                        fileCount={
+                          (row.milestone === "Financial Sanction" && column === "Completed") ||
+                          (row.milestone === "Supply Order" && column === "Placed")
+                        }
+                        detail={
+                          row.milestone === "Financial Sanction" && column === "Completed"
+                            ? `${row.counts["Completed cases"] ?? 0} F.S.`
+                            : row.milestone === "Supply Order" && column === "Placed"
+                              ? `${row.counts["Placed cases"] ?? 0} S.O.`
+                              : undefined
+                        }
                         milestone={row.milestone}
                         stage={column}
                         onClick={() => {
                           const target = getStatus3OpenTarget(row.milestone, column);
-                          onOpenStatus(target.milestone, target.stage);
+                          onOpenStatus(
+                            target.milestone,
+                            target.stage,
+                            column === "Due" && target.stage === "In process" ? "Due" : undefined,
+                          );
                         }}
                       />
                     </td>
@@ -8423,11 +9637,15 @@ function Status3TableSection({
 
 function DashboardStatusSummaryValue({
   value,
+  detail,
+  fileCount = false,
   milestone,
   stage,
   onClick,
 }: {
   value: number | string | undefined;
+  detail?: string;
+  fileCount?: boolean;
   milestone: string;
   stage: string;
   onClick: () => void;
@@ -8444,11 +9662,12 @@ function DashboardStatusSummaryValue({
       onClick={onClick}
       data-testid={`status-counter-${testIdSlug(milestone)}-${testIdSlug(stage)}`}
       className={
-        "inline-flex min-w-8 justify-center rounded px-2 py-0.5 text-xs font-semibold transition hover:ring-2 hover:ring-ring/30 " +
+        "inline-flex min-w-8 flex-col items-center justify-center rounded px-2 py-0.5 text-xs font-semibold leading-tight transition hover:ring-2 hover:ring-ring/30 " +
         (value === 0 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-foreground")
       }
     >
-      {value}
+      <span>{fileCount && typeof value === "number" ? `${value} Files` : value}</span>
+      {detail ? <span className="block text-[10px] font-normal leading-tight text-muted-foreground">{detail}</span> : null}
     </button>
   );
 }
@@ -8491,13 +9710,13 @@ function getStatus3OpenTarget(milestone: string, stage: string) {
 
 function getStatus3MilestoneHelper(name: string) {
   if (name === "Delivery Period") {
-    return "Includes all file types after S.O. DP is entered. Valid means current/future DP, Expired means DP has passed, and Extended means revised DP is active. For IR No or contract files, completion is checked through Job Completion.";
+    return "Shown after an S.O. has a D.P. date. Valid means the D.P. is today or later; Expired means it has passed; Extended means a revised D.P. applies. For IR = No and Contract files, completion is based on Job Completion.";
   }
   if (name === "Delivery") {
-    return "Physical delivery/inspection only. Includes Goods & Services where IR is Yes. Excludes Goods & Services with IR No and contract files such as AMC, MPC, CARS, CAPSI, and O&M.";
+    return "Tracks physical delivery and inspection for Goods & Services files with IR = Yes. It does not apply to IR = No files or Contract files; those use Job Completion.";
   }
   if (name === "Job Completion") {
-    return "Non-delivery inspection workflow. Includes Goods & Services where IR is No and contract files such as AMC, MPC, CARS, CAPSI, and O&M. Due starts after the DP has passed and job completion is still blank.";
+    return "Tracks completed work for Goods & Services files with IR = No and for Contract files. It becomes Due after the D.P. passes if Job Completion is still blank.";
   }
   return undefined;
 }
@@ -8625,10 +9844,31 @@ function getStatus3Presentation(
         flowRow("cnc", [["Total", "total"], ["Completed", "cleared"], ["At previous stage", "underProcess"], ["Due", "active"], ["Reviewed", "reviewed"], ["Pending", "pending"]]),
       ]),
       section("Financial Sanction", ["Completed", "Pending", "At previous stage"], [
-        flowRow("financialSanction", [["Completed", "financialSanctionCompleted"], ["Pending", "financialSanctionPending"], ["At previous stage", "underProcess"]]),
+        (() => {
+          const entry = byKey.get("financialSanction");
+          return entry
+            ? makeRow("Financial Sanction", {
+                Completed: metric(entry, "financialSanctionCompletedFiles"),
+                "Completed cases": metric(entry, "financialSanctionCompleted"),
+                Pending: metric(entry, "financialSanctionPending"),
+                "At previous stage": metric(entry, "underProcess"),
+              })
+            : undefined;
+        })(),
       ]),
       section("Supply Order", ["Placed", "Live", "Pending", "At Previous Stage"], [
-        flowRow("supplyOrder", [["Placed", "cleared"], ["Live", "liveSupplyOrders"], ["Pending", "pending"], ["At Previous Stage", "underProcess"]]),
+        (() => {
+          const entry = byKey.get("supplyOrder");
+          return entry
+            ? makeRow("Supply Order", {
+                Placed: metric(entry, "supplyOrderPlacedFiles"),
+                "Placed cases": metric(entry, "supplyOrderPlacedCount"),
+                Live: metric(entry, "liveSupplyOrders"),
+                Pending: metric(entry, "pending"),
+                "At Previous Stage": metric(entry, "underProcess"),
+              })
+            : undefined;
+        })(),
       ]),
     ]),
     buildStatus3WorkflowGroup("so-till-payment", "S.O. till payment", [
@@ -8671,9 +9911,9 @@ function getStatus3Presentation(
       section("Returned Bills", [
         "Bills returned",
         "Return pending",
-        "Resubmitted",
+        "Resubmitted and Unpaid",
         "Returned paid",
-      ], [flowRow("payment", [["Bills returned", "billsReturnedForCorrection"], ["Return pending", "returnedBillsPending"], ["Resubmitted", "returnedBillsResubmitted"], ["Returned paid", "returnedBillsPaid"]], "Returned Bills")]),
+      ], [flowRow("payment", [["Bills returned", "billsReturnedForCorrection"], ["Return pending", "returnedBillsPending"], ["Resubmitted and Unpaid", "returnedBillsResubmitted"], ["Returned paid", "returnedBillsPaid"]], "Returned Bills")]),
       section("Supplementary Bill", [
         "Submitted total",
         "Returned total",
@@ -8685,15 +9925,15 @@ function getStatus3Presentation(
       ], [flowRow("payment", [["Submitted total", "supplementarySubmitted"], ["Returned total", "supplementaryReturnedForCorrection"], ["Return pending", "supplementaryReturnedPending"], ["Resubmitted total", "supplementaryReturnedResubmitted"], ["Returned paid", "supplementaryReturnedPaid"], ["Normal paid", "supplementaryNormalPaid"], ["Pending", "supplementaryPending"]], "Supplementary Bill")]),
     ]),
     buildStatus3WorkflowGroup("miscellaneous", "Miscellaneous", [
-      section("Miscellaneous", ["Live files", "File closed", "LD", "Demand cancelled", "S.O. cancelled", "Shortclosed S.O.", "Files with Multiple S.O."], [
+      section("Miscellaneous", ["Live files", "File closed", "Demand cancelled", "Files with Multiple S.O.", "S.O. cancelled", "Shortclosed S.O.", "LD"], [
         makeRow("Miscellaneous", {
           "Live files": miscellaneousCounts.liveFiles,
           "File closed": miscellaneousCounts.fileClosed,
-          LD: miscellaneousCounts.ld,
           "Demand cancelled": miscellaneousCounts.demandCancelled,
+          "Files with Multiple S.O.": miscellaneousCounts.multipleSupplyOrders,
           "S.O. cancelled": miscellaneousCounts.soCancelled,
           "Shortclosed S.O.": miscellaneousCounts.shortclosedSo,
-          "Files with Multiple S.O.": miscellaneousCounts.multipleSupplyOrders,
+          LD: miscellaneousCounts.ld,
         }),
       ]),
     ]),
@@ -9035,6 +10275,84 @@ function countCurrentSupplyOrderMilestoneStatuses(
   }, 0);
 }
 
+function countDpDatePendingCases(files: FileRecord[]) {
+  return rawSupplyOrderEntries(files).reduce((total, { file, order }) => {
+    if (
+      isSupplyOrderCancelled(file, order) ||
+      isYes(order.shortclosure) ||
+      isYes(order.noFurtherAction) ||
+      !hasSupplyOrderDate(order)
+    ) {
+      return total;
+    }
+    if (isYes(order.stageDelivery)) {
+      return (
+        total +
+        (order.stageDeliveries ?? []).filter((stage) => {
+          const current = normalizeMilestoneName(stage.currentMilestone ?? "");
+          return (
+            !hasFilledString(stage.revisedDp || stage.dpDate || order.revisedDp || order.dpDate) &&
+            current.replace(/\d+$/, "") === "deliveryperiod"
+          );
+        }).length
+      );
+    }
+    const current = normalizeMilestoneName(order.currentMilestone ?? "");
+    return total +
+      (!hasFilledString(order.revisedDp || order.dpDate) &&
+      current === "deliveryperiod"
+        ? 1
+        : 0);
+  }, 0);
+}
+
+function countMaterialReceiptPendingCases(files: FileRecord[]) {
+  const today = formatLocalDate(new Date());
+  return rawSupplyOrderEntries(files).reduce((total, { file, order }) => {
+    if (
+      isSupplyOrderCancelled(file, order) ||
+      isYes(order.shortclosure) ||
+      isYes(order.noFurtherAction) ||
+      !hasSupplyOrderDate(order) ||
+      !isPhysicalDeliveryWorkflow(file)
+    ) {
+      return total;
+    }
+    if (isYes(order.stageDelivery)) {
+      return (
+        total +
+        (order.stageDeliveries ?? []).filter((stage) => {
+          const dp = stage.revisedDp || stage.dpDate || order.revisedDp || order.dpDate;
+          const start = stage.deliveryPeriodStartDate || order.soDate;
+          return (
+            !hasFilledString(stage.materialReceiptDate) &&
+            !stage.completedMilestones?.some(
+              (milestone) => normalizeMilestoneName(milestone) === "delivery",
+            ) &&
+            hasFilledString(dp) &&
+            dp! >= today &&
+            hasFilledString(start) &&
+            start! <= today
+          );
+        }).length
+      );
+    }
+    const dp = order.revisedDp || order.dpDate;
+    const start = order.deliveryPeriodStartDate || order.soDate;
+    return total +
+      (!hasFilledString(order.materialReceiptDate) &&
+      !order.completedMilestones?.some(
+        (milestone) => normalizeMilestoneName(milestone) === "delivery",
+      ) &&
+      hasFilledString(dp) &&
+      dp! >= today &&
+      hasFilledString(start) &&
+      start! <= today
+        ? 1
+        : 0);
+  }, 0);
+}
+
 function countCompletedSupplyOrderMilestoneStatuses(
   files: FileRecord[],
   normalizedMilestone: string,
@@ -9319,6 +10637,8 @@ function StatusSubBox({
 type StatusMetric = {
   label: string;
   count: number;
+  countUnit?: string;
+  detail?: string;
   onClick?: () => void;
   testId?: string;
   toneCount?: boolean;
@@ -9330,16 +10650,16 @@ function getStatusMetricTooltip(metric: StatusMetric) {
   if (metric.help) return metric.help;
   if (metric.statusKind === "live") {
     return [
-      "Includes files currently pending/live for this counter.",
-      "Cancelled demand files are excluded.",
-      "File Closed follows the selected Global Filter.",
+      "Shows files or cases that are still in progress.",
+      "Cancelled demands are not included.",
+      "Closed files appear only when the Global Filter includes them.",
     ];
   }
   if (metric.statusKind === "history") {
     return [
-      "Includes files where this activity is already completed/recorded.",
-      "Cancelled demand files are excluded.",
-      "File Closed follows the selected Global Filter.",
+      "Shows work already recorded as complete.",
+      "Cancelled demands are not included.",
+      "Closed files appear only when the Global Filter includes them.",
     ];
   }
   return undefined;
@@ -9366,7 +10686,14 @@ function StatusMetricBox({
         <span>{metric.label}</span>
         {getStatusMetricTooltip(metric) ? <InlineInfoIcon /> : null}
       </span>
-      <span className="block text-base font-semibold tabular-nums">{metric.count}</span>
+      <span className="block text-base font-semibold tabular-nums">
+        {metric.count}{metric.countUnit ? ` ${metric.countUnit}` : ""}
+      </span>
+      {metric.detail ? (
+        <span className="block text-[10px] leading-tight text-muted-foreground tabular-nums">
+          {metric.detail}
+        </span>
+      ) : null}
     </>
   );
   const className =
@@ -9963,7 +11290,7 @@ function AnomalyGovernancePanel({
     title: row.ruleLabel || humanizeCompactAnomalyLabel(row.ruleKey) || "Anomaly exception",
     detail:
       row.previousField || row.laterField
-        ? `${row.previousField || "Expected"}: ${row.previousValue || "-"}; ${row.laterField || "Found"}: ${row.laterValue || "-"}`
+      ? `${row.previousField || "Earlier value"}: ${row.previousValue || "-"}; ${row.laterField || "Recorded value"}: ${row.laterValue || "-"}`
         : row.context
           ? `Context: ${row.context}`
           : "",
@@ -10242,18 +11569,22 @@ function CoParticipantControls({
           disabled={!coBiddingFirms.length}
           onClick={() => onExport("pdf")}
           aria-label="Export co-participating firms as PDF"
-          className="inline-flex h-8 items-center rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+          title="Export co-bidding firms as PDF"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
         >
-          Export PDF
+          <FileText className="size-3.5" />
+          PDF
         </button>
         <button
           type="button"
           disabled={!coBiddingFirms.length}
           onClick={() => onExport("excel")}
           aria-label="Export co-participating firms as Excel"
-          className="inline-flex h-8 items-center rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+          title="Export co-bidding firms as Excel"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
         >
-          Export Excel
+          <FileSpreadsheet className="size-3.5" />
+          Excel
         </button>
       </div>
       {loading ? (
@@ -10306,7 +11637,7 @@ function CoBiddingFirmTable({
               firms.map((firm) => (
                 <tr key={firm.key} className="border-t border-border">
                   <td className="px-3 py-2">{firm.uniqueNumber}</td>
-                  <td className="px-3 py-2">{firm.name}</td>
+                  <td className="px-3 py-2"><CompactTableText value={firm.name} width={20} /></td>
                   <td className="px-3 py-2">{firm.city}</td>
                   <td className="px-2 py-2 text-right">{firm.tendersParticipated}</td>
                   <td className="px-2 py-2 text-right">{firm.soCount}</td>
@@ -10377,7 +11708,7 @@ function CoParticipantResultsPlaceholder({
                 Unique Code
               </th>
               <th className="px-3 py-2 font-semibold">Control No.</th>
-              <th className="px-3 py-2 font-semibold">Item Description</th>
+              <th className="px-3 py-2 font-semibold">Demand Description</th>
               <th className="px-3 py-2 font-semibold">Indentor</th>
               <th className="px-3 py-2 font-semibold">S.O. Year</th>
               <th className="px-3 py-2 font-semibold">S.O. Firm</th>
@@ -10397,10 +11728,10 @@ function CoParticipantResultsPlaceholder({
                     </button>
                   </td>
                   <td className="px-3 py-2">{tender.controlNo || "—"}</td>
-                  <td className="px-3 py-2">{tender.itemDescription || "—"}</td>
+                  <td className="px-3 py-2"><CompactTableText value={tender.itemDescription || "—"} width={36} /></td>
                   <td className="px-3 py-2">{tender.indentor || "—"}</td>
                   <td className="px-3 py-2">{tender.soYear || "—"}</td>
-                  <td className="px-3 py-2">{tender.soFirm || "—"}</td>
+                  <td className="px-3 py-2"><CompactTableText value={tender.soFirm || "—"} width={20} /></td>
                 </tr>
               ))
             ) : (
@@ -10464,6 +11795,7 @@ function AnalyticsChartCard({
   subtitle,
   helper,
   helperExamples,
+  unitNote,
   actions,
   children,
 }: {
@@ -10471,6 +11803,7 @@ function AnalyticsChartCard({
   subtitle: string;
   helper?: string[] | string;
   helperExamples?: HelperExamples;
+  unitNote?: string;
   actions?: ReactNode;
   children: ReactNode;
 }) {
@@ -10507,6 +11840,11 @@ function AnalyticsChartCard({
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
+      {unitNote ? (
+        <div className="mb-3 rounded-md border border-border bg-secondary/25 px-3 py-2 text-xs font-medium text-muted-foreground">
+          {unitNote}
+        </div>
+      ) : null}
       {children}
     </div>
   );
@@ -10737,16 +12075,16 @@ function getDefaultAnalyticsSortDirection(panelKey: AnalyticsPanelKey): Analytic
 function getValueAnalyticsColumns(nameLabel: string, valueLabel: string): AnalyticsTableColumn[] {
   return [
     { key: "name", label: nameLabel, align: "left" },
-    { key: "value", label: valueLabel, format: (value) => formatCurrency(Number(value)) },
+    { key: "value", label: valueLabel, format: (value) => formatLakhsValue(Number(value)) },
   ];
 }
 
 function getIndentorValueAnalyticsColumns(): AnalyticsTableColumn[] {
   return [
     { key: "name", label: "Indentor", align: "left" },
-    { key: "capital", label: "Capital value", format: (value) => formatCurrency(Number(value)) },
-    { key: "revenue", label: "Revenue value", format: (value) => formatCurrency(Number(value)) },
-    { key: "value", label: "Total value", format: (value) => formatCurrency(Number(value)) },
+    { key: "capital", label: "Capital value", format: (value) => formatLakhsValue(Number(value)) },
+    { key: "revenue", label: "Revenue value", format: (value) => formatLakhsValue(Number(value)) },
+    { key: "value", label: "Total value", format: (value) => formatLakhsValue(Number(value)) },
   ];
 }
 
@@ -10816,19 +12154,19 @@ function getCountValueAnalysisColumns(mode: CountValueAnalysisMode): AnalyticsTa
         key: "revenue",
         label: "Revenue",
         group: "Value",
-        format: (value) => formatCurrency(Number(value)),
+        format: (value) => formatLakhsValue(Number(value)),
       },
       {
         key: "capital",
         label: "Capital",
         group: "Value",
-        format: (value) => formatCurrency(Number(value)),
+        format: (value) => formatLakhsValue(Number(value)),
       },
       {
         key: "value",
         label: "Total",
         group: "Value",
-        format: (value) => formatCurrency(Number(value)),
+        format: (value) => formatLakhsValue(Number(value)),
       },
     ];
   }
@@ -10843,25 +12181,25 @@ function getCountValueAnalysisColumns(mode: CountValueAnalysisMode): AnalyticsTa
         format: (value) => formatContributionPercent(Number(value)),
       },
       {
+        key: "value",
+        label: "Value",
+        group: "Value",
+        format: (value) => formatLakhsValue(Number(value)),
+      },
+      {
         key: "valueContribution",
         label: "Value (%)",
         group: "Value",
         format: (value) => formatContributionPercent(Number(value)),
-      },
-      {
-        key: "value",
-        label: "Value",
-        group: "Value",
-        format: (value) => formatCurrency(Number(value)),
       },
     ];
   }
   return [
     { key: "range", label: "Value range", align: "left" },
     { key: "count", label: isSupplyOrder ? "S.O." : "Demands" },
-    { key: "capital", label: "Capital", format: (value) => formatCurrency(Number(value)) },
-    { key: "revenue", label: "Revenue", format: (value) => formatCurrency(Number(value)) },
-    { key: "value", label: "Total", format: (value) => formatCurrency(Number(value)) },
+    { key: "capital", label: "Capital", format: (value) => formatLakhsValue(Number(value)) },
+    { key: "revenue", label: "Revenue", format: (value) => formatLakhsValue(Number(value)) },
+    { key: "value", label: "Total", format: (value) => formatLakhsValue(Number(value)) },
   ];
 }
 
@@ -10956,13 +12294,13 @@ function getSuspectedAnomalyColumns(
     { key: "rule", label: "Rule", align: "left" },
     {
       key: "previousDate",
-      label: "Expected / previous",
+      label: "Earlier value",
       align: "left",
       format: (value, row) => `${row.previousField || "Previous"}\n${value}`,
     },
     {
       key: "laterDate",
-      label: "Found / later",
+      label: "Recorded value",
       align: "left",
       format: (value, row) => `${row.laterField || "Later"}\n${value}`,
     },
@@ -11234,38 +12572,38 @@ function MilestoneClearingNameCell({ name }: { name: string }) {
 
 function getMilestoneClearingHelper(name: string) {
   const helpers: Record<string, string> = {
-    scrutiny: "Scrutiny clearing = Scrutiny Completion Date - Received Date.",
+    scrutiny: "Measures days from the Received Date to Scrutiny Completion.",
     highvalue:
-      "High Value clearing = High Value Minutes Date - latest applicable completed milestone date on or before High Value Minutes Date. Falls back to Received Date if none exists.",
+      "Measures days from the latest completed step before the High Value Minutes Date. If there is no earlier step, it starts from the Received Date.",
     pretcec:
-      "Pre-TCEC clearing = Pre-TCEC Minutes Date - latest applicable completed milestone date on or before Pre-TCEC Minutes Date.",
-    ad: "AD clearing = AD Vetting Date - latest applicable completed milestone date on or before AD Vetting Date.",
-    rqa: "R&QA clearing = R&QA Approval Date - latest applicable completed milestone date on or before R&QA Approval Date.",
+      "Measures days from the latest completed step before the Pre-TCEC Minutes Date.",
+    ad: "Measures days from the latest completed step before the AD Vetting Date.",
+    rqa: "Measures days from the latest completed step before the R&QA Approval Date.",
     controlling:
-      "Controlling clearing = Demand Control Date - latest applicable completed milestone date on or before Demand Control Date.",
-    ifa: "IFA clearing = IFA Final Date - latest applicable completed milestone date on or before IFA Final Date.",
-    cfa: "CFA clearing = CFA Date - latest applicable completed milestone date on or before CFA Date.",
+      "Measures days from the latest completed step before the Demand Control Date.",
+    ifa: "Measures days from the latest completed step before the IFA Final Date.",
+    cfa: "Measures days from the latest completed step before the CFA Date.",
     bidding:
-      "Bidding clearing = Bid Opening Date - latest applicable completed milestone date on or before Bid Opening Date. For refloat cases, Refloat Bid Opening Date is used.",
+      "Measures days from the latest completed step before bid opening. For a refloat, it uses the Refloat Bid Opening Date.",
     posttcec:
-      "Post-TCEC clearing = Post-TCEC Minutes Date - latest applicable completed milestone date on or before Post-TCEC Minutes Date.",
-    cnc: "CNC clearing = CNC Approval Date - latest applicable completed milestone date on or before CNC Approval Date.",
+      "Measures days from the latest completed step before the Post-TCEC Minutes Date.",
+    cnc: "Measures days from the latest completed step before CNC Approval.",
     supplyorder:
-      "Supply Order clearing = S.O. Date - latest applicable file-level completed milestone date on or before S.O. Date. Cancelled S.O. rows are included here because placement happened before cancellation.",
+      "Measures days from the latest completed file stage before the S.O. Date. Cancelled S.O.s remain included because they were placed before cancellation.",
     irpreparation:
-      "IR Preparation clearing = IR Preparation Date - Material Receipt Date, counted per applicable S.O./stage row.",
+      "Measures days from Material Receipt to IR Preparation for each applicable S.O. or stage.",
     irreceipt:
-      "IR Receipt clearing = IR Receipt Date - IR Sent Date, counted per applicable S.O./stage row.",
+      "Measures days from IR Sent to IR Receipt for each applicable S.O. or stage.",
     billpreparation:
-      "Bill preparation clearing = Bill Preparation Date - IR Receipt Date for Material Receipt cases; otherwise from DP/Revised DP + 1 day for Job Completion cases.",
+      "Measures days from IR Receipt to Bill Preparation for inspection cases. For Job Completion cases, it starts the day after D.P./Revised D.P.",
     billsentforpayment:
-      "Bill sent for payment clearing = Bill Sent for Payment Date - Bill Preparation Date.",
+      "Measures days from Bill Preparation to Bill Sent for Payment.",
     billreturnedforcorrection:
-      "Returned Bills clearing = Resubmitted Date - Returned Date, counted per completed return cycle.",
+      "Measures days from a bill being returned to its resubmission, for each completed return cycle.",
     supplementarybillreturnedforcorrection:
-      "Supplementary bill returned for correction clearing = Supplementary Resubmitted Date - Supplementary Returned Date, counted per completed supplementary return cycle.",
+      "Measures days from a supplementary bill being returned to its resubmission, for each completed return cycle.",
     payment:
-      "Payment clearing = Payment Date - Bill Sent for Payment Date. Cancelled S.O. rows are excluded.",
+      "Measures days from Bill Sent for Payment to the Payment Date. Cancelled S.O.s are left out.",
   };
   return helpers[normalizeMilestoneName(name)];
 }
@@ -11605,8 +12943,14 @@ function getAnalyticsSearchTarget(
     };
   }
   if (panelKey === "paymentPending" && columnKey === "count") {
+    const fileIds = String(row.fileIds ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
     return {
-      dashboardFilter: "analyticsPaymentPending",
+      dashboardFilter: fileIds.length
+        ? `fileIds:${fileIds.map(encodeURIComponent).join(",")}`
+        : "analyticsPaymentPending",
       division: name,
       focusSection: "Supply order and payment",
       focusTarget: "payment:pending",
@@ -12330,13 +13674,23 @@ function SuspectedAnomalyGroupedView({
   onOpenRow: (row: Record<string, number | string>) => void;
 }) {
   const [tab, setTab] = useState<AnomalyWorkflowTab>("current");
+  const [freeSearch, setFreeSearch] = useState("");
   const [selectedDecisionSignatures, setSelectedDecisionSignatures] = useState<string[]>([]);
-  const currentRows = rows.filter((row) => row.requestStatus !== "pending");
-  const sentRows = rows.filter((row) => row.requestStatus === "pending");
-  const fileAcceptedRows = acceptances.filter((row) => row.status === "approved_file");
-  const universalAcceptedRows = acceptances.filter((row) => row.status === "approved_universal");
-  const rejectedRows = acceptances.filter((row) => row.status === "rejected");
-  const revokedRows = acceptances.filter((row) => row.status === "revoked");
+  const searchNeedle = freeSearch.trim().toLowerCase();
+  const matchesSearch = (row: object) =>
+    !searchNeedle || Object.values(row).join(" ").toLowerCase().includes(searchNeedle);
+  const currentRows = rows.filter(
+    (row) => row.requestStatus !== "pending" && matchesSearch(row),
+  );
+  const sentRows = rows.filter((row) => row.requestStatus === "pending" && matchesSearch(row));
+  const fileAcceptedRows = acceptances.filter(
+    (row) => row.status === "approved_file" && matchesSearch(row),
+  );
+  const universalAcceptedRows = acceptances.filter(
+    (row) => row.status === "approved_universal" && matchesSearch(row),
+  );
+  const rejectedRows = acceptances.filter((row) => row.status === "rejected" && matchesSearch(row));
+  const revokedRows = acceptances.filter((row) => row.status === "revoked" && matchesSearch(row));
   const decisionRows =
     tab === "fileAccepted"
       ? fileAcceptedRows
@@ -12385,7 +13739,6 @@ function SuspectedAnomalyGroupedView({
       current.filter((signature) => decisionRows.some((row) => row.signature === signature)),
     );
   }, [decisionSignatureKey]);
-
   const renderActiveGroups = (activeRows: SuspectedAnomalyRow[]) => {
     if (!activeRows.length) {
       return <div className="text-sm text-muted-foreground">No anomalies in this tab.</div>;
@@ -12395,7 +13748,9 @@ function SuspectedAnomalyGroupedView({
         {(tab === "sent" ? sentGroups : currentGroups).map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
-              <h3 className="text-sm font-semibold">{group.title}</h3>
+              <h3 className="min-w-0 text-sm font-semibold">
+                <CompactTableText value={group.title} width={52} />
+              </h3>
               <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
             </div>
             <div className="divide-y divide-border/70">
@@ -12422,11 +13777,11 @@ function SuspectedAnomalyGroupedView({
                   </div>
                   <div className="space-y-1">
                     <div>
-                      <span className="font-medium">{row.previousField || "Expected"}:</span>{" "}
+                      {row.previousField ? <span className="font-medium">{row.previousField}: </span> : null}
                       {row.previousDate || "-"}
                     </div>
                     <div>
-                      <span className="font-medium">{row.laterField || "Found"}:</span>{" "}
+                      {row.laterField ? <span className="font-medium">{row.laterField}: </span> : null}
                       {row.laterDate || "-"}
                     </div>
                     {row.userExplanation ? (
@@ -12503,7 +13858,9 @@ function SuspectedAnomalyGroupedView({
         {decisionGroups.map((group) => (
           <div key={group.title} className="rounded-md border border-border">
             <div className="flex items-center justify-between gap-3 border-b border-border bg-secondary/40 px-3 py-2">
-              <h3 className="text-sm font-semibold">{group.title}</h3>
+              <h3 className="min-w-0 text-sm font-semibold">
+                <CompactTableText value={group.title} width={52} />
+              </h3>
               <span className="text-xs text-muted-foreground">{group.items.length} file(s)</span>
             </div>
             <div className="divide-y divide-border/70">
@@ -12531,10 +13888,10 @@ function SuspectedAnomalyGroupedView({
                   </div>
                   <div>
                     <div>
-                      {row.previousField || "Expected"}: {row.previousValue || "-"}
+                      {row.previousField ? `${row.previousField}: ` : ""}{row.previousValue || "-"}
                     </div>
                     <div>
-                      {row.laterField || "Found"}: {row.laterValue || "-"}
+                      {row.laterField ? `${row.laterField}: ` : ""}{row.laterValue || "-"}
                     </div>
                     {row.reason ? (
                       <div className="mt-1 text-muted-foreground">
@@ -12592,6 +13949,16 @@ function SuspectedAnomalyGroupedView({
 
   return (
     <div className="space-y-3">
+      <div className="flex max-w-2xl items-center gap-2 rounded-md border border-border bg-background px-3">
+        <Search className="size-4 shrink-0 text-muted-foreground" />
+        <input
+          value={freeSearch}
+          onChange={(event) => setFreeSearch(event.target.value)}
+          placeholder="Free search files, control numbers, descriptions, or anomaly details"
+          aria-label="Search suspected anomalies"
+          className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none"
+        />
+      </div>
       <div className="flex flex-wrap gap-2">
         <TooltipProvider delayDuration={150}>
           {tabs.map((item) => (
@@ -12651,15 +14018,354 @@ function SuspectedAnomalyGroupedView({
   );
 }
 
+function AnalyticsHorizontalBarChart({
+  view,
+  title,
+  unit,
+  columns,
+  rows,
+  preferValueRangeLabels = false,
+  onPlotChange,
+  getSearchTarget,
+  onOpenSearchTarget,
+}: {
+  view: ResultView;
+  title: string;
+  unit?: string;
+  columns: AnalyticsTableColumn[];
+  rows: Array<Record<string, number | string>>;
+  preferValueRangeLabels?: boolean;
+  onPlotChange: (plot?: ExportPlot) => void;
+  getSearchTarget?: (
+    row: Record<string, number | string>,
+    column: AnalyticsTableColumn,
+  ) => AnalyticsSearchTarget | undefined;
+  onOpenSearchTarget?: (target: AnalyticsSearchTarget) => void;
+}) {
+  const [selectedMetricKey, setSelectedMetricKey] = useState("");
+  const metrics = columns.filter(
+    (column) =>
+      column.key !== "rank" && rows.some((row) => typeof row[column.key] === "number"),
+  );
+  const metric =
+    metrics.find((column) => column.key === selectedMetricKey) ??
+    metrics.find((column) => column.key === "value" || column.key === "committedTotal") ??
+    metrics[0];
+  const exportPlot: ExportPlot | undefined = useMemo(() => {
+    if (view === "table" || !metric || !rows.length) return undefined;
+    const lakhScale =
+      /lakh/i.test(unit ?? "") &&
+      /value|amount|capital|revenue|payment/i.test(`${metric.key} ${metric.label}`)
+        ? 100_000
+        : 1;
+    const xKey = preferValueRangeLabels
+      ? "range"
+      : rows.some((row) => row.month !== undefined)
+        ? "month"
+        : rows.some((row) => row.monthKey !== undefined)
+          ? "monthKey"
+          : rows.some((row) => row.year !== undefined)
+            ? "year"
+            : "name";
+    return {
+      kind: view === "line" ? "line" : "bar",
+      title: `${title} · ${metric.label}`,
+      measure: metric.label,
+      unit: lakhScale > 1 ? "Lakhs" : (unit ?? "Value"),
+      xAxisTitle:
+        xKey === "month" || xKey === "monthKey"
+          ? "Month"
+          : xKey === "year"
+            ? "Year"
+            : /firm/i.test(title)
+              ? "Firm Name"
+              : /indentor/i.test(title)
+                ? "Indentor"
+                : "Category",
+      yAxisTitle: lakhScale > 1 ? "Lakhs" : `${metric.label}${unit ? ` ${unit}` : ""}`,
+      compactBars: title === "Milestone clearing ranking",
+      categories: rows.map((row, index) =>
+        String(row[xKey] ?? row.label ?? row.name ?? `Row ${index + 1}`),
+      ),
+      series: [
+        {
+          name: metric.label,
+          values: rows.map((row) => Math.max(0, Number(row[metric.key]) || 0) / lakhScale),
+        },
+      ],
+    };
+  }, [metric, preferValueRangeLabels, rows, title, unit, view]);
+  const lastExportPlotRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const nextPlotKey = exportPlot ? JSON.stringify(exportPlot) : undefined;
+    if (lastExportPlotRef.current === nextPlotKey) return;
+    lastExportPlotRef.current = nextPlotKey;
+    onPlotChange(exportPlot);
+  }, [exportPlot, onPlotChange]);
+  if (!rows.length || !metric) {
+    return <div className="py-8 text-center text-sm text-muted-foreground">No numeric results to chart.</div>;
+  }
+  const maxValue = Math.max(0, ...rows.map((row) => Number(row[metric.key]) || 0));
+  const formatValue = (row: Record<string, number | string>) => {
+    const value = row[metric.key] ?? 0;
+    return metric.render?.(value, row) ?? metric.format?.(value, row) ?? String(value);
+  };
+
+  if (view === "line") {
+    const xKey = preferValueRangeLabels
+      ? "range"
+      : rows.some((row) => row.month !== undefined)
+        ? "month"
+        : rows.some((row) => row.monthKey !== undefined)
+          ? "monthKey"
+          : rows.some((row) => row.year !== undefined)
+            ? "year"
+            : "name";
+    const lineRows = rows.map((row, index) => ({
+      ...row,
+      chartLabel: String(row[xKey] ?? row.label ?? row.name ?? row.monthKey ?? row.year ?? `Row ${index + 1}`),
+      chartValue: Math.max(0, Number(row[metric.key]) || 0),
+    }));
+    return (
+      <section data-chart-copy-area aria-label="Trend chart" className="space-y-3">
+        <h3 className="text-sm font-semibold text-foreground">{title} · {metric.label}</h3>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p data-chart-copy-exclude className="text-xs text-muted-foreground">Chronological trend from the same filtered result rows.</p>
+          {metrics.length > 1 ? (
+            <label data-chart-copy-exclude className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              Measure
+              <select value={metric.key} onChange={(event) => setSelectedMetricKey(event.target.value)}
+                className="h-8 min-w-44 rounded-md border border-input bg-background px-2 text-sm text-foreground">
+                {metrics.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+              </select>
+            </label>
+          ) : null}
+          <ChartCopyButton />
+        </div>
+        <div className="h-[320px] min-w-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={lineRows} margin={{ top: 12, right: 20, left: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="chartLabel" tick={{ fontSize: 13 }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 13 }} width={64}
+                label={{ value: unit ?? metric.label, angle: -90, position: "insideLeft", fontSize: 13 }} />
+              <ChartTooltip formatter={(value) => Number(value).toLocaleString()} />
+              <Line type="monotone" dataKey="chartValue" name={metric.label} stroke="#0f766e" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section data-chart-copy-area aria-label="Chart view" className="space-y-4">
+      <h3 className="text-sm font-semibold text-foreground">{title} · {metric.label}</h3>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+        <p data-chart-copy-exclude className="text-xs text-muted-foreground">Showing the same ranked rows and active filters as the table.</p>
+        {metrics.length > 1 ? (
+          <label data-chart-copy-exclude className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            Measure
+            <select
+              value={metric.key}
+              onChange={(event) => setSelectedMetricKey(event.target.value)}
+              className="h-8 min-w-44 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+            >
+              {metrics.map((column) => (
+                <option key={column.key} value={column.key}>
+                  {column.group ? `${column.group} · ` : ""}{column.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        <ChartCopyButton />
+      </div>
+      <p className="text-right text-xs text-muted-foreground">{unit ?? metric.label}</p>
+      <div role="group" aria-label={`${title} bar chart`} className="space-y-3">
+        {rows.map((row, index) => {
+          const numericValue = Math.max(0, Number(row[metric.key]) || 0);
+          const label = String(
+            (preferValueRangeLabels ? row.range : undefined) ??
+              row.name ?? row.division ?? row.label ?? `Result ${index + 1}`,
+          );
+          const target = getSearchTarget?.(row, metric);
+          const content = (
+            <>
+              <span className="w-40 shrink-0 truncate text-left text-sm font-medium" title={label}>{label}</span>
+              <span className="min-w-0 flex-1 pt-4">
+                <span className="relative block h-5 overflow-visible rounded-sm bg-secondary/70">
+                  <span
+                    className="block h-full rounded-sm bg-primary/80"
+                    style={{ width: `${maxValue ? (numericValue / maxValue) * 100 : 0}%` }}
+                  />
+                  <span className="absolute -top-4 -translate-x-full whitespace-nowrap text-xs tabular-nums text-foreground" style={{ left: `${maxValue ? (numericValue / maxValue) * 100 : 0}%` }}>{formatValue(row)}</span>
+                </span>
+              </span>
+            </>
+          );
+          return target && onOpenSearchTarget ? (
+            <button
+              key={`${label}-${index}`}
+              type="button"
+              onClick={() => onOpenSearchTarget(target)}
+              className="flex w-full items-center gap-3 rounded-sm py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title={`Open ${label} results in Search Files`}
+            >
+              {content}
+            </button>
+          ) : (
+            <div key={`${label}-${index}`} className="flex items-center gap-3 py-1">{content}</div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function TcecStatusStackedBarChart({
+  title,
+  stage,
+  rows,
+  onPlotChange,
+  getSearchTarget,
+  onOpenSearchTarget,
+}: {
+  title: string;
+  stage: TcecStatusStage;
+  rows: Array<Record<string, number | string>>;
+  onPlotChange: (plot?: ExportPlot) => void;
+  getSearchTarget?: (
+    row: Record<string, number | string>,
+    column: AnalyticsTableColumn,
+  ) => AnalyticsSearchTarget | undefined;
+  onOpenSearchTarget?: (target: AnalyticsSearchTarget) => void;
+}) {
+  const signedColor = "#4472c4";
+  const pendingColor = "#ed7d31";
+  const totalColor = "#0f766e";
+  const exportPlot: ExportPlot | undefined = useMemo(() => {
+    if (!rows.length) return undefined;
+    const xKey = rows.some((row) => row.meetingDate !== undefined) ? "meetingDate" : "name";
+    return {
+      kind: "bar",
+      title: `${title} · ${stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}`,
+      measure: "Files reviewed",
+      unit: "Files",
+      xAxisTitle: xKey === "meetingDate" ? "Meeting date" : "Committee / FY",
+      yAxisTitle: "Files",
+      stackedBars: true,
+      categories: rows.map((row, index) =>
+        String(row[xKey] ?? row.name ?? `Row ${index + 1}`),
+      ),
+      series: [
+        { name: "Minutes signed", values: rows.map((row) => Number(row.signed) || 0), color: signedColor },
+        { name: "Minutes pending", values: rows.map((row) => Number(row.pending) || 0), color: pendingColor },
+      ],
+    };
+  }, [rows, stage, title]);
+  const lastExportPlotRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const nextPlotKey = exportPlot ? JSON.stringify(exportPlot) : undefined;
+    if (lastExportPlotRef.current === nextPlotKey) return;
+    lastExportPlotRef.current = nextPlotKey;
+    onPlotChange(exportPlot);
+  }, [exportPlot, onPlotChange]);
+
+  if (!rows.length) {
+    return <div className="py-8 text-center text-sm text-muted-foreground">No TCEC results to chart.</div>;
+  }
+  const maximum = Math.max(1, ...rows.map((row) => Number(row.reviewed) || 0));
+  const segments = [
+    { key: "signed", label: "Minutes signed", color: signedColor },
+    { key: "pending", label: "Minutes pending", color: pendingColor },
+  ] as const;
+
+  return (
+    <section data-chart-copy-area aria-label="TCEC status chart" className="space-y-4">
+      <h3 className="text-sm font-semibold text-foreground">{title} · {stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}</h3>
+      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="size-2.5 rounded-sm border-2" style={{ borderColor: totalColor }} />
+          Files reviewed (total)
+        </span>
+        {segments.map((segment) => (
+          <span key={segment.key} className="inline-flex items-center gap-1.5">
+            <span className="size-2.5 rounded-sm" style={{ backgroundColor: segment.color }} />
+            {segment.label}
+          </span>
+        ))}
+        <span className="ml-auto">Files</span>
+        <ChartCopyButton />
+      </div>
+      <div role="group" aria-label={`${title} stacked bar chart`} className="space-y-3">
+        {rows.map((row, index) => {
+          const label = String(row.name ?? `Result ${index + 1}`);
+          const reviewed = Math.max(0, Number(row.reviewed) || 0);
+          const signed = Math.max(0, Number(row.signed) || 0);
+          const pending = Math.max(0, Number(row.pending) || 0);
+          const target = getSearchTarget?.(row, { key: "reviewed", label: "Files reviewed" });
+          const chart = (
+            <>
+              <span className="w-40 shrink-0 truncate text-left text-sm font-medium" title={label}>{label}</span>
+              <span className="min-w-0 flex-1 pt-4">
+                <span className="relative block h-5 overflow-visible rounded-sm bg-secondary/70">
+                  <span
+                  className="flex h-full overflow-hidden rounded-sm border-2 bg-background"
+                  style={{ width: `${(reviewed / maximum) * 100}%`, borderColor: totalColor }}
+                  role="img"
+                  aria-label={`${label}: ${reviewed} files reviewed; ${signed} minutes signed; ${pending} minutes pending`}
+                >
+                  {segments.map((segment) => {
+                    const value = segment.key === "signed" ? signed : pending;
+                    const width = reviewed > 0 ? (value / reviewed) * 100 : 0;
+                    return (
+                      <span
+                        key={segment.key}
+                        className="block h-full shrink-0"
+                        style={{ width: `${width}%`, backgroundColor: segment.color }}
+                        title={`${segment.label}: ${value}`}
+                      />
+                    );
+                  })}
+                  </span>
+                  <span className="absolute -top-4 -translate-x-full whitespace-nowrap text-xs tabular-nums text-foreground" style={{ left: `${(reviewed / maximum) * 100}%` }}>Reviewed: {reviewed}</span>
+                </span>
+              </span>
+            </>
+          );
+          return target && onOpenSearchTarget ? (
+            <button
+              key={`${label}-${index}`}
+              type="button"
+              onClick={() => onOpenSearchTarget(target)}
+              className="flex w-full items-center gap-3 rounded-sm py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title={`Open ${label} results in Search Files`}
+            >
+              {chart}
+            </button>
+          ) : (
+            <div key={`${label}-${index}`} className="flex items-center gap-3 py-1">{chart}</div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function AnalyticsRankingTable({
   columns,
   rows,
+  compactRankColumn = false,
+  wideNameColumn = false,
   getCellSearchTarget,
   getColumnTotalSearchTarget,
   onOpenSearchTarget,
 }: {
   columns: AnalyticsTableColumn[];
   rows: Array<Record<string, number | string>>;
+  compactRankColumn?: boolean;
+  wideNameColumn?: boolean;
   getCellSearchTarget?: (
     row: Record<string, number | string>,
     column: AnalyticsTableColumn,
@@ -12679,10 +14385,27 @@ function AnalyticsRankingTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[980px] table-fixed border-collapse text-sm">
+      <table
+        className={`w-full ${wideNameColumn ? "min-w-[820px]" : compactRankColumn ? "min-w-[720px]" : "min-w-[980px]"} table-fixed border-collapse text-sm`}
+      >
         <colgroup>
           {columns.map((column, index) => (
-            <col key={column.key} className={index === 0 ? "w-40" : "w-32"} />
+            <col
+              key={column.key}
+              className={
+                index === 0 && compactRankColumn
+                  ? "w-12"
+                  : index === 1 && wideNameColumn
+                    ? "w-64"
+                    : wideNameColumn && column.key === "supplyOrderCount"
+                      ? "w-20"
+                      : wideNameColumn && column.key === "city"
+                        ? "w-36"
+                    : index === 0
+                      ? "w-40"
+                      : "w-32"
+              }
+            />
           ))}
         </colgroup>
         <thead>
@@ -12743,7 +14466,9 @@ function AnalyticsRankingTable({
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr
-              key={String(row.signature ?? row.name ?? row.fileRef ?? rowIndex)}
+              key={String(
+                row.relationshipKey ?? row.signature ?? row.uniqueNumber ?? row.name ?? row.fileRef ?? rowIndex,
+              )}
               className="border-b border-border/60 last:border-0"
             >
               {columns.map((column, columnIndex) => {
@@ -12753,6 +14478,15 @@ function AnalyticsRankingTable({
                   : column.format
                     ? column.format(value, row)
                     : String(value);
+                const textWidth =
+                  typeof renderedValue === "string"
+                    ? getCompactTableTextWidth(column.key, column.label)
+                    : undefined;
+                const compactValue = textWidth ? (
+                  <CompactTableText value={String(renderedValue)} width={textWidth} />
+                ) : (
+                  renderedValue
+                );
                 const searchTarget = getCellSearchTarget?.(row, column);
                 const content =
                   searchTarget && onOpenSearchTarget ? (
@@ -12761,10 +14495,10 @@ function AnalyticsRankingTable({
                       onClick={() => onOpenSearchTarget(searchTarget)}
                       className="rounded-md px-2 py-1 font-semibold text-primary hover:bg-primary/10"
                     >
-                      {renderedValue}
+                      {compactValue}
                     </button>
                   ) : (
-                    renderedValue
+                    compactValue
                   );
                 return (
                   <td
@@ -13199,6 +14933,9 @@ function MilestoneFlowNode({
     liveSupplyOrders?: number;
     financialSanctionPending?: number;
     financialSanctionCompleted?: number;
+    financialSanctionCompletedFiles?: number;
+    supplyOrderPlacedCount?: number;
+    supplyOrderPlacedFiles?: number;
     bgExpired?: number;
     bgToBeReturned?: number;
     bgReturned?: number;
@@ -13254,6 +14991,7 @@ function MilestoneFlowNode({
   onSupplementaryResubmittedClick?: () => void;
   onSupplementaryPaidClick: () => void;
   onReturnedSupplementaryPaidClick?: () => void;
+  onSupplementaryPaymentPendingClick?: () => void;
 }) {
   const tone = getMilestoneTone(milestone.active);
   const widthPercent =
@@ -13380,7 +15118,7 @@ function PaymentMetricGrid({
       metrics: [
         findMetric("Bills returned"),
         findMetric("Return pending"),
-        findMetric("Resubmitted"),
+        findMetric("Resubmitted and Unpaid"),
         findMetric("Returned paid"),
       ],
     },
@@ -13683,9 +15421,9 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
   if (milestoneKey === "supplyOrder") {
     if (normalizedLabel === "placed" || normalizedLabel === "completed") {
       return [
-        "File has reached Supply Order placement.",
-        "This is file based: multiple S.O.s in one file count once.",
-        "For Status-4/order-placement history, cancelled S.O. does not remove the file from placed count.",
+        "The first number is files; the second is placed S.O.s.",
+        "A file with several placed S.O.s counts once as a file and once for each S.O.",
+        "Cancelled S.O.s are not counted. Shortclosed S.O.s remain included as placed history.",
       ];
     }
     if (normalizedLabel === "live") {
@@ -13697,6 +15435,14 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
     if (normalizedLabel === "pending") {
       return "Files currently waiting at Supply Order stage after financial sanction.";
     }
+  }
+
+  if (milestoneKey === "financialSanction" && normalizedLabel === "completed") {
+    return [
+      "The first number is files; the second is completed Financial Sanctions.",
+      "A file with several S.O.s counts once as a file and once for each completed sanction.",
+      "Cancelled S.O.s are not counted.",
+    ];
   }
 
   if (isBgMilestoneKey(milestoneKey)) {
@@ -13720,7 +15466,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
         "Payment workflow has become due, but bill preparation date and bill sent for payment date are still blank.",
         "For physical delivery/inspection files, due starts after material receipt.",
         "For Goods & Services where IR is No, due starts after Job Completion.",
-        "For AMC/MPC/CARS/CAPSI/O&M contract files, due can start from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
+        "For File Types configured as Group B (Contract), due can start from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
         "One file can contribute more than one payment case when it has multiple payable stages.",
         "This does not mean the bill is already with payment authority; that is counted separately under Submitted and unpaid.",
       ];
@@ -13809,6 +15555,9 @@ function getStatusMetrics({
     liveSupplyOrders?: number;
     financialSanctionPending?: number;
     financialSanctionCompleted?: number;
+    financialSanctionCompletedFiles?: number;
+    supplyOrderPlacedCount?: number;
+    supplyOrderPlacedFiles?: number;
     bgExpired?: number;
     bgToBeReturned?: number;
     bgReturned?: number;
@@ -13873,7 +15622,15 @@ function getStatusMetrics({
   };
   const completed = {
     label: milestone.completedLabel,
-    count: milestone.cleared,
+    count:
+      milestone.key === "supplyOrder"
+        ? milestone.supplyOrderPlacedFiles ?? milestone.cleared
+        : milestone.cleared,
+    countUnit: milestone.key === "supplyOrder" ? "Files" : undefined,
+    detail:
+      milestone.key === "supplyOrder"
+        ? `${milestone.supplyOrderPlacedCount ?? milestone.cleared} S.O.`
+        : undefined,
     onClick: onClearedClick,
     statusKind: "history" as const,
     help: getStatusMetricHelp(milestone.key, milestone.completedLabel),
@@ -13959,7 +15716,9 @@ function getStatusMetrics({
     return [
       {
         label: "Completed",
-        count: milestone.financialSanctionCompleted ?? milestone.cleared,
+        count: milestone.financialSanctionCompletedFiles ?? milestone.cleared,
+        countUnit: "Files",
+        detail: `${milestone.financialSanctionCompleted ?? milestone.cleared} F.S.`,
         onClick: onFinancialSanctionCompletedClick,
         statusKind: "history",
         help: getStatusMetricHelp(milestone.key, "Completed"),
@@ -14119,10 +15878,11 @@ function getStatusMetrics({
         statusKind: "live",
       },
       {
-        label: "Resubmitted",
+        label: "Resubmitted and Unpaid",
         count: milestone.returnedBillsResubmitted ?? 0,
         onClick: onReturnedBillsResubmittedClick,
         statusKind: "live",
+        help: "Returned bill has been resubmitted, has no open return cycle, and is still unpaid. No Further Action = Yes stops this pending follow-up.",
       },
       {
         label: "Returned paid",
@@ -14288,7 +16048,7 @@ function DeliveryPeriodMetricButton({
   label: string;
   count: number;
   onClick: () => void;
-  help: string | string[];
+  help: string | readonly string[];
   className?: string;
 }) {
   return (
@@ -14317,7 +16077,7 @@ function DeliveryPeriodMetricButton({
           align="center"
           className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
-          <HelperBulletList items={help} />
+          <HelperBulletList items={typeof help === "string" ? help : [...help]} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -14951,7 +16711,13 @@ function countReturnedBillsPending(files: FileRecord[]) {
 }
 
 function countReturnedBillsResubmitted(files: FileRecord[]) {
-  return countReturnedBillOrders(files, hasCompletedBillReturn);
+  return countReturnedBillOrders(
+    files,
+    (order) =>
+      hasCompletedBillReturn(order) &&
+      !hasFilledString(order.paymentDate) &&
+      !isYes(order.noFurtherAction),
+  );
 }
 
 function countReturnedBillsPaid(files: FileRecord[]) {
@@ -15588,7 +17354,18 @@ function getFinance1LiabilityDate(entry: FinancePaymentLiabilityEntry) {
   if (entry.kind === "main" && hasFilledString(entry.order.stageDeliveryLabel)) {
     return entry.order.revisedDp || entry.order.dpDate;
   }
-  return entry.sourceDate;
+  if (entry.kind !== "main") return entry.sourceDate;
+
+  const workflowTriggerDate = getPaymentWorkflowStartDate(entry.file, entry.order);
+  const jobCompletionDate = entry.order.jobCompletionDate?.trim();
+  if (
+    isContractFileType(entry.file) &&
+    jobCompletionDate &&
+    (!workflowTriggerDate || jobCompletionDate < workflowTriggerDate)
+  ) {
+    return jobCompletionDate;
+  }
+  return workflowTriggerDate;
 }
 
 function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Summary {
@@ -15783,6 +17560,7 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       addDrillFile("billSentByFyEnd", file);
     }
     const paymentLiabilityEntries = getFinancePaymentLiabilityEntries([file]);
+    const paymentLiabilitiesAtFyEnd = getFinancePaymentLiabilityEntries([file], cutoffDate);
     const hasRegularPaymentByFyEnd = paymentLiabilityEntries.some((entry) =>
       isDateOnOrBefore(entry.paymentDate, cutoffDate),
     );
@@ -15795,14 +17573,24 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       summary.paymentCompletedByFyEnd += 1;
       addDrillFile("paymentCompletedByFyEnd", file);
     }
-    if (billSentByFyEnd && !hasRegularPaymentByFyEnd) {
+    const hasSubmittedUnpaidBillByFyEnd = paymentLiabilitiesAtFyEnd.some((entry) => {
+      const submittedDate =
+        entry.kind === "supplementary"
+          ? entry.bill.billSentForPaymentDate
+          : entry.order.billSentForPaymentDate;
+      return (
+        isDateOnOrBefore(submittedDate, cutoffDate) &&
+        !isDateOnOrBefore(entry.paymentDate, cutoffDate)
+      );
+    });
+    if (hasSubmittedUnpaidBillByFyEnd) {
       addDrillFile("billsSubmittedButUnpaid", file);
     }
     if (deliveryJobDoneByFyEnd && !billSentByFyEnd) {
       addDrillFile("paymentDueButBillNotSubmitted", file);
     }
 
-    paymentLiabilityEntries.forEach((entry) => {
+    paymentLiabilitiesAtFyEnd.forEach((entry) => {
       if (isDateOnOrBefore(entry.paymentDate, cutoffDate)) {
         if (isDateOnOrBefore(entry.sourceDate, cutoffDate)) {
           addFinance1Amount(summary.paidByFyEnd, entry.capital, entry.revenue);
@@ -15826,33 +17614,71 @@ function getFinance1Summary(files: FileRecord[], fiscalYear: string): Finance1Su
       }
     });
 
-    let hasPaymentMadeLater = paymentLiabilityEntries.some((entry) =>
-      isDateAfterDate(entry.paymentDate, cutoffDate),
+    let hasPaymentMadeLater = paymentLiabilityEntries.some(
+      (entry) =>
+        isDateAfterDate(entry.paymentDate, cutoffDate) &&
+        isDateOnOrBefore(entry.paymentDate, todayDate),
     );
 
     advancePaymentEntries([file]).forEach(({ order }) => {
+      if (isUnpaidAdvanceClearedByNoFurtherAction(order, cutoffDate)) return;
       if (isSupplyOrderCancelledByCutoff(file, order, cutoffDate)) return;
-      const capital = getInrAmount(getAdvancePaymentCapital(order), file) ?? 0;
-      const revenue = getInrAmount(getAdvancePaymentRevenue(order), file) ?? 0;
-      if (capital + revenue <= 0) return;
-      if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
-        addFinance1Amount(summary.paidByFyEnd, capital, revenue);
+      const paymentDate = order.advancePaymentDetail?.paymentDate;
+      const paidByFyEnd = isDateOnOrBefore(paymentDate, cutoffDate);
+      const paidByToday = isDateOnOrBefore(paymentDate, todayDate);
+      const paidCapital = getInrAmount(getAdvancePaymentCapital(order), file) ?? 0;
+      const paidRevenue = getInrAmount(getAdvancePaymentRevenue(order), file) ?? 0;
+      const allocatedCapital = getAdvanceFinanceAllocationCapital(file, order);
+      const allocatedRevenue = getAdvanceFinanceAllocationRevenue(file, order);
+      const advanceLiabilityDate =
+        order.advancePaymentDetail?.expectedPaymentDate || order.soDate;
+      if (allocatedCapital + allocatedRevenue <= 0) return;
+
+      if (paidByFyEnd && paidCapital + paidRevenue > 0) {
+        addFinance1Amount(summary.paidByFyEnd, paidCapital, paidRevenue);
         addDrillFile("paidByFyEnd", file);
-      } else if (isDateOnOrBefore(order.soDate, cutoffDate)) {
-        summary.advancePendingByFyEnd += 1;
-        addFinance1Amount(summary.unpaidLiabilityAtFyEnd, capital, revenue);
-        addDrillFile("advancePendingByFyEnd", file);
-        addDrillFile("unpaidLiabilityAtFyEnd", file);
       }
 
-      if (isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, todayDate)) {
-        addFinance1Amount(summary.paidTillDate, capital, revenue);
+      const unpaidAtFyEndCapital = Math.max(0, allocatedCapital - (paidByFyEnd ? paidCapital : 0));
+      const unpaidAtFyEndRevenue = Math.max(0, allocatedRevenue - (paidByFyEnd ? paidRevenue : 0));
+      if (
+        isDateOnOrBefore(advanceLiabilityDate, cutoffDate) &&
+        unpaidAtFyEndCapital + unpaidAtFyEndRevenue > 0
+      ) {
+        addFinance1Amount(
+          summary.unpaidLiabilityAtFyEnd,
+          unpaidAtFyEndCapital,
+          unpaidAtFyEndRevenue,
+        );
+        addDrillFile("unpaidLiabilityAtFyEnd", file);
+      }
+      if (
+        unpaidAtFyEndCapital + unpaidAtFyEndRevenue > 0 &&
+        isDateOnOrBefore(advanceLiabilityDate, cutoffDate)
+      ) {
+        summary.advancePendingByFyEnd += 1;
+        addDrillFile("advancePendingByFyEnd", file);
+      }
+
+      if (paidByToday && paidCapital + paidRevenue > 0) {
+        addFinance1Amount(summary.paidTillDate, paidCapital, paidRevenue);
         addDrillFile("paidTillDate", file);
-      } else if (!isSupplyOrderCancelled(file, order) && isDateOnOrBefore(order.soDate, todayDate)) {
-        addFinance1Amount(summary.balanceUnpaidToday, capital, revenue);
+      }
+      const unpaidTodayCapital = Math.max(0, allocatedCapital - (paidByToday ? paidCapital : 0));
+      const unpaidTodayRevenue = Math.max(0, allocatedRevenue - (paidByToday ? paidRevenue : 0));
+      if (
+        unpaidTodayCapital + unpaidTodayRevenue > 0 &&
+        !isUnpaidAdvanceIncludedInShortclosedBalance(order) &&
+        !isSupplyOrderCancelled(file, order) &&
+        isDateOnOrBefore(order.soDate, todayDate)
+      ) {
+        addFinance1Amount(summary.balanceUnpaidToday, unpaidTodayCapital, unpaidTodayRevenue);
         addDrillFile("balanceUnpaidToday", file);
       }
-      if (isDateAfterDate(order.advancePaymentDetail?.paymentDate, cutoffDate)) {
+      if (
+        isDateAfterDate(order.advancePaymentDetail?.paymentDate, cutoffDate) &&
+        isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, todayDate)
+      ) {
         hasPaymentMadeLater = true;
       }
     });
@@ -15965,8 +17791,9 @@ function getActualPaymentDistributionByFirmType(
   const totals = new Map<string, number>();
   const configured = getConfiguredFirmTypes(configuredFirmTypes);
   const activityYearRange = getFinancialYearDateRange(activityYear);
+  const todayDate = formatLocalDate(new Date());
   getFinancePaymentLiabilityEntries(files).forEach((entry) => {
-    if (!hasFilledString(entry.paymentDate)) return;
+    if (!isDateOnOrBefore(entry.paymentDate, todayDate)) return;
     if (activityYearRange && !isDateWithinRange(entry.paymentDate, activityYearRange)) return;
     const value = entry.capital + entry.revenue;
     if (value <= 0) return;
@@ -15975,7 +17802,7 @@ function getActualPaymentDistributionByFirmType(
   });
   advancePaymentEntries(files).forEach(({ file, order }) => {
     if (isSupplyOrderCancelled(file, order)) return;
-    if (!hasFilledString(order.advancePaymentDetail?.paymentDate)) return;
+    if (!isDateOnOrBefore(order.advancePaymentDetail?.paymentDate, todayDate)) return;
     if (
       activityYearRange &&
       !isDateWithinRange(order.advancePaymentDetail?.paymentDate, activityYearRange)
@@ -16227,11 +18054,10 @@ function getReturnedBillClearingDurationRows(
   file: FileRecord,
   entry: Pick<SupplyOrderDetail, "billReturnCycles">,
 ) {
-  return normalizeBillReturnCycles(entry.billReturnCycles)
-    .map((cycle) =>
-      getMilestoneClearingDurationRow(file, cycle.returnedDate, cycle.resubmittedDate),
-    )
-    .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  const latest = latestBillReturnCycle(entry.billReturnCycles);
+  if (!latest) return [];
+  const row = getMilestoneClearingDurationRow(file, latest.returnedDate, latest.resubmittedDate);
+  return row ? [row] : [];
 }
 
 function getMilestoneClearingDurationRow(
@@ -16591,13 +18417,20 @@ function getDivisionRiskRanking(files: FileRecord[]) {
 
 function getDivisionPaymentPendingRanking(files: FileRecord[]) {
   const counts = new Map<string, number>();
+  const fileIds = new Map<string, Set<string>>();
   files.forEach((file) => {
     const pendingCount = getPaymentPendingRowCount(file);
     if (!pendingCount) return;
     const name = getAnalyticsName(file.division, "Unassigned");
     counts.set(name, (counts.get(name) ?? 0) + pendingCount);
+    const ids = fileIds.get(name) ?? new Set<string>();
+    ids.add(file.id);
+    fileIds.set(name, ids);
   });
-  return mapEntriesToSortedRows(counts, "count");
+  return mapEntriesToSortedRows(counts, "count").map((row) => ({
+    ...row,
+    fileIds: [...(fileIds.get(row.name) ?? [])].sort().join(","),
+  }));
 }
 
 function getRiskRowCount(file: FileRecord) {
@@ -16952,7 +18785,9 @@ function isSupplyOrderPlacedByDate(file: FileRecord) {
 }
 
 function isPaymentPending(file: FileRecord) {
-  return finalPaymentOrders(file).some((order) => isNormalPaymentOpenOrder(file, order));
+  return effectivePaymentEntries([file]).some(({ order }) =>
+    isNormalPaymentOpenOrder(file, order),
+  );
 }
 
 const milestoneDefinitions = [
@@ -17118,6 +18953,7 @@ const defaultManualMilestones = [
   "Financial Sanction",
   "Supply Order",
   "Delivery Period",
+  "Material Receipt",
   "PSB",
   "PWB",
   "PSB+PWB",
@@ -17134,6 +18970,7 @@ const protectedLiveStatusMilestones = [
   "Refloat Post-TCEC",
   "Bill returned for correction",
   "Supplementary bill returned for correction",
+  "Material Receipt",
   "Job Completion",
 ];
 
@@ -17147,7 +18984,9 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
       insertAdvancePaymentMilestone(
         insertSupplementaryBillReturnedMilestone(
           insertBillSentMilestone(
-            insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+            insertMaterialReceiptMilestone(
+              insertJobCompletionMilestone(insertRefloatMilestones(configured)),
+            ),
           ),
         ),
       ),
@@ -17260,6 +19099,21 @@ function insertJobCompletionMilestone(milestones: string[]) {
   ];
 }
 
+function insertMaterialReceiptMilestone(milestones: string[]) {
+  const hasMaterialReceipt = milestones.some(
+    (milestone) => normalizeMilestoneName(milestone) === "materialreceipt",
+  );
+  const deliveryPeriodIndex = milestones.findIndex(
+    (milestone) => normalizeMilestoneName(milestone) === "deliveryperiod",
+  );
+  if (hasMaterialReceipt || deliveryPeriodIndex === -1) return milestones;
+  return [
+    ...milestones.slice(0, deliveryPeriodIndex + 1),
+    "Material Receipt",
+    ...milestones.slice(deliveryPeriodIndex + 1),
+  ];
+}
+
 function normalizeConfiguredMilestoneLabel(milestone: string) {
   return normalizeMilestoneName(milestone) === "controlled" ? "Controlling" : milestone;
 }
@@ -17335,6 +19189,8 @@ function getManualMilestoneFlow(
 
 function getManualMilestoneCurrentCount(files: FileRecord[], name: string) {
   const normalized = normalizeMilestoneName(name);
+  if (normalized === "deliveryperiod") return countDpDatePendingCases(files);
+  if (normalized === "materialreceipt") return countMaterialReceiptPendingCases(files);
   if (isBgMilestoneKey(normalized)) return countBgPendingOrders(files, normalized);
   if (normalized === "supplementarybillreturnedforcorrection") {
     return countSupplementaryBillReturnedOrders(files);
@@ -17486,6 +19342,9 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
       );
       const financialSanctionPreviousStage =
         countFinancialSanctionPreviousStageFiles(applicableFiles);
+      const financialSanctionCompletedFiles = applicableFiles.filter(
+        (file) => countCompletedSupplyOrderMilestoneStatuses([file], "financialsanction") > 0,
+      ).length;
       return {
         key: milestone.key,
         label: milestone.label,
@@ -17502,6 +19361,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         activeLabel: "Pending",
         financialSanctionPending,
         financialSanctionCompleted,
+        financialSanctionCompletedFiles,
       };
     }
 
@@ -17525,6 +19385,13 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         cleared,
         activeLabel: "In process",
         liveSupplyOrders: countLiveSupplyOrders(files),
+        supplyOrderPlacedCount: countCompletedSupplyOrderMilestoneStatuses(
+          applicableFiles,
+          "supplyorder",
+        ),
+        supplyOrderPlacedFiles: applicableFiles.filter(
+          (file) => countCompletedSupplyOrderMilestoneStatuses([file], "supplyorder") > 0,
+        ).length,
       };
     }
 
@@ -17683,30 +19550,37 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
 }
 
 function combineJobCompletionAndIr(statusFlow: ReturnType<typeof getMilestoneFlow>) {
+  type FlowMilestone = (typeof statusFlow)[number];
   const ir = statusFlow.find(
     (
       milestone,
-    ): milestone is Extract<(typeof statusFlow)[number], { irPreparationPending: number }> =>
+    ): milestone is FlowMilestone & {
+      irPreparationPending: number;
+      irReceiptPending: number;
+      irCompleted: number;
+    } =>
       "irPreparationPending" in milestone,
   );
 
   if (!ir) return statusFlow;
 
-  return statusFlow.flatMap((milestone) => {
-    if ("irPreparationPending" in milestone) return [];
-    if (!("jobLive" in milestone) || "due" in milestone) return [milestone];
-
-    return [
-      {
+  const combined: FlowMilestone[] = [];
+  for (const milestone of statusFlow) {
+    if ("irPreparationPending" in milestone) continue;
+    if (!("jobLive" in milestone) || "due" in milestone) {
+      combined.push(milestone);
+    } else {
+      combined.push({
         ...milestone,
         key: "jobCompletionIr",
         label: "Job Completion / IR",
         irPreparationPending: ir.irPreparationPending,
         irReceiptPending: ir.irReceiptPending,
         irCompleted: ir.irCompleted,
-      },
-    ];
-  });
+      });
+    }
+  }
+  return combined;
 }
 
 function countAtPreviousStageFiles(
@@ -17948,9 +19822,10 @@ function isOrderActiveForCurrentMilestone(
   order: SupplyOrderDetail,
   normalizedMilestone: string,
 ) {
+  if (isBgMilestoneKey(normalizedMilestone)) return !isSupplyOrderCancelled(file, order);
   return isPaymentMilestone(normalizedMilestone)
-    ? isPaymentOrderActive(file, order)
-    : !isSupplyOrderCancelled(file, order) && !isYes(order.shortclosure);
+    ? isPaymentOrderActive(file, order) && !isYes(order.noFurtherAction)
+    : !isSupplyOrderCancelled(file, order) && !isYes(order.shortclosure) && !isYes(order.noFurtherAction);
 }
 
 function isPaymentMilestone(normalizedMilestone: string) {
@@ -18032,8 +19907,9 @@ function countLiveSupplyOrders(files: FileRecord[]) {
   return rawSupplyOrderEntries(files).filter(
     ({ file, order }) =>
       isSupplyOrderTabComplete(file, order) &&
-      !hasFilledString(order.paymentDate) &&
-      !isSupplyOrderCancelled(file, order),
+      hasUnpaidSupplyOrderPayment(order) &&
+      !isSupplyOrderCancelled(file, order) &&
+      !isYes(order.noFurtherAction),
   ).length;
 }
 
@@ -18206,7 +20082,6 @@ function isBgPendingOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     !isBgReceivedOrder(order, category) &&
     !isSupplyOrderCancelled(file, order) &&
-    !isYes(order.shortclosure) &&
     (normalized === "psb" || normalized === "psbpwb"
       ? isFinancialSanctionCompletedOrder(order)
       : isPwbDueForWorkflow(file, order))
@@ -18310,6 +20185,11 @@ function isNormalPaymentOpenOrder(file: FileRecord, order: SupplyOrderDetail) {
     hasPaymentWorkflowStarted(file, order) &&
     !hasFilledString(order.paymentDate) &&
     isPaymentOrderActive(file, order) &&
+    (!isYes(order.shortclosure) ||
+      !isYes(order.noFurtherAction) ||
+      hasFilledString(order.billSentForPaymentDate) ||
+      hasFilledString(order.billAmountCapital) ||
+      hasFilledString(order.billAmountRevenue)) &&
     !hasBillReturnHistory(order)
   );
 }
@@ -18509,15 +20389,27 @@ function isNormalSupplementaryBillPaid(bill: SupplementaryBillDetail) {
   return isSupplementaryBillPaid(bill) && !hasSupplementaryBillReturnHistory(bill);
 }
 
-function getFinancePaymentLiabilityEntries(files: FileRecord[]): FinancePaymentLiabilityEntry[] {
+function getFinancePaymentLiabilityEntries(
+  files: FileRecord[],
+  asOfDate?: string,
+): FinancePaymentLiabilityEntry[] {
   return files.flatMap((file) => {
     if (isYes(file.demandCancelled)) return [];
     return rawSupplyOrders(file).flatMap((baseOrder) => {
       if (isSupplyOrderCancelled(file, baseOrder)) return [];
-      const mainEntries = normalizedFilePaymentOrders({ ...file, supplyOrders: [baseOrder] })
+      const paymentOrders = normalizedFilePaymentOrders({ ...file, supplyOrders: [baseOrder] })
         .filter((order) => order.stageDeliveryLabel !== "Advance Payment")
-        .filter((order) => isPaymentOrderActive(file, order))
-        .filter((order) => isFinanceMainPaymentLiabilityRelevant(file, order))
+        .filter((order) => isPaymentOrderActive(file, order));
+      const noFurtherActionEffective =
+        isYes(baseOrder.shortclosure) &&
+        isYes(baseOrder.noFurtherAction) &&
+        (!asOfDate || !baseOrder.noFurtherActionDate || baseOrder.noFurtherActionDate <= asOfDate);
+      const mainEntries = paymentOrders
+        .filter((order) =>
+          noFurtherActionEffective || isYes(baseOrder.shortclosure)
+            ? hasFilledString(order.paymentDate) && (!asOfDate || order.paymentDate! <= asOfDate)
+            : isFinanceMainPaymentLiabilityRelevant(file, order),
+        )
         .map(
           (order): FinancePaymentLiabilityEntry => ({
             kind: "main",
@@ -18530,8 +20422,58 @@ function getFinancePaymentLiabilityEntries(files: FileRecord[]): FinancePaymentL
             pending: hasPaymentWorkflowStarted(file, order) && !hasFilledString(order.paymentDate),
           }),
         );
+      if (isYes(baseOrder.shortclosure) && !noFurtherActionEffective) {
+        const paidCapital = paymentOrders.reduce(
+          (total, order) =>
+            total +
+            (hasFilledString(order.paymentDate) && (!asOfDate || order.paymentDate! <= asOfDate)
+              ? getFinancePaymentCapital(file, order)
+              : 0),
+          0,
+        );
+        const paidRevenue = paymentOrders.reduce(
+          (total, order) =>
+            total +
+            (hasFilledString(order.paymentDate) && (!asOfDate || order.paymentDate! <= asOfDate)
+              ? getFinancePaymentRevenue(file, order)
+              : 0),
+          0,
+        );
+        const advance = baseOrder.advancePaymentDetail;
+        const advancePaid =
+          isYes(baseOrder.advancePayment) &&
+          hasFilledString(advance?.paymentDate) &&
+          (!asOfDate || advance!.paymentDate! <= asOfDate);
+        const remainingCapital = Math.max(
+          0,
+          (getInrAmount(baseOrder.soValueCapital, file) ?? 0) - paidCapital -
+            (advancePaid ? getAdvanceFinanceAllocationCapital(file, baseOrder) : 0),
+        );
+        const remainingRevenue = Math.max(
+          0,
+          (getInrAmount(baseOrder.soValueRevenue, file) ?? 0) - paidRevenue -
+            (advancePaid ? getAdvanceFinanceAllocationRevenue(file, baseOrder) : 0),
+        );
+        if (remainingCapital + remainingRevenue > 0) {
+          mainEntries.push({
+            kind: "main",
+            file,
+            order: baseOrder,
+            sourceDate: baseOrder.soDate,
+            paymentDate: undefined,
+            capital: remainingCapital,
+            revenue: remainingRevenue,
+            pending: paymentOrders.some((order) => hasPaymentWorkflowStarted(file, order)),
+          });
+        }
+      }
       const supplementaryEntries = getSupplementaryBills(baseOrder)
         .filter((bill) => isSupplementaryPaymentRelevant(bill))
+        .filter(
+          (bill) =>
+            !noFurtherActionEffective ||
+            (hasFilledString(bill.paymentDate) && (!asOfDate || bill.paymentDate! <= asOfDate)),
+        )
         .map(
           (bill): FinancePaymentLiabilityEntry => ({
             kind: "supplementary",
@@ -18575,9 +20517,11 @@ function getFinancePaymentCapital(file: FileRecord, order: SupplyOrderDetail) {
       0
     );
   }
-  return (
-    getInrAmount(order.actualPaymentCapital, file) ?? getInrAmount(order.soValueCapital, file) ?? 0
-  );
+  const actualPayment = getInrAmount(order.actualPaymentCapital, file);
+  if (actualPayment !== undefined) return actualPayment;
+  const soValue = getInrAmount(order.soValueCapital, file) ?? 0;
+  if (order.stageDeliveryLabel || !isYes(order.advancePayment)) return soValue;
+  return Math.max(0, soValue - getAdvanceFinanceAllocationCapital(file, order));
 }
 
 function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
@@ -18588,8 +20532,26 @@ function getFinancePaymentRevenue(file: FileRecord, order: SupplyOrderDetail) {
       0
     );
   }
+  const actualPayment = getInrAmount(order.actualPaymentRevenue, file);
+  if (actualPayment !== undefined) return actualPayment;
+  const soValue = getInrAmount(order.soValueRevenue, file) ?? 0;
+  if (order.stageDeliveryLabel || !isYes(order.advancePayment)) return soValue;
+  return Math.max(0, soValue - getAdvanceFinanceAllocationRevenue(file, order));
+}
+
+function getAdvanceFinanceAllocationCapital(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    getInrAmount(order.actualPaymentRevenue, file) ?? getInrAmount(order.soValueRevenue, file) ?? 0
+    getInrAmount(order.advancePaymentDetail?.stageAmountCapital, file) ??
+    getInrAmount(order.advancePaymentDetail?.actualPaymentCapital, file) ??
+    0
+  );
+}
+
+function getAdvanceFinanceAllocationRevenue(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    getInrAmount(order.advancePaymentDetail?.stageAmountRevenue, file) ??
+    getInrAmount(order.advancePaymentDetail?.actualPaymentRevenue, file) ??
+    0
   );
 }
 
@@ -18618,15 +20580,13 @@ function getSupplementaryFinancePaymentRevenue(file: FileRecord, bill: Supplemen
 }
 
 function hasOpenSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && !hasFilledString(latest.resubmittedDate));
 }
 
 function hasCompletedSupplementaryBillReturn(bill: SupplementaryBillDetail) {
-  return (bill.billReturnCycles ?? []).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(bill.billReturnCycles);
+  return Boolean(latest && hasFilledString(latest.resubmittedDate));
 }
 
 function hasAdvancePaymentPaid(file: FileRecord) {
@@ -18766,10 +20726,11 @@ function isPreBidMeetingStatus(
 }
 
 function isLiveSupplyOrder(file: FileRecord) {
-  return fileSupplyOrders(file).some(
+  return rawSupplyOrders(file).some(
     (order) =>
       isSupplyOrderTabComplete(file, order) &&
-      !hasFilledString(order.paymentDate) &&
+      hasUnpaidSupplyOrderPayment(order) &&
+      !isYes(order.noFurtherAction) &&
       !isSupplyOrderCancelled(file, order),
   );
 }
@@ -18842,7 +20803,9 @@ function isWarrantyBgReturnPurposeComplete(
   if (category !== "pwb" && category !== "psbpwb") return false;
   if (!isBgCategoryApplicable(file, order, category)) return false;
   if (!hasFilledString(order.warrantyPeriodDate)) return false;
-  return isDateBeforeToday(addDays(order.warrantyPeriodDate, 60));
+  return isDateBeforeToday(
+    addDays(order.warrantyPeriodDate, store.getSettings().bgReturnOffsetDays ?? 60),
+  );
 }
 
 function isWarrantyBgMismatchOrder(
@@ -18858,7 +20821,12 @@ function isWarrantyBgMismatchOrder(
   const validityDate = getBgValidityDate(order, category);
   if (!hasFilledString(order.warrantyPeriodDate) || !hasFilledString(validityDate)) return false;
   const requiredValidityDate = addDays(order.warrantyPeriodDate, bufferDays);
-  return hasFilledString(requiredValidityDate) && validityDate < requiredValidityDate;
+  return (
+    typeof validityDate === "string" &&
+    typeof requiredValidityDate === "string" &&
+    hasFilledString(requiredValidityDate) &&
+    validityDate < requiredValidityDate
+  );
 }
 
 function isPsbReturnPurposeComplete(file: FileRecord, order: SupplyOrderDetail) {
@@ -18949,7 +20917,8 @@ function isJobCompletionCurrentOrder(file: FileRecord, order: SupplyOrderDetail)
     !hasSupplyOrderDate(order) ||
     !isJobCompletionWorkflow(file) ||
     isJobCompletionDone(order) ||
-    isYes(order.shortclosure)
+    isYes(order.shortclosure) ||
+    isYes(order.noFurtherAction)
   ) {
     return false;
   }
@@ -19001,6 +20970,7 @@ function isJobCompletionPeriodOver(file: FileRecord) {
         !isSupplyOrderCancelled(file, order) &&
         hasSupplyOrderDate(order) &&
         isJobCompletionWorkflow(file) &&
+        !isYes(order.noFurtherAction) &&
         !isJobCompletionDone(order) &&
         isDateBeforeToday(getDeliveryPeriodDate(order)),
     )
@@ -19013,7 +20983,8 @@ function isDueDeliveryOrder(file: FileRecord, order: SupplyOrderDetail) {
     isPhysicalDeliveryWorkflow(file) &&
     !isCompletedDeliveryOrder(file, order) &&
     !isYes(order.soCancelled) &&
-    !isYes(order.shortclosure)
+    !isYes(order.shortclosure) &&
+    !isYes(order.noFurtherAction)
   );
 }
 
@@ -19177,7 +21148,6 @@ const statusExportFileColumns = [
   { key: "lastDateDescription", label: "Last status" },
   { key: "lastDate", label: "Date" },
 ];
-const statusPageExportHeaders = ["S.No.", "Section", "Metric", "Count"];
 const financeExportHeaders = ["S.No.", "Category", "Capital", "Revenue", "Notes"];
 
 type StatusPageExportRow = {
@@ -19297,6 +21267,19 @@ function getAnalyticsExportPanel(
     return getCncSummaryExportPanel(panel, fullRows);
   }
   return panel;
+}
+
+function getAnalyticsPanelUnitNote(panel: AnalyticsPanel) {
+  if (panel.key === "topFirms" || panel.key === "indentorsByValue" || panel.key === "indentorFirmLinkage") {
+    return "All monetary values are in Lakh.";
+  }
+  if (
+    panel.key === "fileValueThresholds" &&
+    panel.columns.some((column) => ["capital", "revenue", "value"].includes(column.key))
+  ) {
+    return "All monetary values are in Lakh.";
+  }
+  return undefined;
 }
 
 function getPreBidMeetingExportPanel(
@@ -19457,6 +21440,8 @@ function getTcecExportPurpose(context: {
 }
 
 const dashboardFilterTitles: Record<string, string> = {
+  status2DpPending: "Status-2 - D.P. date pending",
+  status2MaterialReceiptPending: "Status-2 - Material Receipt pending",
   deliveryCompleted: "Delivery Completed",
   deliveryDue: "Delivery Pending",
   deliveryOverdue: "Delivery Overdue",
@@ -19489,9 +21474,11 @@ const dashboardFilterTitles: Record<string, string> = {
   paymentSubmitted: "Payment - Submitted and unpaid",
   advancePaid: "Payment - Advance Paid",
   advancePending: "Payment - Advance Pending",
+  status2AdvancePaymentPending: "Advance Payment - Pending",
   "billReturn:any": "Bills returned",
   "billReturn:pending": "Returned bills pending",
   "billReturn:resubmitted": "Returned bills resubmitted",
+  "billReturn:resubmittedUnpaid": "Returned bills resubmitted and unpaid",
   "billReturn:paid": "Returned bills paid",
   "supplementaryBill:any": "Payment - Supplementary returned",
   "supplementaryBill:submitted": "Payment - Supplementary submitted total",
@@ -19544,15 +21531,19 @@ function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
   const sourceYear = decodeStatusFilterPart(rawSourceYear);
   const range = getFinancialYearDateRange(selectedYear);
   if (!selectedYear || !sourceYear || !range) return false;
+  const todayDate = formatLocalDate(new Date());
   const matchesEntry = (sourceDate: string | undefined, paymentDate: string | undefined) => {
     const orderYear = getFinancialYearForDate(sourceDate);
     if (!orderYear) return false;
-    const paidInSelectedYear = isDateWithinRange(paymentDate, range);
+    const paymentOccurredByToday = isDateOnOrBefore(paymentDate, todayDate);
+    const paidInSelectedYear =
+      paymentOccurredByToday && isDateWithinRange(paymentDate, range);
     const unpaidAtSelectedYearEnd =
-      !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
+      !paymentOccurredByToday || !hasFilledString(paymentDate) || isDateAfter(paymentDate, range.end);
     if (mode === "futureClearedCarryForward") {
       return (
         orderYear === selectedYear &&
+        paymentOccurredByToday &&
         hasFilledString(paymentDate) &&
         isDateAfter(paymentDate, range.end) &&
         getFinancialYearForDate(paymentDate) === sourceYear
@@ -19571,8 +21562,27 @@ function matchesFinanceCarryForwardFilter(file: FileRecord, filter: string) {
     advancePaymentEntries([file]).some(
       ({ file: entryFile, order }) =>
         !isSupplyOrderCancelled(entryFile, order) &&
+        !isUnpaidAdvanceClearedByNoFurtherAction(order) &&
         matchesEntry(order.soDate, order.advancePaymentDetail?.paymentDate),
     )
+  );
+}
+
+function isUnpaidAdvanceClearedByNoFurtherAction(order: SupplyOrderDetail, asOfDate?: string) {
+  const advance = order.advancePaymentDetail;
+  return (
+    isYes(order.shortclosure) &&
+    isYes(order.noFurtherAction) &&
+    (!asOfDate || !order.noFurtherActionDate || order.noFurtherActionDate <= asOfDate) &&
+    !hasFilledString(advance?.paymentDate)
+  );
+}
+
+function isUnpaidAdvanceIncludedInShortclosedBalance(order: SupplyOrderDetail) {
+  return (
+    isYes(order.shortclosure) &&
+    !hasFilledString(order.advancePaymentDetail?.paymentDate) &&
+    !isYes(order.noFurtherAction)
   );
 }
 
@@ -19680,12 +21690,20 @@ function splitDashboardFilterTitle(title: string) {
     .filter(Boolean);
 }
 
-function getDashboardDrillPath(tab: DashboardTab, dashboardFilter: string) {
+function getDashboardDrillPath(
+  tab: DashboardTab,
+  dashboardFilter: string,
+  status3DisplayStage?: string,
+) {
   const tabHref = getDashboardTabHref(tab);
+  const titleParts = splitDashboardFilterTitle(getDashboardFilterTitle(dashboardFilter));
+  if (tab === "status3" && status3DisplayStage && titleParts.length) {
+    titleParts[titleParts.length - 1] = status3DisplayStage;
+  }
   return [
     drillItem("Dashboard", "/dashboard"),
     drillItem(getDashboardTabDrillLabel(tab), tabHref),
-    ...splitDashboardFilterTitle(getDashboardFilterTitle(dashboardFilter)).map((part) =>
+    ...titleParts.map((part) =>
       drillItem(part, tabHref),
     ),
   ];
@@ -19696,8 +21714,8 @@ function getStatus4DrillPath(filter: Status4SearchFilter) {
   const parts = [
     drillItem("Dashboard", "/dashboard"),
     drillItem("Status-4", status4Href),
-    drillItem(filter.fiscalYear, status4Href),
   ];
+  if (filter.fiscalYear !== "all") parts.push(drillItem(filter.fiscalYear, status4Href));
   if (filter.monthKey) parts.push(drillItem(formatMonthKeyLabel(filter.monthKey), status4Href));
   if (filter.minValue !== undefined || filter.maxValue !== undefined) {
     parts.push(
@@ -19983,6 +22001,9 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const category = filter.slice("bgReturned:".length);
     return isBgMilestoneKey(category) ? isBgReturned(file, category) : true;
   }
+  if (filter === "status2DpPending") return countDpDatePendingCases([file]) > 0;
+  if (filter === "status2MaterialReceiptPending")
+    return countMaterialReceiptPendingCases([file]) > 0;
   if (filter === "dpExtension") return isYes(file.dpExtension);
   if (filter === "dpExpired") return isDpExpired(file);
   if (filter === "deliveryOverdue") return isDeliveryOverdue(file);
@@ -20004,6 +22025,14 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "paymentDueOnly") return hasPaymentDueOnly(file);
   if (filter === "paymentInProcess") return hasPaymentInProcess(file);
   if (filter === "paymentSubmitted") return hasPaymentSubmitted(file);
+  if (filter === "status2AdvancePaymentPending")
+    return fileSupplyOrders(file).some(
+      (order) =>
+        !isYes(order.soCancelled) &&
+        isYes(order.advancePayment) &&
+        normalizeMilestoneName(order.advancePaymentDetail?.currentMilestone) === "advancepayment" &&
+        !hasFilledString(order.advancePaymentDetail?.paymentDate),
+    );
   if (filter === "advancePaid") return hasAdvancePaymentPaid(file);
   if (filter === "advancePending") return hasAdvancePaymentPending(file);
   if (filter === "supplementaryBill:any") return hasSupplementaryBillReturnHistoryFile(file);
@@ -20360,6 +22389,13 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "pending" || stageKey === "returnpending") return orders.some(hasOpenBillReturn);
     if (stageKey === "completed" || stageKey === "resubmitted")
       return orders.some(hasCompletedBillReturn);
+    if (stageKey === "resubmittedandunpaid")
+      return orders.some(
+        (order) =>
+          hasCompletedBillReturn(order) &&
+          !hasFilledString(order.paymentDate) &&
+          !isYes(order.noFurtherAction),
+      );
     if (stageKey === "returnedpaid") return orders.some(hasReturnedBillPaid);
   }
 
@@ -20553,7 +22589,14 @@ function getStatusPageExportRows(
       return;
     }
 
-    if ("due" in milestone) {
+    if (
+      "due" in milestone &&
+      typeof milestone.due === "number" &&
+      "completed" in milestone &&
+      typeof milestone.completed === "number" &&
+      "overdue" in milestone &&
+      typeof milestone.overdue === "number"
+    ) {
       rows.push(
         { section: milestoneLabel, metric: "Completed", count: milestone.completed },
         { section: milestoneLabel, metric: "Pending", count: milestone.due },
@@ -20562,7 +22605,14 @@ function getStatusPageExportRows(
       return;
     }
 
-    if ("irPreparationPending" in milestone) {
+    if (
+      "irPreparationPending" in milestone &&
+      typeof milestone.irPreparationPending === "number" &&
+      "irReceiptPending" in milestone &&
+      typeof milestone.irReceiptPending === "number" &&
+      "irCompleted" in milestone &&
+      typeof milestone.irCompleted === "number"
+    ) {
       rows.push(
         {
           section: milestoneLabel,
@@ -20579,9 +22629,10 @@ function getStatusPageExportRows(
       return;
     }
 
+    if (!("total" in milestone) || !("underProcess" in milestone)) return;
     getStatusMetricsForExport(
       getStatusMetrics({
-        milestone,
+        milestone: milestone as Parameters<typeof getStatusMetrics>[0]["milestone"],
         onTotalClick: noop,
         onUnderProcessClick: noop,
         onActiveClick: noop,
@@ -20622,11 +22673,15 @@ function getStatusPageExportRows(
   rows.push(
     { section: "Miscellaneous", metric: "Live files", count: miscellaneousCounts.liveFiles },
     { section: "Miscellaneous", metric: "File closed", count: miscellaneousCounts.fileClosed },
-    { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
     {
       section: "Miscellaneous",
       metric: "Demand cancelled",
       count: miscellaneousCounts.demandCancelled,
+    },
+    {
+      section: "Miscellaneous",
+      metric: "Files with Multiple S.O.",
+      count: miscellaneousCounts.multipleSupplyOrders,
     },
     { section: "Miscellaneous", metric: "S.O. cancelled", count: miscellaneousCounts.soCancelled },
     {
@@ -20634,11 +22689,7 @@ function getStatusPageExportRows(
       metric: "Shortclosed S.O.",
       count: miscellaneousCounts.shortclosedSo,
     },
-    {
-      section: "Miscellaneous",
-      metric: "Files with Multiple S.O.",
-      count: miscellaneousCounts.multipleSupplyOrders,
-    },
+    { section: "Miscellaneous", metric: "LD", count: miscellaneousCounts.ld },
   );
 
   return rows;
@@ -20785,12 +22836,12 @@ function printStatusPageRowsToPdf(
   void downloadStatusPageRows(rows, title, "pdf", description);
 }
 
-function exportSnapshotRowsToExcel(rows: SnapshotExportRow[], title: string, description?: string) {
-  void downloadSnapshotRows(rows, title, "excel", description);
+function exportSnapshotRowsToExcel(rows: SnapshotExportRow[], title: string, description?: string, plots?: ExportPlot[]) {
+  void downloadSnapshotRows(rows, title, "excel", description, plots);
 }
 
-function printSnapshotRowsToPdf(rows: SnapshotExportRow[], title: string, description?: string) {
-  void downloadSnapshotRows(rows, title, "pdf", description);
+function printSnapshotRowsToPdf(rows: SnapshotExportRow[], title: string, description?: string, plots?: ExportPlot[]) {
+  void downloadSnapshotRows(rows, title, "pdf", description, plots);
 }
 
 async function downloadSnapshotRows(
@@ -20798,17 +22849,26 @@ async function downloadSnapshotRows(
   title: string,
   format: "excel" | "pdf",
   description?: string,
+  plots?: ExportPlot[],
 ) {
+  const sections = Array.from(new Set(rows.map((row) => row.section)));
+  const tables = sections.length
+    ? sections.map((section) => ({
+        title: section,
+        headers: ["Item", "Value"],
+        rows: rows
+          .filter((row) => row.section === section)
+          .map((row) => [row.metric, row.value]),
+        columnWidths: [38, 20],
+      }))
+    : [{ title, headers: ["Item", "Value"], rows: [["No snapshot data", ""]] }];
+
   await downloadBackendExport({
     format,
     title,
     description,
-    tables: [
-      {
-        headers: ["S.No.", "Section", "Metric", "Value"],
-        rows: rows.map((row, index) => [index + 1, row.section, row.metric, row.value]),
-      },
-    ],
+    plots,
+    tables,
   });
 }
 
@@ -20816,9 +22876,11 @@ function exportStatus4RowsToExcel(
   rows: Status4TableRow[],
   milestones: ReturnType<typeof getStatus4Milestones>,
   title: string,
+  rowHeaderLabel: string,
   description?: string,
+  plot?: ExportPlot,
 ) {
-  void downloadStatus4Rows(rows, milestones, title, "excel", description);
+  void downloadStatus4Rows(rows, milestones, title, "excel", rowHeaderLabel, description, plot);
 }
 
 function printStatus4RowsToPdf(
@@ -20826,8 +22888,9 @@ function printStatus4RowsToPdf(
   milestones: ReturnType<typeof getStatus4Milestones>,
   title: string,
   description?: string,
+  plot?: ExportPlot,
 ) {
-  void downloadStatus4Rows(rows, milestones, title, "pdf", description);
+  void downloadStatus4Rows(rows, milestones, title, "pdf", "Group", description, plot);
 }
 
 async function downloadStatus4Rows(
@@ -20835,35 +22898,81 @@ async function downloadStatus4Rows(
   milestones: ReturnType<typeof getStatus4Milestones>,
   title: string,
   format: "excel" | "pdf",
+  rowHeaderLabel: string,
   description?: string,
+  plot?: ExportPlot,
 ) {
+  const excelLayout = format === "excel";
+  const tableRows = rows.flatMap((row, index) => {
+    if (!excelLayout) {
+      return [[
+        index + 1,
+        row.label,
+        row.total,
+        ...milestones.flatMap((milestone) => {
+          const metrics = row.metrics[milestone.name] ?? {
+            applicable: 0,
+            current: 0,
+            cleared: 0,
+          } satisfies Status4MilestoneMetrics;
+          return [metrics.applicable, metrics.current, metrics.cleared];
+        }),
+      ]];
+    }
+
+    const metricRows = [
+      { key: "applicable", label: "Applicable" },
+      { key: "cleared", label: "Cleared" },
+      { key: "current", label: "Current" },
+    ] as const;
+
+    return metricRows.map((metric, metricIndex) => [
+      metricIndex === 0 ? row.label : "",
+      metricIndex === 0 ? row.total : "",
+      metric.label,
+      ...milestones.map((milestone) => {
+        const metrics = row.metrics[milestone.name] ?? {
+          applicable: 0,
+          current: 0,
+          cleared: 0,
+        } satisfies Status4MilestoneMetrics;
+        return metrics[metric.key];
+      }),
+    ]);
+  });
+  const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
+  if (excelLayout) {
+    tableRows.push(["Total", grandTotal, "", ...milestones.map(() => "")]);
+  }
+
   await downloadBackendExport({
     format,
     title,
     description,
+    ...(excelLayout && plot ? { plot } : {}),
     tables: [
       {
-        headers: [
-          "S.No.",
-          "Group",
-          "Total",
-          ...milestones.flatMap((milestone) => [
-            `${getWorkflowDisplayLabel(milestone.label)} - Applicable`,
-            `${getWorkflowDisplayLabel(milestone.label)} - Current`,
-            `${getWorkflowDisplayLabel(milestone.label)} - Cleared`,
-          ]),
-        ],
-        rows: rows.map((row, index) => [
-          index + 1,
-          row.label,
-          row.total,
-          ...milestones.flatMap((milestone) => {
-            const metrics =
-              row.metrics[milestone.name] ??
-              ({ applicable: 0, current: 0, cleared: 0 } satisfies Status4MilestoneMetrics);
-            return [metrics.applicable, metrics.current, metrics.cleared];
-          }),
-        ]),
+        headers: excelLayout
+          ? [
+              rowHeaderLabel,
+              "Total",
+              "Status",
+              ...milestones.map((milestone) => getWorkflowDisplayLabel(milestone.label)),
+            ]
+          : [
+              "S.No.",
+              "Group",
+              "Total",
+              ...milestones.flatMap((milestone) => [
+                `${getWorkflowDisplayLabel(milestone.label)} - Applicable`,
+                `${getWorkflowDisplayLabel(milestone.label)} - Current`,
+                `${getWorkflowDisplayLabel(milestone.label)} - Cleared`,
+              ]),
+            ],
+        rows: tableRows,
+        ...(excelLayout
+          ? { columnWidths: [24, 12, 14, ...milestones.map(() => 22)] }
+          : {}),
       },
     ],
   });
@@ -20875,16 +22984,23 @@ async function downloadStatusPageRows(
   format: "excel" | "pdf",
   description?: string,
 ) {
+  const sections = Array.from(new Set(rows.map((row) => row.section)));
+  const tables = sections.length
+    ? sections.map((section) => ({
+        title: section,
+        headers: ["Metric", "Count"],
+        rows: rows
+          .filter((row) => row.section === section)
+          .map((row) => [row.metric, row.count]),
+        columnWidths: [38, 14],
+      }))
+    : [{ title, headers: ["Metric", "Count"], rows: [["No status data", ""]] }];
+
   await downloadBackendExport({
     format,
     title,
     description,
-    tables: [
-      {
-        headers: statusPageExportHeaders,
-        rows: rows.map((row, index) => [index + 1, row.section, row.metric, row.count]),
-      },
-    ],
+    tables,
   });
 }
 
@@ -20935,8 +23051,8 @@ function exportFinanceRowsToExcel(
   );
 }
 
-function exportAnalyticsPanelToExcel(panel: AnalyticsPanel, description?: string) {
-  void downloadAnalyticsPanel(panel, "excel", description);
+function exportAnalyticsPanelToExcel(panel: AnalyticsPanel, description?: string, plot?: ExportPlot) {
+  void downloadAnalyticsPanel(panel, "excel", description, plot);
 }
 
 function getAnalyticsCellValue(row: Record<string, number | string>, column: AnalyticsTableColumn) {
@@ -20976,8 +23092,8 @@ function getAnalyticsHeaderHtml(columns: AnalyticsTableColumn[], includeSerial =
   `;
 }
 
-function printAnalyticsPanelToPdf(panel: AnalyticsPanel, description?: string) {
-  void downloadAnalyticsPanel(panel, "pdf", description);
+function printAnalyticsPanelToPdf(panel: AnalyticsPanel, description?: string, plot?: ExportPlot) {
+  void downloadAnalyticsPanel(panel, "pdf", description, plot);
 }
 
 function getAnalyticsExportCellHtml(
@@ -21060,15 +23176,19 @@ async function downloadFinanceRows(
   await downloadBackendExport({
     format,
     title,
-    description,
+    description:
+      format === "excel"
+        ? [description, "All monetary values are shown in Lakhs."].filter(Boolean).join("\n")
+        : description,
     tables: [
       {
         headers: financeExportHeaders,
+        ...(format === "pdf" ? { columnWidths: [34, 135, 95, 95, 411] } : {}),
         rows: rows.map((row, index) => [
           index + 1,
           row.category,
-          row.capital,
-          row.revenue,
+          format === "excel" ? formatFinanceExcelAmount(row.capital) : row.capital,
+          format === "excel" ? formatFinanceExcelAmount(row.revenue) : row.revenue,
           row.notes,
         ]),
       },
@@ -21080,7 +23200,7 @@ async function downloadFinanceRows(
               rows: firmTypeDistributionRows.map((row, index) => [
                 index + 1,
                 row.name,
-                formatCurrency(row.value),
+                format === "excel" ? formatLakhNumber(row.value) : formatCurrency(row.value),
                 formatPercent(row.share),
               ]),
             },
@@ -21090,16 +23210,35 @@ async function downloadFinanceRows(
   });
 }
 
+function formatFinanceExcelAmount(value: string) {
+  const amount = Number(value.replace(/\s*Lakh$/i, "").replace(/,/g, "").trim());
+  return Number.isFinite(amount) ? amount : "";
+}
+
+function formatLakhNumber(value: number) {
+  return formatThousandsAndLakhs(value / 100_000, 2);
+}
+
 async function downloadAnalyticsPanel(
   panel: AnalyticsPanel,
   format: "excel" | "pdf",
   description?: string,
+  plot?: ExportPlot,
 ) {
   const includeSerialColumn = shouldIncludeAnalyticsExportSerialColumn(panel.key);
-  const headers = panel.columns.map(getAnalyticsExportHeader);
-  const columnWidths = getAnalyticsExportColumnWidths(panel.key, includeSerialColumn);
+  const exportColumns =
+    panel.key === "suspectedAnomaly" && format === "pdf"
+      ? panel.columns.filter((column) => column.key !== "action")
+      : panel.columns;
+  const headers = exportColumns.map(getAnalyticsExportHeader);
+  const columnWidths = getAnalyticsExportColumnWidths(
+    panel.key,
+    includeSerialColumn,
+    exportColumns.length,
+    format,
+  );
   const rows = panel.rows.map((row, index) => {
-    const values = panel.columns.map((column) =>
+    const values = exportColumns.map((column) =>
       getAnalyticsCellValue(row, column).replace(/\n/g, " "),
     );
     return includeSerialColumn ? [index + 1, ...values] : values;
@@ -21108,9 +23247,15 @@ async function downloadAnalyticsPanel(
     format,
     title: panel.title,
     subtitle: panel.subtitle,
-    description: [description, panel.exportNote, ...(panel.helper ?? [])]
+    description: [
+      description,
+      panel.exportNote,
+      getAnalyticsPanelUnitNote(panel),
+      ...(panel.helper ?? []),
+    ]
       .filter(Boolean)
       .join("\n"),
+    plot,
     tables: [
       {
         headers: includeSerialColumn ? ["S.No.", ...headers] : headers,
@@ -21124,7 +23269,25 @@ async function downloadAnalyticsPanel(
 function getAnalyticsExportColumnWidths(
   panelKey: AnalyticsPanelKey,
   includeSerialColumn: boolean,
+  columnCount: number,
+  format: "excel" | "pdf",
 ) {
+  if (panelKey === "topFirms") return [42, 300, 110];
+  if (panelKey === "indentorsByValue") return [42, 220, 105, 105, 115];
+  if (panelKey === "suspectedAnomaly" && format === "pdf") {
+    return [38, 95, 52, 90, 215, 135, 145];
+  }
+  if (
+    panelKey === "milestoneClearingTable" &&
+    format === "pdf" &&
+    includeSerialColumn &&
+    columnCount + 1 > 8
+  ) {
+    return [34, 185, 63, 75, 58, 58, 58, 55, 55];
+  }
+  if ((panelKey === "divisionValue" || panelKey === "divisionTotalValue") && format === "pdf") {
+    return [24, 75, ...Array(Math.max(0, columnCount - 2)).fill(100)];
+  }
   if (panelKey !== "cncSummary") return undefined;
   const widths = [90, 82, 82, 104, 78, 88, 108, 82];
   return includeSerialColumn ? [38, ...widths] : widths;
@@ -21139,6 +23302,7 @@ function shouldIncludeAnalyticsExportSerialColumn(panelKey: AnalyticsPanelKey) {
     panelKey === "topFirms" ||
     panelKey === "indentorsByFiles" ||
     panelKey === "indentorsByValue" ||
+    panelKey === "indentorFirmLinkage" ||
     panelKey === "biddingMode" ||
     panelKey === "fileValueThresholds" ||
     panelKey === "paymentPending"

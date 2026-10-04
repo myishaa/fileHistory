@@ -5,6 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronDown,
   Info,
   Lock,
   Pencil,
@@ -13,6 +14,7 @@ import {
   Unlock,
   X,
 } from "lucide-react";
+import { CompactTableText } from "@/components/compact-table-text";
 import {
   createMasterFirm,
   deleteMasterFirm,
@@ -36,8 +38,6 @@ import {
   type FileRecord,
   type FirmRatingConfig,
   type Indentor,
-  type IndentorTransferPreview,
-  type IndentorTransferScope,
   type IpAccessConfig,
   type IpAccessMode,
   type IpLoginAttempt,
@@ -240,6 +240,7 @@ type AdminSection = {
 const adminSectionKeys = new Set([
   "user",
   "workspace",
+  "offsetDays",
   "yearSetup",
   "mmgSummary",
   "demandProcessing",
@@ -263,90 +264,123 @@ const adminSectionKeys = new Set([
 
 const settingsSectionHelpers = {
   theme: [
-    "Controls your personal display theme and tint.",
-    "This does not change file data or workflow logic.",
+    "Choose how the software looks for your account.",
+    "This changes appearance only; it does not change files or workflow rules.",
   ],
   user: [
-    "Shows your account, role, and assigned divisions.",
-    "Some appearance settings here affect only your own view.",
+    "See your account, role, and the divisions you can access.",
+    "Display preferences apply only to your account.",
   ],
   workspace: [
-    "Controls global workspace defaults such as selected FY, available years, theme, and deletion password.",
-    "Changes here can affect all users.",
+    "These are shared settings for everyone.",
+    "Changing the Current FY changes the year used as 'current'; it does not move existing files.",
+    "Example: set 2026-27 as current and new files use that FY. Older files stay in their original FY.",
+  ],
+  offsetDays: [
+    "Set the shared day offsets used to estimate S.O., payment, and BG-return dates.",
+    "Each setting names its starting event and the date it estimates. Local overrides remain available where a report permits them.",
+    "Resetting a local override restores the latest value set here.",
   ],
   yearSetup: [
-    "Choose the FY to prepare division allocations and other year-specific setup.",
-    "Saved allocation values are used in dashboard value views and value reports for that FY.",
+    "Choose the FY whose division budgets you want to set up.",
+    "This is separate from the Global Filter, which chooses which files you view.",
+    "Example: save a budget under 2026-27. It stays with that FY even if the Global Filter shows 2025-26 files.",
   ],
   mmgSummary: [
-    "Controls which fields and labels appear in MMG Summary exports.",
-    "This changes report display/export fields, not file records.",
+    "These choices appear in Reports > MMG Summary.",
+    "Each checked field appears as a report row and in PDF/Excel exports. Your label is used for that row.",
+    "Unchecking a field hides the row; its calculation and file data stay unchanged.",
+    "Example: hide 'Total demands' to remove that row, or rename it 'Demand count' without changing its value.",
   ],
   demandProcessing: [
-    "Controls reusable Demand Processing Analysis presets.",
-    "Preset From/To dates decide how demand-processing time is measured in reports.",
+    "Presets choose which demand-processing dates are compared.",
+    "Day ranges group the gaps shown in Reports > Demand processing analysis.",
+    "These choices change how results are grouped, not the dates saved on files.",
   ],
   divisions: [
-    "Maintains division names, codes, AD flag, and division-level allocation context.",
-    "Division changes affect filters, access, dashboards, and reports.",
-    "A division used in active or archived files must be transferred/merged before it can be archived.",
+    "Manage division names, codes, AD settings, and budgets here.",
+    "Renaming a division changes its name, not the division recorded on existing files.",
+    "A division used by an active or archived file cannot be deleted.",
+    "Example: correcting 'ACC Divison' to 'ACC Division' fixes the name; it does not move any files.",
   ],
   indentors: [
-    "Maintains indentor master data and division mapping.",
-    "Editing an indentor changes the master record only; old file rows keep their saved indentor text.",
-    "Use Indentor Transfer when existing files must move from one indentor or division responsibility to another.",
-    "Indentors used in active or archived files are protected from direct archive/delete.",
+    "Manage indentor contact details and division assignment here.",
+    "Changing a name updates the directory only. Existing files keep the name saved when they were entered.",
+    "An indentor used by an active or archived file cannot be deleted.",
+    "Example: change 'Rina Sharma' to 'Reena Sharma'. New files use the corrected name; older files keep 'Rina Sharma'.",
   ],
   firms: [
-    "Maintains firm master data and the Firm Unique No. label.",
-    "Firm data is used for search, firm analysis, and firm performance reports.",
-    "A firm used in active or archived files/S.O.s stays protected for historical reference.",
+    "Maintain the firm directory and Firm Unique No. here.",
+    "For Firm Type 'Other', enter the specific type here. Choosing this firm for a new S.O. copies both values.",
+    "Change a firm name only to correct that same firm's directory entry. Existing files and S.O.s keep their saved name.",
+    "A firm used by an active or archived file/S.O. cannot be deleted.",
+    "Example: set the type to Other and enter Cooperative. New S.O.s show Other / Cooperative; older ones keep their saved type.",
+    "Example: correct 'North Star Ltd' to 'North Star Limited'. New S.O.s use the corrected name; older ones keep 'North Star Ltd'.",
   ],
   firmRating: [
-    "Controls firm rating fields and maximum marks.",
-    "These settings affect rating score calculation in firm performance views.",
+    "Choose the rating items and maximum marks used for firms.",
+    "These choices affect scores in Firm Performance.",
   ],
   fileTypes: [
-    "Controls available file types and their workflow group.",
-    "Workflow group affects delivery, inspection, and payment behavior in the app.",
-    "Name and workflow group are locked once active or archived files use the file type.",
+    "Choose whether each new file type follows Goods & Services or Contract rules.",
+    "Once a file uses a type, its name and group are locked. Inactivate it to keep it off new files.",
+    "Example: add a new AMC-type as Contract. You cannot change a used Goods & Services type into Contract.",
   ],
   modes: [
-    "Controls available procurement modes such as OBM, PBM, SBM, LBM, and LPC.",
-    "These modes appear in file entry, filters, analytics, and reports.",
-    "Used modes can be inactivated for future selection; old files keep their saved mode text.",
+    "Modes such as OBM, PBM, SBM, LBM, and LPC appear in file entry, filters, and reports.",
+    "A mode already used on a file cannot be renamed. Inactivate it to stop offering it for new files.",
+    "Example: if a mode's meaning changes, add a new mode and inactivate the old one. Existing files keep their original mode.",
   ],
   firmTypes: [
-    "Controls firm type options such as MSE, MSE (Women), and Non-MSE.",
-    "These options are used in S.O. firm details and firm-type reporting.",
-    "Used firm types can be inactivated for future selection; old S.O. rows keep their saved firm type text.",
+    "Firm types such as MSE and Non-MSE are used in S.O. details and firm-type reports.",
+    "A type already used on an S.O. cannot be renamed. Inactivate it to stop offering it for new entries.",
+    "Example: add the new category and inactivate the old one; existing S.O.s keep the type recorded when they were entered.",
   ],
   fileMarkers: [
-    "Controls special marker codes that can be attached to files.",
-    "Markers help tag and filter special cases.",
-    "Used markers should be inactivated for future use, not deleted from history.",
+    "Marker codes tag special situations so files can be found later.",
+    "A code already used on a file cannot be renamed. Inactivate it to stop using it on new files.",
+    "Example: if 'URG' is being given a new meaning, create a new code. Existing files keep the original URG tag.",
   ],
   tcec: [
-    "Controls TCEC committee options.",
-    "These options are used in TCEC fields, analytics, and reports.",
-    "Used committee labels can be inactivated for future selection; active and archived files keep their saved committee text.",
+    "Committee names can be selected in TCEC fields and are shown in related reports.",
+    "To replace a committee name, add the new choice and inactivate the old one. Existing files keep the name already recorded.",
+    "Example: add 'Committee B' for future entries and inactivate 'Committee A'; older files still show Committee A.",
   ],
   thresholds: [
-    "Controls value slabs used for count/value analysis.",
-    "Thresholds can apply to demand value, S.O. value, or both.",
+    "Set the value bands used in Count and Value Analysis.",
+    "Choose whether each band applies to demand value, S.O. value, or both.",
   ],
   anomalyGovernance: [
     "Shows suspected data issues and accepted/rejected anomaly decisions.",
     "Use this to review anomaly decisions and reopen accepted/rejected items if needed.",
+    "Example: revoking an accepted decision makes that anomaly available for review again; it does not change the underlying file data.",
   ],
   milestones: [
-    "Controls the milestone sequence used for workflow tracking.",
-    "Changing milestones can affect Status-2, Status-4, and related search focus behavior.",
-    "Used milestones can be inactivated for future selection; file and S.O. histories keep their saved milestone text.",
+    "This list controls the order of stages shown on file workflow boards and in Status-2 and Status-4.",
+    "Add: Choose where a new stage should appear. A custom stage applies to every file, so add only steps every file must follow.",
+    "Activate: Brings an inactive stage back at the end, just before File Closed. You can then move it with the arrows.",
+    "Activating a stage makes it available again; it does not add dates or mark existing files complete.",
+    "Move a stage to change where it appears, not a file's actual progress.",
+    "Reorder: In Add/Edit File > Milestones, it changes the order of applicable stages on the file's milestone board. On the Dashboard, it changes the configured stage order in Status-2 and Status-4.",
+    "Reorder: Status-1 and Status-3 use their own standard stage logic, so changing this sequence does not change their counters.",
+    "Moving a stage does not change file dates, completion marks, automatic rules, or whether one stage waits for another.",
+    "Timeline uses the dates entered on the file. An event with an earlier date appears first, even if its stage is lower in this list. This list breaks ties for same-day events; undated events follow it in Show all dates.",
+    "Reorder: File Closed stays last, and the software positions some standard stages automatically.",
+    "Inactivate: Hides a stage from the active list. Its saved data is not erased immediately, but it may disappear from file checklists.",
+    "If you later edit and save a file that used an inactive stage, its completion tick for that stage may be removed.",
+    "A used stage can only be inactivated. An unused stage can be deleted permanently.",
+    "Caution: Changes affect workflow displays across the software. Check the usage count and make sure you understand the effect before changing this list.",
+    "Example: add 'Technical Review' only if every file must pass it. If it applies only to contract files, do not add it as a general milestone.",
+    "Example: activating an inactive 'Committee Review' stage puts it back at the end of the list for future use. It does not add dates or mark the stage complete on existing files.",
+    "Example: if you move 'Financial Sanction' above 'Bidding', the Milestones board and Status-2/Status-4 display that order. If the Bidding date on a file is earlier than its Financial Sanction date, the Timeline still shows Bidding first; neither date nor the file's progress is changed by the reorder.",
   ],
   presets: [
-    "Controls reusable Search table field presets.",
-    "Presets change visible/exported columns, not which files are returned.",
+    "Use these presets on the Search File page from the 'Preset fields' menu above the results table.",
+    "A preset chooses which columns appear in the results and in PDF/Excel exports. It does not change the search, matching files, or counts.",
+    "Create a preset when you often need the same set of columns. Use Manual for a one-time column change.",
+    "Admin-created presets are shared with users. Other users can create personal presets visible only to their own login.",
+    "Example: create a 'Payment review' preset with Control No., Indentor, S.O. and payment details if you regularly export those columns together.",
+    "Example: choosing a preset changes the table/export columns, but the same files remain in the results.",
   ],
   users: [
     "Controls authorised users, roles, division access, and file-category access.",
@@ -359,8 +393,8 @@ const settingsSectionHelpers = {
     "Archived IP attempts can be permanently deleted with the configured deletion password.",
   ],
   archive: [
-    "Shows archived files and permanent delete options.",
-    "Permanent delete needs the configured deletion password.",
+    "Shows archived records and their restore or permanent-delete actions.",
+    "Restore returns an archived setting to active use; permanent deletion removes it and needs the configured deletion password.",
   ],
 } satisfies Record<string, string[]>;
 
@@ -386,8 +420,8 @@ const deletionPasswordHelper = [
 
 const settingsControlHelpers = {
   genericAdd: [
-    "Adds this value to future dropdown choices.",
-    "Existing file records are not changed automatically.",
+    "Makes this choice available for new entries.",
+    "Existing files keep the value already saved on them.",
   ],
   workspaceDelete: [
     "Deletes only the selected FY from workspace year options.",
@@ -395,8 +429,9 @@ const settingsControlHelpers = {
     "This action needs the deletion password.",
   ],
   firmTypeName: [
-    "Firm type values appear in Supply Order firm details.",
-    "Renaming changes the available label for future selection and reporting.",
+    "Firm Type is chosen in Supply Order details.",
+    "Once an S.O. uses a type, its name is protected. Add the replacement and inactivate the old choice.",
+    "Example: to replace 'MSE', add the new name and inactivate MSE. Older S.O.s keep the value they were given.",
   ],
   firmTypeAdd: [
     "Adds a new firm type option for Supply Order firm details.",
@@ -408,28 +443,33 @@ const settingsControlHelpers = {
     "Used firm types should be inactivated for future selection; old S.O. rows keep their saved text.",
   ],
   fileTypeGroup: [
-    "Goods & Services follows normal delivery, inspection, and bill behavior.",
-    "MPC/AMC/O&M/CARS follows contract-style workflow behavior.",
-    "This is locked once any active or archived file uses the file type.",
+    "Goods & Services and Contract file types follow different steps.",
+    "Choose the correct group when you add a type. Once a file uses it, the type's name and group cannot be changed.",
+    "Example: add a new AMC type under Contract so its files use the contract workflow.",
   ],
   fileTypeDelete: [
-    "Deletes only a non-default file type option.",
-    "Deletion is blocked if any active or archived file uses this file type.",
-    "Name and workflow group changes are restricted once used.",
+    "An unused, non-default type can be deleted.",
+    "A type used by an active or archived file cannot be deleted or renamed. Inactivate it to stop offering it for new files.",
+    "Example: keep a used type for old files, but inactivate it so it is no longer offered on new files.",
+  ],
+  demandProcessingDayRanges: [
+    "Used in Reports > Demand processing analysis.",
+    "The report puts the number of days between two dates into one of these ranges.",
+    "Changing a range changes the grouping only; file dates and measured gaps stay the same.",
   ],
   genericDelete: [
-    "Removes this option from Settings.",
-    "Unused options can be deleted.",
-    "If the option is already used in file history, use Inactivate where available so old file text remains visible.",
+    "You can delete a choice that no file uses.",
+    "If files already use it, keep it for history and inactivate it when possible.",
+    "Example: inactivate an old mode to hide it from new entries. Existing files keep their saved mode.",
   ],
   userDelete: [
     "Moves this user account out of active use.",
     "This action needs the deletion password.",
   ],
   universalViewerCashOutgoScope: [
-    "View only cannot save MER or Cash Out Go Plan changes.",
-    "Personal Cash Out Go saves planning offsets and row dates only for that Universal Viewer account.",
-    "Global Cash Out Go + MER can save official Cash Out Go Plan changes and MER for the software.",
+    "View-only users cannot save MER or Cash Out Go Plan changes.",
+    "Personal Cash Out Go saves offsets and dates for that Universal Viewer account only.",
+    "Global Cash Out Go + MER saves the official plan and MER for everyone.",
   ],
   archiveRestore: [
     "Restores the archived item back to active records.",
@@ -440,9 +480,9 @@ const settingsControlHelpers = {
     "This action needs the deletion password and cannot be undone from this screen.",
   ],
   ipMode: [
-    "Off allows normal login and does not enforce trusted IPs.",
-    "Notify allows login but records and notifies Admin when a new IP is used.",
-    "Restrict blocks login from IPs that are not active in the trusted list.",
+    "Off leaves login unchanged.",
+    "Notify allows login and tells Admin when someone signs in from a new IP.",
+    "Restrict allows login only from active addresses in the trusted list.",
   ],
   ipCurrent: [
     "Shows the IP address detected for the current browser/backend request.",
@@ -599,49 +639,44 @@ function canViewAllDivisions(role: AppUserRole | undefined) {
   return role === "admin" || role === "sub_admin" || role === "universal_viewer";
 }
 
-let settingsUsageFilesCache: FileRecord[] | undefined;
-let settingsUsageFilesPromise: Promise<FileRecord[]> | undefined;
-
 function useSettingsUsageFiles() {
   const fallbackFiles = useFiles();
   const [usageFiles, setUsageFiles] = useState<FileRecord[]>(
-    () => settingsUsageFilesCache ?? fallbackFiles,
+    () => fallbackFiles,
   );
 
   useEffect(() => {
     let cancelled = false;
-    if (settingsUsageFilesCache) {
-      setUsageFiles(settingsUsageFilesCache);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    settingsUsageFilesPromise ??= Promise.all([
-      fetchFilesForYear(""),
-      store.listArchivedFiles().catch(() => ({ files: [] as FileRecord[] })),
-    ]).then(([activePayload, archivedPayload]) => {
-      const byId = new Map<string, FileRecord>();
-      [...activePayload.files, ...archivedPayload.files].forEach((file) => byId.set(file.id, file));
-      const files = Array.from(byId.values());
-      settingsUsageFilesCache = files;
-      return files;
-    });
-
-    settingsUsageFilesPromise
-      .then((files) => {
-        if (!cancelled) setUsageFiles(files);
-      })
-      .catch((error) => {
+    let inFlight = false;
+    const loadUsageFiles = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const [activePayload, archivedPayload] = await Promise.all([
+          fetchFilesForYear(""),
+          store.listArchivedFiles(),
+        ]);
+        if (!cancelled) {
+          const byId = new Map<string, FileRecord>();
+          [...activePayload.files, ...archivedPayload.files].forEach((file) =>
+            byId.set(file.id, file),
+          );
+          setUsageFiles(Array.from(byId.values()));
+        }
+      } catch (error) {
         console.error(error);
         if (!cancelled) setUsageFiles(fallbackFiles);
-      })
-      .finally(() => {
-        settingsUsageFilesPromise = undefined;
-      });
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void loadUsageFiles();
+    window.addEventListener("focus", loadUsageFiles);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", loadUsageFiles);
     };
   }, [fallbackFiles]);
 
@@ -650,10 +685,12 @@ function useSettingsUsageFiles() {
 
 function SettingsPage() {
   const activeUser = useActiveUser();
+  const settingsRole: AppUserRole | undefined = activeUser?.role;
   const locationSearch = useRouterState({ select: (state) => state.location.search });
   const [activeAdminSection, setActiveAdminSection] = useState("divisions");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
   const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
+  const [expandedAdminGroup, setExpandedAdminGroup] = useState("organization");
 
   useEffect(() => {
     const requestedSection =
@@ -757,6 +794,12 @@ function SettingsPage() {
       label: "Workspace",
       helper: settingsSectionHelpers.workspace,
       content: <WorkspaceSettings />,
+    },
+    {
+      key: "offsetDays",
+      label: "Offset days setting",
+      helper: settingsSectionHelpers.offsetDays,
+      content: <OffsetDaysSettings />,
     },
     {
       key: "yearSetup",
@@ -875,15 +918,54 @@ function SettingsPage() {
   ];
   const universalViewer = isUniversalViewer(activeUser?.role);
   const adminSections = universalViewer
-    ? allAdminSections.filter((section) => section.key === "user" || section.key === "presets")
-    : activeUser?.role === "sub_admin"
-      ? allAdminSections.filter((section) => section.key === "user" || section.key === "workspace")
+    ? allAdminSections.filter((section) =>
+        ["user", "presets", "offsetDays"].includes(section.key),
+      )
+    : settingsRole === "sub_admin"
+      ? allAdminSections.filter((section) => ["user", "workspace", "offsetDays"].includes(section.key))
       : allAdminSections;
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
   const selectedAdminSectionUnlocked =
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
     (universalViewer && ["user", "presets"].includes(selectedAdminSection.key));
+  const adminSectionGroups = [
+    {
+      key: "organization",
+      label: "Organization",
+      keys: ["workspace", "yearSetup", "divisions", "indentors"],
+    },
+    {
+      key: "procurement",
+      label: "Procurement Setup",
+      keys: ["modes", "fileTypes", "firmTypes", "firms", "tcec", "fileMarkers", "milestones"],
+    },
+    {
+      key: "analytics",
+      label: "Analytics and reports",
+      keys: [
+        "thresholds",
+        "offsetDays",
+        "demandProcessing",
+        "presets",
+        "firmRating",
+        "mmgSummary",
+        "anomalyGovernance",
+      ],
+    },
+    {
+      key: "access",
+      label: "Access and security",
+      keys: ["user", "users", "ipAccess", "archive"],
+    },
+  ]
+    .map((group) => ({
+      ...group,
+      sections: group.keys
+        .map((key) => adminSections.find((section) => section.key === key))
+        .filter((section): section is AdminSection => Boolean(section)),
+    }))
+    .filter((group) => group.sections.length > 0);
 
   const setAdminSectionUnlocked = (key: string, unlocked: boolean) => {
     setUnlockedAdminSections((current) => ({ ...current, [key]: unlocked }));
@@ -891,18 +973,18 @@ function SettingsPage() {
 
   return (
     <div className="space-y-4 max-w-none">
-      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900">
-        <div className="font-semibold">Settings protection rule</div>
-        <div className="mt-1 text-xs leading-5">
-          If a value is used in any active or archived file history, Settings will protect it. Use
-          Transfer/Merge/Inactivate where applicable instead of deleting historical references.
+      <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 text-sm">
+        <div className="font-semibold">Protecting file history</div>
+        <div className="mt-1 text-xs leading-5 text-muted-foreground">
+          Values used in active or archived file history may be locked against editing or deletion.
+          Use the available edit, inactivate, or archive actions; historical references are kept.
         </div>
       </div>
       <div
         className={
           "grid grid-cols-1 gap-4 " +
           (settingsSidePanelHooked
-            ? "lg:grid-cols-[230px_minmax(0,1fr)]"
+          ? "lg:grid-cols-[260px_minmax(0,1fr)]"
             : "lg:grid-cols-[48px_minmax(0,1fr)]")
         }
       >
@@ -921,27 +1003,62 @@ function SettingsPage() {
                 Unhook
               </button>
             </div>
-            <div className="space-y-1">
-              {adminSections.map((section) => {
-                const selected = selectedAdminSection.key === section.key;
-                return (
-                  <div key={section.key} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setActiveAdminSection(section.key)}
+            <div className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto pr-1">
+              {adminSectionGroups.map((group) => (
+                <section
+                  key={group.key}
+                  className="overflow-hidden rounded-md border border-border bg-secondary/20"
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedAdminGroup((current) =>
+                        current === group.key ? "" : group.key,
+                      )
+                    }
+                    aria-expanded={expandedAdminGroup === group.key}
+                    className={
+                      "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide transition " +
+                      (group.sections.some((section) => section.key === selectedAdminSection.key)
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground")
+                    }
+                  >
+                    <span>{group.label}</span>
+                    <ChevronDown
                       className={
-                        "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
-                        (selected
-                          ? "bg-primary text-primary-foreground shadow-sm"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                        "size-4 transition-transform " +
+                        (expandedAdminGroup === group.key ? "rotate-180" : "")
                       }
-                    >
-                      {section.label}
-                    </button>
-                    <SettingsHelper items={section.helper} label={`${section.label} help`} />
-                  </div>
-                );
-              })}
+                      aria-hidden="true"
+                    />
+                  </button>
+                  {expandedAdminGroup === group.key ? (
+                    <div className="space-y-1 border-t border-border bg-secondary/20 p-1.5">
+                      {group.sections.map((section) => {
+                        const selected = selectedAdminSection.key === section.key;
+                        return (
+                          <div key={section.key} className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setActiveAdminSection(section.key)}
+                              className={
+                                "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
+                                (selected
+                                  ? "bg-primary text-primary-foreground shadow-sm"
+                                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                              }
+                            >
+                              {section.label}
+                            </button>
+                            <SettingsHelper items={section.helper} label={`${section.label} help`} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </section>
+              ))}
             </div>
           </aside>
         ) : (
@@ -1104,6 +1221,214 @@ function HelpedControl({
   );
 }
 
+type SettingsCashOutGoPlan = {
+  settings: {
+    billOffsetDays: number;
+    defaultBillOffsetDays: number;
+    useCustomBillOffsetDays: boolean;
+    handSubmissionOffsetDays: number;
+    defaultHandSubmissionOffsetDays: number;
+    useCustomHandSubmissionOffsetDays: boolean;
+    dpOffsetDays: number;
+    defaultDpOffsetDays: number;
+    useCustomDpOffsetDays: boolean;
+  };
+  billsSubmitted?: SettingsCashOutGoRow[];
+  billsAtHand?: SettingsCashOutGoRow[];
+  deliveredBillsPending?: SettingsCashOutGoRow[];
+  dpBasedForecast?: SettingsCashOutGoRow[];
+  dpExpired?: SettingsCashOutGoRow[];
+};
+
+type SettingsCashOutGoRow = {
+  rowKey: string;
+  expectedSentDateOverride?: string;
+  manualExpectedPaymentDate?: string;
+  billOffsetOverride?: string;
+};
+
+function CashOutGoOffsetSettings({
+  canEdit,
+  scopeNote,
+}: {
+  canEdit: boolean;
+  scopeNote: string;
+}) {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [plan, setPlan] = useState<SettingsCashOutGoPlan | undefined>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const query = new URLSearchParams({
+      financialYear: settings.financialYear,
+      includePreviousFySubmitted: "false",
+      divisionId: "all",
+    });
+    fetch(`${apiBase}/api/reports/cash-out-go-plan?${query}`, {
+      credentials: "include",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Cash Out Go offsets could not be loaded.");
+        const body = (await response.json()) as { plan?: SettingsCashOutGoPlan };
+        setPlan(body.plan);
+        setError("");
+      })
+      .catch((loadError: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(loadError instanceof Error ? loadError.message : "Offsets could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [settings.financialYear]);
+
+  const updateOffset = (key: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays", value: string) => {
+    if (!plan) return;
+    const defaultDays = key === "dpOffsetDays"
+      ? plan.settings.defaultDpOffsetDays
+      : key === "billOffsetDays"
+        ? plan.settings.defaultBillOffsetDays
+        : plan.settings.defaultHandSubmissionOffsetDays;
+    const isPersonalScope =
+      activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal";
+    const enabledKey = key === "dpOffsetDays"
+      ? "useCustomDpOffsetDays"
+      : key === "billOffsetDays"
+        ? "useCustomBillOffsetDays"
+        : "useCustomHandSubmissionOffsetDays";
+    const days = Math.max(0, Number.parseInt(value || "0", 10) || 0);
+    setPlan({
+      ...plan,
+      settings: {
+        ...plan.settings,
+        [key]: days,
+        [enabledKey]: isPersonalScope ? days !== defaultDays : true,
+      },
+    });
+    setSaved(false);
+  };
+
+  const save = async () => {
+    if (!plan || !canEdit) return;
+    setSaving(true);
+    setError("");
+    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const rows = [
+      ...(plan.billsSubmitted ?? []),
+      ...(plan.billsAtHand ?? []),
+      ...(plan.deliveredBillsPending ?? []),
+      ...(plan.dpBasedForecast ?? []),
+      ...(plan.dpExpired ?? []),
+    ].map((row) => ({
+      rowKey: row.rowKey,
+      expectedSentDate: row.expectedSentDateOverride,
+      expectedPaymentDate: row.manualExpectedPaymentDate,
+      billOffsetOverride: row.billOffsetOverride || "",
+    }));
+    try {
+      const response = await fetch(`${apiBase}/api/reports/cash-out-go-plan`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...plan.settings, rows }),
+      });
+      if (!response.ok) throw new Error("Cash Out Go offsets could not be saved.");
+      setSaved(true);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Offsets could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cashSettings = plan?.settings;
+  const fields = [
+    {
+      key: "dpOffsetDays" as const,
+      label: "D.P. / revised D.P. to expected cash-out date",
+      value: cashSettings?.dpOffsetDays ?? 10,
+      helper: [
+        "Reports → Cash Out Go Plan → D.P.-based forecast.",
+        "Reports → Expected Cash Outgo by D.P.",
+        "The plan adds one day before this offset.",
+      ],
+    },
+    {
+      key: "handSubmissionOffsetDays" as const,
+      label: "Bill preparation to expected submission / resubmission",
+      value: cashSettings?.handSubmissionOffsetDays ?? 5,
+      helper: [
+        "Reports → Cash Out Go Plan → Bills at Hand.",
+        "Sets the expected interval from the row's forecast base date to sending or resubmitting the bill.",
+      ],
+    },
+    {
+      key: "billOffsetDays" as const,
+      label: "Bill sent / resubmitted to expected payment",
+      value: cashSettings?.billOffsetDays ?? 5,
+      helper: [
+        "Reports → Cash Out Go Plan → expected payment date.",
+        "A row-specific payment-offset override takes precedence when present.",
+      ],
+    },
+  ];
+
+  return (
+    <div className="mt-4 rounded-md border border-border bg-background p-4">
+      <h4 className="text-sm font-semibold">Cash Out Go forecast offsets</h4>
+      <p className="mb-4 mt-1 text-xs text-muted-foreground">
+        {scopeNote} Click Save shared offsets to keep your change for future visits. It remains in effect until changed and saved again. Row-specific overrides remain separate where the report allows them.
+      </p>
+      {loading ? <p className="text-xs text-muted-foreground">Loading shared offsets...</p> : null}
+      <div className="grid gap-3 md:grid-cols-3">
+        {fields.map((field) => (
+          <label key={field.key} className="block rounded-md border border-border p-3">
+            <span className="mb-1 block text-xs font-medium">{field.label}</span>
+            <span className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                value={field.value}
+                disabled={!canEdit || loading || !plan}
+                onChange={(event) => updateOffset(field.key, event.target.value)}
+                className="h-9 w-24 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+              />
+              <span className="text-xs text-muted-foreground">days</span>
+            </span>
+            <span className="mt-2 block space-y-1 text-xs leading-relaxed text-muted-foreground">
+              {field.helper.map((line) => (
+                <span key={line} className="block">
+                  {line}
+                </span>
+              ))}
+            </span>
+          </label>
+        ))}
+      </div>
+      {canEdit ? (
+        <div className="mt-3 flex items-center gap-3">
+          <button type="button" className="btn-primary h-9 px-3" onClick={() => void save()} disabled={!plan || loading || saving || saved}>
+            {saving ? "Saving..." : saved ? "Saved" : "Save shared offsets"}
+          </button>
+          {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : null}
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-muted-foreground">You can view these values; your role cannot change shared Cash Out Go offsets.</p>
+      )}
+    </div>
+  );
+}
+
 function splitHelperText(items: string[]) {
   return items
     .flatMap((item) => protectHelperAbbreviations(item).split("\n"))
@@ -1242,10 +1567,101 @@ function AddEditRibbonSettings() {
   );
 }
 
+function OffsetDaysSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const canEditPreSoOffsets =
+    activeUser?.role === "admin" || activeUser?.role === "sub_admin";
+  const canEditCashOutGoOffsets =
+    activeUser?.role === "admin" ||
+    activeUser?.role === "sub_admin" ||
+    (activeUser?.role === "universal_viewer" &&
+      (activeUser.cashOutgoEditScope === "personal" ||
+        activeUser.cashOutgoEditScope === "global"));
+  const cashOutGoScopeNote =
+    activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal"
+      ? "Your edits apply only to your personal Cash Out Go view."
+      : "Authorized edits apply to the shared Cash Out Go Plan.";
+
+  const offsets = [
+    {
+      label: "Pre-S.O. stage date to expected S.O. date",
+      value: settings.preSoDefaultSoOffsetDays ?? 30,
+      disabled: !canEditPreSoOffsets,
+      onChange: (value: number) => store.updateSettings({ preSoDefaultSoOffsetDays: value }),
+      helper: [
+        "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
+        "Counts from the selected pre-S.O. milestone date to estimate when the S.O. may be placed.",
+      ],
+    },
+    {
+      label: "Expected S.O. date to expected payment date",
+      value: settings.preSoDefaultPaymentOffsetDays ?? 30,
+      disabled: !canEditPreSoOffsets,
+      onChange: (value: number) => store.updateSettings({ preSoDefaultPaymentOffsetDays: value }),
+      helper: [
+        "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
+        "Counts from the estimated S.O. date to estimate the payment date.",
+      ],
+    },
+    {
+      label: "Warranty-period end to BG return due date",
+      value: settings.bgReturnOffsetDays ?? 60,
+      disabled: !canEditPreSoOffsets,
+      onChange: (value: number) => store.updateSettings({ bgReturnOffsetDays: value }),
+      helper: [
+        "Used in Add/Edit File and BG-return checks in Search, Dashboard, Analytics, and Reports.",
+        "Admin/Sub-admin changes apply throughout the software.",
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded-md border border-border bg-secondary/20 p-4">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold">Pre-S.O. and BG offsets</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            These values describe the interval from a starting event to the expected date. Changes save to Settings automatically and remain in effect for future calculations until changed again. Report-level overrides, where available, remain separate.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {offsets.map((offset) => (
+            <label key={offset.label} className="block rounded-md border border-border bg-background p-3">
+              <span className="mb-1 block text-xs font-medium">{offset.label}</span>
+              <span className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  value={offset.value}
+                  disabled={offset.disabled}
+                  onChange={(event) =>
+                    offset.onChange(Math.max(0, Number(event.target.value || 0)))
+                  }
+                  className="h-9 w-24 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
+                />
+                <span className="text-xs text-muted-foreground">days</span>
+              </span>
+              <span className="mt-2 block space-y-1 text-xs leading-relaxed text-muted-foreground">
+                {offset.helper.map((line) => (
+                  <span key={line} className="block">{line}</span>
+                ))}
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+      <CashOutGoOffsetSettings canEdit={canEditCashOutGoOffsets} scopeNote={cashOutGoScopeNote} />
+    </div>
+  );
+}
+
 function WorkspaceSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
-  const [selectedYearFileCount, setSelectedYearFileCount] = useState(0);
+  const [selectedYearFileCount, setSelectedYearFileCount] = useState(-1);
+  const [yearUsageError, setYearUsageError] = useState("");
+  const [yearUsageRetry, setYearUsageRetry] = useState(0);
   const [newFinancialYear, setNewFinancialYear] = useState("");
   const [newFinancialYearError, setNewFinancialYearError] = useState("");
   const [workspaceYear, setWorkspaceYear] = useState(settings.financialYear);
@@ -1272,6 +1688,8 @@ function WorkspaceSettings() {
   }, [financialYears, settings.financialYear, workspaceYear]);
   useEffect(() => {
     let cancelled = false;
+    setSelectedYearFileCount(-1);
+    setYearUsageError("");
     store
       .getFinancialYearUsageCount(workspaceYear)
       .then((payload) => {
@@ -1279,19 +1697,21 @@ function WorkspaceSettings() {
       })
       .catch((error) => {
         console.error(error);
-        if (!cancelled) setSelectedYearFileCount(0);
+        if (!cancelled) {
+          setSelectedYearFileCount(-1);
+          setYearUsageError("Could not check whether this year has files. Retry before deleting it.");
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [workspaceYear]);
+  }, [workspaceYear, yearUsageRetry]);
   const canDeleteSelectedYear =
     workspaceYear !== settings.financialYear &&
     selectedYearFileCount === 0 &&
+    !yearUsageError &&
     financialYears.length > 1;
   const canEditWorkspaceGlobals = activeUser?.role === "admin";
-  const canEditPreSoOffsets = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
-
   const addFinancialYear = () => {
     const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
@@ -1446,6 +1866,21 @@ function WorkspaceSettings() {
                   <Trash2 className="size-4" /> Delete
                 </button>
               </HelpedControl>
+              {selectedYearFileCount < 0 && !yearUsageError ? (
+                <span className="text-xs text-muted-foreground">Checking year records...</span>
+              ) : null}
+              {yearUsageError ? (
+                <div className="flex items-center gap-2 text-xs text-destructive">
+                  <span>{yearUsageError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setYearUsageRetry((current) => current + 1)}
+                    className="font-semibold underline underline-offset-2"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1468,47 +1903,6 @@ function WorkspaceSettings() {
           disabled={!canEditWorkspaceGlobals}
           helper={deletionPasswordHelper}
         />
-        <div className="md:col-span-2 rounded-md border border-border bg-secondary/20 p-4">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold">Pre-S.O. expected cash outgo defaults</h3>
-            <p className="text-xs text-muted-foreground">
-              These defaults are used in Reports → Pre-S.O. based expected cash outgo unless a stage
-              override is saved in the report.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="block">
-              <div className="mb-1.5 text-xs font-medium">Default S.O. offset days</div>
-              <input
-                type="number"
-                min="0"
-                value={settings.preSoDefaultSoOffsetDays ?? 30}
-                disabled={!canEditPreSoOffsets}
-                onChange={(event) =>
-                  store.updateSettings({
-                    preSoDefaultSoOffsetDays: Math.max(0, Number(event.target.value || 0)),
-                  })
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
-              />
-            </label>
-            <label className="block">
-              <div className="mb-1.5 text-xs font-medium">Default payment offset days</div>
-              <input
-                type="number"
-                min="0"
-                value={settings.preSoDefaultPaymentOffsetDays ?? 30}
-                disabled={!canEditPreSoOffsets}
-                onChange={(event) =>
-                  store.updateSettings({
-                    preSoDefaultPaymentOffsetDays: Math.max(0, Number(event.target.value || 0)),
-                  })
-                }
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
-              />
-            </label>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -1850,7 +2244,7 @@ function FileTypeSettings() {
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
-  const [newFileTypeGroup, setNewFileTypeGroup] = useState<FileTypeGroup>("goodsServices");
+  const [newFileTypeGroup, setNewFileTypeGroup] = useState<FileTypeGroup | "">("");
   const fileTypes = normalizeFileTypes(settings.fileTypes);
   const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
   const rows = getMasterValueUsageRows(fileTypes, getFileTypeUsage(files));
@@ -1867,7 +2261,7 @@ function FileTypeSettings() {
 
   const add = () => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || !newFileTypeGroup) return;
     const exists = fileTypes.some((fileType) => fileType.toLowerCase() === trimmed.toLowerCase());
     if (!exists) {
       updateFileTypes(
@@ -1876,7 +2270,7 @@ function FileTypeSettings() {
       );
     }
     setName("");
-    setNewFileTypeGroup("goodsServices");
+    setNewFileTypeGroup("");
   };
 
   const rename = (index: number, value: string) => {
@@ -1935,6 +2329,7 @@ function FileTypeSettings() {
             className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             aria-label="Workflow group for new file type"
           >
+            <option value="">Select workflow group</option>
             {fileTypeGroupOptions.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -1946,7 +2341,8 @@ function FileTypeSettings() {
         <button
           type="button"
           onClick={add}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          disabled={!name.trim() || !newFileTypeGroup}
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="size-4" /> Add
         </button>
@@ -2855,7 +3251,7 @@ function AnomalyGovernanceSettings() {
     title: row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception",
     detail:
       row.previousField || row.laterField
-        ? `${row.previousField || "Expected"}: ${row.previousValue || "-"}; ${row.laterField || "Found"}: ${row.laterValue || "-"}`
+        ? `${row.previousField || "Earlier value"}: ${row.previousValue || "-"}; ${row.laterField || "Recorded value"}: ${row.laterValue || "-"}`
         : row.context
           ? `Context: ${row.context}`
           : "",
@@ -3002,10 +3398,10 @@ function AnomalyGovernanceSettings() {
                   </div>
                   <div>
                     <div>
-                      {row.previousField || "Expected"}: {row.previousDate || "-"}
+                      {row.previousField ? `${row.previousField}: ` : ""}{row.previousDate || "-"}
                     </div>
                     <div>
-                      {row.laterField || "Found"}: {row.laterDate || "-"}
+                      {row.laterField ? `${row.laterField}: ` : ""}{row.laterDate || "-"}
                     </div>
                     {row.userExplanation ? (
                       <div className="mt-1 text-muted-foreground">
@@ -3306,10 +3702,12 @@ function MilestoneSettings() {
 
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <h2 className="text-sm font-semibold mb-1">Milestones</h2>
+      <div className="mb-1 inline-flex items-center gap-1.5">
+        <h2 className="text-sm font-semibold">Milestones</h2>
+        <SettingsHelper items={settingsSectionHelpers.milestones} label="Milestones help" />
+      </div>
       <p className="text-xs text-muted-foreground mb-5">
-        Rename/reorder carefully. Used milestones can be inactivated for future selection while old
-        file/S.O. history remains visible. File Closed stays protected.
+        Milestones affect workflow boards and Status views. Review the guidance before changing them.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
@@ -3476,7 +3874,10 @@ function TableFieldPresetSettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold mb-1">Preset table fields</h2>
+          <div className="mb-1 inline-flex items-center gap-1.5">
+            <h2 className="text-sm font-semibold">Preset table fields</h2>
+            <SettingsHelper items={settingsSectionHelpers.presets} label="Preset table fields help" />
+          </div>
           <p className="text-xs text-muted-foreground">
             Shared presets are set by admin and visible to all. Add personal presets visible only to
             your own login.
@@ -3862,7 +4263,7 @@ function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDay
         maxDays: String(record.maxDays ?? "").trim(),
       };
     })
-    .filter((range): range is DemandProcessingDayRange => Boolean(range));
+    .filter((range): range is NonNullable<typeof range> => range !== undefined);
   return ranges.length ? ranges : defaultDemandProcessingDayRanges;
 }
 
@@ -3877,7 +4278,7 @@ function validateDemandProcessingDayRanges(ranges: DemandProcessingDayRange[]) {
     if (!minText || !Number.isInteger(min) || min < 0) {
       return { error: `${label}: minimum days must be a non-negative whole number.` };
     }
-    if (maxText && (!Number.isInteger(max) || max < 0)) {
+    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
       return { error: `${label}: maximum days must be a non-negative whole number.` };
     }
     return { label, min, max };
@@ -3909,9 +4310,15 @@ function DemandProcessingDayRangeSettings({
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold mb-1">Demand processing day ranges</h2>
+          <div className="mb-1 inline-flex items-center gap-1.5">
+            <h2 className="text-sm font-semibold">Demand processing day ranges</h2>
+            <SettingsHelper
+              items={settingsControlHelpers.demandProcessingDayRanges}
+              label="Demand processing day ranges help"
+            />
+          </div>
           <p className="text-xs text-muted-foreground">
-            Configure gap buckets used in Demand processing analysis.
+            These ranges group results in Reports &gt; Demand processing analysis.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -4017,9 +4424,12 @@ function MmgSummarySettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold mb-1">MMG Summary</h2>
+          <div className="mb-1 inline-flex items-center gap-1.5">
+            <h2 className="text-sm font-semibold">MMG Summary</h2>
+            <SettingsHelper items={settingsSectionHelpers.mmgSummary} label="MMG Summary help" />
+          </div>
           <p className="text-xs text-muted-foreground">
-            Choose fields and edit labels for the MMG Summary report export.
+            Choose the rows and row labels shown in Reports &gt; MMG Summary.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -4156,8 +4566,8 @@ function DivisionSettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Divisions</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Rename only for corrections. Transfer/merge work belongs in Year Setup. Delete is available
-        only when no files use the division.
+        Rename only to correct the division name; linked records will show the updated name. Delete
+        is available only when no files use the division.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_0.8fr_0.7fr_auto]">
@@ -4298,10 +4708,11 @@ function DivisionSettings() {
 	                            <button
 	                              type="button"
 	                              disabled
-		                              title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Transfer/Merge first.`}
-	                              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+	                              title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"}, including Archive. Historical references are protected.`}
+	                              aria-label={`Cannot delete ${division.name}; it is used in file history`}
+	                              className="size-8 grid place-items-center rounded-md text-muted-foreground opacity-60"
 	                            >
-	                              Transfer/Merge first
+	                              <Trash2 className="size-4" />
 	                            </button>
 	                          ) : (
 	                            <HelpedControl
@@ -4344,12 +4755,13 @@ type IndentorDraft = Pick<
 
 type FirmDraft = Pick<
   MasterFirm,
-  "firmName" | "firmType" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
+  "firmName" | "firmType" | "firmTypeOther" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
 >;
 
 const emptyFirmDraft: FirmDraft = {
   firmName: "",
   firmType: "",
+  firmTypeOther: "",
   emailId: "",
   city: "",
   address: "",
@@ -4361,6 +4773,7 @@ function cleanFirmDraft(draft: FirmDraft): FirmDraft {
   return {
     firmName: draft.firmName?.trim() || "",
     firmType: draft.firmType?.trim() || "",
+    firmTypeOther: draft.firmType?.trim().toUpperCase() === "OTHER" ? draft.firmTypeOther?.trim() || "" : "",
     emailId: draft.emailId?.trim() || "",
     city: draft.city?.trim() || "",
     address: draft.address?.trim() || "",
@@ -4546,7 +4959,10 @@ function FirmDatabaseSettings() {
   const lastResultNumber = Math.min(firmTotal, (page - 1) * pageSize + firms.length);
   const isComplete = (value: FirmDraft) => {
     const cleaned = cleanFirmDraft(value);
-    return Boolean(cleaned.firmName || cleaned.emailId || cleaned.firmUniqueNo);
+    return Boolean(
+      (cleaned.firmName || cleaned.emailId || cleaned.firmUniqueNo) &&
+      (cleaned.firmType?.toUpperCase() !== "OTHER" || cleaned.firmTypeOther),
+    );
   };
 
   const updateDraft = (key: keyof FirmDraft, value: string) => {
@@ -4579,6 +4995,7 @@ function FirmDatabaseSettings() {
     setEditDraft({
       firmName: firm.firmName ?? "",
       firmType: firm.firmType ?? "",
+      firmTypeOther: firm.firmTypeOther ?? "",
       emailId: firm.emailId ?? "",
       city: firm.city ?? "",
       address: firm.address ?? "",
@@ -4694,11 +5111,21 @@ function FirmDatabaseSettings() {
           placeholder="Contact No."
           type="tel"
         />
-        <FirmTypeSelect
-          value={draft.firmType ?? ""}
-          options={firmTypeOptions}
-          onChange={(value) => updateDraft("firmType", value)}
-        />
+        <div className="space-y-2">
+          <FirmTypeSelect
+            value={draft.firmType ?? ""}
+            options={firmTypeOptions}
+            onChange={(value) => updateDraft("firmType", value)}
+          />
+          {draft.firmType?.toUpperCase() === "OTHER" ? (
+            <FirmInput
+              value={draft.firmTypeOther ?? ""}
+              onChange={(value) => updateDraft("firmTypeOther", value)}
+              placeholder="Specify firm type"
+              invalid={!draft.firmTypeOther?.trim()}
+            />
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={() => void addFirm()}
@@ -4737,11 +5164,11 @@ function FirmDatabaseSettings() {
           <colgroup>
             <col className="w-[16%]" />
             <col className="w-[12%]" />
-            <col className="w-[15%]" />
-            <col className="w-[17%]" />
+            <col className="w-[12%]" />
+            <col className="w-[13%]" />
             <col className="w-[8%]" />
             <col className="w-[9%]" />
-            <col className="w-[9%]" />
+            <col className="w-[16%]" />
             <col className="w-[8%]" />
             <col className="w-[6%]" />
           </colgroup>
@@ -4772,6 +5199,7 @@ function FirmDatabaseSettings() {
                 const editChanged = !isSettingsDirtyValueEqual(cleanFirmDraft(editDraft), {
                   firmName: firm.firmName ?? "",
                   firmType: firm.firmType ?? "",
+                  firmTypeOther: firm.firmTypeOther ?? "",
                   emailId: firm.emailId ?? "",
                   city: firm.city ?? "",
                   address: firm.address ?? "",
@@ -4784,6 +5212,7 @@ function FirmDatabaseSettings() {
                       editing={isEditing}
                       value={isEditing ? editDraft.firmName : firm.firmName}
                       onChange={(value) => updateEditDraft("firmName", value)}
+                      displayWidth={20}
                     />
                     <FirmCell
                       editing={isEditing}
@@ -4801,6 +5230,7 @@ function FirmDatabaseSettings() {
                       editing={isEditing}
                       value={isEditing ? editDraft.address : firm.address}
                       onChange={(value) => updateEditDraft("address", value)}
+                      displayWidth={26}
                     />
                     <FirmCell
                       editing={isEditing}
@@ -4813,12 +5243,29 @@ function FirmDatabaseSettings() {
                       onChange={(value) => updateEditDraft("contactNo", numericOnly(value))}
                       type="tel"
                     />
-                    <FirmCell
-                      editing={isEditing}
-                      value={isEditing ? editDraft.firmType : firm.firmType}
-                      onChange={(value) => updateEditDraft("firmType", value)}
-                      options={firmTypeOptions}
-                    />
+                    <td className="break-words px-3 py-3 text-muted-foreground">
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <FirmTypeSelect
+                            value={editDraft.firmType ?? ""}
+                            options={firmTypeOptions}
+                            onChange={(value) => updateEditDraft("firmType", value)}
+                          />
+                          {editDraft.firmType?.toUpperCase() === "OTHER" ? (
+                            <FirmInput
+                              value={editDraft.firmTypeOther ?? ""}
+                              onChange={(value) => updateEditDraft("firmTypeOther", value)}
+                              placeholder="Specify firm type"
+                              invalid={!editDraft.firmTypeOther?.trim()}
+                            />
+                          ) : null}
+                        </div>
+                      ) : (
+                        [firm.firmType, firm.firmType?.toUpperCase() === "OTHER" ? firm.firmTypeOther : ""]
+                          .filter(Boolean)
+                          .join(": ") || "Not set"
+                      )}
+                    </td>
 	                    <td className="break-words px-3 py-3 text-muted-foreground">
 	                      {firm.firmRating || "Not rated"}
 	                    </td>
@@ -4922,6 +5369,7 @@ function FirmCell({
   type = "text",
   invalid = false,
   options,
+  displayWidth,
 }: {
   editing: boolean;
   value?: string;
@@ -4929,6 +5377,7 @@ function FirmCell({
   type?: string;
   invalid?: boolean;
   options?: string[];
+  displayWidth?: number;
 }) {
   return (
     <td className="break-words px-3 py-3 text-muted-foreground">
@@ -4944,6 +5393,8 @@ function FirmCell({
             invalid={invalid}
           />
         )
+      ) : displayWidth ? (
+        <CompactTableText value={value || "Not set"} width={displayWidth} />
       ) : (
         value || "Not set"
       )}
@@ -5173,29 +5624,6 @@ function IndentorSettings() {
   const [indentorTotal, setIndentorTotal] = useState(0);
   const [indentorsLoading, setIndentorsLoading] = useState(false);
   const [indentorsError, setIndentorsError] = useState<string | undefined>();
-  const [transferIndentors, setTransferIndentors] = useState<Indentor[]>([]);
-  const transferIndentorOptions = useMemo(() => {
-    const labelById = new Map<string, string>();
-    const idByLabel = new Map<string, string>();
-    for (const indentor of transferIndentors) {
-      const base = `${indentor.name} - ${indentor.divisionName}${indentor.sfId ? ` [${indentor.sfId}]` : ""}`;
-      const label = idByLabel.has(base) ? `${base} [${indentor.id}]` : base;
-      labelById.set(indentor.id, label);
-      idByLabel.set(label, indentor.id);
-    }
-    return { labelById, idByLabel };
-  }, [transferIndentors]);
-  const [transferSourceId, setTransferSourceId] = useState("");
-  const [transferTargetId, setTransferTargetId] = useState("");
-  const [transferScope, setTransferScope] = useState<IndentorTransferScope>("active");
-  const [transferYear, setTransferYear] = useState("");
-  const [transferPreview, setTransferPreview] = useState<IndentorTransferPreview | null>(null);
-  const [transferMessage, setTransferMessage] = useState<string | undefined>();
-  const [transferLoading, setTransferLoading] = useState(false);
-  const [transferCommitting, setTransferCommitting] = useState(false);
-  const [transferReason, setTransferReason] = useState("");
-  const [transferArchiveSource, setTransferArchiveSource] = useState(false);
-  const [transferConfirmation, setTransferConfirmation] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<IndentorDraft>(emptyIndentorDraft);
 
@@ -5239,16 +5667,6 @@ function IndentorSettings() {
     loadIndentors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [divisionFilter, debouncedSearch, page, pageSize]);
-
-  useEffect(() => {
-    if (!canManage) return;
-    fetchIndentors({ page: 1, pageSize: 200 })
-      .then((result) => setTransferIndentors(result.indentors))
-      .catch((error) => {
-        console.error(error);
-        setTransferMessage(error instanceof Error ? error.message : "Failed to load transfer list.");
-      });
-  }, [canManage]);
 
   const totalPages = Math.max(1, Math.ceil(indentorTotal / pageSize));
   const firstResultNumber = indentorTotal === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -5329,86 +5747,6 @@ function IndentorSettings() {
     }
   };
 
-  const previewIndentorTransfer = async () => {
-    setTransferMessage(undefined);
-    setTransferPreview(null);
-    if (!transferSourceId || !transferTargetId) {
-      setTransferMessage("Select both source and target indentor.");
-      return;
-    }
-    if (transferSourceId === transferTargetId) {
-      setTransferMessage("Source and target indentor cannot be same.");
-      return;
-    }
-    if (transferScope === "financialYear" && !transferYear.trim()) {
-      setTransferMessage("Enter financial year for selected FY transfer.");
-      return;
-    }
-    setTransferLoading(true);
-    try {
-      const result = await store.previewIndentorTransfer({
-        sourceIndentorId: transferSourceId,
-        targetIndentorId: transferTargetId,
-        scope: transferScope,
-        financialYear: transferScope === "financialYear" ? transferYear.trim() : undefined,
-      });
-      setTransferPreview(result.preview);
-      setTransferConfirmation("");
-      setTransferMessage(
-        `Preview ready: ${result.preview.count} file${result.preview.count === 1 ? "" : "s"} matched.`,
-      );
-    } catch (error) {
-      setTransferMessage(error instanceof Error ? error.message : "Failed to preview transfer.");
-    } finally {
-      setTransferLoading(false);
-    }
-  };
-
-  const commitIndentorTransfer = async () => {
-    if (!transferPreview) return;
-    setTransferMessage(undefined);
-    if (!transferReason.trim()) {
-      setTransferMessage("Reason is required before transfer.");
-      return;
-    }
-    const expectedConfirmation = `TRANSFER ${transferPreview.count} FILES`;
-    if (transferConfirmation.trim().toUpperCase() !== expectedConfirmation) {
-      setTransferMessage(`Type "${expectedConfirmation}" to confirm transfer.`);
-      return;
-    }
-    setTransferCommitting(true);
-    try {
-      const result = await store.commitIndentorTransfer({
-        sourceIndentorId: transferPreview.sourceIndentor.id,
-        targetIndentorId: transferPreview.targetIndentor.id,
-        scope: transferScope,
-        financialYear: transferScope === "financialYear" ? transferYear.trim() : undefined,
-        reason: transferReason.trim(),
-        expectedCount: transferPreview.count,
-        confirmationText: transferConfirmation.trim().toUpperCase(),
-        archiveSourceIndentor: transferArchiveSource,
-      });
-      setTransferMessage(
-        `Transfer completed: ${result.transfer.movedFileCount} file${result.transfer.movedFileCount === 1 ? "" : "s"} moved.`,
-      );
-      setTransferPreview(null);
-      setTransferSourceId("");
-      setTransferTargetId("");
-      setTransferReason("");
-      setTransferConfirmation("");
-      setTransferArchiveSource(false);
-      loadIndentors();
-      fetchIndentors({ page: 1, pageSize: 200 })
-        .then((list) => setTransferIndentors(list.indentors))
-        .catch((error) => console.error(error));
-      void store.reload();
-    } catch (error) {
-      setTransferMessage(error instanceof Error ? error.message : "Failed to transfer indentor files.");
-    } finally {
-      setTransferCommitting(false);
-    }
-  };
-
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -5421,11 +5759,10 @@ function IndentorSettings() {
 	            Division and Name are required. Other details may be left blank and completed later
 	            by an admin or sub-admin.
 	          </p>
-	          <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
-	            Edit is for correcting indentor master details only. It does not update old file
-	            rows already saved with that indentor. Use Indentor Transfer when existing files
-	            must move to another indentor or division responsibility.
-	          </p>
+          <p className="mt-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+            Editing changes the indentor master record only. Existing file records keep the
+            indentor name and division saved on them.
+          </p>
 	        </div>
         <div className="flex w-full flex-col gap-2 sm:max-w-xl sm:flex-row">
           <select
@@ -5497,196 +5834,6 @@ function IndentorSettings() {
           <Plus className="size-4" /> Add indentor
         </button>
       </div>
-
-      {canManage ? (
-        <div className="mt-5 rounded-md border border-border bg-secondary/20 p-4">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold">Indentor Transfer</h3>
-            <p className="text-xs text-muted-foreground">
-              Preview files before moving responsibility from one indentor to another.
-            </p>
-            <p className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800">
-              If the target indentor belongs to another division, file responsibility and
-              division-wise reporting move to that division. Budget allocation is not transferred
-              automatically; adjust division allocation separately if required.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_12rem_9rem_auto]">
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <span>Source indentor</span>
-              <SearchableDropdown
-                value={transferIndentorOptions.labelById.get(transferSourceId) ?? ""}
-                onChange={(label) => {
-                  const nextId = transferIndentorOptions.idByLabel.get(label) ?? "";
-                  setTransferSourceId(nextId);
-                  if (nextId === transferTargetId) setTransferTargetId("");
-                  setTransferPreview(null);
-                }}
-                options={Array.from(transferIndentorOptions.idByLabel.keys())}
-                placeholder="Select source"
-                deferChangeUntilSelect
-                typeAheadOnly
-                allowCustomValue={false}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <span>Target indentor</span>
-              <SearchableDropdown
-                value={transferIndentorOptions.labelById.get(transferTargetId) ?? ""}
-                onChange={(label) => {
-                  setTransferTargetId(transferIndentorOptions.idByLabel.get(label) ?? "");
-                  setTransferPreview(null);
-                }}
-                options={Array.from(transferIndentorOptions.idByLabel.entries())
-                  .filter(([, id]) => id !== transferSourceId)
-                  .map(([label]) => label)}
-                placeholder="Select target"
-                deferChangeUntilSelect
-                typeAheadOnly
-                allowCustomValue={false}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <span>Transfer scope</span>
-              <select
-                value={transferScope}
-                onChange={(event) => {
-                  setTransferScope(event.target.value as IndentorTransferScope);
-                  setTransferPreview(null);
-                }}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="active">Active/open files</option>
-                <option value="financialYear">Selected FY files</option>
-                <option value="all">All historical files</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <span>FY</span>
-              <input
-                value={transferYear}
-                onChange={(event) => {
-                  setTransferYear(event.target.value);
-                  setTransferPreview(null);
-                }}
-                disabled={transferScope !== "financialYear"}
-                placeholder="2026-27"
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
-              />
-            </label>
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={() => void previewIndentorTransfer()}
-                disabled={transferLoading}
-                className="h-9 rounded-md border border-border bg-background px-3 text-xs font-semibold hover:bg-accent disabled:cursor-wait disabled:opacity-60"
-              >
-                {transferLoading ? "Checking..." : "Preview"}
-              </button>
-            </div>
-          </div>
-          {transferMessage ? (
-            <p className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs">
-              {transferMessage}
-            </p>
-          ) : null}
-          {transferPreview ? (
-            <div className="mt-3 rounded-md border border-border bg-background">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs">
-                <span className="font-semibold">
-                  {transferPreview.count} affected file{transferPreview.count === 1 ? "" : "s"}
-                </span>
-                <span className="text-muted-foreground">
-                  Review the list, enter a reason, then type the confirmation text before transfer.
-                </span>
-              </div>
-              <div className="max-h-56 overflow-auto">
-                {transferPreview.files.length ? (
-                  <table className="min-w-full text-left text-xs">
-                    <thead className="bg-secondary/60 text-muted-foreground">
-                      <tr>
-                        <th className="px-3 py-2">Control No.</th>
-                        <th className="px-3 py-2">Division</th>
-                        <th className="px-3 py-2">FY</th>
-                        <th className="px-3 py-2">Closure</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transferPreview.files.map((file) => (
-                        <tr key={file.id} className="border-t border-border">
-                          <td className="px-3 py-2 font-medium">
-                            {file.imms || "-"}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {file.division || "Not set"}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">{file.year || "Not set"}</td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {file.fileClosureDate || "Open"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="px-3 py-4 text-xs text-muted-foreground">
-                    No files matched this transfer scope.
-                  </div>
-                )}
-              </div>
-              {transferPreview.count > 0 ? (
-                <div className="space-y-3 border-t border-border p-3">
-                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    <span>Reason for transfer</span>
-                    <input
-                      value={transferReason}
-                      onChange={(event) => setTransferReason(event.target.value)}
-                      placeholder="Example: Indentor retired / responsibility reassigned"
-                      className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-                    />
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={transferArchiveSource}
-                      onChange={(event) => setTransferArchiveSource(event.target.checked)}
-                      className="size-4"
-                    />
-                    <span>Archive source indentor after successful transfer</span>
-                  </label>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      <span>
-                        Type{" "}
-                        <span className="font-semibold text-foreground">
-                          TRANSFER {transferPreview.count} FILES
-                        </span>
-                      </span>
-                      <input
-                        value={transferConfirmation}
-                        onChange={(event) => setTransferConfirmation(event.target.value)}
-                        className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
-                      />
-                    </label>
-                    <div className="flex items-end">
-                      <button
-                        type="button"
-                        onClick={() => void commitIndentorTransfer()}
-                        disabled={transferCommitting}
-                        className="h-9 rounded-md bg-destructive px-3 text-xs font-semibold text-destructive-foreground hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
-                      >
-                        {transferCommitting ? "Transferring..." : "Commit Transfer"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
 
       <SettingsPaginationControls
         firstResultNumber={firstResultNumber}
@@ -5831,10 +5978,11 @@ function IndentorSettings() {
                                 <button
                                   type="button"
                                   disabled
-	                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Use Indentor Transfer first.`}
-                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"}, including Archive. Historical references are protected.`}
+                                  aria-label={`Cannot delete ${indentor.name}; it is used in file history`}
+                                  className="size-8 grid place-items-center rounded-md text-muted-foreground opacity-60"
                                 >
-                                  Transfer
+                                  <Trash2 className="size-4" />
                                 </button>
                               ) : (
                                 <HelpedControl
@@ -7102,7 +7250,9 @@ function ArchiveSettings() {
               ) : (
                 archivedFirms.map((firm) => (
                   <tr key={firm.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">{firm.firmName || "Not set"}</td>
+                    <td className="px-4 py-3 font-medium">
+                      <CompactTableText value={firm.firmName || "Not set"} width={20} />
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {firm.firmUniqueNo || "Not set"}
                     </td>
@@ -7397,7 +7547,7 @@ function cashOutgoEditScopeLabel(role: AppUserRole, scope?: string | null) {
 
 function normalizeUserFileCategories(
   values: string[] | null | undefined,
-  options: FileCategoryOption[] = fileCategoryOptions,
+  options: readonly FileCategoryOption[] = fileCategoryOptions,
 ): FileCategoryKey[] {
   const optionKeys = options.map((option) => option.key);
   if (!values) return optionKeys;
@@ -7419,7 +7569,7 @@ function normalizeUserFileCategories(
 
 function fileCategoryAccessLabel(
   values: string[] | null | undefined,
-  options: FileCategoryOption[] = fileCategoryOptions,
+  options: readonly FileCategoryOption[] = fileCategoryOptions,
 ) {
   const categories = normalizeUserFileCategories(values, options);
   if (categories.length === options.length) return "All file types";

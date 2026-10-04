@@ -229,9 +229,9 @@ test.describe("refloat and returned bill status visibility", () => {
 
     await page.getByTestId("dashboard-tab-status3").click();
     await expect(page.getByTestId("status-counter-refloat-bidding-in-process")).toBeVisible();
-    await expect(page.getByTestId("status-counter-refloat-post-tcec-in-process")).toBeVisible();
-    await expect(page.getByTestId("status-counter-bill-returned-for-correction-total")).toBeVisible();
-    const returnedBillPending = page.getByTestId("status-counter-bill-returned-for-correction-pending");
+    await expect(page.getByTestId("status-counter-refloat-post-tcec-due")).toBeVisible();
+    await expect(page.getByTestId("status-counter-returned-bills-bills-returned")).toBeVisible();
+    const returnedBillPending = page.getByTestId("status-counter-returned-bills-return-pending");
     await expect(returnedBillPending).toBeVisible();
     await expect(returnedBillPending).not.toHaveText("0");
 
@@ -241,10 +241,10 @@ test.describe("refloat and returned bill status visibility", () => {
     await expect(page.getByRole("columnheader", { name: "Returned Bills" })).toHaveCount(0);
 
     await page.getByTestId("dashboard-tab-status3").click();
-    await page.getByTestId("status-counter-refloat-post-tcec-in-process").click();
+    await page.getByTestId("status-counter-refloat-post-tcec-due").click();
     await expect(page).toHaveURL(/\/search/);
     await expect(page.getByLabel("Dashboard drill path")).toContainText(
-      "DashboardStatus-3Refloat Post-TCECIn processSearch Files",
+      "DashboardStatus-3Refloat Post-TCECDueSearch Files",
     );
     await expect(page.getByLabel("Dashboard drill path").getByRole("link", { name: "Dashboard" })).toHaveAttribute(
       "href",

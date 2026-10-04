@@ -594,6 +594,7 @@ const definitions = [
       noOfSo: "1",
       supplyOrders: [
         order(x.code, d, x.value, {
+          dpDate: "2025-11-17",
           currentMilestone: "Bill preparation",
           jobCompletionDate: d.delivery,
           completedMilestones: ["Financial Sanction", "Supply Order", "Job Completion"],
@@ -620,6 +621,7 @@ const definitions = [
       noOfSo: "1",
       supplyOrders: [
         completedJobCompletionOrder(x.code, d, x.value, {
+          dpDate: "2025-11-17",
           supplementaryBills: [
             {
               billNo: `SUPP-${x.code}`,
@@ -952,6 +954,7 @@ const definitions = [
       noOfSo: "1",
       supplyOrders: [
         completedJobCompletionOrder(x.code, d, x.value, {
+          dpDate: "2026-08-17",
           supplementaryBills: [
             {
               billNo: `SUPP-${x.code}`,

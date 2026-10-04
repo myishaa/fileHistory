@@ -12,7 +12,12 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import { displayFinancialYearLabel, isFileVisibleForYear } from "@/lib/year-filter";
-import { formatThousandsAndLakhs, parseAmount } from "@/lib/money";
+import {
+  formatAmountInput,
+  formatThousandsAndLakhs,
+  handleFormattedAmountInput,
+  parseAmount,
+} from "@/lib/money";
 import { DateInput } from "@/components/date-input";
 
 export const Route = createFileRoute("/year-setup")({
@@ -40,6 +45,7 @@ export function YearSetupPanel() {
   const settings = useSettings();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [currentDivisions, setCurrentDivisions] = useState<Division[]>([]);
+  const [currentDivisionsYear, setCurrentDivisionsYear] = useState("");
   const [drafts, setDrafts] = useState<Record<string, DraftAllocation>>({});
   const [savingId, setSavingId] = useState<string | undefined>();
   const [newName, setNewName] = useState("");
@@ -72,7 +78,7 @@ export function YearSetupPanel() {
   const [deactivateSplitSource, setDeactivateSplitSource] = useState(false);
   const [splitSaving, setSplitSaving] = useState(false);
   const [splitMessage, setSplitMessage] = useState("");
-  const [activeSubview, setActiveSubview] = useState<YearSetupSubview>("setup");
+  const [activeSubview] = useState<YearSetupSubview>("setup");
   const setupYear = settings.setupYear || settings.financialYear;
   const setupYearLabel = displayFinancialYearLabel(setupYear);
 
@@ -90,16 +96,21 @@ export function YearSetupPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    setCurrentDivisions([]);
+    setCurrentDivisionsYear("");
+    setFiles([]);
     Promise.all([store.getDivisionsForYear(setupYear, true), fetchFilesForYear(setupYear)])
       .then(([divisionPayload, filePayload]) => {
         if (cancelled) return;
         setCurrentDivisions(divisionPayload.divisions);
+        setCurrentDivisionsYear(setupYear);
         setFiles(filePayload.files);
       })
       .catch((error) => {
         console.error(error);
         if (!cancelled) {
           setCurrentDivisions([]);
+          setCurrentDivisionsYear("");
           setFiles([]);
         }
       });
@@ -109,11 +120,13 @@ export function YearSetupPanel() {
   }, [reloadKey, setupYear]);
 
   useEffect(() => {
+    if (currentDivisionsYear !== setupYear) return;
     setDrafts((current) => {
       const next = { ...current };
       currentDivisions.forEach((division) => {
-        if (!next[division.id]) {
-          next[division.id] = {
+        const key = getAllocationDraftKey(setupYear, division.id);
+        if (!next[key]) {
+          next[key] = {
             allocatedCapital: division.allocatedCapital ?? "",
             allocatedRevenue: division.allocatedRevenue ?? "",
             active: division.active ?? false,
@@ -122,7 +135,9 @@ export function YearSetupPanel() {
       });
       return next;
     });
-  }, [currentDivisions]);
+  }, [currentDivisions, currentDivisionsYear, setupYear]);
+
+  const yearDivisions = currentDivisionsYear === setupYear ? currentDivisions : [];
 
   const currentFilesByDivision = useMemo(
     () => getYearFileCounts(files, setupYear),
@@ -131,8 +146,8 @@ export function YearSetupPanel() {
 
   const rows = useMemo(
     () =>
-      currentDivisions.map((division) => {
-        const draft = drafts[division.id] ?? {
+      yearDivisions.map((division) => {
+        const draft = drafts[getAllocationDraftKey(setupYear, division.id)] ?? {
           allocatedCapital: division.allocatedCapital ?? "",
           allocatedRevenue: division.allocatedRevenue ?? "",
           active: division.active ?? false,
@@ -142,25 +157,25 @@ export function YearSetupPanel() {
           draft,
         };
       }),
-    [currentDivisions, drafts],
+    [yearDivisions, drafts, setupYear],
   );
 
   const activeDivisions = useMemo(
-    () => currentDivisions.filter((division) => division.active),
-    [currentDivisions],
+    () => yearDivisions.filter((division) => division.active),
+    [yearDivisions],
   );
   const targetOptions = useMemo(
-    () => currentDivisions.filter((division) => !mergeSourceIds.includes(division.id)),
-    [currentDivisions, mergeSourceIds],
+    () => yearDivisions.filter((division) => !mergeSourceIds.includes(division.id)),
+    [yearDivisions, mergeSourceIds],
   );
   const selectedSourceFileCount = useMemo(
     () =>
-      currentDivisions
+      yearDivisions
         .filter((division) => mergeSourceIds.includes(division.id))
         .reduce((total, division) => total + (currentFilesByDivision.get(division.name) ?? 0), 0),
-    [currentDivisions, currentFilesByDivision, mergeSourceIds],
+    [yearDivisions, currentFilesByDivision, mergeSourceIds],
   );
-  const splitSourceDivision = currentDivisions.find(
+  const splitSourceDivision = yearDivisions.find(
     (division) => division.id === splitSourceDivisionId,
   );
   useEffect(() => {
@@ -190,8 +205,8 @@ export function YearSetupPanel() {
   }, [splitSourceDivisionId, splitIndentorSearch, splitIndentorPage]);
   const splitIndentorTotalPages = Math.max(1, Math.ceil(splitIndentorTotal / 100));
   const splitTargetOptions = useMemo(
-    () => currentDivisions.filter((division) => division.id !== splitSourceDivisionId),
-    [currentDivisions, splitSourceDivisionId],
+    () => yearDivisions.filter((division) => division.id !== splitSourceDivisionId),
+    [yearDivisions, splitSourceDivisionId],
   );
   const splitSelectedIndentorNames = useMemo(
     () => splitIndentorIds.map((id) => selectedSplitIndentorNames[id]).filter(Boolean),
@@ -214,6 +229,7 @@ export function YearSetupPanel() {
   const splitRemainingCapital = splitSourceCapital - splitTransferCapital;
   const splitRemainingRevenue = splitSourceRevenue - splitTransferRevenue;
 
+
   if (activeUser?.role !== "admin") {
     return (
       <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
@@ -226,12 +242,13 @@ export function YearSetupPanel() {
   }
 
   const updateDraft = (id: string, patch: Partial<DraftAllocation>) => {
+    const key = getAllocationDraftKey(setupYear, id);
     setDrafts((current) => ({
       ...current,
-      [id]: {
-        allocatedCapital: current[id]?.allocatedCapital ?? "",
-        allocatedRevenue: current[id]?.allocatedRevenue ?? "",
-        active: current[id]?.active ?? false,
+      [key]: {
+        allocatedCapital: current[key]?.allocatedCapital ?? "",
+        allocatedRevenue: current[key]?.allocatedRevenue ?? "",
+        active: current[key]?.active ?? false,
         ...patch,
       },
     }));
@@ -241,9 +258,7 @@ export function YearSetupPanel() {
     setSavingId(division.id);
     try {
       await store.saveDivisionAllocation(division.id, setupYear, allocation);
-      setCurrentDivisions((current) =>
-        current.map((item) => (item.id === division.id ? { ...item, ...allocation } : item)),
-      );
+      setReloadKey((value) => value + 1);
     } finally {
       setSavingId(undefined);
     }
@@ -312,11 +327,8 @@ export function YearSetupPanel() {
     const indentor = splitIndentors.find((item) => item.id === indentorId);
     setSelectedSplitIndentorNames((current) => {
       const next = { ...current };
-      if (checked && indentor) {
-        next[indentorId] = indentor.name;
-      } else {
-        delete next[indentorId];
-      }
+      if (checked && indentor) next[indentorId] = indentor.name;
+      else delete next[indentorId];
       return next;
     });
     setSplitIndentorIds((current) =>
@@ -326,22 +338,11 @@ export function YearSetupPanel() {
 
   const splitTransferDivision = async () => {
     setSplitMessage("");
-    if (!splitSourceDivisionId) {
-      setSplitMessage("Select a source division.");
-      return;
-    }
-    if (splitIndentorIds.length === 0) {
-      setSplitMessage("Select at least one indentor.");
-      return;
-    }
-    if (!splitTargetId) {
-      setSplitMessage("Choose an existing target division.");
-      return;
-    }
-    if (splitTargetId === splitSourceDivisionId) {
-      setSplitMessage("Target division cannot be the source division.");
-      return;
-    }
+    if (!splitSourceDivisionId) return setSplitMessage("Select a source division.");
+    if (splitIndentorIds.length === 0) return setSplitMessage("Select at least one indentor.");
+    if (!splitTargetId) return setSplitMessage("Choose an existing target division.");
+    if (splitTargetId === splitSourceDivisionId)
+      return setSplitMessage("Target division cannot be the source division.");
 
     setSplitSaving(true);
     try {
@@ -401,28 +402,6 @@ export function YearSetupPanel() {
             ))}
           </select>
         </label>
-      </div>
-
-      <div className="inline-flex rounded-md border border-border bg-card p-1 shadow-[var(--shadow-card)]">
-        {[
-          { key: "setup", label: "Year setup" },
-          { key: "merge", label: "Merge divisions" },
-          { key: "split", label: "Split / transfer" },
-        ].map((view) => (
-          <button
-            key={view.key}
-            type="button"
-            onClick={() => setActiveSubview(view.key as YearSetupSubview)}
-            className={
-              "h-9 rounded px-3 text-sm font-medium transition " +
-              (activeSubview === view.key
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            {view.label}
-          </button>
-        ))}
       </div>
 
       {activeSubview === "setup" ? (
@@ -745,6 +724,49 @@ export function YearSetupPanel() {
                     className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-50"
                   />
                 </div>
+                {splitSourceDivisionId ? (
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>Page {splitIndentorPage} of {splitIndentorTotalPages}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage <= 1}
+                        onClick={() => setSplitIndentorPage(1)}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage <= 1}
+                        onClick={() => setSplitIndentorPage((current) => Math.max(1, current - 1))}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage >= splitIndentorTotalPages}
+                        onClick={() =>
+                          setSplitIndentorPage((current) =>
+                            Math.min(splitIndentorTotalPages, current + 1),
+                          )
+                        }
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        disabled={splitIndentorPage >= splitIndentorTotalPages}
+                        onClick={() => setSplitIndentorPage(splitIndentorTotalPages)}
+                        className="h-7 rounded-md border border-border px-2 disabled:opacity-50"
+                      >
+                        Last
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="grid max-h-72 gap-2 overflow-auto rounded-md border border-border bg-background p-2">
                   {splitIndentors.map((indentor) => (
                     <label
@@ -969,8 +991,12 @@ function AllocationInput({
 }) {
   return (
     <input
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
+      value={amount ? formatAmountInput(value) : value}
+      onChange={(event) =>
+        amount
+          ? handleFormattedAmountInput(event.currentTarget, onChange)
+          : onChange(event.currentTarget.value)
+      }
       placeholder={placeholder}
       inputMode={amount ? "decimal" : undefined}
       className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -1019,6 +1045,10 @@ function getYearFileCounts(files: FileRecord[], year: string) {
     counts.set(file.division, (counts.get(file.division) ?? 0) + 1);
   });
   return counts;
+}
+
+function getAllocationDraftKey(year: string, divisionId: string) {
+  return `${year}:${divisionId}`;
 }
 
 function formatAmount(value: number) {

@@ -215,7 +215,7 @@ async function assertIndentorUnusedBeforeArchive(indentor: Indentor) {
   if (count > 0) {
     throw new HttpError(
       400,
-      `This indentor is used in ${count} file${count === 1 ? "" : "s"}, including Archive. Use Indentor Transfer first.`,
+      `This indentor is used in ${count} file${count === 1 ? "" : "s"}, including Archive. Historical references are protected.`,
     );
   }
 }
@@ -354,6 +354,9 @@ indentorsRouter.post(
   "/",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    if (user.role === "universal_viewer") {
+      throw new HttpError(403, "You cannot add indentors.");
+    }
     const body = requireObjectBody(request.body);
     const divisionId =
       typeof body.divisionId === "string" && body.divisionId.trim()

@@ -1,4 +1,12 @@
 const helperSectionRules = [
+  { title: "Purpose", match: /^\s*purpose:/i },
+  { title: "Add or activate", match: /^\s*add or activate:/i },
+  { title: "Reorder", match: /^\s*reorder:/i },
+  { title: "Remove", match: /^\s*remove:/i },
+  {
+    title: "Caution",
+    match: /^\s*(caution|warning)\b/i,
+  },
   {
     title: "Example",
     match: /^\s*(example|e\.g\.)\b/i,
@@ -34,12 +42,17 @@ function groupHelperLines(lines: string[]) {
       groups.set(section, [...(groups.get(section) ?? []), line]);
     });
   const sectionOrder = [
+    "Purpose",
+    "Add or activate",
+    "Reorder",
+    "Remove",
     "Filters",
     "Included and excluded",
     "What is counted",
     "Clicking a result",
-    "Example",
     "Details",
+    "Caution",
+    "Example",
   ];
   return Array.from(groups, ([title, items]) => ({ title, items })).sort(
     (left, right) => sectionOrder.indexOf(left.title) - sectionOrder.indexOf(right.title),
@@ -56,7 +69,9 @@ export function HelperContent({ lines }: { lines: string[] }) {
             key={title}
             className={
               "min-w-0 rounded-md border p-3 " +
-              (title === "Filters"
+              (title === "Caution"
+                ? "border-destructive/25 bg-destructive/5"
+                : title === "Filters"
                 ? "border-primary/30 bg-primary/10"
                 : "border-primary/15 bg-primary/5")
             }
@@ -64,7 +79,9 @@ export function HelperContent({ lines }: { lines: string[] }) {
             <h3 className="mb-1.5 text-base font-semibold text-foreground">{title}</h3>
             <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
               {items.map((item, index) => (
-                <li key={`${title}-${index}`}>{item}</li>
+                <li key={`${title}-${index}`}>
+                  {item.replace(/^(Purpose|Add or activate|Reorder|Remove):\s*/i, "")}
+                </li>
               ))}
             </ul>
           </section>

@@ -19,6 +19,7 @@ import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as HelpRouteImport } from './routes/help'
 import { Route as DivisionsRouteImport } from './routes/divisions'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as AiAssistantRouteImport } from './routes/ai-assistant'
 import { Route as AddRouteImport } from './routes/add'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -72,6 +73,11 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AiAssistantRoute = AiAssistantRouteImport.update({
+  id: '/ai-assistant',
+  path: '/ai-assistant',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AddRoute = AddRouteImport.update({
   id: '/add',
   path: '/add',
@@ -86,6 +92,7 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/ai-assistant': typeof AiAssistantRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
   '/help': typeof HelpRoute
@@ -100,6 +107,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/ai-assistant': typeof AiAssistantRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
   '/help': typeof HelpRoute
@@ -115,6 +123,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/ai-assistant': typeof AiAssistantRoute
   '/dashboard': typeof DashboardRoute
   '/divisions': typeof DivisionsRoute
   '/help': typeof HelpRoute
@@ -131,6 +140,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/add'
+    | '/ai-assistant'
     | '/dashboard'
     | '/divisions'
     | '/help'
@@ -145,6 +155,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/add'
+    | '/ai-assistant'
     | '/dashboard'
     | '/divisions'
     | '/help'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/add'
+    | '/ai-assistant'
     | '/dashboard'
     | '/divisions'
     | '/help'
@@ -174,6 +186,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AddRoute: typeof AddRoute
+  AiAssistantRoute: typeof AiAssistantRoute
   DashboardRoute: typeof DashboardRoute
   DivisionsRoute: typeof DivisionsRoute
   HelpRoute: typeof HelpRoute
@@ -258,6 +271,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ai-assistant': {
+      id: '/ai-assistant'
+      path: '/ai-assistant'
+      fullPath: '/ai-assistant'
+      preLoaderRoute: typeof AiAssistantRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/add': {
       id: '/add'
       path: '/add'
@@ -278,6 +298,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AddRoute: AddRoute,
+  AiAssistantRoute: AiAssistantRoute,
   DashboardRoute: DashboardRoute,
   DivisionsRoute: DivisionsRoute,
   HelpRoute: HelpRoute,

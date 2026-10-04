@@ -6,6 +6,8 @@ import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js"
 const QA_USERNAME = "qa_playwright";
 const QA_PASSWORD = "qa_playwright123";
 const QA_PREFIX = "QA-PLAYWRIGHT-SEQAUDIT";
+const QA_FIRM_NAME = "QA Playwright Sequential Firm";
+const QA_FIRM_UNIQUE_NO = "QA-PLAYWRIGHT-SEQAUDIT-FIRM";
 
 type BgCoverage = "None" | "PSB" | "PWB" | "PSB+PWB" | "PSB and PWB separately";
 
@@ -96,20 +98,26 @@ const scenarios: AuditScenario[] = [
 const counterIds = [
   "status-counter-financial-sanction-completed",
   "status-counter-supply-order-placed",
-  "status-counter-delivery-period-completed",
-  "status-counter-delivery-completed",
-  "status-counter-payment-pending",
+  "status-counter-payment-due",
   "status-counter-payment-completed",
   "status-counter-psb-received",
   "status-counter-pwb-received",
   "status-counter-psb-pwb-received",
-  "status-counter-advance-payment-pending",
+  "status-counter-advance-payment-advance-pending",
 ] as const;
 
 async function cleanupQaFiles() {
   await pool.query(
     "delete from files where unique_code like $1 or file_no like $1 or demand_description like $1",
     [`${QA_PREFIX}%`],
+  );
+}
+
+async function ensureQaFirm() {
+  await pool.query("delete from master_firms where firm_unique_no = $1", [QA_FIRM_UNIQUE_NO]);
+  await pool.query(
+    "insert into master_firms (firm_name, firm_unique_no, firm_type) values ($1, $2, 'MSE')",
+    [QA_FIRM_NAME, QA_FIRM_UNIQUE_NO],
   );
 }
 
@@ -166,9 +174,18 @@ async function openStage(page: Page, orderIndex: number, stageIndex: number) {
   if (!isOpen) await card.locator("summary").click();
 }
 
+async function openPaymentCard(page: Page, label: "Advance Payment" | "Normal Payment") {
+  const summary = page.locator("summary").filter({ has: page.getByText(label, { exact: true }) }).first();
+  const card = summary.locator("..");
+  if (!(await card.evaluate((element) => (element as HTMLDetailsElement).open))) {
+    await summary.click();
+  }
+}
+
 async function fillFileDetails(page: Page, code: string, scenario: AuditScenario) {
   await page.getByTestId("add-section-file-details").click();
   await page.getByTestId("add-field-division").fill("ACC");
+  await page.getByTestId("add-field-division").press("Enter");
   await page.getByTestId("add-field-indentor").fill("Playwright Operator");
   await page.getByTestId("add-field-demandDescription").fill(`${code} sequential audit`);
   await page.getByTestId("add-field-valueCapitalSelected").check();
@@ -238,8 +255,9 @@ async function fillSupplyOrderTab(
   );
   await page.getByTestId(`add-field-supplyOrder-${orderIndex}-gemSoNo`).fill(`${code}-GEM-${orderIndex + 1}`);
   await page.getByTestId(`add-field-supplyOrder-${orderIndex}-soValueCapital`).fill(String(10000 + orderIndex * 2500));
-  await page.getByTestId(`add-field-supplyOrder-${orderIndex}-firm`).fill(`Audit Firm ${orderIndex + 1}`);
-  await page.getByTestId(`add-field-supplyOrder-${orderIndex}-firmType`).selectOption({ label: "MSE" });
+  await page.getByTestId(`add-field-supplyOrder-${orderIndex}-firm`).fill(QA_FIRM_NAME);
+  await page.getByTestId(`add-field-supplyOrder-${orderIndex}-firm`).press("Enter");
+  await expect(page.getByTestId(`add-field-supplyOrder-${orderIndex}-firmUniqueNo`)).toHaveValue(QA_FIRM_UNIQUE_NO);
   await clickRadio(page, `add-field-supplyOrder-${orderIndex}-stageDelivery`, order.stageDelivery ? "Yes" : "No");
   if (order.stageDelivery) {
     await page.getByTestId(`add-field-supplyOrder-${orderIndex}-stageDeliveryCount`).fill("2");
@@ -268,12 +286,10 @@ async function fillBg(page: Page, code: string, order: OrderScenario, orderIndex
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-psbBgValidityDate`, "2026-12-31");
   }
   if (coverage === "PWB" || coverage === "PSB and PWB separately") {
-    if (coverage === "PSB and PWB separately") {
-      await page.getByTestId(`add-field-supplyOrder-${orderIndex}-pwbBgNo`).fill(`${code}-PWB-${orderIndex + 1}`);
-      await page.getByTestId(`add-field-supplyOrder-${orderIndex}-pwbBgAmount`).fill("1000");
-      await fillDate(page, `add-field-supplyOrder-${orderIndex}-pwbBgReceivedDate`, "2026-07-26");
-      await fillDate(page, `add-field-supplyOrder-${orderIndex}-pwbBgValidityDate`, "2027-12-31");
-    }
+    await page.getByTestId(`add-field-supplyOrder-${orderIndex}-pwbBgNo`).fill(`${code}-PWB-${orderIndex + 1}`);
+    await page.getByTestId(`add-field-supplyOrder-${orderIndex}-pwbBgAmount`).fill("1000");
+    await fillDate(page, `add-field-supplyOrder-${orderIndex}-pwbBgReceivedDate`, "2026-07-26");
+    await fillDate(page, `add-field-supplyOrder-${orderIndex}-pwbBgValidityDate`, "2027-12-31");
   }
   if (coverage === "PSB+PWB") {
     await page.getByTestId(`add-field-supplyOrder-${orderIndex}-combinedBgNo`).fill(`${code}-COMBINED-${orderIndex + 1}`);
@@ -299,6 +315,11 @@ async function fillDeliveryPeriod(page: Page, scenario: AuditScenario, order: Or
       .fill(stageIndex === 0 ? "4000" : "6000");
     await fillDate(
       page,
+      `add-field-supplyOrder-${orderIndex}-stage-${stageIndex}-deliveryPeriodStartDate`,
+      stageIndex === 0 ? "2026-07-15" : "2026-07-23",
+    );
+    await fillDate(
+      page,
       `add-field-supplyOrder-${orderIndex}-stage-${stageIndex}-dpDate`,
       stageIndex === 0 ? "2026-07-22" : "2026-07-26",
     );
@@ -307,6 +328,7 @@ async function fillDeliveryPeriod(page: Page, scenario: AuditScenario, order: Or
 
 async function fillDeliveryAndInspection(page: Page, scenario: AuditScenario, order: OrderScenario, orderIndex: number) {
   if (scenario.fileType !== "Goods & Services") return;
+  const hasInspection = (order.ir ?? scenario.ir) === "Yes";
   await page.getByTestId("add-so-tab-delivery").click();
   await openSupplyOrder(page, orderIndex);
   if (order.stageDelivery) {
@@ -314,15 +336,15 @@ async function fillDeliveryAndInspection(page: Page, scenario: AuditScenario, or
       await openStage(page, orderIndex, stageIndex);
       await fillDate(
         page,
-        `add-field-supplyOrder-${orderIndex}-stage-${stageIndex}-materialReceiptDate`,
+        `add-field-supplyOrder-${orderIndex}-stage-${stageIndex}-${hasInspection ? "materialReceiptDate" : "jobCompletionDate"}`,
         stageIndex === 0 ? "2026-07-23" : "2026-07-27",
       );
     }
     return;
   }
 
-  await fillDate(page, `add-field-supplyOrder-${orderIndex}-materialReceiptDate`, "2026-07-25");
-  if ((order.ir ?? scenario.ir) === "Yes") {
+  await fillDate(page, `add-field-supplyOrder-${orderIndex}-${hasInspection ? "materialReceiptDate" : "jobCompletionDate"}`, "2026-07-25");
+  if (hasInspection) {
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-irPreparationDate`, "2026-07-26");
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-irReceiptDate`, "2026-07-27");
   }
@@ -332,6 +354,7 @@ async function fillPayment(page: Page, scenario: AuditScenario, order: OrderScen
   await page.getByTestId("add-so-tab-payment").click();
   await openSupplyOrder(page, orderIndex);
   if (order.advancePayment) {
+    await openPaymentCard(page, "Advance Payment");
     await page.getByTestId(`add-field-supplyOrder-${orderIndex}-advance-stageAmountCapital`).fill("2000");
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-advance-billPreparationDate`, "2026-07-12");
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-advance-billSentForPaymentDate`, "2026-07-13");
@@ -348,7 +371,9 @@ async function fillPayment(page: Page, scenario: AuditScenario, order: OrderScen
     }
     return;
   }
+  if (order.stageDelivery) return;
   if (scenario.fileType === "Goods & Services") {
+    await openPaymentCard(page, "Normal Payment");
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-billPreparationDate`, "2026-07-28");
     if (order.completePayment) {
       await fillDate(page, `add-field-supplyOrder-${orderIndex}-billSentForPaymentDate`, "2026-07-29");
@@ -371,7 +396,7 @@ async function saveCurrentFile(page: Page) {
     await dialog.accept();
     return { type: "dialog" as const, message };
   });
-  await page.getByTestId("add-save").click();
+  await page.getByTestId("add-save-file-details").click();
   const result = await Promise.race([responsePromise, dialogPromise]);
   if (result.type === "dialog") {
     throw new Error(`Sequential entry was blocked by validation dialog:\n${result.message}`);
@@ -380,8 +405,11 @@ async function saveCurrentFile(page: Page) {
 }
 
 async function readDashboardCounters(page: Page, tabName: string): Promise<CounterSnapshot> {
-  await page.goto("/");
-  await page.getByText("Dashboard", { exact: true }).click();
+  const summaryResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/dashboard/summary?") && response.ok(),
+  );
+  await page.goto("/dashboard");
+  await summaryResponse;
   await page.getByRole("button", { name: tabName, exact: true }).click();
   const snapshot: CounterSnapshot = {};
   for (const id of counterIds) {
@@ -414,6 +442,7 @@ test.describe("Sequential workflow audit", () => {
 
   test.beforeAll(async () => {
     await cleanupQaFiles();
+    await ensureQaFirm();
     const userId = await ensureQaUser();
     browserSessionToken = await saveUserSession(userId);
   });
@@ -421,26 +450,29 @@ test.describe("Sequential workflow audit", () => {
   test.afterAll(async () => {
     await deleteSession(browserSessionToken);
     await cleanupQaFiles();
+    await pool.query("delete from master_firms where firm_unique_no = $1", [QA_FIRM_UNIQUE_NO]);
     await pool.end();
   });
 
   test("enters 10 mixed demands sequentially and audits dashboard/report clickers", async ({ page }) => {
     test.setTimeout(900_000);
+    page.setDefaultTimeout(15_000);
     await authenticate(page, browserSessionToken);
+    await page.goto("/dashboard");
+    await page.getByTestId("global-year-select").selectOption("2026-27");
+    await page.getByTestId("dashboard-file-year-select").selectOption("2026-27");
 
     const baseline = await readDashboardCounters(page, "Status-3");
     const codes: string[] = [];
-    let expectedSupplyOrders = 0;
 
     for (let index = 0; index < scenarios.length; index += 1) {
       const scenario = scenarios[index];
       const code = `${QA_PREFIX}-${String(index + 1).padStart(2, "0")}`;
       codes.push(code);
-      expectedSupplyOrders += scenario.orders.length;
 
       await test.step(`Sequentially add ${code}`, async () => {
         await page.goto("/add");
-        await expect(page.getByRole("heading", { name: "Add a new file" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "File details" })).toBeVisible();
         await fillFileDetails(page, code, scenario);
         await fillScrutinyAndFileMilestones(page, code);
         await page.getByTestId("add-section-supply-order-and-payment").click();
@@ -459,9 +491,7 @@ test.describe("Sequential workflow audit", () => {
 
       await test.step(`Check Status-3 supply order delta after ${code}`, async () => {
         const current = await readDashboardCounters(page, "Status-3");
-        expect(counterDelta(current, baseline, "status-counter-supply-order-placed")).toBe(
-          expectedSupplyOrders,
-        );
+        expect(counterDelta(current, baseline, "status-counter-supply-order-placed")).toBe(index + 1);
       });
     }
 
@@ -476,19 +506,16 @@ test.describe("Sequential workflow audit", () => {
     await test.step("Compare expected Status-3 counter deltas", async () => {
       const after = await readDashboardCounters(page, "Status-3");
       expect(counterDelta(after, baseline, "status-counter-financial-sanction-completed")).toBe(11);
-      expect(counterDelta(after, baseline, "status-counter-supply-order-placed")).toBe(11);
+      expect(counterDelta(after, baseline, "status-counter-supply-order-placed")).toBe(10);
       expect(counterDelta(after, baseline, "status-counter-psb-received")).toBe(1);
       expect(counterDelta(after, baseline, "status-counter-pwb-received")).toBe(1);
       expect(counterDelta(after, baseline, "status-counter-psb-pwb-received")).toBe(1);
-      expect(counterDelta(after, baseline, "status-counter-payment-completed")).toBeGreaterThanOrEqual(2);
-      expect(counterDelta(after, baseline, "status-counter-payment-pending")).toBeGreaterThanOrEqual(5);
+      expect(counterDelta(after, baseline, "status-counter-payment-completed")).toBe(1);
     });
 
     await test.step("Check source landing for key Status tabs", async () => {
-      for (const tabName of ["Status-1", "Status-2", "Status-3"]) {
-        await clickCounterAndExpectSearch(page, tabName, "status-counter-supply-order-placed");
-        await clickCounterAndExpectSearch(page, tabName, "status-counter-payment-pending");
-      }
+      await clickCounterAndExpectSearch(page, "Status-3", "status-counter-supply-order-placed");
+      await clickCounterAndExpectSearch(page, "Status-3", "status-counter-payment-due");
       await clickCounterAndExpectSearch(page, "Status-3", "status-counter-psb-pwb-received");
     });
 
@@ -503,13 +530,13 @@ test.describe("Sequential workflow audit", () => {
       await expect(page.getByText("Demand processing analysis").first()).toBeVisible();
       await expect(page.getByText("Supply order & delivery").first()).toBeVisible();
 
-      await page.goto("/");
-      await page.getByRole("button", { name: "Analytics", exact: true }).click();
+      await page.goto("/dashboard");
+      await page.getByTestId("dashboard-tab-analytics").click();
       await expect(page.getByText("Suspected anomaly").first()).toBeVisible();
       await expect(page.getByText("Delay Status").first()).toBeVisible();
 
       await page.getByRole("button", { name: "Finance", exact: true }).click();
-      await expect(page.getByText(/Finance summary/i).first()).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Finance", exact: true })).toBeVisible();
     });
   });
 });

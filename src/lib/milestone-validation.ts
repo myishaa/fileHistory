@@ -245,9 +245,9 @@ export function getMilestoneValidationTarget(errors: string[], configuredMilesto
     : milestoneCompletionRules.flatMap((rule) => rule.aliases.slice(0, 1));
   const firstError = errors[0] ?? "";
   const matchingRule = milestoneCompletionRules.find((rule) =>
-    [rule.completionLabel, rule.startLabel, ...rule.aliases].filter(Boolean).some((label) =>
-      firstError.toLowerCase().includes(label.toLowerCase()),
-    ),
+    [rule.completionLabel, rule.startLabel, ...rule.aliases]
+      .filter((label): label is string => Boolean(label))
+      .some((label) => firstError.toLowerCase().includes(label.toLowerCase())),
   );
   if (!matchingRule) return undefined;
   const match = configured.find((milestone) =>

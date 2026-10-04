@@ -14,7 +14,7 @@ export const fileTypeGroupOptions: { value: FileTypeGroup; label: string; descri
     },
     {
       value: "contract",
-      label: "Group B - AMC/MPC/O&M/CARS",
+      label: "Group B - Contract / service files",
       description: "Contract/service workflow based on job completion and stage delivery rules.",
     },
   ];

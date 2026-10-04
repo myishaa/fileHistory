@@ -3,6 +3,7 @@ type ExportTable = {
   headers: string[];
   rows: string[][];
   columnWidths?: number[];
+  emphasizedColumns?: number[];
 };
 
 type ExportDocument = {
@@ -10,6 +11,22 @@ type ExportDocument = {
   subtitle?: string;
   description?: string;
   tables: ExportTable[];
+  plot?: ExportPlot;
+  plots?: ExportPlot[];
+};
+
+type ExportPlot = {
+  kind: "bar" | "line" | "pie";
+  title: string;
+  measure: string;
+  unit?: string;
+  xAxisTitle?: string;
+  yAxisTitle?: string;
+  expandedYears?: string[];
+  compactBars?: boolean;
+  stackedBars?: boolean;
+  categories: string[];
+  series: Array<{ name: string; values: number[]; color?: string }>;
 };
 
 type ExportDescriptionRow =
@@ -40,7 +57,7 @@ type PdfPage = {
 
 type AddPdfPage = () => PdfPage;
 
-export function getExportFileName(title: string, extension: "xls" | "pdf") {
+export function getExportFileName(title: string, extension: "xlsx" | "pdf") {
   const base =
     title
       .trim()
@@ -51,66 +68,7 @@ export function getExportFileName(title: string, extension: "xls" | "pdf") {
 }
 
 export function renderExcelDocument(document: ExportDocument) {
-  const descriptionSections = parseExportDescriptionSections(document.description);
-  const generatedAt = formatGeneratedAt();
-  const tables = document.tables
-    .map(
-      (table) => `
-        ${table.title ? `<h2>${escapeHtml(table.title)}</h2>` : ""}
-        <table>
-          <thead>
-            <tr>${table.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
-          </thead>
-          <tbody>
-            ${
-              table.rows.length
-                ? table.rows
-                    .map(
-                      (row) =>
-                        `<tr>${row.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`,
-                    )
-                    .join("")
-                : `<tr><td colspan="${Math.max(1, table.headers.length)}">No rows found.</td></tr>`
-            }
-          </tbody>
-        </table>
-      `,
-    )
-    .join("");
-
-  return `<!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; margin-bottom: 16px; }
-          th, td { border: 1px solid #999; padding: 6px; text-align: left; vertical-align: top; }
-          th { background: #f3f4f6; font-weight: 700; }
-          h1 { font-size: 18px; margin: 0 0 6px; }
-          h2 { font-size: 14px; margin: 14px 0 6px; }
-          p { margin: 0 0 10px; color: #4b5563; }
-          table.export-title { border-collapse: collapse; width: 100%; margin: 0 0 6px; }
-          table.export-title td { border: 0; padding: 0; }
-          table.export-title .stamp { text-align: right; color: #64748b; font-size: 11px; white-space: nowrap; }
-          table.description { border-collapse: collapse; margin: 0 0 12px; max-width: 900px; }
-          table.description th, table.description td { border: 1px solid #cbd5e1; padding: 5px 7px; color: #374151; }
-          table.description th { background: #e0f2fe; width: 180px; white-space: nowrap; }
-          table.description-notes { border-collapse: collapse; margin: 0 0 12px; max-width: 900px; }
-          table.description-notes td { border: 1px solid #e2e8f0; padding: 5px 7px; color: #475569; background: #f8fafc; font-style: italic; }
-        </style>
-      </head>
-      <body>
-        <table class="export-title">
-          <tr>
-            <td><h1>${escapeHtml(document.title)}</h1></td>
-            <td class="stamp">${escapeHtml(generatedAt)}</td>
-          </tr>
-        </table>
-        ${document.subtitle ? `<p>${escapeHtml(document.subtitle)}</p>` : ""}
-        ${renderDescriptionHtml(descriptionSections)}
-        ${tables}
-      </body>
-    </html>`;
+  return renderXlsxDocument(document);
 }
 
 export function renderPdfDocument(document: ExportDocument) {
@@ -124,13 +82,14 @@ export function renderPdfDocument(document: ExportDocument) {
   objects.push("<< /Type /Catalog /Pages 2 0 R >>");
   objects.push("PAGES_PLACEHOLDER");
   objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
 
   pages.forEach((page) => {
     const pageObjectId = objects.length + 1;
     const contentObjectId = pageObjectId + 1;
     pageObjectIds.push(pageObjectId);
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfPageWidth} ${pdfPageHeight}] /Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfPageWidth} ${pdfPageHeight}] /Resources << /Font << /F1 ${fontObjectId} 0 R /F2 4 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
     );
     const content = page.commands.join("\n");
     objects.push(
@@ -184,9 +143,28 @@ function renderPdfPages(document: ExportDocument) {
   }
   page.y -= descriptionSections.notes.length ? 22 : 10;
 
-  document.tables.flatMap(getPdfTableSegments).forEach((table) => {
+  const plots = [...(document.plot ? [document.plot] : []), ...(document.plots ?? [])];
+  const pdfTables = plots.length
+    ? [
+        ...plots.map((plot) => ({
+          title: `Chart data · ${plot.title} · ${plot.measure}${plot.unit ? ` (${plot.unit})` : ""}`,
+          headers: ["Period", ...plot.series.map((series) => series.name)],
+          rows: plot.categories.map((category, index) => [
+            category,
+            ...plot.series.map((series) => String(series.values[index] ?? 0)),
+          ]),
+        })),
+        ...document.tables,
+      ]
+    : document.tables;
+  plots.forEach((plot) => {
+    page = drawExportPlot(page, plot, addPage);
+  });
+
+  pdfTables.flatMap(getPdfTableSegments).forEach((table) => {
     const columns = normalizeColumns(table.headers.length);
     const columnWidths = getColumnWidths(table.headers, table.rows, table.columnWidths);
+    const emphasizedColumns = new Set(table.emphasizedColumns ?? []);
     const rows = table.rows.length ? table.rows : [["No rows found."]];
 
     const ensureSpace = (height: number) => {
@@ -200,7 +178,7 @@ function renderPdfPages(document: ExportDocument) {
     }
 
     ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
-    drawTableHeader(page, table.headers, columnWidths);
+    drawTableHeader(page, table.headers, columnWidths, emphasizedColumns);
 
     rows.forEach((row) => {
       const cells = columns.map((columnIndex) => normalizeCell(row[columnIndex] ?? ""));
@@ -216,15 +194,166 @@ function renderPdfPages(document: ExportDocument) {
       if (page.y - rowHeight < pdfMargin) {
         page = addPage();
         ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
-        drawTableHeader(page, table.headers, columnWidths);
+        drawTableHeader(page, table.headers, columnWidths, emphasizedColumns);
       }
-      drawTableRow(page, wrappedCells, columnWidths, rowHeight);
+      drawTableRow(page, wrappedCells, columnWidths, rowHeight, false, emphasizedColumns);
     });
 
     page.y -= 24;
   });
 
   return pages;
+}
+
+function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
+  const colors = ["0.06 0.46 0.43", "0.15 0.39 0.92", "0.78 0.25 0.12", "0.50 0.30 0.68"];
+  const categories = plot.categories;
+  const series = plot.series.slice(0, 4);
+  const seriesColors = series.map((item, index) =>
+    item.color && /^#[0-9a-f]{6}$/i.test(item.color)
+      ? item.color
+          .slice(1)
+          .match(/.{2}/g)!
+          .map((channel) => (parseInt(channel, 16) / 255).toFixed(3))
+          .join(" ")
+      : colors[index],
+  );
+  if (!categories.length || !series.length) {
+    if (page.y - 50 < pdfMargin) page = addPage();
+    drawText(page, plot.title, pdfMargin, page.y, pdfSubheadingFontSize + 1, true);
+    page.y -= 18;
+    drawText(page, "No plotted values.", pdfMargin, page.y, pdfFontSize);
+    page.y -= 24;
+    return page;
+  }
+  const chartLeft = plot.kind === "bar" ? pdfMargin + 160 : pdfMargin + 38;
+  const chartRight = pdfPageWidth - pdfMargin - 12;
+  const chartWidth = chartRight - chartLeft;
+  const details = [`Measure: ${plot.measure}`, plot.unit, plot.expandedYears?.length ? `Expanded years: ${plot.expandedYears.join(", ")}` : ""]
+    .filter(Boolean)
+    .join(" · ");
+  const pageSize =
+    plot.kind === "line"
+      ? 12
+      : plot.kind === "pie" || plot.compactBars
+        ? categories.length
+        : 18;
+  const pageCount = Math.ceil(categories.length / pageSize);
+  const maxValue = Math.max(
+    1,
+    ...(plot.stackedBars
+      ? categories.map((_, index) =>
+          series.reduce((sum, item) => sum + Math.max(0, item.values[index] ?? 0), 0),
+        )
+      : series.flatMap((item) => item.values.map((value) => Math.max(0, value)))),
+  );
+
+  for (let offset = 0; offset < categories.length; offset += pageSize) {
+    if (page.y - 410 < pdfMargin) page = addPage();
+    const pageCategories = categories.slice(offset, offset + pageSize);
+    const suffix = pageCount > 1 ? ` (${Math.floor(offset / pageSize) + 1}/${pageCount})` : "";
+    drawText(page, `${plot.title}${suffix}`, pdfMargin, page.y, pdfSubheadingFontSize + 1, true);
+    page.y -= 16;
+    if (details) {
+      drawText(page, details, pdfMargin, page.y, pdfFontSize);
+      page.y -= 18;
+    }
+    series.forEach((item, index) => {
+      const x = pdfMargin + (index % 2) * 250;
+      const y = page.y - 3 - Math.floor(index / 2) * 13;
+      page.commands.push(`${seriesColors[index]} rg`);
+      page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(y - 2)} 7 7 re f`);
+      drawText(page, item.name, x + 11, y - 1, pdfFontSize - 1);
+    });
+
+    const chartTop = page.y - 24;
+    const chartBottom = pdfMargin + 54;
+    const chartHeight = chartTop - chartBottom;
+    if (plot.kind === "pie") {
+      const pieValues = series[0].values.slice(offset, offset + pageCategories.length).map((value) => Math.max(0, value));
+      const pieTotal = pieValues.reduce((sum, value) => sum + value, 0);
+      const centerX = pdfMargin + 290;
+      const centerY = chartBottom + Math.min(170, chartHeight * 0.48);
+      const radius = Math.min(115, chartHeight * 0.38);
+      let angle = -Math.PI / 2;
+      pageCategories.forEach((category, index) => {
+        const value = pieValues[index] ?? 0;
+        const sweep = pieTotal > 0 ? (value / pieTotal) * Math.PI * 2 : 0;
+        const points = Math.max(2, Math.ceil(sweep * 24));
+        page.commands.push(`${colors[index % colors.length]} rg`);
+        page.commands.push(`${formatPdfNumber(centerX)} ${formatPdfNumber(centerY)} m`);
+        page.commands.push(`${formatPdfNumber(centerX + Math.cos(angle) * radius)} ${formatPdfNumber(centerY + Math.sin(angle) * radius)} l`);
+        for (let point = 1; point <= points; point += 1) {
+          const nextAngle = angle + (sweep * point) / points;
+          page.commands.push(`${formatPdfNumber(centerX + Math.cos(nextAngle) * radius)} ${formatPdfNumber(centerY + Math.sin(nextAngle) * radius)} l`);
+        }
+        page.commands.push("h f");
+        const share = pieTotal ? Math.round((value / pieTotal) * 100) : 0;
+        const legendY = chartTop - 24 - index * 15;
+        page.commands.push(`${colors[index % colors.length]} rg`);
+        page.commands.push(`${formatPdfNumber(pdfMargin + 515)} ${formatPdfNumber(legendY - 2)} 7 7 re f`);
+        drawText(page, `${category.slice(0, 32)}: ${value} (${share}%)`, pdfMargin + 527, legendY - 1, pdfFontSize - 1);
+        angle += sweep;
+      });
+    } else if (plot.kind === "line") {
+      const plotTop = chartTop - 12;
+      const plotBottom = chartBottom + 10;
+      const xStep = pageCategories.length > 1 ? chartWidth / (pageCategories.length - 1) : 0;
+      page.commands.push("0.7 0.73 0.78 RG 0.7 w");
+      page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(plotBottom)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(plotBottom)} l S`);
+      series.forEach((item, seriesIndex) => {
+        page.commands.push(`${seriesColors[seriesIndex]} RG 1.8 w`);
+        const points = pageCategories.map((_, index) => ({
+          x: chartLeft + index * xStep,
+          y: plotBottom + (Math.max(0, item.values[offset + index] ?? 0) / maxValue) * (plotTop - plotBottom),
+        }));
+        if (points.length) {
+          page.commands.push(`${formatPdfNumber(points[0].x)} ${formatPdfNumber(points[0].y)} m`);
+          points.slice(1).forEach((point) => page.commands.push(`${formatPdfNumber(point.x)} ${formatPdfNumber(point.y)} l`));
+          page.commands.push("S");
+          points.forEach((point) => page.commands.push(`${formatPdfNumber(point.x - 2)} ${formatPdfNumber(point.y - 2)} 4 4 re f`));
+        }
+      });
+      pageCategories.forEach((category, index) => {
+        const x = chartLeft + index * xStep;
+        drawText(page, category.slice(0, 13), x - 18, chartBottom - 13, pdfFontSize - 2);
+      });
+    } else {
+      const rowHeight = chartHeight / pageSize;
+      const groupHeight = Math.max(4, rowHeight / (series.length + 1));
+      pageCategories.forEach((category, categoryIndex) => {
+        const yTop = chartTop - categoryIndex * rowHeight;
+        drawText(page, category.slice(0, 28), pdfMargin, yTop - groupHeight, pdfFontSize - 1);
+        if (plot.stackedBars) {
+          let x = chartLeft;
+          let total = 0;
+          series.forEach((item, seriesIndex) => {
+            const value = Math.max(0, item.values[offset + categoryIndex] ?? 0);
+            total += value;
+            const width = chartWidth * (value / maxValue);
+            page.commands.push(`${seriesColors[seriesIndex]} rg`);
+            page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(yTop - groupHeight)} ${formatPdfNumber(width)} ${formatPdfNumber(Math.max(2, groupHeight - 1))} re f`);
+            x += width;
+          });
+          if (total > 0) {
+            drawText(page, String(total), Math.min(chartRight - 12, x + 3), yTop - groupHeight + 1, pdfFontSize - 2);
+          }
+          return;
+        }
+        series.forEach((item, seriesIndex) => {
+          const value = Math.max(0, item.values[offset + categoryIndex] ?? 0);
+          const y = yTop - (seriesIndex + 1) * groupHeight;
+          const width = chartWidth * (value / maxValue);
+          page.commands.push(`${seriesColors[seriesIndex]} rg`);
+          page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(y)} ${formatPdfNumber(Math.max(value ? 1 : 0, width))} ${formatPdfNumber(Math.max(2, groupHeight - 1))} re f`);
+          if (value > 0) drawText(page, String(value), Math.min(chartRight - 12, chartLeft + width + 3), y + 1, pdfFontSize - 2);
+        });
+      });
+    }
+    page.y = pdfMargin + 20;
+    if (offset + pageSize < categories.length) page = addPage();
+  }
+  return page;
 }
 
 function createPdfPage(): PdfPage {
@@ -244,14 +373,19 @@ function addPdfPageNumbers(pages: PdfPage[]) {
   });
 }
 
-function drawTableHeader(page: PdfPage, headers: string[], columnWidths: number[]) {
+function drawTableHeader(
+  page: PdfPage,
+  headers: string[],
+  columnWidths: number[],
+  emphasizedColumns = new Set<number>(),
+) {
   const columns = normalizeColumns(headers.length);
   const cells = columns.map((columnIndex) => normalizeCell(headers[columnIndex] ?? ""));
   const wrappedCells = cells.map((cell, index) =>
     wrapText(cell, getMaxCharsForColumn(columnWidths[index])),
   );
   const rowHeight = getWrappedCellsHeight(wrappedCells);
-  drawTableRow(page, wrappedCells, columnWidths, rowHeight, true);
+  drawTableRow(page, wrappedCells, columnWidths, rowHeight, true, emphasizedColumns);
 }
 
 function getTableHeaderHeight(headers: string[], columnWidths: number[]) {
@@ -278,14 +412,22 @@ function drawTableRow(
   columnWidths: number[],
   rowHeight: number,
   isHeader = false,
+  emphasizedColumns = new Set<number>(),
 ) {
   let x = pdfMargin;
   const yTop = page.y;
   const yBottom = yTop - rowHeight;
 
   columnWidths.forEach((width, index) => {
-    if (isHeader) {
-      page.commands.push("0.95 0.96 0.98 rg");
+    const emphasized = emphasizedColumns.has(index);
+    if (isHeader || emphasized) {
+      page.commands.push(
+        isHeader && emphasized
+          ? "0.86 0.92 0.98 rg"
+          : isHeader
+            ? "0.95 0.96 0.98 rg"
+            : "0.93 0.96 0.99 rg",
+      );
       page.commands.push(
         `${formatPdfNumber(x)} ${formatPdfNumber(yBottom)} ${formatPdfNumber(width)} ${formatPdfNumber(rowHeight)} re f`,
       );
@@ -304,7 +446,7 @@ function drawTableRow(
     );
     wrappedCells[index].forEach((line, lineIndex) => {
       const textY = yTop - pdfCellPaddingY - pdfFontSize - lineIndex * pdfLineHeight;
-      drawText(page, line, x + pdfCellPaddingX, textY, pdfFontSize);
+      drawText(page, line, x + pdfCellPaddingX, textY, pdfFontSize, emphasized);
     });
     page.commands.push("Q");
     x += width;
@@ -347,7 +489,7 @@ function drawDescriptionTable(
         true,
       );
     }
-    drawTableRow(page, wrappedCells, columnWidths, rowHeight);
+    drawTableRow(page, wrappedCells, columnWidths, rowHeight, false, new Set([0]));
   });
   return page;
 }
@@ -372,10 +514,17 @@ function drawDescriptionNotes(page: PdfPage, notes: string[], addPage: AddPdfPag
   return page;
 }
 
-function drawText(page: PdfPage, value: string, x: number, y: number, fontSize: number) {
+function drawText(
+  page: PdfPage,
+  value: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  bold = false,
+) {
   page.commands.push("0 0 0 rg");
   page.commands.push("BT");
-  page.commands.push(`/F1 ${formatPdfNumber(fontSize)} Tf`);
+  page.commands.push(`/F${bold ? "2" : "1"} ${formatPdfNumber(fontSize)} Tf`);
   page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(y)} Td`);
   page.commands.push(`(${escapePdfText(value)}) Tj`);
   page.commands.push("ET");
@@ -412,6 +561,9 @@ function getPdfTableSegments(table: ExportTable): ExportTable[] {
       title: `${table.title ?? "Table"} (${index + 1}/${chunks.length})`,
       headers: indexes.map((columnIndex) => table.headers[columnIndex] ?? ""),
       rows: table.rows.map((row) => indexes.map((columnIndex) => row[columnIndex] ?? "")),
+      emphasizedColumns: indexes.flatMap((columnIndex, index) =>
+        table.emphasizedColumns?.includes(columnIndex) ? [index] : [],
+      ),
     };
   });
 }
@@ -659,7 +811,12 @@ function isExportDetailLabel(label: string) {
   return (
     /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|source|filter|filters|subfilter|value type|payment mode|stage|milestone|generated by|layout|files)$/.test(
       normalized,
-    ) || /^(global|selected|active|from|to) /.test(normalized)
+    ) ||
+    /^(global|selected|active|from|to) /.test(normalized) ||
+    normalized === "analysis basis" ||
+    /^(sort field|order|plan fy|bill payment offset|bill submission offset|d\.p\. offset)$/.test(
+      normalized,
+    )
   );
 }
 
@@ -723,3 +880,4 @@ function escapeHtml(value: string | number | undefined) {
 function escapePdfText(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
+import { renderXlsxDocument } from "./export-xlsx.js";

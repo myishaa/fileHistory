@@ -12,6 +12,7 @@ import {
   Search,
 } from "lucide-react";
 import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
+import { CompactTableText } from "@/components/compact-table-text";
 import {
   createFileStatusUpdate,
   fetchFilesByIdentifier,
@@ -204,7 +205,7 @@ function QuickEntryEditor() {
     const cleanIdentifier = fileIdentifier.trim();
     const cleanDescription = description.trim();
     if (!cleanIdentifier && !cleanDescription) {
-      setLookupMessage({ tone: "error", text: "Enter Unique Code / Control No. or Item description." });
+      setLookupMessage({ tone: "error", text: "Enter Unique Code / Control No. or Demand Description." });
       return;
     }
     setLookupLoading(true);
@@ -421,7 +422,7 @@ function QuickEntryEditor() {
             />
           </label>
           <label>
-            <div className="mb-1.5 text-xs font-medium">Item description</div>
+            <div className="mb-1.5 text-xs font-medium">Demand Description</div>
             <input
               value={description}
               onChange={(event) => {
@@ -434,7 +435,7 @@ function QuickEntryEditor() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void lookupFile();
               }}
-              placeholder="Enter item description"
+              placeholder="Enter demand description"
               className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
@@ -454,8 +455,8 @@ function QuickEntryEditor() {
               lookupLoading ||
               (!fileIdentifier && !description && !lookupMessage && matches.length === 0 && !context)
             }
-            title="Reset identifier and Item Description"
-            aria-label="Reset identifier and Item Description"
+            title="Reset identifier and Demand Description"
+            aria-label="Reset identifier and Demand Description"
             className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RotateCcw className="size-4" />
@@ -491,7 +492,7 @@ function QuickEntryEditor() {
                     file.uniqueCode ||
                     "File"}
                 </span>
-                <span className="truncate">{file.itemDescription || "-"}</span>
+                <CompactTableText value={file.itemDescription || "-"} width={36} />
                 <span className="text-muted-foreground">{file.division || "-"}</span>
                 <span className="text-muted-foreground">{formatDate(file.receivedDate)}</span>
               </button>
@@ -567,7 +568,7 @@ function FileConfirmation({
 }) {
   const details = [
     ...(matchedIdentifier ? [[matchedIdentifier.label, matchedIdentifier.value]] : []),
-    ["Item description", file.demandDescription],
+    ["Demand Description", file.demandDescription],
     ["Division", file.division],
     ["Indentor", file.indentor],
     ["Demand Received date", formatDate(file.receivedDate)],

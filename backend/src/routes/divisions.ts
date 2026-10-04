@@ -86,7 +86,7 @@ async function assertDivisionUnusedBeforeArchive(divisionId: string) {
   if (count > 0) {
     throw new HttpError(
       400,
-      `This division is used in ${count} file${count === 1 ? "" : "s"}, including Archive. Transfer/Merge files first.`,
+      `This division is used in ${count} file${count === 1 ? "" : "s"}, including Archive, so it cannot be deleted while those records exist.`,
     );
   }
 }

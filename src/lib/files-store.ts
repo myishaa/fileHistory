@@ -16,9 +16,22 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 
+const anomalyRefreshStorageKey = "recordkeeper:anomaly-data-updated";
+
+function notifyAnomalyDataUpdated() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event("recordkeeper:anomaly-data-updated"));
+  try {
+    window.localStorage.setItem(anomalyRefreshStorageKey, `${Date.now()}-${Math.random()}`);
+  } catch {
+    // Same-tab listeners still receive the event when storage is unavailable.
+  }
+}
+
 export type FileRecord = {
   id: string;
   title?: string;
+  divisionId?: string;
   division?: string;
   officer?: string;
   imms?: string;
@@ -130,6 +143,7 @@ export type FileRecord = {
   shortclosure?: string;
   shortclosureDate?: string;
   noFurtherAction?: string;
+  noFurtherActionDate?: string;
   bqFirms?: FirmDetail[];
   invitedFirms?: FirmDetail[];
   bidderFirms?: FirmDetail[];
@@ -300,6 +314,7 @@ export type SupplyOrderDetail = {
   shortclosure?: string;
   shortclosureDate?: string;
   noFurtherAction?: string;
+  noFurtherActionDate?: string;
   stageDelivery?: string;
   stageDeliveryCount?: string;
   stagePayment?: string;
@@ -331,6 +346,7 @@ export type AdvancePaymentDetail = {
   completedMilestones?: string[];
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
+  expectedPaymentDate?: string;
   billPreparationDate?: string;
   billNo?: string;
   billSentForPaymentDate?: string;
@@ -351,8 +367,11 @@ export type StageDeliveryDetail = {
   dpExtension?: string;
   dpExtensionCount?: string;
   ld?: string;
+  ldType?: string;
+  ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
   billPreparationDate?: string;
@@ -411,6 +430,7 @@ export type MasterFirm = {
   id: string;
   firmName?: string;
   firmType?: string;
+  firmTypeOther?: string;
   emailId?: string;
   city?: string;
   address?: string;
@@ -588,6 +608,7 @@ export type AppSettings = {
   addEditRibbonFields?: AddEditRibbonFieldKey[];
   preSoDefaultSoOffsetDays?: number;
   preSoDefaultPaymentOffsetDays?: number;
+  bgReturnOffsetDays?: number;
 };
 
 function currentYear() {
@@ -641,6 +662,7 @@ const defaultSettings: AppSettings = {
   addEditRibbonFields: defaultAddEditRibbonFields,
   preSoDefaultSoOffsetDays: 30,
   preSoDefaultPaymentOffsetDays: 30,
+  bgReturnOffsetDays: 60,
 };
 
 const defaultUsers: AppUser[] = [];
@@ -1101,7 +1123,7 @@ export const store = {
         reviewedAt?: string;
         scope?: string;
       }>;
-    }>(`/api/dashboard/suspected-anomalies?${params.toString()}`);
+    }>(`/api/dashboard/suspected-anomalies?${params.toString()}`, { cache: "no-store" });
   },
   async countSuspectedAnomalies(query: string) {
     const payload = await request<{ rows: Array<{ signature: string }> }>(
@@ -1111,22 +1133,40 @@ export const store = {
     return payload.rows.length;
   },
   acceptSuspectedAnomaly(signature: string, reason: string) {
-    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances", {
-      method: "POST",
-      body: JSON.stringify({ signature, reason }),
-    });
+    return (async () => {
+      const result = await request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances", {
+        method: "POST",
+        body: JSON.stringify({ signature, reason }),
+      });
+      notifyAnomalyDataUpdated();
+      return result;
+    })();
   },
   reviewSuspectedAnomaly(signature: string, action: string, adminMessage?: string) {
-    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances/review", {
-      method: "POST",
-      body: JSON.stringify({ signature, action, adminMessage }),
-    });
+    return (async () => {
+      const result = await request<{ ok: true }>(
+        "/api/dashboard/suspected-anomalies/acceptances/review",
+        {
+          method: "POST",
+          body: JSON.stringify({ signature, action, adminMessage }),
+        },
+      );
+      notifyAnomalyDataUpdated();
+      return result;
+    })();
   },
   clearSuspectedAnomalyHistory(password: string, signatures: string[]) {
-    return request<{ ok: true }>("/api/dashboard/suspected-anomalies/acceptances/clear-history", {
-      method: "POST",
-      body: JSON.stringify({ password, signatures }),
-    });
+    return (async () => {
+      const result = await request<{ ok: true }>(
+        "/api/dashboard/suspected-anomalies/acceptances/clear-history",
+        {
+          method: "POST",
+          body: JSON.stringify({ password, signatures }),
+        },
+      );
+      notifyAnomalyDataUpdated();
+      return result;
+    })();
   },
   viewerLogin(divisionId: string, password: string) {
     return (async () => {
@@ -1158,6 +1198,10 @@ export const store = {
         body: JSON.stringify(f),
       });
       setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
       return result.file;
     })();
   },
@@ -1169,6 +1213,10 @@ export const store = {
         body: JSON.stringify(patch),
       });
       setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
       return result.file;
     })();
   },
@@ -1232,10 +1280,14 @@ export const store = {
   },
   deleteFile(id: string, deletionPassword: string) {
     setState({ files: state.files.filter((f) => f.id !== id) });
-    return request(`/api/files/${id}`, {
-      method: "DELETE",
-      body: JSON.stringify({ deletionPassword }),
-    });
+    return (async () => {
+      const result = await request(`/api/files/${id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ deletionPassword }),
+      });
+      notifyAnomalyDataUpdated();
+      return result;
+    })();
   },
   listArchivedFiles() {
     return request<{ files: FileRecord[] }>("/api/files/archive/list");
@@ -1244,6 +1296,7 @@ export const store = {
     return (async () => {
       await request<{ file: FileRecord }>(`/api/files/${id}/restore`, { method: "POST" });
       await loadAll(true);
+      notifyAnomalyDataUpdated();
     })();
   },
   permanentlyDeleteArchivedFile(id: string, deletionPassword: string) {
@@ -1253,6 +1306,7 @@ export const store = {
         body: JSON.stringify({ deletionPassword }),
       });
       await loadAll(true);
+      notifyAnomalyDataUpdated();
     })();
   },
   addDivision(

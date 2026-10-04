@@ -10,9 +10,10 @@ export const firmsRouter = Router();
 let masterFirmTypeSchemaReady: Promise<void> | undefined;
 
 function ensureMasterFirmTypeSchema() {
-  masterFirmTypeSchemaReady ??= pool
-    .query("alter table master_firms add column if not exists firm_type text")
-    .then(() => undefined);
+  masterFirmTypeSchemaReady ??= (async () => {
+    await pool.query("alter table master_firms add column if not exists firm_type text");
+    await pool.query("alter table master_firms add column if not exists firm_type_other text");
+  })();
   return masterFirmTypeSchemaReady;
 }
 
@@ -24,6 +25,7 @@ type MasterFirmRow = {
   id: string;
   firm_name: string | null;
   firm_type: string | null;
+  firm_type_other: string | null;
   email_id: string | null;
   city: string | null;
   address: string | null;
@@ -42,6 +44,7 @@ function mapFirm(row: MasterFirmRow): MasterFirm {
     id: row.id,
     firmName: fromDbText(row.firm_name) || undefined,
     firmType: fromDbText(row.firm_type) || undefined,
+    firmTypeOther: fromDbText(row.firm_type_other) || undefined,
     emailId: fromDbText(row.email_id) || undefined,
     city: fromDbText(row.city) || undefined,
     address: fromDbText(row.address) || undefined,
@@ -241,7 +244,6 @@ async function assertFirmUnusedBeforeArchive(firm: MasterFirm) {
        from files f
        where (
            ($1 <> '' and lower(trim(coalesce(f.firm, ''))) = $1)
-           or ($2 <> '' and lower(trim(coalesce(f.firm_unique_no, ''))) = $2)
            or exists (
              select 1
              from supply_orders so
@@ -278,6 +280,7 @@ async function assertFirmUnusedBeforeArchive(firm: MasterFirm) {
 function readFirmPayload(body: Record<string, unknown>) {
   const firmName = toDbText(body.firmName);
   const firmType = toDbText(body.firmType);
+  const firmTypeOther = firmType?.toUpperCase() === "OTHER" ? toDbText(body.firmTypeOther) : null;
   const emailId = toDbText(body.emailId);
   const city = toDbText(body.city);
   const address = toDbText(body.address);
@@ -292,7 +295,10 @@ function readFirmPayload(body: Record<string, unknown>) {
   if (!firmName && !emailId && !firmUniqueNo) {
     throw new HttpError(400, "Enter firm name, email id, or Firm Unique No.");
   }
-  return { firmName, firmType, emailId, city, address, firmUniqueNo, contactNo };
+  if (firmType?.toUpperCase() === "OTHER" && !firmTypeOther) {
+    throw new HttpError(400, "Specify the firm type when Other is selected.");
+  }
+  return { firmName, firmType, firmTypeOther, emailId, city, address, firmUniqueNo, contactNo };
 }
 
 function isUniqueViolation(error: unknown) {
@@ -331,6 +337,7 @@ firmsRouter.get(
           or lower(coalesce(mf.email_id, '')) like $${values.length}
           or lower(coalesce(mf.firm_unique_no, '')) like $${values.length}
           or lower(coalesce(mf.firm_type, '')) like $${values.length}
+          or lower(coalesce(mf.firm_type_other, '')) like $${values.length}
           or lower(coalesce(mf.contact_no, '')) like $${values.length})`,
       );
     }
@@ -370,12 +377,13 @@ firmsRouter.post(
     const payload = readFirmPayload(requireObjectBody(request.body));
     try {
       const result = await pool.query<MasterFirmRow>(
-        `insert into master_firms (firm_name, firm_type, email_id, city, address, firm_unique_no, contact_no, created_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+        `insert into master_firms (firm_name, firm_type, firm_type_other, email_id, city, address, firm_unique_no, contact_no, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          returning *, null::text as created_by_name`,
         [
           payload.firmName,
           payload.firmType,
+          payload.firmTypeOther,
           payload.emailId,
           payload.city,
           payload.address,
@@ -404,13 +412,14 @@ firmsRouter.patch(
     try {
       const result = await pool.query<MasterFirmRow>(
         `update master_firms
-         set firm_name = $2, firm_type = $3, email_id = $4, city = $5, address = $6, firm_unique_no = $7, contact_no = $8
+         set firm_name = $2, firm_type = $3, firm_type_other = $4, email_id = $5, city = $6, address = $7, firm_unique_no = $8, contact_no = $9
          where id = $1 and archived_at is null
          returning *, null::text as created_by_name`,
         [
           id,
           payload.firmName,
           payload.firmType,
+          payload.firmTypeOther,
           payload.emailId,
           payload.city,
           payload.address,

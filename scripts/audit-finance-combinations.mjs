@@ -297,6 +297,27 @@ async function main() {
     }
   }
 
+  const unavailableDivision = {
+    name: "unavailable division",
+    selectedYear: settings.financialYear,
+    division: "__audit_unavailable_division__",
+  };
+  const unavailablePayload = await api(dashboardPath(unavailableDivision), token);
+  const unavailableSummary = unavailablePayload.summary ?? {};
+  checked.push(unavailableDivision.name);
+  if (n(unavailableSummary.dashboardFileCount) !== 0) {
+    addIssue(issues, unavailableDivision, "division scope", { issue: "unavailable division includes files" });
+  }
+  if (unavailableSummary.activeDivision !== unavailableDivision.division) {
+    addIssue(issues, unavailableDivision, "division scope", { issue: "unavailable division became all divisions" });
+  }
+  for (const field of additiveFields) {
+    if (n(unavailableSummary.financeTotals?.[field]) !== 0) {
+      addIssue(issues, unavailableDivision, "division scope", { field, issue: "unavailable division includes Finance value" });
+    }
+  }
+  await validateCarryForwardClickers(token, unavailableDivision, unavailableSummary, issues);
+
   for (const category of categoryPasses) {
     const combo = { ...category, selectedYear: allActiveFiles, division: "all" };
     const payload = await api(dashboardPath(combo), token);

@@ -10,26 +10,46 @@ export function normalizeBillReturnCycles(cycles: BillReturnCycle[] | undefined)
   );
 }
 
+export function latestBillReturnCycle(cycles: BillReturnCycle[] | undefined) {
+  return normalizeBillReturnCycles(cycles)
+    .map((cycle, index) => ({ cycle, index }))
+    .filter(({ cycle }) => hasFilledString(cycle.returnedDate))
+    .sort((left, right) => {
+      const dateDifference =
+        returnCycleDateOrder(right.cycle.returnedDate) - returnCycleDateOrder(left.cycle.returnedDate);
+      return dateDifference || right.index - left.index;
+    })[0]?.cycle;
+}
+
+function returnCycleDateOrder(value: string | undefined) {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const dmy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value);
+  const normalized = iso
+    ? `${iso[1]}-${iso[2]}-${iso[3]}`
+    : dmy
+      ? `${dmy[3]}-${dmy[2]}-${dmy[1]}`
+      : value;
+  const parsed = Date.parse(normalized);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
 export function hasOpenBillReturn(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return normalizeBillReturnCycles(order.billReturnCycles).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(order.billReturnCycles);
+  return Boolean(latest && !hasFilledString(latest.resubmittedDate));
 }
 
 export function hasReturnedBill(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return normalizeBillReturnCycles(order.billReturnCycles).some((cycle) =>
-    hasFilledString(cycle.returnedDate),
-  );
+  return Boolean(latestBillReturnCycle(order.billReturnCycles));
 }
 
 export function hasResubmittedBillReturn(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return normalizeBillReturnCycles(order.billReturnCycles).some(
-    (cycle) => hasFilledString(cycle.returnedDate) && hasFilledString(cycle.resubmittedDate),
-  );
+  const latest = latestBillReturnCycle(order.billReturnCycles);
+  return Boolean(latest && hasFilledString(latest.resubmittedDate));
 }
 
 export function hasCompletedBillReturn(order: Pick<SupplyOrderDetail, "billReturnCycles">) {
-  return hasResubmittedBillReturn(order) && !hasOpenBillReturn(order);
+  return hasResubmittedBillReturn(order);
 }
 
 export function hasReturnedBillPaid(
@@ -48,28 +68,21 @@ export type ReturnedBillCashOutgoMode =
   | "returnedBillsResubmitted"
   | "returnedBillsPaid";
 
-function earliestDate(dates: Array<string | undefined>) {
-  return dates.filter(hasFilledString).sort()[0];
-}
-
 export function getReturnedBillCashOutgoEventDate(
   order: Pick<SupplyOrderDetail, "billReturnCycles" | "paymentDate">,
   mode: ReturnedBillCashOutgoMode,
 ) {
   const cycles = normalizeBillReturnCycles(order.billReturnCycles);
+  const latest = latestBillReturnCycle(cycles);
   if (mode === "returnedBills") {
-    return earliestDate(cycles.map((cycle) => cycle.returnedDate));
+    return latest?.returnedDate;
   }
   if (mode === "pendingReturnedBills") {
-    return earliestDate(
-      cycles
-        .filter((cycle) => hasFilledString(cycle.returnedDate) && !hasFilledString(cycle.resubmittedDate))
-        .map((cycle) => cycle.returnedDate),
-    );
+    return hasOpenBillReturn(order) ? latest?.returnedDate : undefined;
   }
   if (mode === "returnedBillsResubmitted") {
-    if (!hasCompletedBillReturn(order)) return undefined;
-    return earliestDate(cycles.map((cycle) => cycle.resubmittedDate));
+    if (!hasCompletedBillReturn(order) || hasFilledString(order.paymentDate)) return undefined;
+    return latest?.resubmittedDate;
   }
   return hasReturnedBillPaid(order) ? order.paymentDate : undefined;
 }

@@ -257,6 +257,11 @@
     border-color: var(--color-border);
   }
 
+  table th + th,
+  table td + td {
+    border-inline-start: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
