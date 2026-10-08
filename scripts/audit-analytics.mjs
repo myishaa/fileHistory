@@ -268,11 +268,11 @@ async function checkExactFileIdsClicker(token, issues, pass, area, label, fileId
   }
 }
 
-async function checkSearchCount(token, issues, pass, area, label, expected, target, exact = true) {
+async function checkSearchCount(token, issues, pass, area, label, expected, target, exact = true, searchExpected = expected) {
   if (n(expected) <= 0) return;
   const result = await api(searchPath(pass, target), token);
-  if (exact ? n(result.total) !== n(expected) : n(result.total) <= 0) {
-    issues.push({ pass: pass.name, area, label, issue: exact ? "clicker count mismatch" : "non-zero row opens no files", expected: n(expected), actual: n(result.total), target });
+  if (exact ? n(result.total) !== n(searchExpected) : n(result.total) <= 0) {
+    issues.push({ pass: pass.name, area, label, issue: exact ? "Search file count mismatch" : "non-zero row opens no files", displayedCount: n(expected), expectedSearchFiles: n(searchExpected), actualSearchFiles: n(result.total), target });
   }
 }
 
@@ -381,7 +381,7 @@ async function checkDelayStatus(token, issues, pass) {
     }
     for (const row of sampleRows(rows)) {
       tasks.push(async () => {
-        await checkSearchCount(token, issues, pass, "Delay Status", `${days}:${row.key}`, row.count, { dashboardFilter: `delayStatus:${days}:${row.key}` });
+        await checkSearchCount(token, issues, pass, "Delay Status", `${days}:${row.key}`, row.count, { dashboardFilter: `delayStatus:${days}:${row.key}` }, true, row.fileCount ?? row.count);
         const filtered = await api(reportsPath(pass, days, row.key), token);
         const filteredRows = filtered.summary?.delaySummary?.byMilestone ?? [];
         const filteredTotal = filteredRows.reduce((sum, item) => sum + n(item.count), 0);

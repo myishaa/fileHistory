@@ -65,7 +65,7 @@ export function displayFinancialYearLabel(year: string | undefined) {
 }
 
 export function normalizeMilestoneName(value: string | undefined) {
-  return (value ?? "").trim().toLowerCase();
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 export function isPaymentCompletedFile(file: Pick<FileRecord, "completedMilestones">) {

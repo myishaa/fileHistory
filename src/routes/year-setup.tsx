@@ -19,6 +19,7 @@ import {
   parseAmount,
 } from "@/lib/money";
 import { DateInput } from "@/components/date-input";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 
 export const Route = createFileRoute("/year-setup")({
   component: YearSetupPage,
@@ -390,17 +391,21 @@ export function YearSetupPanel() {
         </div>
         <label className="block">
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">Setup year</div>
-          <select
+          <SearchableDropdown
             value={setupYear}
-            onChange={(event) => store.updateSettings({ setupYear: event.target.value })}
+            onChange={(year) =>
+              store.updateSettings({ setupYear: year || settings.financialYear })
+            }
+            options={[]}
+            optionItems={yearOptions.map((year) => ({
+              value: year,
+              label: displayFinancialYearLabel(year),
+            }))}
+            placeholder="Select setup year"
+            deferChangeUntilSelect
+            allowCustomValue={false}
             className="h-9 min-w-36 rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-          >
-            {yearOptions.map((year) => (
-              <option key={year} value={year}>
-                {displayFinancialYearLabel(year)}
-              </option>
-            ))}
-          </select>
+          />
         </label>
       </div>
 
@@ -589,18 +594,19 @@ export function YearSetupPanel() {
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                     Existing merged division
                   </div>
-                  <select
+                  <SearchableDropdown
                     value={mergeTargetId}
-                    onChange={(event) => setMergeTargetId(event.target.value)}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                  >
-                    <option value="">Select target</option>
-                    {targetOptions.map((division) => (
-                      <option key={division.id} value={division.id}>
-                        {division.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setMergeTargetId}
+                    options={[]}
+                    optionItems={targetOptions.map((division) => ({
+                      value: division.id,
+                      label: division.name,
+                    }))}
+                    placeholder="Select target"
+                    deferChangeUntilSelect
+                    allowCustomValue={false}
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                  />
                 </label>
                 <label className="block">
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">
@@ -686,10 +692,10 @@ export function YearSetupPanel() {
                 <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                   Source division
                 </div>
-                <select
+                <SearchableDropdown
                   value={splitSourceDivisionId}
-                  onChange={(event) => {
-                    setSplitSourceDivisionId(event.target.value);
+                  onChange={(value) => {
+                    setSplitSourceDivisionId(value);
                     setSplitIndentorIds([]);
                     setSelectedSplitIndentorNames({});
                     setSplitIndentorPage(1);
@@ -697,15 +703,16 @@ export function YearSetupPanel() {
                     setSplitTargetId("");
                     setSplitMessage("");
                   }}
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                >
-                  <option value="">Select source division</option>
-                  {activeDivisions.map((division) => (
-                    <option key={division.id} value={division.id}>
-                      {division.name}
-                    </option>
-                  ))}
-                </select>
+                  options={[]}
+                  optionItems={activeDivisions.map((division) => ({
+                    value: division.id,
+                    label: division.name,
+                  }))}
+                  placeholder="Select source division"
+                  deferChangeUntilSelect
+                  allowCustomValue={false}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                />
               </label>
 
               <div>
@@ -872,18 +879,19 @@ export function YearSetupPanel() {
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                     Existing target division
                   </div>
-                  <select
+                  <SearchableDropdown
                     value={splitTargetId}
-                    onChange={(event) => setSplitTargetId(event.target.value)}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                  >
-                    <option value="">Select target</option>
-                    {splitTargetOptions.map((division) => (
-                      <option key={division.id} value={division.id}>
-                        {division.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setSplitTargetId}
+                    options={[]}
+                    optionItems={splitTargetOptions.map((division) => ({
+                      value: division.id,
+                      label: division.name,
+                    }))}
+                    placeholder="Select target"
+                    deferChangeUntilSelect
+                    allowCustomValue={false}
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                  />
                 </label>
                 <label className="block">
                   <div className="mb-1.5 text-xs font-medium text-muted-foreground">

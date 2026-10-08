@@ -14,7 +14,7 @@ import {
   fetchFile,
   fetchMasterFirms,
   fetchNextUniqueCode,
-  fetchIndentors,
+  fetchAllIndentors,
   store,
   type Division,
   type FileMessage,
@@ -245,7 +245,8 @@ type DrillPathItem = { label: string; href?: string };
 function parseDrillPath(value: string | undefined): DrillPathItem[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value);
+    let parsed: unknown = JSON.parse(value);
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
     if (!Array.isArray(parsed)) return [];
     return parsed
       .map((item) => {
@@ -1399,7 +1400,7 @@ function AddFilePage() {
     return (
       <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">File editing unavailable</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Your account can view records only.</p>
+        <p className="mt-2 text-sm text-muted-foreground">View-only access. Records cannot be changed.</p>
       </div>
     );
   }
@@ -1717,7 +1718,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     [effectiveFinancialYear, settings.financialYears, settings.yearSelectionLocked],
   );
   const [indentorOptions, setIndentorOptions] = useState<string[]>([]);
-  const [indentorSearch, setIndentorSearch] = useState("");
   useEffect(() => {
     if (!selectedDivision) {
       setIndentorOptions([]);
@@ -1725,15 +1725,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
-      fetchIndentors({
-        divisionId: selectedDivision.id,
-        q: indentorSearch || formWithLockedYear.indentor,
-        page: 1,
-        pageSize: 50,
-      })
-        .then((result) => {
+      fetchAllIndentors({ divisionId: selectedDivision.id })
+        .then((indentors) => {
           if (!controller.signal.aborted) {
-            setIndentorOptions(result.indentors.map((indentor) => indentor.name));
+            setIndentorOptions(indentors.map((indentor) => indentor.name));
           }
         })
         .catch((error) => {
@@ -1747,7 +1742,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [selectedDivision, formWithLockedYear.indentor, indentorSearch]);
+  }, [selectedDivision]);
   const tcecIsNo = isNo(formWithLockedYear.tcec);
   const gemIsNo = isNo(formWithLockedYear.gem);
   const highValueIsNo = isNo(formWithLockedYear.highValue);
@@ -2723,7 +2718,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                     ? "Type or select indentor"
                     : "Select division first",
                   typeahead: true,
-                  onSearchChange: setIndentorSearch,
                 }
               : field.key === "fileType"
                 ? {
@@ -3233,7 +3227,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           ) : null}
           <p className="text-xs text-muted-foreground mt-1">
             {readOnlyMode
-              ? "Viewer access is read-only. You can inspect milestones, dates, and file details."
+              ? "Viewer access is read-only. Milestones, dates, and file details are available to view."
               : isEditing
                 ? "Update the filled and unfilled details for this file."
                 : "All fields are optional — save now and complete missing details later."}
@@ -4117,6 +4111,8 @@ function FirmDetailsBlock({
   const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("bqFirms");
   const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
+  const [firmSuggestionQuery, setFirmSuggestionQuery] = useState("");
+  const [firmSuggestionMatches, setFirmSuggestionMatches] = useState<MasterFirm[]>([]);
   const [firmSaveMessage, setFirmSaveMessage] = useState<string | undefined>();
   const tabs: { key: keyof FirmDetailsState; label: string }[] = [
     { key: "bqFirms", label: "BQ" },
@@ -4137,20 +4133,20 @@ function FirmDetailsBlock({
   const selectedIndexes = [...selectedRows].filter((index) => index < rows.length);
   const firmNameOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
-    for (const firm of masterFirms) {
+    for (const firm of firmSuggestionMatches) {
       const option = firmNameOption(firm);
       if (option) map.set(option, firm);
     }
     return map;
-  }, [masterFirms]);
+  }, [firmSuggestionMatches]);
   const firmUniqueNoOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
-    for (const firm of masterFirms) {
+    for (const firm of firmSuggestionMatches) {
       const option = firmUniqueNoOption(firm);
       if (option) map.set(option, firm);
     }
     return map;
-  }, [masterFirms]);
+  }, [firmSuggestionMatches]);
   const firmNameOptions = useMemo(() => Array.from(firmNameOptionMap.keys()), [firmNameOptionMap]);
   const firmUniqueNoOptions = useMemo(
     () => Array.from(firmUniqueNoOptionMap.keys()),
@@ -4175,6 +4171,31 @@ function FirmDetailsBlock({
   useEffect(() => {
     loadMasterFirms();
   }, []);
+
+  useEffect(() => {
+    const query = firmSuggestionQuery.trim();
+    if (!query) {
+      setFirmSuggestionMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      fetchMasterFirms({ q: query, prefix: true, pageSize: 100 })
+        .then((result) => {
+          if (!cancelled) setFirmSuggestionMatches(result.firms);
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            console.error(error);
+            setFirmSuggestionMatches([]);
+          }
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [firmSuggestionQuery]);
 
   useEffect(() => {
     if (disabled || !masterFirms.length) return;
@@ -4365,7 +4386,7 @@ function FirmDetailsBlock({
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "pdf")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
             title="Export firm details as PDF"
             aria-label="Export firm details PDF"
           >
@@ -4374,7 +4395,7 @@ function FirmDetailsBlock({
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "excel")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
             title="Export firm details as Excel"
             aria-label="Export firm details Excel"
           >
@@ -4458,6 +4479,7 @@ function FirmDetailsBlock({
                       }
                     }}
                     options={firmNameOptions}
+                    onSearchChange={setFirmSuggestionQuery}
                     deferChangeUntilSelect
                     typeAheadOnly
                     placeholder="Firm name"
@@ -4481,6 +4503,7 @@ function FirmDetailsBlock({
                       }
                     }}
                     options={firmUniqueNoOptions}
+                    onSearchChange={setFirmSuggestionQuery}
                     deferChangeUntilSelect
                     typeAheadOnly
                     placeholder={firmUniqueNoLabel}
@@ -4762,6 +4785,8 @@ function SupplyOrdersBlock({
   const [activeSubview, setActiveSubview] = useState<SupplyOrderSubviewKey>("supplyOrder");
   const [downstreamOverrideUnlocked, setDownstreamOverrideUnlocked] = useState(false);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
+  const [firmSuggestionQuery, setFirmSuggestionQuery] = useState("");
+  const [firmSuggestionMatches, setFirmSuggestionMatches] = useState<MasterFirm[]>([]);
   const [openCardKeys, setOpenCardKeys] = useState<Set<string>>(new Set());
   const deliveryInspectionInactive = isDeliveryInspectionInactive(form);
   const effectiveIrDisabled = irDisabled || deliveryInspectionInactive;
@@ -4789,20 +4814,20 @@ function SupplyOrdersBlock({
   );
   const firmNameOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
-    for (const firm of masterFirms) {
+    for (const firm of firmSuggestionMatches) {
       const option = firmNameOption(firm);
       if (option) map.set(option, firm);
     }
     return map;
-  }, [masterFirms]);
+  }, [firmSuggestionMatches]);
   const firmUniqueNoOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
-    for (const firm of masterFirms) {
+    for (const firm of firmSuggestionMatches) {
       const option = firmUniqueNoOption(firm);
       if (option) map.set(option, firm);
     }
     return map;
-  }, [masterFirms]);
+  }, [firmSuggestionMatches]);
   const firmNameOptions = useMemo(() => Array.from(firmNameOptionMap.keys()), [firmNameOptionMap]);
   const firmUniqueNoOptions = useMemo(
     () => Array.from(firmUniqueNoOptionMap.keys()),
@@ -4897,6 +4922,31 @@ function SupplyOrdersBlock({
       .then((result) => setMasterFirms(result.firms))
       .catch((error) => console.error(error));
   }, []);
+
+  useEffect(() => {
+    const query = firmSuggestionQuery.trim();
+    if (!query) {
+      setFirmSuggestionMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      fetchMasterFirms({ q: query, prefix: true, pageSize: 100 })
+        .then((result) => {
+          if (!cancelled) setFirmSuggestionMatches(result.firms);
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            console.error(error);
+            setFirmSuggestionMatches([]);
+          }
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [firmSuggestionQuery]);
 
   useEffect(() => {
     if (disabled || !masterFirms.length) return;
@@ -5214,7 +5264,7 @@ function SupplyOrdersBlock({
               Complete Supply Order and D.P. details before editing this tab.
             </div>
             <div className="text-xs">
-              Incomplete orders stay locked unless you unlock these downstream fields.
+              Incomplete orders stay locked until their D.P. and Security/Warranty fields are unlocked.
             </div>
           </div>
           <button
@@ -6048,6 +6098,7 @@ function SupplyOrdersBlock({
                                   updateOrderFirmLookup(index, key, nextValue, optionMap);
                                 }}
                                 options={options}
+                                onSearchChange={setFirmSuggestionQuery}
                                 deferChangeUntilSelect
                                 typeAheadOnly
                                 placeholder={
@@ -8301,7 +8352,7 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
           <button
             type="button"
             onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "pdf")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Remarks Summary PDF"
             aria-label="Export Remarks Summary PDF"
           >
@@ -8310,7 +8361,7 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
           <button
             type="button"
             onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "excel")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Remarks Summary Excel"
             aria-label="Export Remarks Summary Excel"
           >
@@ -8322,17 +8373,14 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
       <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
         <label className="block">
           <div className="mb-1.5 text-xs font-medium">Stage</div>
-          <select
+          <SearchableDropdown
             value={stageFilter}
-            onChange={(event) => setStageFilter(event.target.value)}
+            onChange={setStageFilter}
+            options={stageOptions}
+            deferChangeUntilSelect
+            allowCustomValue={false}
             className={inputCls}
-          >
-            {stageOptions.map((stage) => (
-              <option key={stage} value={stage}>
-                {stage}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label className="block">
           <div className="mb-1.5 text-xs font-medium">Sort</div>
@@ -8473,7 +8521,7 @@ function TimelineBlock({
           <button
             type="button"
             onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "pdf")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline PDF"
             aria-label="Export Timeline PDF"
           >
@@ -8482,7 +8530,7 @@ function TimelineBlock({
           <button
             type="button"
             onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "excel")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline Excel"
             aria-label="Export Timeline Excel"
           >
@@ -9482,7 +9530,7 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
 
 function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
   const seen = new Set<string>();
-  const values = (firmTypes?.length ? firmTypes : defaultFirmTypes)
+  const values = [...(firmTypes?.length ? firmTypes : defaultFirmTypes), "Other"]
     .map((firmType) => firmType.trim())
     .filter((firmType) => {
       if (!firmType) return false;
@@ -12898,9 +12946,8 @@ function DynamicField({
           value={value}
           onChange={onChange}
           options={field.options}
-          onSearchChange={field.onSearchChange}
           deferChangeUntilSelect
-          typeAheadOnly
+          allowCustomValue={false}
           disabled={disabled}
           placeholder={field.placeholder}
           inputRef={inputRef as (element: HTMLInputElement | null) => void}
@@ -13032,13 +13079,12 @@ function StageDeliveryAutofillHelper() {
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Stage duration</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  MPC uses 1-month stage duration. Other file types, including Goods & Services,
-                  AMC, CARS, CAPSI and O&M, use 3-month duration unless the user edits dates
-                  manually.
+                  MPC uses a 1-month stage interval. All other file types use a 3-month interval
+                  unless dates are edited manually.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
-                  MPC stage from 01-Apr ends around 30-Apr. G&S/AMC/CARS/O&M/CAPSI stage from
-                  01-Apr ends around 30-Jun.
+                  An MPC stage starting 01-Apr ends 30-Apr. A stage for any other file type
+                  starting 01-Apr ends 30-Jun.
                 </td>
               </tr>
               <tr>

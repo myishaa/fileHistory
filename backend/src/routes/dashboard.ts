@@ -8677,13 +8677,14 @@ async function loadManualMilestoneSqlSlice({
                     ...extraConditions,
                     `not ${isCancelledExpression()}`,
                     `not ${isYesExpression("so_current.so_cancelled")}`,
+                    `not ${isYesExpression("so_current.no_further_action")}`,
                     `${isYesExpression("so_current.advance_payment")}`,
                     `${normalizeMilestoneExpression("so_current.advance_payment_detail ->> 'currentMilestone'")} = 'advancepayment'`,
                     `not ${hasFilledExpression("so_current.advance_payment_detail ->> 'paymentDate'")}`,
                   ],
                 )}
-	              )
-	              when ${normalizeMilestoneExpression("milestone.name")} = 'supplementarybillreturnedforcorrection' then (
+              )
+              when ${normalizeMilestoneExpression("milestone.name")} = 'supplementarybillreturnedforcorrection' then (
 	                select count(*)::integer
 	                from supply_orders so_current
 	                join files f on f.id = so_current.file_id
@@ -8694,6 +8695,7 @@ async function loadManualMilestoneSqlSlice({
 	                    ...extraConditions,
 	                    `not ${isCancelledExpression()}`,
 	                    `not ${isYesExpression("so_current.so_cancelled")}`,
+	                    `not ${isYesExpression("so_current.no_further_action")}`,
 	                    `exists (
 	                      select 1
 	                      from jsonb_array_elements(coalesce(so_current.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
@@ -8810,6 +8812,10 @@ async function loadManualMilestoneSqlSlice({
                     `not ${isCancelledExpression()}`,
                     `not ${isYesExpression("so_current.so_cancelled")}`,
                     `(
+                      ${normalizeMilestoneExpression("milestone.name")} not in ('billpreparation', 'billsentforpayment', 'billreturnedforcorrection', 'payment')
+                      or not ${isYesExpression("so_current.no_further_action")}
+                    )`,
+                    `(
 	                      (
 	                        ${normalizeMilestoneExpression("so_current.current_milestone")} = ${normalizeMilestoneExpression("milestone.name")}
 		                        and ${normalizeMilestoneExpression("milestone.name")} <> 'billsentforpayment'
@@ -8817,22 +8823,26 @@ async function loadManualMilestoneSqlSlice({
 		                        and ${normalizeMilestoneExpression("milestone.name")} <> 'billpreparation'
 			                        and (
 			                          ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
-			                          or (
-			                            not ${hasFilledExpression("so_current.payment_date")}
-	                            and not ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
-			                          )
+	                          or (
+	                            not ${hasFilledExpression("so_current.payment_date")}
+	                          )
 			                        )
 		                          and (
 		                            ${normalizeMilestoneExpression("milestone.name")} <> 'jobcompletion'
 		                          or not ${effectiveOrderCompletedMilestoneExpression("Job Completion", "so_current")}
 		                        )
-		                      )
-				                      or (
+	                      )
+	                      or (
+	                        ${normalizeMilestoneExpression("milestone.name")} = 'payment'
+	                        and not ${hasFilledExpression("so_current.payment_date")}
+	                        and ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
+	                      )
+	                      or (
 				                        ${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment'
 				                        and ${hasFilledExpression("so_current.bill_preparation_date")}
 				                        and not ${hasFilledExpression("so_current.bill_sent_for_payment_date")}
-				                      )
-				                      or (
+	                          )
+	                          or (
 				                        ${normalizeMilestoneExpression("milestone.name")} = 'billreturnedforcorrection'
 	                        and ${latestReturnCycleStateExpression("so_current.bill_return_cycles", "open")}
 				                      )
@@ -8864,12 +8874,17 @@ async function loadManualMilestoneSqlSlice({
 				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'jobcompletion'
 				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'billsentforpayment'
 				                            and ${normalizeMilestoneExpression("milestone.name")} <> 'billpreparation'
-			                              and (
-				                              ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
-				                              or not ${hasFilledExpression("current_stage.stage ->> 'paymentDate'")}
-				                            )
-				                          )
-			                          or (
+	                            and (
+	                              ${normalizeMilestoneExpression("milestone.name")} <> 'payment'
+	                              or not ${hasFilledExpression("current_stage.stage ->> 'paymentDate'")}
+	                            )
+	                          )
+	                          or (
+	                            ${normalizeMilestoneExpression("milestone.name")} = 'payment'
+	                            and not ${hasFilledExpression("current_stage.stage ->> 'paymentDate'")}
+	                            and ${latestReturnCycleStateExpression("current_stage.stage -> 'billReturnCycles'", "open")}
+	                          )
+	                          or (
 				                            ${normalizeMilestoneExpression("milestone.name")} = 'billsentforpayment'
 				                            and ${hasFilledExpression("current_stage.stage ->> 'billPreparationDate'")}
 				                            and not ${hasFilledExpression("current_stage.stage ->> 'billSentForPaymentDate'")}
@@ -8973,6 +8988,16 @@ async function loadManualMilestoneSqlSlice({
                     hasFilledExpression("so_completed.financial_sanction_date"),
                   ],
                 )}
+              )
+              when ${normalizeMilestoneExpression("milestone.name")} = 'irpreparation' then (
+                select count(*)::integer
+                from ${dashboardPaymentRowsSource(whereSql, extraConditions)} completed_row
+                where not ${effectiveOrderCancelledExpression("completed_row")}
+                  and exists (
+                    select 1
+                    from jsonb_array_elements_text(coalesce(completed_row.completed_milestones, '[]'::jsonb)) as completed_order(milestone)
+                    where ${normalizeMilestoneExpression("completed_order.milestone")} = 'irpreparation'
+                  )
               )
               when ${normalizeMilestoneExpression("milestone.name")} in (${supplyOrderDrivenManualMilestoneList}) then (
                 select count(*)::integer
@@ -11206,6 +11231,51 @@ dashboardRouter.get(
             liveMilestones,
           }),
         ]);
+        const sqlPaymentStatus = sqlStatusCounts.milestoneRows.find(
+          (row) => row.key === "payment",
+        );
+        const sqlPaymentStatusByDivision =
+          activeDivision === "all"
+            ? await Promise.all(
+                dashboardDivisions.map(async (division) => {
+                  const divisionCounts = await loadStatusCounts({
+                    whereSql: dashboardFileWhere.whereSql,
+                    values: dashboardFileWhere.values,
+                    activeDivision: division.name,
+                  });
+                  return [
+                    division.name,
+                    divisionCounts.milestoneRows.find((row) => row.key === "payment"),
+                  ] as const;
+                }),
+              )
+            : [];
+        const paymentStatusByDivision = new Map(sqlPaymentStatusByDivision);
+        const sqlManualMilestoneSliceForComparison: ManualMilestoneSqlSlice = {
+          ...sqlManualMilestoneSlice,
+          manualMilestoneFlow: sqlManualMilestoneSlice.manualMilestoneFlow.map((row) =>
+            normalizeMilestoneName(row.name) === "payment" && sqlPaymentStatus
+              ? {
+                  ...row,
+                  current: sqlPaymentStatus.pending,
+                  completed: sqlPaymentStatus.cleared,
+                }
+              : row,
+          ),
+          liveStatusRows: sqlManualMilestoneSlice.liveStatusRows.map((row) => {
+            const paymentCount =
+              activeDivision === "all"
+                ? paymentStatusByDivision.get(row.division)?.pending
+                : sqlPaymentStatus?.pending;
+            if (paymentCount === undefined) return row;
+            const previousCount = row.counts.Payment ?? 0;
+            return {
+              ...row,
+              counts: { ...row.counts, Payment: paymentCount },
+              total: row.total - previousCount + paymentCount,
+            };
+          }),
+        };
         warnIfSimpleCountsDiffer(
           {
             dashboardFileCount: normalizedSummary.dashboardFileCount,
@@ -11235,7 +11305,7 @@ dashboardRouter.get(
             visibleLiveMilestoneNames: normalizedSummary.visibleLiveMilestoneNames,
             liveStatusRows: normalizedSummary.liveStatusRows,
           },
-          sqlManualMilestoneSlice,
+          sqlManualMilestoneSliceForComparison,
         );
       }
 

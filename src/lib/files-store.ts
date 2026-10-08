@@ -248,10 +248,22 @@ export type QuickStatusFileSummary = {
   id: string;
   uniqueCode?: string;
   controlNo?: string;
+  fileNo?: string;
+  soNumbers?: string;
   itemDescription?: string;
   division?: string;
   indentor?: string;
   receivedDate?: string;
+};
+
+export type FileIdentifierSuggestion = {
+  id: string;
+  uniqueCode?: string;
+  controlNo?: string;
+  fileNo?: string;
+  soNumbers?: string;
+  itemDescription?: string;
+  division?: string;
 };
 
 export type SupplyOrderDetail = {
@@ -1534,33 +1546,60 @@ export const store = {
 export function fetchIndentors({
   divisionId,
   q,
+  prefix,
   page = 1,
   pageSize = 50,
 }: {
   divisionId?: string;
   q?: string;
+  prefix?: boolean;
   page?: number;
   pageSize?: number;
 }) {
   const params = new URLSearchParams();
   if (divisionId) params.set("divisionId", divisionId);
   if (q?.trim()) params.set("q", q.trim());
+  if (prefix) params.set("prefix", "true");
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
   return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`);
 }
 
+export async function fetchAllIndentors({
+  divisionId,
+  q,
+  prefix,
+}: {
+  divisionId?: string;
+  q?: string;
+  prefix?: boolean;
+} = {}) {
+  const pageSize = 200;
+  const firstPage = await fetchIndentors({ divisionId, q, prefix, page: 1, pageSize });
+  const pageCount = Math.ceil(firstPage.total / pageSize);
+  if (pageCount <= 1) return firstPage.indentors;
+  const remainingPages = await Promise.all(
+    Array.from({ length: pageCount - 1 }, (_, index) =>
+      fetchIndentors({ divisionId, q, prefix, page: index + 2, pageSize }),
+    ),
+  );
+  return [firstPage, ...remainingPages].flatMap((page) => page.indentors);
+}
+
 export function fetchMasterFirms({
   q,
+  prefix,
   page = 1,
   pageSize = 50,
 }: {
   q?: string;
+  prefix?: boolean;
   page?: number;
   pageSize?: number;
 }) {
   const params = new URLSearchParams();
   if (q?.trim()) params.set("q", q.trim());
+  if (prefix) params.set("prefix", "true");
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
   return request<MasterFirmSearchResult>(`/api/firms?${params.toString()}`);
@@ -1702,6 +1741,13 @@ export function fetchFilesByUniqueCode(code: string) {
 
 export function fetchFilesByIdentifier(code: string) {
   return request<{ files: FileRecord[] }>(`/api/files/by-identifier/${encodeURIComponent(code)}`);
+}
+
+export function fetchFileIdentifierSuggestions(query: string) {
+  const params = new URLSearchParams({ q: query });
+  return request<{ files: FileIdentifierSuggestion[] }>(
+    `/api/files/identifier-suggestions?${params.toString()}`,
+  );
 }
 
 export function fetchFilesForYear(year: string) {

@@ -15,15 +15,19 @@ type SearchableDropdownProps = {
   onChange: (value: string) => void;
   onSearchChange?: (query: string) => void;
   options: string[];
+  optionItems?: Array<{ value: string; label: string; searchTerms?: string[] }>;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
   "data-testid"?: string;
   inputRef?: Ref<HTMLInputElement>;
+  autoFocus?: boolean;
   deferChangeUntilSelect?: boolean;
   typeAheadOnly?: boolean;
   allowCustomValue?: boolean;
   clearLabel?: string;
+  showClearOption?: boolean;
+  onEnter?: () => void;
 };
 
 export function SearchableDropdown({
@@ -31,15 +35,19 @@ export function SearchableDropdown({
   onChange,
   onSearchChange,
   options,
+  optionItems,
   placeholder,
   disabled = false,
   className,
   "data-testid": testId,
   inputRef,
+  autoFocus = false,
   deferChangeUntilSelect = false,
   typeAheadOnly = false,
   allowCustomValue = true,
   clearLabel = "Clear selection",
+  showClearOption = true,
+  onEnter,
 }: SearchableDropdownProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const internalInputRef = useRef<HTMLInputElement | null>(null);
@@ -48,27 +56,33 @@ export function SearchableDropdown({
   const [editing, setEditing] = useState(false);
   const [activeOptionIndex, setActiveOptionIndex] = useState(-1);
 
-  const visibleOptions = useMemo(() => {
-    const trimmedQuery = query.trim().toLowerCase();
+  const allOptions = useMemo(() => {
     const compareOptions = (left: string, right: string) =>
       left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
-    const uniqueOptions = Array.from(new Set(options.filter(Boolean))).sort(compareOptions);
-    if (!trimmedQuery) return uniqueOptions;
-    return uniqueOptions
-      .filter((option) => option.toLowerCase().startsWith(trimmedQuery))
-      .sort((left, right) => {
-        const leftExact = left.toLowerCase() === trimmedQuery;
-        const rightExact = right.toLowerCase() === trimmedQuery;
-        if (leftExact !== rightExact) return leftExact ? -1 : 1;
-        const leftStartsWith = left.toLowerCase().startsWith(trimmedQuery);
-        const rightStartsWith = right.toLowerCase().startsWith(trimmedQuery);
-        return leftStartsWith === rightStartsWith
-          ? compareOptions(left, right)
-          : leftStartsWith
-            ? -1
-            : 1;
-      });
-  }, [options, query]);
+    const uniqueOptions = new Map<
+      string,
+      { value: string; label: string; searchTerms?: string[] }
+    >();
+    for (const option of optionItems ?? options.map((item) => ({ value: item, label: item }))) {
+      if (option.value && !uniqueOptions.has(option.value)) uniqueOptions.set(option.value, option);
+    }
+    return Array.from(uniqueOptions.values()).sort((left, right) =>
+      compareOptions(left.label, right.label),
+    );
+  }, [options, optionItems]);
+  const visibleOptions = useMemo(() => {
+    const trimmedQuery = query.trim().toLowerCase();
+    return trimmedQuery
+      ? allOptions.filter(
+          (option) =>
+            option.label.toLowerCase().startsWith(trimmedQuery) ||
+            option.searchTerms?.some((term) =>
+              term.trim().toLowerCase().startsWith(trimmedQuery),
+            ),
+        )
+      : allOptions;
+  }, [allOptions, query]);
+  const selectedLabel = allOptions.find((option) => option.value === value)?.label ?? value;
 
   useEffect(() => {
     if (!open) return;
@@ -94,6 +108,7 @@ export function SearchableDropdown({
   function openFullList() {
     if (disabled) return;
     setQuery("");
+    onSearchChange?.("");
     setActiveOptionIndex(-1);
     setOpen(true);
   }
@@ -116,7 +131,12 @@ export function SearchableDropdown({
   function handleInputBlur() {
     if (deferChangeUntilSelect && (typeAheadOnly ? editing : Boolean(query.trim()))) {
       const next = query.trim();
-      if (!next || allowCustomValue || options.includes(next)) onChange(next);
+      const exactOption = allOptions.find(
+        (option) => option.label.trim().toLowerCase() === next.toLowerCase(),
+      );
+      if (!next) onChange("");
+      else if (allowCustomValue) onChange(exactOption?.value ?? next);
+      else if (exactOption) onChange(exactOption.value);
     }
     setQuery("");
     onSearchChange?.("");
@@ -125,6 +145,11 @@ export function SearchableDropdown({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" && onEnter && (!open || activeOptionIndex < 0)) {
+      event.preventDefault();
+      onEnter();
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (!open) {
@@ -170,12 +195,12 @@ export function SearchableDropdown({
     }
   }
 
-  function selectOption(option: string) {
-    onChange(option);
+  function selectOption(option: { value: string; label: string }) {
     setQuery("");
     onSearchChange?.("");
     setEditing(false);
     setOpen(false);
+    onChange(option.value);
     internalInputRef.current?.focus();
   }
 
@@ -199,15 +224,16 @@ export function SearchableDropdown({
           typeAheadOnly
             ? editing
               ? query
-              : value
+              : selectedLabel
             : deferChangeUntilSelect && open && query
               ? query
-              : value
+              : selectedLabel
         }
         onFocus={handleInputFocus}
         onChange={handleInputChange}
         onBlur={handleInputBlur}
         onKeyDown={handleKeyDown}
+        autoFocus={autoFocus}
         disabled={disabled}
         placeholder={placeholder}
         data-testid={testId}
@@ -258,11 +284,11 @@ export function SearchableDropdown({
       ) : null}
       {open && !disabled ? (
         <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
-          {!typeAheadOnly && (
+          {!typeAheadOnly && showClearOption && (
             <button
               type="button"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => selectOption("")}
+              onClick={clearSelection}
               className={
                 "block min-h-8 w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
                 (value === "" ? "font-semibold text-primary" : "")
@@ -275,7 +301,7 @@ export function SearchableDropdown({
           {visibleOptions.length ? (
             visibleOptions.map((option, index) => (
               <button
-                key={option}
+                key={option.value}
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onMouseEnter={() => setActiveOptionIndex(index)}
@@ -283,12 +309,12 @@ export function SearchableDropdown({
                 className={
                   "block w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
                   (index === activeOptionIndex ? "bg-accent " : "") +
-                  (option === value ? "font-semibold text-primary" : "")
+                  (option.value === value ? "font-semibold text-primary" : "")
                 }
                 role="option"
                 aria-selected={index === activeOptionIndex}
               >
-                {option}
+                {option.label}
               </button>
             ))
           ) : (

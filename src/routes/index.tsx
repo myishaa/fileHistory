@@ -50,12 +50,14 @@ import {
 } from "@/lib/effective-deliveries";
 import { downloadBackendExport, downloadBackendFileSearchExport, type ExportPlot } from "@/lib/export-download";
 import { promptPassword } from "@/lib/delete-password";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   allFileCategoryKeys,
   fileMatchesCategory,
   filterFilesByCategory,
   getVisibleFileCategoryKeys,
   getVisibleFileCategoryOptions,
+  normalizeFileCategories,
   serializeFileCategories,
   type FileCategoryOption,
   type FileCategoryKey,
@@ -81,7 +83,6 @@ import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
 import { HelperContent } from "@/components/helper-content";
 import { ChartCopyButton, TableChartToggle, type ResultView } from "@/components/table-chart-toggle";
-import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   CartesianGrid,
@@ -265,72 +266,72 @@ type HelperDetails = {
 };
 
 const fileYearSubfilterHelper = [
-  "Global Filter chooses the files you can work with; File Initiation Year can narrow that list.",
-  "Choose a year to keep files started in that FY, or All file years to include every start year in the Global Filter results.",
-  "With Global Filter = All files, the all-years choice is called Entire database.",
-  "Example: Global Filter 2026-27 + File Initiation Year 2025-26 shows 2025-26 files that are included in the 2026-27 view.",
-  "This selection stays for the current browser tab session.",
+  "Global Filter chooses the files to show. File Initiation Year can narrow that list.",
+  "A selected year keeps files started in that FY. All file years includes every start year in the Global Filter results.",
+  "With Global Filter = All files, All file years is called Entire database.",
+  "Example: Global Filter 2026-27 + File Initiation Year 2025-26 returns 2025-26 files that meet the 2026-27 rules.",
+  "Selection lasts for the current browser tab only.",
 ];
 
 const fileYearLockHelper = [
-  "Keeps the current File Initiation Year choice in place on Dashboard and Reports while this tab is open.",
-  "The lock is temporary; it is not saved to your account.",
-  "Unlock it to let the subfilter follow its usual default again.",
+  "The selected File Initiation Year stays fixed on Dashboard and Reports while this tab is open.",
+  "The lock lasts only for this browser tab and is not saved to the account.",
+  "Unlocking lets the subfilter return to its usual default.",
 ];
 
 const fileInitiationDateRangeHelper = [
-  "Use these dates to narrow the selected File Initiation Year further.",
-  "Leave both blank when you do not need an exact initiation-date range.",
+  "The date range narrows files already selected by File Initiation Year.",
+  "Blank From and To dates add no date restriction.",
 ];
 
 const analyticsMainHelper = [
-  "Explore the files selected by your Dashboard filters.",
-  "Compare divisions, firms, indentors, value bands, delays, and time to complete milestones.",
-  "Click a number to open the matching files in Search.",
-  "Cancelled demands are left out of regular analysis. Cancelled S.O.s are treated according to the panel: value and liability views leave them out, while history views may retain them.",
+  "Dashboard filters select the files included in Analytics.",
+  "Analytics compares divisions, firms, indentors, value bands, delays, and milestone completion times.",
+  "Clicking a value opens the matching files in Search.",
+  "Cancelled demands are excluded from regular analysis. Cancelled S.O.s are excluded from value and liability totals but may remain in history panels.",
 ];
 
 const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
   status: [
-    "See what is still moving and what has been completed at each stage.",
-    "Use Status-1 as the main reference for workflow counts.",
+    "Status-1 is the main workflow view, with pending and completed counts for each stage.",
+    "Status-3 presents the same workflow counts in table form.",
     "Cancelled demands appear only in their cancellation count.",
-    "The Total Files count can retain files whose S.O.s were all cancelled for context. Those files are left out of live work, payment, delivery, BG, and liability counts.",
-    "Valid D.P. and Extended D.P. have separate counts.",
+    "A file whose every S.O. is cancelled may remain in Total Files to show its history. It is excluded from pending-work, payment, delivery, BG, and liability counts.",
   ],
   liveStatus: [
-    "See where each division's open work is waiting now.",
-    "Cancelled demands and closed files are not live work.",
-    "D.P. counts current S.O.s or stages whose original/revised D.P. date is still missing.",
-    "Material Receipt tracks physical deliveries with a current D.P. where receipt is not yet recorded.",
-    "IR = No and Contract files use Job Completion instead of Material Receipt.",
+    "Status-2 shows work currently waiting at each workflow step.",
+    "Depending on the step, a count can represent a Financial Sanction, S.O., delivery stage, advance, or supplementary-bill case.",
+    "One file can contribute several cases; Search lists each matching file once.",
+    "D.P. counts an S.O. or delivery stage when Delivery Period is current and neither the original nor revised D.P. date is recorded.",
+    "Material Receipt counts physical delivery cases with a D.P. in effect and no receipt recorded.",
+    "Goods & Services with IR = No, and contract files, use Job Completion instead of Material Receipt.",
   ],
   status3: [
-    "See the Status-1 counts arranged in tables.",
-    "Status-3 uses the same counts and click-throughs as Status-1.",
-    "A table value matches its Status-1 counter, or the relevant Status-1 counters combined.",
+    "Status-3 presents the Status-1 counts in tables.",
+    "Status-3 has the same counters and click-through results as Status-1.",
+    "Each table value matches one Status-1 counter or the Status-1 counters named in that row.",
   ],
   status4: [
-    "Follow file progress up to Supply Order placement.",
+    "Status-4 compares applicable, cleared, and current work at each milestone.",
     "Each file counts once, even if it has several S.O.s.",
-    "A stage is counted only for files that use that stage.",
+    "Only files where a stage applies are counted for that stage.",
     "Cancelled S.O.s do not change Status-4 counts.",
   ],
   snapshot: [
-    "Get a quick breakdown of the selected files by type, firm type, mode, and other details.",
+    "Snapshot groups the selected files by File Type, Firm Type, Mode, and other available categories.",
     "Cancelled demands are left out.",
-    "Cancelled or shortclosed S.O.s may remain in history and statistical views, such as Firm Type, File Type, and PSB, when they match your filters.",
+    "Cancelled or shortclosed S.O.s may remain in some historical statistics, such as Firm Type and File Type.",
   ],
   analytics: analyticsMainHelper,
   finance: [
-    "Review budgets, estimated and committed values, payments, and unpaid amounts.",
+    "Finance reports budgets, estimated and committed values, recorded payments, and unpaid amounts.",
     "Cancelled demands and cancelled S.O.s are left out of Finance calculations.",
   ],
   finance1: [
-    "Choose an FY to review files started in that year, their value, payments, unpaid amounts, and status.",
-    "The File Initiation Year is fixed to the FY you choose here.",
-    "For the current FY, year-end figures are estimates based on information entered so far.",
-    "Cards marked Today update as payment and liability details change.",
+    "The selected FY determines which files and year-end figures appear here.",
+    "File Initiation Year is fixed to the selected FY.",
+    "Current-FY year-end figures are provisional and use the information entered so far.",
+    "Cards marked Today update when payment or liability details change.",
   ],
 };
 
@@ -473,73 +474,72 @@ const statusFileExportHelpers = {
 
 const dashboardSectionRuleHelpers = {
   status1: [
-    "Use this as the main view of work in progress and completed stages.",
-    "Live means work is still underway; Completed means the stage has been reached.",
+    "Status-1 is the main view of pending work and completed stages.",
+    "Due, Reviewed, Pending, and Completed show different positions within a stage.",
     "Cancelled demands appear only in their cancellation count.",
     "The Global Filter decides whether closed files are included.",
-    "Valid and extended D.P.s are counted separately.",
   ],
   status2: [
-    "See where each division's work is waiting now.",
-    "Cancelled demands and closed files are not live work.",
-    "Each file appears at its current waiting stage.",
-    "Delivery Period includes valid original and extended D.P.s.",
-    "Recorded delivery or job completion removes the item from live Delivery Period.",
+    "Status-2 shows the current workflow step for each pending S.O. or delivery-stage case.",
+    "One file can contribute several cases; Search shows each matching file once.",
+    "The Global Filter sets which files are in scope. Cancelled demands are not counted as pending work.",
+    "D.P. counts an S.O. or delivery stage when Delivery Period is current and neither the original nor revised D.P. date is recorded.",
+    "Entering an original or revised D.P. date removes the case from D.P. count. Material Receipt and Job Completion are counted separately.",
   ],
   status3: [
-    "Status-3 shows the Status-1 counts in tables.",
-    "It uses the same counts and click-throughs as Status-1.",
-    "A table value matches its Status-1 counter, or the related counters combined.",
+    "Status-3 presents the Status-1 counts in tables.",
+    "Status-3 uses the same counters and click-through results as Status-1.",
+    "Each table value matches one Status-1 counter or the related counters combined.",
   ],
   status4: [
-    "Follow file progress up to Supply Order placement.",
+    "Status-4 compares applicable, cleared, and current work at each milestone.",
     "Each file counts once, even if it has several S.O.s.",
     "Cancelled demands are left out; cancelled S.O.s do not change Status-4 counts.",
-    "A stage is counted only for files that use it.",
+    "Only files where a stage applies are counted for that stage.",
   ],
   snapshot: [
-    "Snapshot shows file statistics, not live payment or liability follow-up.",
+    "Snapshot reports file statistics, not current payment or liability follow-up.",
     "Cancelled demands are left out of regular Snapshot counts.",
-    "Cancelled S.O. history may still appear in statistics such as PSB, Firm Type, and File Type.",
+    "Cancelled S.O. history may still appear in statistics such as Firm Type and File Type.",
     "The Global Filter decides whether closed files are included.",
-    "Click a number to see the files behind it.",
+    "Clicking a number opens the files included in that count.",
   ],
   finance: [
-    "Finance is a mixed live/activity value view, not a frozen FY-end file-group report.",
-    "When a specific FY is selected, some values use that FY as an activity-date filter, while other values show the current position of the selected dashboard file set.",
-    "Intended, Booked, and Committed can change later if file/S.O. data is added, corrected, cancelled, shortclosed, or edited after that FY.",
-    "Payment in FY and Carry Forward use payment/S.O. dates to place rows in the selected FY context.",
-    "Files may belong to an earlier FY by initiation year but still contribute here if the finance activity/date rule matches this Finance view.",
+    "Finance combines payments dated in the selected FY with current values for files matching the Dashboard filters.",
+    "With a specific FY selected, some figures include only activity dated in that FY. Other figures show today's values for the selected files.",
+    "Intended, Booked, and Committed can change when file or S.O. details are added, corrected, cancelled, shortclosed, or edited later.",
+    "Payment in FY uses payment dates. Carry Forward groups unpaid amounts by the FY when the payment obligation began.",
+    "A file started in an earlier FY can still contribute when its finance activity meets the selected FY rule.",
     "Cancelled demand files are excluded.",
     "Cancelled S.O. rows are excluded from value calculations and finance liability.",
-    "No Further Action = Yes stops pending delivery, job-completion, and payment work, including open unpaid bill-return/resubmission follow-up. BG receipt, validity, expiry, return, and warranty tracking continue; recorded history remains.",
-    "File Closed follows the selected Global Filter.",
+    "No Further Action = Yes stops unfinished delivery, job-completion, and payment follow-up, including unpaid bills in an open return/resubmission cycle. BG and warranty tracking continues; recorded history remains.",
+    "Closed files appear only when the selected Global Filter includes them.",
   ],
   analytics: [
-    "Analytics uses your Dashboard Global Filter, File Initiation Year, date range, Division, and File Type choices.",
+    "Global Filter, File Initiation Year, date range, Division, and File Type select the files used in Analytics.",
     "Cancelled demands are left out of regular Analytics.",
     "Cancelled S.O.s are left out of value and liability totals, but may remain in history and statistics.",
-    "Click a result to open the matching files in Search.",
-    "Milestone clearing measures stage completion; Finance panels show money and unpaid amounts.",
+    "Clicking a result opens the matching files in Search.",
+    "Milestone clearing panels show time to complete each stage. Finance panels show recorded payments and unpaid amounts.",
   ],
 } as const;
 
 const deliveryPeriodMetricHelpers = {
   valid: [
-    "S.O. exists and the original D.P. date is today or later.",
+    "The original D.P. date is today or later.",
     "No revised D.P. is present; revised/extended cases are not counted here.",
     "Material receipt/job completion must still be pending.",
     "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
   ],
   expired: [
-    "S.O. exists and the effective D.P. date is before today.",
+    "The effective D.P. date is before today.",
     "Material receipt/job completion must still be pending.",
     "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
   ],
   extended: [
-    "Revised D.P. exists and the revised/effective D.P. date is today or later.",
+    "A revised D.P. date is recorded and is today or later.",
     "Material receipt/job completion must still be pending.",
-    "This is kept separate from normal D.P. Valid in Status-1 and Status-3.",
+    "Shown separately from normal D.P. Valid in Status-1 and Status-3.",
   ],
 } as const;
 
@@ -549,8 +549,8 @@ const statusActionModes = [
     label: "PDF",
     icon: FileText,
     helper: [
-      "When a Status-1 count is clicked, opens the matching files as a PDF.",
-      "The clicked count decides the extra status condition applied to the export.",
+      "Clicking a Status-1 count exports the matching files as a PDF.",
+      "The selected count's status condition is applied to the export.",
     ],
   },
   {
@@ -558,8 +558,8 @@ const statusActionModes = [
     label: "Excel",
     icon: FileSpreadsheet,
     helper: [
-      "When a Status-1 count is clicked, downloads the matching files in Excel format.",
-      "The clicked count decides the extra status condition applied to the export.",
+      "Clicking a Status-1 count exports the matching files to Excel.",
+      "The selected count's status condition is applied to the export.",
     ],
   },
   {
@@ -567,8 +567,8 @@ const statusActionModes = [
     label: "Search file",
     icon: Search,
     helper: [
-      "When a Status-1 count is clicked, opens the matching files in Search Files.",
-      "The landing carries Dashboard filter context and focuses the matching status condition.",
+      "Clicking a Status-1 count opens its matching files in Search Files.",
+      "Search keeps the Dashboard filters and focuses the selected status condition.",
     ],
   },
 ] satisfies Array<{
@@ -857,71 +857,76 @@ const supplyOrderMilestoneNames = [
 ];
 const status2MilestoneHelpers: Record<string, readonly string[]> = {
   financialsanction: [
-    "Shows files still waiting for Financial Sanction.",
-    "Once the sanction is recorded, the case leaves this pending count.",
+    "Each pending Financial Sanction for an expected S.O. is counted as one case.",
+    "Recording that S.O.'s sanction completes its case; another expected S.O. can still have a pending sanction.",
   ],
   advancepayment: [
-    "An S.O. counts when Advance Payment is required, it is the current step, and no payment date has been entered.",
-    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
+    "Advance Payment is tracked separately from regular and stage payments.",
+    "An S.O. is counted when Advance Payment is required, is the current step, and has no payment date.",
+    "Cancelled demands, cancelled S.O.s, and No Further Action = Yes stop this pending follow-up.",
   ],
   supplyorder: [
-    "Shows files waiting for an S.O. after Financial Sanction.",
-    "Once an S.O. is placed, the file leaves this pending count.",
+    "Each expected S.O. waiting to be placed after Financial Sanction is counted as one case.",
+    "Placing that S.O. completes its case; other expected S.O.s are counted separately.",
   ],
   deliveryperiod: [
-    "Shows an S.O. whose D.P. step is current but whose original or revised D.P. date has not been entered.",
-    "Once a D.P. date is entered, the S.O. leaves this counter. Material receipt is tracked separately.",
-    "Cancelled demands, cancelled or shortclosed S.O.s, and S.O.s marked No Further Action are left out.",
+    "An S.O. is counted when its D.P. step is current and neither the original nor revised D.P. date is entered.",
+    "Entering a D.P. date removes the S.O. from this count. Material receipt has a separate count.",
+    "Cancelled demands, cancelled or shortclosed S.O.s, and S.O.s marked No Further Action are excluded.",
   ],
   materialreceipt: [
-    "Shows physical-delivery S.O.s with an active D.P. date where material receipt is still blank.",
-    "A recorded material receipt removes the S.O. from this counter. IR = No and Contract files use Job Completion instead.",
-    "The counter may count more than one S.O. or delivery stage in a file; Search opens each matching file once.",
+    "A physical-delivery S.O. or stage is counted after its D.P. period starts, while the effective D.P. has not passed and material receipt is blank.",
+    "A completed Delivery milestone is excluded. Goods & Services with IR = No, and contract files, use Job Completion instead.",
+    "One file can contribute several cases; Search lists each matching file once.",
   ],
   psb: [
-    "Shows S.O.s that require PSB but do not yet have a received date.",
-    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
+    "An S.O. is counted when PSB is required but its received date is blank.",
+    "Cancelled demands, closed files, and cancelled S.O.s are excluded.",
   ],
   pwb: [
-    "Shows S.O.s that require PWB but do not yet have a received date.",
-    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
+    "An S.O. is counted when PWB is required but its received date is blank.",
+    "Cancelled demands, closed files, and cancelled S.O.s are excluded.",
   ],
   psbpwb: [
-    "Shows S.O.s that require a combined PSB+PWB but do not yet have a received date.",
-    "Cancelled demands, closed files, and cancelled S.O.s are left out.",
+    "An S.O. is counted when combined PSB+PWB is required but its received date is blank.",
+    "Cancelled demands, closed files, and cancelled S.O.s are excluded.",
   ],
   jobcompletion: [
-    "Shows contract or service work waiting for Job Completion.",
-    "Completed jobs leave this pending count.",
+    "Contract work and Goods & Services with IR = No are counted after the effective D.P. date passes if Job Completion is blank.",
+    "A recorded Job Completion date completes this case.",
   ],
   irpreparation: [
-    "Shows inspection cases where material has arrived but IR is not yet prepared.",
-    "After IR is prepared, the case can move to IR Receipt pending.",
+    "An inspection case is counted when material has arrived but IR is not prepared.",
+    "Preparing IR moves the case to IR Receipt pending.",
   ],
   irreceipt: [
-    "Shows inspection cases where IR was prepared or sent but receipt is not yet recorded.",
-    "Once IR is received, the case leaves this pending count.",
+    "An inspection case is counted when IR was prepared or sent but receipt is not recorded.",
+    "Recording IR receipt removes the case from this pending count.",
   ],
   billpreparation: [
-    "Shows payable work where delivery or job completion is recorded but bill preparation is still pending.",
-    "Bills returned for correction are tracked separately.",
+    "Delivered or completed work is counted when bill preparation is still pending.",
+    "Bills returned for correction have a separate count.",
   ],
   billsentforpayment: [
-    "Shows prepared bills that have not yet been sent for payment.",
-    "Bills returned for correction are tracked separately.",
+    "Prepared bills are counted until they are sent for payment.",
+    "Bills returned for correction have a separate count.",
   ],
   billreturnedforcorrection: [
-    "Shows returned bills still waiting for correction or resubmission.",
-    "After resubmission, an unpaid bill moves to Resubmitted and Unpaid. Paid bills remain in the returned-bill history.",
+    "Returned Bills tracks the latest return cycle while correction or resubmission is pending.",
+    "Resubmission ends that return follow-up. If the bill is returned again, the new cycle is the one counted here.",
+    "An unpaid bill remains under Payment after its payment trigger, including while a return is open.",
+    "No Further Action = Yes stops this pending return follow-up.",
   ],
   supplementarybillreturnedforcorrection: [
-    "Shows supplementary bills returned for correction and not yet resubmitted.",
-    "A bill without an open return is not included here.",
+    "A supplementary bill is counted while its latest return cycle is open and the bill is unpaid.",
+    "Resubmission closes that return follow-up; a later return starts a new current cycle.",
+    "No Further Action = Yes stops payment follow-up.",
   ],
   payment: [
-    "Shows S.O. and stage payments that are due, being prepared, or submitted but still unpaid.",
-    "This counts payment cases. One file can have several, but it appears once in Search results.",
-    "Returned bills are separate: they stay under Return Pending until resubmitted, then move to Resubmitted and Unpaid until paid.",
+    "Once its applicable payment trigger is reached, an S.O. or stage payment remains under Payment while unpaid, unless the demand or S.O. is cancelled or No Further Action = Yes.",
+    "The counter counts payment cases. One file can have several cases but appears once in Search results.",
+    "An open return can also appear under Returned Bills; it does not remove the unpaid case from Payment.",
+    "Advance payments and supplementary bills are shown in their own counters.",
   ],
 };
 
@@ -1070,8 +1075,8 @@ export function Dashboard() {
           window.sessionStorage.getItem(fileCategoryFilterStorageKey) ?? "null",
         );
         const selected = Array.isArray(saved?.selected)
-          ? saved.selected.filter((key: unknown): key is FileCategoryKey =>
-              allFileCategoryKeys.includes(key as FileCategoryKey),
+          ? normalizeFileCategories(
+              saved.selected.filter((key: unknown): key is string => typeof key === "string"),
             )
           : undefined;
         return selected?.length ? selected : allFileCategoryKeys;
@@ -2208,7 +2213,7 @@ export function Dashboard() {
   const financeCombinationBlockedReason = {
     title: "Finance view not available for this filter combination",
     description:
-      "This combination mixes file universe, initiation year, allocation year, payment year, and carry-forward basis in a way that can confuse interpretation.",
+      "This combination mixes file start years, budget years, payment years, and carry-forward rules. Choose one of the supported combinations below.",
   };
   const financeUsefulCombinations = [
     {
@@ -2216,10 +2221,10 @@ export function Dashboard() {
       filters: `Global Filter = current FY ${settings.financialYear}, Subfilter = All file years`,
       use: "Use for day-to-day Finance monitoring across all initiation years in the current FY.",
       helper: [
-        "Best for current-FY payments, carry-forward, cleared carry-forward, and firm-type activity.",
+        "Current-FY payments, carry-forward, cleared carry-forward, and firm-type activity are grouped here.",
         "Payment values use payment or advance-payment dates inside the current FY.",
         "Firm Type Distribution uses S.O.s placed and payments made inside the current FY.",
-        "Live cumulative boxes are hidden here so this view stays focused on FY movement.",
+        "Current totals to date are hidden; this view shows payments and carry-forward for the selected FY.",
       ],
     },
     {
@@ -2227,25 +2232,25 @@ export function Dashboard() {
       filters: "Switch Global Filter to All files, then choose Subfilter = Entire database",
       use: "Use for total allocated, intended, booked, committed, paid-till-date, and firm-type distribution across the full accessible database.",
       helper: [
-        "Best for overall finance position of the complete accessible database.",
+        "Finance totals cover the complete accessible database.",
         "Entire database is available only when Global Filter is All files.",
         "For All active files, the matching no-restriction subfilter is All file years.",
         "Allocation is summed across all configured FYs.",
         "Firm Type Distribution is cumulative across the visible database.",
-        "FY movement boxes are hidden to keep this view cumulative.",
+        "Selected-FY payment and carry-forward totals are hidden in this cumulative view.",
         "Do not use this for a selected-FY performance question.",
       ],
     },
     {
       title: "Cumulative initiation-year position",
       filters: "Global Filter = All files, Subfilter = specific FY",
-      use: "Use for cumulative/current-position Finance of all files initiated in one FY.",
+      use: "Current Finance totals for files started in one FY.",
       helper: [
-        "Best for seeing the full historical/current position of one initiation-year file group.",
+        "Recorded Finance history to date covers files started in one FY.",
         "It includes files from that initiation year regardless of whether they are active or closed.",
-        "Values are cumulative/current-position values for that initiation-year file set.",
+        "Values include recorded history to date for those files, whether active or closed.",
         "Firm Type Distribution is cumulative for that initiation-year file group.",
-        "FY movement boxes are hidden to keep it consistent with cumulative Finance views.",
+        "Selected-FY payment and carry-forward totals are hidden in this cumulative view.",
       ],
     },
     {
@@ -2253,7 +2258,7 @@ export function Dashboard() {
       filters: "Global Filter FY = Subfilter",
       use: "Use for a clean selected-FY file-set view, where allocation and file initiation year are the same.",
       helper: [
-        "Best for asking how files started in the selected FY stand right now.",
+        "Current values show how files started in the selected FY stand now.",
         "Allocation belongs to the same selected FY.",
         "Intended, Booked, Committed, and Paid Till Date are live/current.",
         "Firm Type Distribution uses S.O.s placed and payments made inside the selected FY.",
@@ -2263,13 +2268,13 @@ export function Dashboard() {
     {
       title: "FY movement across all file years",
       filters: "Global Filter = target FY, Subfilter = All file years",
-      use: "Use for broad selected-FY payment and carry-forward movement across all initiation years.",
+      use: "Payments and carry-forward amounts for the selected FY across all initiation years.",
       helper: [
-        "Best for previous liabilities carried into or cleared during the target FY.",
+        "Earlier unpaid liabilities appear when carried into or paid during the target FY.",
         "Payment in FY uses payment or advance-payment dates inside the target FY.",
         "Firm Type Distribution uses S.O.s placed and payments made during the target FY.",
         "Carry-forward panels are grouped by the FY when each payment obligation began.",
-        "Live cumulative boxes are hidden so this view stays focused on FY movement.",
+        "Current totals to date are hidden; only activity dated in the selected FY appears.",
       ],
     },
     {
@@ -2277,48 +2282,48 @@ export function Dashboard() {
       filters: "Global Filter = target FY, Subfilter = earlier FY",
       use: "Use to see how files initiated in an earlier FY moved, got paid, or carried forward during the target FY.",
       helper: [
-        "Best for questions like: how did 2025-26 files perform in 2026-27?",
+        "Example question: how did files started in 2025-26 perform during 2026-27?",
         "File Initiation Year selects the older file-start year.",
         "Global Filter selects the later FY being reviewed.",
         "Firm Type Distribution counts only target-FY S.O.s/payments for that older file group.",
-        "Useful for Payment in FY, cleared carry-forward, and later-year movement analysis.",
+        "Use Payment in FY and Cleared Carry Forward to review payments made during the target FY.",
       ],
     },
     {
       title: "Active workload",
       filters: "Global Filter = All active files, Subfilter = All file years",
-      use: "Use for the current finance position of active, non-cancelled work across all initiation years.",
+      use: "Current Finance totals for active, non-cancelled files from all initiation years.",
       helper: [
-        "Best for current pending/active workload monitoring from a finance angle.",
+        "Current pending workload covers active files from all initiation years.",
         "Closed files are excluded.",
         "Values are live/current across all initiation years.",
         "Firm Type Distribution is hidden because this is an operational active-file view.",
-        "Payment in FY and carry-forward boxes are hidden because this is not an Activity-FY movement view.",
+        "Payment-in-FY and carry-forward totals are hidden; this view shows current amounts, not activity for one FY.",
         "Use this instead of Active + current FY closed when working inside Finance.",
       ],
     },
     {
       title: "Active workload by initiation FY",
       filters: "Global Filter = All active files, Subfilter = specific FY",
-      use: "Use for the current finance position of active files initiated in one FY.",
+      use: "Current Finance totals for active files started in one FY.",
       helper: [
-        "Best for seeing active workload that originated in one specific FY.",
+        "Active workload is limited to files started in the selected FY.",
         "Closed files are excluded.",
         "Firm Type Distribution is hidden because this is an operational active-file view.",
-        "Payment in FY and carry-forward boxes are hidden to keep this view cumulative/current-position based.",
+        "Payment-in-FY and carry-forward totals are hidden; this view shows current amounts for those files.",
         "Use this when the initiation year itself matters for active files.",
       ],
     },
     {
       title: "Active plus current-FY closed workload",
       filters: "Global Filter = Active + current FY closed, Subfilter = All file years or specific FY",
-      use: "Use for current operational finance position including active files and files closed during the current FY.",
+      use: "Current Finance totals for active files and files closed during the current FY.",
       helper: [
-        "Best for day-to-day monitoring where current-FY closed files should remain visible.",
-        "Values are cumulative/current-position values for the selected file universe.",
-        "A specific File Initiation Year narrows this same universe by initiation year.",
+        "Active files and files closed during the current FY remain visible together.",
+        "Values show the amounts recorded to date for the selected files.",
+        "A specific File Initiation Year narrows these files to that start year.",
         "Firm Type Distribution is hidden because this is an operational workload view.",
-        "FY movement boxes are hidden to keep the view consistent with cumulative Finance views.",
+        "Payment-in-FY and carry-forward totals are hidden; this view shows amounts recorded to date.",
       ],
     },
   ];
@@ -2384,16 +2389,16 @@ export function Dashboard() {
       `Paid during ${selectedFinanceYearLabel}: ₹40.`,
       `Unpaid at ${selectedFinanceYearLabel} end: ₹60.`,
       isSpecificGlobalEarlierFileYearFinanceView
-        ? `This panel shows ₹60 for FY ${activeFileYear} source liabilities still unpaid.`
-        : "This panel shows ₹60 as still unpaid from previous FY liabilities.",
+        ? `Shows ₹60 for FY ${activeFileYear} source liabilities still unpaid.`
+        : "Shows ₹60 as still unpaid from previous-FY liabilities.",
     ],
     cleared: [
       `${financePreviousCarryExampleSource}: ₹100 was pending at the start of ${selectedFinanceYearLabel}.`,
       `Paid during ${selectedFinanceYearLabel}: ₹40.`,
-      "This panel shows ₹40 as cleared carry forward.",
+      "Shows ₹40 as cleared carry forward.",
       isSpecificGlobalEarlierFileYearFinanceView
         ? `The row belongs to FY ${activeFileYear} source liability.`
-        : "This amount belongs to the FY when the payment obligation began.",
+        : "Belongs to the FY when the payment obligation began.",
     ],
     carryForward: [
       `The payment obligation began in ${selectedFinanceYearLabel}: ₹75.`,
@@ -2405,7 +2410,7 @@ export function Dashboard() {
     futureCleared: [
       `At the end of ${selectedFinanceYearLabel}, ₹75 from that FY was still unpaid.`,
       "Paid in a later FY: ₹50.",
-      "This panel shows ₹50 as cleared later.",
+      "Shows ₹50 as cleared later.",
       "The unpaid balance, if any, continues as pending carry-forward.",
     ],
   };
@@ -2483,7 +2488,7 @@ export function Dashboard() {
       ],
     })),
     hint: [
-      "Files are grouped by bidding mode from the selected Dashboard file set.",
+          "Files matching the Dashboard filters are grouped by bidding mode.",
       "Cancelled demand files are excluded.",
       "File Closed follows the selected Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
@@ -2502,7 +2507,7 @@ export function Dashboard() {
       ],
     })),
     hint: [
-      "GeM files are grouped by GeM bidding mode from the selected Dashboard file set.",
+          "GeM files matching the Dashboard filters are grouped by GeM bidding mode.",
       "Cancelled demand files are excluded.",
       "File Closed follows the selected Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
@@ -2582,8 +2587,8 @@ export function Dashboard() {
     ? {
         rules: [
           `Same-FY view: Global Filter FY and Subfilter are both ${selectedFinanceYearLabel}.`,
-          "The file set is narrowed to that same FY context.",
-          "Intended, Booked, Committed, and Paid Till Date are live/current values for this visible file set.",
+          "Only files started in the selected FY are included.",
+          "Intended, Booked, Committed, and Paid Till Date show current amounts for those files.",
           "Firm Type Distribution is restricted to S.O.s placed and payments made in this Global Filter FY.",
           `Payment in ${selectedFinanceYearLabel} is the only top value box restricted by actual payment/advance payment date within this FY.`,
           shortclosedPayableHelper,
@@ -2591,51 +2596,51 @@ export function Dashboard() {
         ],
         allocated: [
           `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-          "This is setup/budget data, not file transaction data.",
+          "Setup/budget data, not file transaction data.",
           "It changes only if the allocation setup for this FY/division is edited.",
         ],
         intended: [
           `Live intended value for visible ${selectedFinanceYearLabel} files where Controlled/S.O. value has not replaced the estimate.`,
-          "This is a current value, so later Controlled/S.O. entry can move it to Booked or Committed.",
+          "Live value; later Controlled/S.O. entry can move it to Booked or Committed.",
           "The percentage is against the selected FY allocation.",
         ],
         booked: [
           `Live booked value for visible ${selectedFinanceYearLabel} files where Controlled/file booking exists and committed S.O. value has not replaced it.`,
-          "This is a current value, so later S.O. entry can move it to Committed.",
+          "Live value; later S.O. entry can move it to Committed.",
           "The percentage is against the selected FY allocation.",
         ],
         committed: [
-          `Live committed value from effective S.O.s in the visible ${selectedFinanceYearLabel} file set.`,
-          "This is current effective S.O. value, not a frozen FY-end figure.",
+          `Current committed value from effective S.O.s in files started in FY ${selectedFinanceYearLabel}.`,
+          "Current effective S.O. value, not a frozen FY-end figure.",
           "Shortclosed S.O.s remain here as S.O. history because shortclosure is not cancellation.",
           "The percentage is against the selected FY allocation.",
         ],
         paidTillDate: [
-          `Total paid till date for the visible ${selectedFinanceYearLabel} file set.`,
+          `Total paid to date for files started in FY ${selectedFinanceYearLabel}.`,
           "Includes final/stage/supplementary payments and advance payments.",
           "It is not restricted to payments made inside this FY.",
           "The percentage is against the selected FY allocation.",
         ],
         paymentInYear: [
-          `Payments actually made during ${selectedFinanceYearLabel} for the visible same-FY file set.`,
+          `Payments made during ${selectedFinanceYearLabel} for files started in that FY.`,
           "Uses payment date or advance payment date.",
           "Includes final/stage/supplementary payments and advance payments.",
-          "This complements Paid Till Date: Paid Till Date is cumulative, while this box is FY-payment-date based.",
+          "Paid Till Date is cumulative; Payment in FY uses payment dates within the selected FY.",
         ],
-          previousCarryForward: isCurrentFinanceYearSameFyView
+        previousCarryForward: isCurrentFinanceYearSameFyView
           ? [
               `Older-FY liabilities still unpaid in the current FY ${selectedFinanceYearLabel} view.`,
-              "This is must-have current-year monitoring because unpaid liabilities from earlier years still require action now.",
-          "It can include payment obligations from earlier FYs for these files.",
+              "Prior-FY liabilities that remain unpaid are available for follow-up in the current FY.",
+              "Can include payment obligations from earlier FYs for these files.",
             ]
           : [
               "Hidden in historical same-FY view to avoid confusion.",
-              "For older-FY liability movement, use Global Filter = target FY and Subfilter = earlier FY.",
+              "To review earlier-FY liabilities in a later FY, set Global Filter to the later FY and Subfilter to the earlier FY.",
             ],
         clearedCarryForward: isCurrentFinanceYearSameFyView
           ? [
               `Older-FY carry-forward liabilities paid during current FY ${selectedFinanceYearLabel}.`,
-              "This shows how much previous-year pending liability has been cleared in the current FY.",
+              "Cleared Carry Forward totals the previous-year liability paid in the current FY.",
               "It uses payment date in the current FY and liability source from an earlier FY.",
             ]
           : [
@@ -2643,18 +2648,18 @@ export function Dashboard() {
               "For older-FY carry-forward cleared during a target FY, use Global Filter = target FY and Subfilter = earlier FY.",
             ],
         carryForward: [
-          `Unpaid ${selectedFinanceYearLabel} liabilities remaining at FY end for this same-FY file set.`,
-          "Uses liability source date, usually S.O./bill source date.",
+          `Unpaid liabilities from files started in ${selectedFinanceYearLabel}, as of that FY-end.`,
+          "The liability source date, usually the S.O. or bill date, determines its carry-forward FY.",
           shortclosedPayableHelper,
           "If paid after FY end, the same liability can appear in the cleared-later panel.",
         ],
         futureClearedCarryForward: [
-          `${selectedFinanceYearLabel} carry-forward liabilities from this same-FY file set that were paid after FY end.`,
-          "This intentionally updates when later payment entries are made.",
-          "It helps explain what happened later to unpaid year-end liabilities.",
+          `Liabilities from files started in ${selectedFinanceYearLabel} that were unpaid at FY-end and paid later.`,
+          "Updates when later payment entries are recorded.",
+          "Explains how unpaid year-end liabilities were cleared later.",
         ],
           firmType: [
-            `Activity-year distribution by firm type for the visible ${selectedFinanceYearLabel} file set.`,
+            `Firm-type totals for S.O.s and payments recorded during ${selectedFinanceYearLabel} for files started in that FY.`,
             `S.O. value counts only S.O.s placed during ${selectedFinanceYearLabel}.`,
             `Actual payment counts only payment and advance-payment dates falling in ${selectedFinanceYearLabel}.`,
             "The File Initiation Year subfilter only narrows which files are eligible.",
@@ -2665,33 +2670,33 @@ export function Dashboard() {
       ? {
           rules: [
             `Continuation view: Global Filter is ${selectedFinanceYearLabel} and Subfilter is ${activeFileYear}.`,
-            `The file set is earlier-FY files initiated in ${activeFileYear} that are visible in the ${selectedFinanceYearLabel} context.`,
+            `The selected files started in ${activeFileYear}; the Global Filter shows their activity in ${selectedFinanceYearLabel}.`,
             "Use this to see how older files performed in the later target FY.",
-            "Intended, Booked, Committed, and Paid Till Date are live/current values for this visible earlier-file set.",
+            "Intended, Booked, Committed, and Paid Till Date show current amounts for these earlier-started files.",
             `Firm Type Distribution is restricted to S.O.s placed and payments made in ${selectedFinanceYearLabel}.`,
             shortclosedPayableHelper,
             `Payment in ${selectedFinanceYearLabel} and carry-forward boxes use ${selectedFinanceYearLabel} activity/liability rules.`,
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-            `The file set is initiated in ${activeFileYear}, but allocation remains the target FY allocation.`,
+            `These files started in ${activeFileYear}; allocation still comes from the target FY.`,
             "Use this comparison as a later-year workload/payment view, not as a pure initiation-year budget view.",
           ],
           intended: [
             `Live intended value of visible files initiated in ${activeFileYear}.`,
             `These are earlier-FY files still relevant to the ${selectedFinanceYearLabel} view.`,
-            "This is current/live and can change when Controlled/S.O. fields are entered or corrected.",
+            "Live value; it can change when Controlled or S.O. fields are entered or corrected.",
           ],
           booked: [
             `Live booked value of visible files initiated in ${activeFileYear}.`,
             "Includes files where Controlled/file booking exists and committed S.O. value has not replaced it yet.",
-            "This is current/live and can move to Committed after S.O. entry.",
+            "Live value; a later S.O. entry can move it to Committed.",
           ],
           committed: [
             `Live committed value from effective S.O.s for visible files initiated in ${activeFileYear}.`,
             "Uses current effective S.O. value; cancelled S.O. rows are excluded.",
             "Shortclosed S.O.s remain included as S.O. history.",
-            "This is not frozen at the target FY end.",
+            "Not frozen at the target FY-end.",
           ],
           paidTillDate: [
             `Total paid till date for visible files initiated in ${activeFileYear}.`,
@@ -2702,27 +2707,27 @@ export function Dashboard() {
             `Payments actually made during ${selectedFinanceYearLabel} for visible files initiated in ${activeFileYear}.`,
             "Uses payment date or advance payment date.",
             "Includes final/stage/supplementary payments and advance payments.",
-            "This is the clean box for later-FY payment movement of earlier-FY files.",
+            "Payments recorded in a later FY remain visible for files started in an earlier FY.",
           ],
           previousCarryForward: [
             `Payment obligations that began in FY ${activeFileYear} for files started that year and were still unpaid at the end of ${selectedFinanceYearLabel}.`,
             `This view intentionally restricts previous carry-forward to FY ${activeFileYear} source liability.`,
-            "Before FY-end, this is a live/provisional unpaid position and can reduce if payment is made before year end.",
+            "Before FY-end, this unpaid amount is provisional and decreases if a payment is recorded before year-end.",
           ],
           clearedCarryForward: [
             `FY ${activeFileYear} carry-forward liabilities within files initiated in ${activeFileYear} that were paid during ${selectedFinanceYearLabel}.`,
             `This uses payments made in ${selectedFinanceYearLabel} against obligations that began in FY ${activeFileYear}.`,
-            "Use it to see how much of that earlier-FY pending liability was cleared in the target FY.",
+            "Cleared Carry Forward totals how much of that earlier-FY liability was paid in the target FY.",
           ],
           carryForward: [
             `${selectedFinanceYearLabel} liabilities within files initiated in ${activeFileYear} that are currently unpaid and would carry forward if still unpaid at FY-end.`,
             shortclosedPayableHelper,
-            "This is live/provisional before FY-end; values may reduce if payment is made before year end.",
-            "After FY-end, it becomes the final carry-forward position for those liabilities.",
+            "Live and provisional before FY-end; the amount may reduce if payment is made before year-end.",
+            "After FY-end, this is the final unpaid amount carried forward for those liabilities.",
           ],
           futureClearedCarryForward: [
             `${selectedFinanceYearLabel} carry-forward liabilities within files initiated in ${activeFileYear} that were paid after FY-end.`,
-            "This explains later clearing of target-FY liabilities from the earlier-file set.",
+            "Target-FY liabilities paid after FY-end appear here for files started in earlier FYs.",
             "It mainly becomes meaningful after the target FY has ended.",
           ],
           firmType: [
@@ -2736,35 +2741,35 @@ export function Dashboard() {
     : isSpecificGlobalAllFileYearsFinanceView
       ? {
           rules: [
-            `FY movement view: Global Filter is ${selectedFinanceYearLabel} and Subfilter is All file years.`,
-            "The view is focused on payment and carry-forward movement across all initiation years.",
-            "Live position boxes such as Intended, Booked, Committed, and Paid Till Date are hidden here to avoid mixing current position with FY movement.",
+            `Selected-FY view: Global Filter is ${selectedFinanceYearLabel} and Subfilter is All file years.`,
+            "Payments made during this FY and unpaid amounts carried forward from earlier FYs include all initiation years.",
+            "Intended, Booked, Committed, and Paid Till Date are hidden because they show amounts recorded to date, not activity in one FY.",
             `Payment in ${selectedFinanceYearLabel} uses actual payment/advance payment date inside ${selectedFinanceYearLabel}.`,
             shortclosedPayableHelper,
             "Carry-forward panels are grouped by the FY when each payment obligation began.",
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-            "This gives the selected-FY budget reference for the movement view.",
+            "Shows the budget set up for the selected FY.",
             "It is setup/budget data, not file transaction data.",
           ],
           intended: [
-            "Hidden in FY movement view to avoid mixing live current position with selected-FY movement.",
+            "Hidden because this view shows payments made in the selected FY, not current intended amounts.",
           ],
           booked: [
-            "Hidden in FY movement view to avoid mixing live current position with selected-FY movement.",
+            "Hidden because this view shows payments made in the selected FY, not current booked amounts.",
           ],
           committed: [
-            "Hidden in FY movement view to avoid mixing live current position with selected-FY movement.",
+            "Hidden because this view shows payments made in the selected FY, not current committed amounts.",
           ],
           paidTillDate: [
-            "Hidden in FY movement view because it is cumulative till date, not selected-FY payment movement.",
+            "Hidden because Paid Till Date includes all recorded payments, not only payments made in the selected FY.",
           ],
           paymentInYear: [
             `Payments actually made during ${selectedFinanceYearLabel} across all visible initiation years.`,
             "Uses payment date or advance payment date.",
             "Includes final/stage/supplementary payments and advance payments.",
-            "This is the main payment box for this broad FY movement view.",
+            "Main measure for payments recorded during the selected FY.",
           ],
           previousCarryForward: [
             `Payment obligations from before ${selectedFinanceYearLabel} that were still unpaid at that FY-end.`,
@@ -2778,13 +2783,13 @@ export function Dashboard() {
           ],
           carryForward: [
             `${selectedFinanceYearLabel} liabilities that are currently unpaid and would carry forward if still unpaid at FY-end.`,
-            "This is liability-source-FY based and covers all visible initiation years.",
+            "Liabilities are grouped by their source FY across all visible initiation years.",
             shortclosedPayableHelper,
             "Before FY-end, this is live/provisional.",
           ],
           futureClearedCarryForward: [
             `${selectedFinanceYearLabel} carry-forward liabilities that were paid after FY-end.`,
-            "This covers all visible initiation years.",
+            "Covers all visible initiation years.",
             "It mainly becomes meaningful after the selected FY has ended.",
           ],
           firmType: [
@@ -2792,21 +2797,21 @@ export function Dashboard() {
             `Actual payment by firm type is restricted to payment/advance payment dates falling in ${selectedFinanceYearLabel}.`,
             "Supplementary bill payments are included by their payment date.",
             "All visible initiation years are eligible.",
-            "This distribution is Global Filter FY based, not live cumulative.",
+            "Global Filter FY based, not live cumulative.",
           ],
         }
     : isAllFilesSpecificFileYearFinanceView
       ? {
           rules: [
             `Cumulative initiation-year view: Global Filter is All files and Subfilter is ${activeFileYear}.`,
-            `The file set includes all accessible files initiated in FY ${activeFileYear}.`,
+            `Includes all accessible files started in FY ${activeFileYear}.`,
             "Active, closed, and historical files from that initiation year remain in scope as permitted by access and File Type filters.",
-            "Intended, Booked, Committed, Paid Till Date, and Firm Type Distribution are cumulative/current-position values for this initiation-year file set.",
-            "FY-specific movement boxes are hidden to keep this view cumulative and current-position based.",
+            "Intended, Booked, Committed, Paid Till Date, and Firm Type Distribution include recorded history to date for these files.",
+            "Payment and carry-forward totals for a selected FY are hidden in this cumulative view.",
           ],
           allocated: [
             `Budget allocation for FY ${activeFileYear} and the selected division.`,
-            `The file set is all files initiated in FY ${activeFileYear}, so allocation also uses FY ${activeFileYear}.`,
+            `These files started in FY ${activeFileYear}, so allocation also uses that FY.`,
             "Percentages compare this initiation-year file group with the same FY allocation.",
           ],
           intended: [
@@ -2831,26 +2836,26 @@ export function Dashboard() {
             "It is cumulative till date, not restricted to payments made inside the selected FY.",
           ],
           paymentInYear: [
-            "Hidden in cumulative initiation-year view to avoid mixing FY-payment movement with current-position values.",
+            "Hidden because this view shows payment history to date, not payments for one selected FY.",
           ],
           previousCarryForward: [
-            "Hidden in cumulative initiation-year view because this is an FY-specific movement box.",
+            "Hidden because this is a selected-FY carry-forward measure; the current view includes all years.",
           ],
           clearedCarryForward: [
-            "Hidden in cumulative initiation-year view because this is an FY-specific movement box.",
+            "Hidden because this is a selected-FY carry-forward measure; the current view includes all years.",
           ],
           carryForward: [
-            "Hidden in cumulative initiation-year view because this is an FY-specific movement box.",
+            "Hidden because this is a selected-FY carry-forward measure; the current view includes all years.",
           ],
           futureClearedCarryForward: [
-            "Hidden in cumulative initiation-year view because this is an FY-specific movement box.",
+            "Hidden because this is a selected-FY carry-forward measure; the current view includes all years.",
           ],
           firmType: [
             `Cumulative distribution by firm type for all visible files initiated in FY ${activeFileYear}.`,
             "S.O. value basis uses current effective S.O. value grouped by S.O. firm type.",
             "Actual payment basis uses paid-till-date rows grouped by related S.O. firm type.",
             "Actual payment includes supplementary bill payments and advance payments.",
-            "This is not restricted by S.O. date or payment date because Global Filter is All files.",
+            "Not restricted by S.O. date or payment date because Global Filter is All files.",
           ],
         }
     : isActivePlusCurrentFyClosedFinanceView
@@ -2859,15 +2864,15 @@ export function Dashboard() {
             activeFileYear === "all"
               ? "Current operational workload view: Global Filter is Active + current FY closed and Subfilter is All file years."
               : `Current operational workload view: Global Filter is Active + current FY closed and Subfilter is ${activeFileYear}.`,
-            "The file set includes currently active, non-cancelled files plus files closed during the current FY.",
-            "A specific File Initiation Year narrows this same active/current-FY-closed universe by initiation year.",
-            "Intended, Booked, Committed, and Paid Till Date are live/current values for this operational workload.",
+            "Includes active, non-cancelled files and files closed during the current FY.",
+            "File Initiation Year can narrow these files to one start year.",
+            "Intended, Booked, Committed, and Paid Till Date show current amounts for these files.",
             "Firm Type Distribution is hidden here because this is an operational workload view, not an Activity-FY or cumulative All-files view.",
-            "FY-specific movement boxes are hidden to keep this view cumulative and current-position based.",
+            "Payment-in-FY and carry-forward totals are hidden; this view shows amounts recorded to date.",
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-            "Allocation remains FY setup data, even though the file set is an operational workload universe.",
+            "Allocation comes from Finance setup for the selected FY; included files may have started in different years.",
             "Percentages compare operational workload values with this selected FY allocation.",
           ],
           intended: [
@@ -2900,19 +2905,19 @@ export function Dashboard() {
             "It is cumulative till date, not restricted to payments made inside the selected FY.",
           ],
           paymentInYear: [
-            "Hidden in Active + current FY closed view to avoid mixing FY-payment movement with cumulative operational values.",
+            "Payment-in-FY and carry-forward totals require a specific Global Filter FY; this view shows current active/closed-file totals.",
           ],
           previousCarryForward: [
-            "Hidden in Active + current FY closed view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           clearedCarryForward: [
-            "Hidden in Active + current FY closed view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           carryForward: [
-            "Hidden in Active + current FY closed view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           futureClearedCarryForward: [
-            "Hidden in Active + current FY closed view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           firmType: [
             "Hidden in Active + current FY closed view.",
@@ -2924,15 +2929,15 @@ export function Dashboard() {
       ? {
           rules: [
             "Active workload view: Global Filter is All active files and Subfilter is All file years.",
-            "The file set includes currently active, non-cancelled files across all initiation years.",
+            "Includes active, non-cancelled files from all initiation years.",
             "Closed files are excluded by the Global Filter.",
-            "Intended, Booked, Committed, and Paid Till Date are live/current values for active workload.",
+            "Intended, Booked, Committed, and Paid Till Date show current amounts for these active files.",
             "Firm Type Distribution is hidden here because this is an operational workload view, not an Activity-FY or cumulative All-files view.",
-            "FY-specific movement boxes are hidden to keep this active workload view cumulative and current-position based.",
+            "Payment-in-FY and carry-forward totals are hidden; this view shows amounts recorded to date.",
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-            "Allocation remains FY setup data, even though active files may have been initiated in different years.",
+            "Allocation comes from Finance setup for the selected FY; active files may have started in different years.",
             "Percentages compare active-workload values with this selected FY allocation.",
           ],
           intended: [
@@ -2957,19 +2962,19 @@ export function Dashboard() {
             "It is not restricted to payments made inside the selected FY.",
           ],
           paymentInYear: [
-            "Hidden in Active workload view to avoid mixing FY-payment activity with cumulative active-file values.",
+            "Payment-in-FY and carry-forward totals require a specific Global Filter FY; this view shows active files today.",
           ],
           previousCarryForward: [
-            "Hidden in Active workload view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           clearedCarryForward: [
-            "Hidden in Active workload view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           carryForward: [
-            "Hidden in Active workload view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           futureClearedCarryForward: [
-            "Hidden in Active workload view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           firmType: [
             "Hidden in All active files view.",
@@ -2981,16 +2986,16 @@ export function Dashboard() {
       ? {
           rules: [
             `Active initiation-year view: Global Filter is All active files and Subfilter is ${activeFileYear}.`,
-            `The file set includes currently active, non-cancelled files initiated in FY ${activeFileYear}.`,
+            `Includes active, non-cancelled files started in FY ${activeFileYear}.`,
             "Closed files are excluded by the Global Filter.",
-            "Intended, Booked, Committed, and Paid Till Date are live/current values for this active initiation-year file set.",
+            "Intended, Booked, Committed, and Paid Till Date show current amounts for these files.",
             "Firm Type Distribution is hidden here because this is an operational workload view, not an Activity-FY or cumulative All-files view.",
             "Payment in FY and carry-forward boxes are hidden because this is an operational active-file view.",
           ],
           allocated: [
             `Budget allocation for ${selectedFinanceYearLabel} and the selected division.`,
-            `The file set is active files initiated in FY ${activeFileYear}, but allocation remains Finance FY setup data.`,
-            "Use the visible basis line to compare allocation FY and file-set basis.",
+            `These files started in FY ${activeFileYear}; allocation comes from Finance setup for ${selectedFinanceYearLabel}.`,
+            "The basis line above shows the file start year and allocation year.",
           ],
           intended: [
             `Live intended value of active files initiated in FY ${activeFileYear}.`,
@@ -3014,19 +3019,19 @@ export function Dashboard() {
             "It is not restricted to payments made inside the selected Finance FY.",
           ],
           paymentInYear: [
-            "Hidden in All active files view to avoid mixing FY-payment movement with cumulative active-file values.",
+            "Payment-in-FY and carry-forward totals require a specific Global Filter FY; this view shows active files today.",
           ],
           previousCarryForward: [
-            "Hidden in All active files view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           clearedCarryForward: [
-            "Hidden in All active files view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           carryForward: [
-            "Hidden in All active files view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           futureClearedCarryForward: [
-            "Hidden in All active files view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           firmType: [
             "Hidden in All active files view, even when a File Initiation Year is selected.",
@@ -3038,14 +3043,14 @@ export function Dashboard() {
       ? {
           rules: [
             "Entire database view: Global Filter is All files and Subfilter is Entire database.",
-            "All visible finance boxes are cumulative/live and use the full visible database file set.",
+            "All Finance totals include files matching the current filters, across every initiation year.",
             "Allocated is the sum of allocations across all configured FYs for the visible divisions.",
             "Percentages compare database-wide live values with all-FY allocation.",
-            "FY-specific movement boxes are hidden in this view to keep the all-database position clean.",
+            "Payments and carry-forward amounts for one selected FY are not shown in this cumulative view.",
           ],
           allocated: [
             "Sum of allocations across all configured financial years for the visible divisions.",
-            "This is used only for All files + Entire database so the allocation basis matches the all-database value basis.",
+            "Used only for All files + Entire database so allocation and value use the same database-wide basis.",
             "It changes if any FY allocation setup is edited.",
           ],
           intended: [
@@ -3073,23 +3078,23 @@ export function Dashboard() {
             "Hidden in Entire database view to avoid mixing FY-payment activity with cumulative all-database values.",
           ],
           previousCarryForward: [
-            "Hidden in Entire database view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           clearedCarryForward: [
-            "Hidden in Entire database view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           carryForward: [
-            "Hidden in Entire database view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           futureClearedCarryForward: [
-            "Hidden in Entire database view because this is an FY-specific movement box.",
+            "Available only when a specific Global Filter FY is selected.",
           ],
           firmType: [
             "Cumulative distribution by firm type across the entire visible database.",
             "S.O. value basis uses current effective S.O. value grouped by S.O. firm type.",
             "Actual payment basis uses paid-till-date rows grouped by related S.O. firm type.",
             "Actual payment includes supplementary bill payments and advance payments.",
-            "This is not restricted by S.O. date or payment date because Global Filter is All files.",
+          "Not restricted by S.O. date or payment date because Global Filter is All files.",
           ],
         }
     : {
@@ -3102,7 +3107,7 @@ export function Dashboard() {
         ],
         intended: [
           "Estimated value of live requirements where demand is not yet controlled.",
-          "This is a current-position value for files visible under the Dashboard filters.",
+          "The value uses today's records for files matching the Dashboard filters.",
           "It is not frozen at the end of the selected FY.",
           "If Controlled/S.O. is entered later, the file can move out of Intended.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
@@ -3111,7 +3116,7 @@ export function Dashboard() {
         ],
         booked: [
           "Amount booked at file level through Controlled where no S.O./committed value has replaced it yet.",
-          "This is a current-position value, not an as-on-FY-end value.",
+          "The amount is current, not frozen at FY-end.",
           "If S.O. value is entered later, the file can move from Booked to Committed.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
           "Shortclosed S.O. files remain included.",
@@ -3119,7 +3124,7 @@ export function Dashboard() {
         ],
         committed: [
           "Committed value from effective supply orders.",
-          "This is current effective S.O. value for the selected Dashboard file set.",
+          "Current effective S.O. values are used for files matching the Dashboard filters.",
           "It is not frozen at selected FY end and is not purely S.O.-date based.",
           "Later S.O. edits, cancellations, shortclosures, or value corrections can update it.",
           "Earlier-FY files may appear if the selected Dashboard context includes them.",
@@ -3128,15 +3133,15 @@ export function Dashboard() {
           "File Closed visibility follows the selected Global Filter.",
         ],
         paidTillDate: [
-          "Current cumulative paid amount against the visible Dashboard file set.",
+          "Total payments recorded so far for files matching the Dashboard filters.",
           "Includes final/main/stage payments, supplementary payments, and advance payments.",
           "There is no payment-FY restriction in this box.",
-          "It follows the same current/live file-set context as Intended, Booked, and Committed.",
+          "The same files are included as in Intended, Booked, and Committed.",
           "If payment dates or amounts are entered or corrected later, this value can change.",
         ],
         paymentInYear: [
           `Actual payment amount where payment date or advance payment date falls in ${selectedFinanceYearLabel}.`,
-          "This is payment-date based, not file-initiation-FY based.",
+          "Payment-date based, not File Initiation Year based.",
           "Includes main, stage, returned, supplementary, and advance payment amounts.",
           "It can include payments for files initiated in earlier FYs if their payment date falls in the selected FY and the file is visible in the Dashboard context.",
           "If a payment/advance date or amount is edited later, this selected-FY payment value can change.",
@@ -3145,9 +3150,9 @@ export function Dashboard() {
         ],
         previousCarryForward: [
           "Unpaid payment rows from earlier FYs that are still unpaid.",
-          "This is liability-source-FY based, not file-initiation-FY based.",
+          "Liability-source-FY based, not File Initiation Year based.",
           "Rows can belong to files initiated in an earlier or later FY if their S.O./bill liability source year and Dashboard context match.",
-          "If payment dates are entered or corrected later, this carry-forward position can change.",
+          "Later payment-date entries or corrections can change this carry-forward total.",
           "Supplementary bills are included if they are still unpaid.",
           "Closed Files are included when payment liability history matches.",
           "Shortclosed S.O. rows remain included.",
@@ -3155,7 +3160,7 @@ export function Dashboard() {
         ],
         clearedCarryForward: [
           `Earlier-FY carry-forward rows that were paid during ${selectedFinanceYearLabel}.`,
-          "This uses payment date in the selected FY and liability source from an earlier FY.",
+          "The payment date must fall in the selected FY, and the liability must have started in an earlier FY.",
           "It is not restricted to files initiated in the selected FY.",
           "If a payment date is edited later, rows can move into or out of this panel.",
           "Supplementary bills are included if their payment date falls in this FY.",
@@ -3165,7 +3170,7 @@ export function Dashboard() {
         ],
         carryForward: [
           `Payment obligations that began in ${selectedFinanceYearLabel} and were still unpaid at FY-end.`,
-          "This uses the liability source year, usually S.O./bill source date, not file initiation year.",
+          "The liability source year usually comes from the S.O. or bill date, not File Initiation Year.",
           "It can include visible files initiated outside the selected FY if their liability source belongs to this FY.",
           "If payment is later recorded after FY end, that row may also appear in the cleared-later panel.",
           "Supplementary bills are included if they remain unpaid at FY end.",
@@ -3175,7 +3180,7 @@ export function Dashboard() {
         ],
         futureClearedCarryForward: [
           `${selectedFinanceYearLabel} carry-forward rows that were paid after this FY ended.`,
-          "This tracks later payment of liabilities sourced from the selected FY.",
+          "Later payments are tracked when the liability began in the selected FY.",
           "It is not a frozen year-end snapshot; later payment entries intentionally update this panel.",
           "It is not restricted by file initiation FY.",
           "Supplementary bills are included if they were carried forward and later paid.",
@@ -3186,7 +3191,7 @@ export function Dashboard() {
         firmType: [
           "Firm Type Distribution is shown only for specific Activity FY views and cumulative All-files views.",
           "For a specific Activity FY, it counts S.O.s placed and payments made during that FY.",
-          "For Global Filter = All files, it is cumulative for the selected file universe.",
+          "With Global Filter = All files, totals include the files selected by File Initiation Year and other filters.",
           "It is hidden in active operational workload views.",
         ],
       };
@@ -3228,7 +3233,7 @@ export function Dashboard() {
             revenue: formatCurrency(financeTotals.projectedRevenue),
             notes: `Against allocation: Capital ${formatPercent(capitalProjectedPercent)}, Revenue ${formatPercent(
               revenueProjectedPercent,
-            )}. Current-position value; not frozen at FY end.`,
+            )}. Shows today's value; later edits can change it, so it is not fixed at FY-end.`,
           },
           {
             category: "Booked",
@@ -3236,7 +3241,7 @@ export function Dashboard() {
             revenue: formatCurrency(financeTotals.bookedRevenue),
             notes: `Against allocation: Capital ${formatPercent(capitalBookedPercent)}, Revenue ${formatPercent(
               revenueBookedPercent,
-            )}. Current-position value; later S.O. entry can move it to Committed.`,
+            )}. A later S.O. entry can move this amount from Booked to Committed.`,
           },
           {
             category: "Committed",
@@ -3603,15 +3608,15 @@ export function Dashboard() {
         (row) => getFinancialYearForDate(String(row.cncDate ?? "")) === selectedCncFiscalYear,
       )
     : cncFyRows;
-  const analyticsPanels: AnalyticsPanel[] = [
+const analyticsPanels: AnalyticsPanel[] = [
     {
       key: "divisionFiles",
       title: "Division ranking by files",
       subtitle: "Number of files",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Count shows number of selected files under each division.",
-        "This is file-level comparison, so cancellation visibility follows the selected global file set.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Each division's count is the number of selected files assigned to it.",
+        "Each matching file is counted once under its division. Cancelled demands are excluded; closed files follow the Global Filter.",
       ],
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
@@ -3626,8 +3631,8 @@ export function Dashboard() {
       title: "Division ranking by value",
       subtitle: "",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Intended, booked, committed, and S.O. values are calculated from those selected files, not from the date the value activity happened.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Intended, booked, committed, and S.O. values come from those files, even if the value was entered in another FY.",
         "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
         "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
       ],
@@ -3641,8 +3646,8 @@ export function Dashboard() {
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Intended, booked, committed, and S.O. totals are calculated from those selected files, not from the date the value activity happened.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Intended, booked, committed, and S.O. totals come from those files, even if the value was entered in another FY.",
         "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
         "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
       ],
@@ -3659,10 +3664,10 @@ export function Dashboard() {
       title: "Division turnaround ranking",
       subtitle: "Average days from Demand received date to first S.O.",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Average is calculated from Demand received date to first S.O. date inside selected files.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Average days run from Demand Received to the first S.O. date for each selected file.",
         "Cancelled demand files are excluded.",
-        "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
@@ -3677,11 +3682,11 @@ export function Dashboard() {
       title: "Firms ranking by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
       helper: [
-        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type filter first decide the accessible file set.",
+        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type determine which files are included.",
         "Cancelled demand files are excluded.",
-        "Because this is firm history, File Closed, cancelled S.O., and shortclosed S.O. records can still contribute when they belong to the selected file set.",
-        "Ranking uses S.O. values recorded inside those selected files.",
-        "If FY 2025-26 is selected, the file set is narrowed by that FY context, but S.O.s inside those files can still be counted even if the S.O. date is in another FY.",
+        "Closed files and cancelled or shortclosed S.O.s can remain in the firm's order history when the files match the selected filters.",
+        "The ranking adds S.O. values recorded in the selected files.",
+        "A selected FY filters files, not S.O. dates. An S.O. from another FY can still count if its file is included.",
       ],
       helperExamples: {
         title: "Firm ranking examples",
@@ -3702,10 +3707,10 @@ export function Dashboard() {
         ? `BQ, invited, tender participation, and order conversion for ${selectedFirmAnalysisRow.name}`
         : "Select a firm to see BQ, invitation, tender participation, and order conversion.",
       helper: [
-        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type filter first decide the accessible file set.",
-        "Firm counts are taken from BQ, invitation, tender participation, and S.O. entries inside those selected files.",
+        "Division access, Global Filter, File Initiation Year, initiation date range, and File Type determine which files are included.",
+        "Firm counts use BQ, invitation, tender participation, and S.O. entries recorded in those files.",
         "Cancelled demand files are excluded.",
-        "Because this is firm history, File Closed, cancelled S.O., and shortclosed S.O. records can still contribute when they belong to the selected file set.",
+        "Closed files and cancelled or shortclosed S.O.s can remain in firm history when the files match the selected filters.",
       ],
       helperExamples: {
         title: "Firm Analysis examples",
@@ -3733,10 +3738,10 @@ export function Dashboard() {
         `Ranked by S.O. ${indentorFirmSortKey === "count" ? "count" : "value"}.`,
       ].join("\n"),
       helper: [
-        "This view links the selected indentor to firms receiving S.O.s, or a selected firm to the indentors who placed S.O.s with it.",
+        "Select an indentor to list firms that received its S.O.s. Select a firm to list indentors who placed S.O.s with it.",
         "Each placed S.O. is counted once. Value uses the S.O. header amount; cancelled S.O.s remain part of award history.",
-        "The same Global Filter, File Initiation Year, Division, File Type, and access scope as Analytics apply.",
-        "Common means the firm or indentor is linked to more than one counterpart in the filtered files. Unique means it is linked only to the selected indentor or firm.",
+        "The Analytics Global Filter, File Initiation Year, Division, and File Type filters also apply.",
+        "Common includes firms or indentors linked to other matching records too. Unique includes only firms linked to the selected indentor, or indentors linked to the selected firm.",
       ],
       columns: [
         { key: "rank", label: "S.No.", align: "left" },
@@ -3771,10 +3776,10 @@ export function Dashboard() {
       title: "Top indentors by files",
       subtitle: "Number of files raised",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Count shows number of selected files raised by each indentor.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Each indentor's count is the number of selected files raised by that indentor.",
         "Cancelled demand files are excluded.",
-        "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Indentor")),
       rows: indentorsByFilesPagination.rows,
@@ -3788,13 +3793,12 @@ export function Dashboard() {
         "Total"
       } value.`,
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Capital value is the sum of demand Capital value from selected files.",
-        "Revenue value is the sum of demand Revenue value from selected files.",
-        "Total value is Capital value plus Revenue value, and sorting is by Total value.",
-        "It does not apply a separate activity-date filter.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Capital and Revenue sum the recorded demand values of those files, grouped by indentor.",
+        "A selected file contributes its recorded demand values even if the demand or S.O. activity happened in another FY.",
+        "Total is Capital plus Revenue. The list is sorted by Total value.",
         "Cancelled demand files are excluded.",
-        "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: withRankAnalyticsColumns(getIndentorValueAnalyticsColumns()),
       rows: indentorsByValuePagination.rows,
@@ -3804,10 +3808,10 @@ export function Dashboard() {
       title: "Bidding mode mix",
       subtitle: "Distribution by mode",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Count shows selected files grouped by bidding mode.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "The count for each mode is the number of selected files using it.",
         "Cancelled demand files are excluded.",
-        "File Closed, Cancelled S.O., and Shortclosed S.O. files remain included when they belong to the selected global file set.",
+        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: getCountAnalyticsColumns("Mode"),
       rows: analytics.biddingModeMix,
@@ -3817,9 +3821,9 @@ export function Dashboard() {
       title: "Count and Value analysis",
       subtitle: getCountValueAnalysisSubtitle(countValueAnalysisMode),
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Count mode groups selected files by configured value slabs.",
-        "S.O. value mode uses supply order values recorded inside those selected files.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Count mode groups files by the configured value ranges.",
+        "S.O. value mode uses the order values recorded in those files.",
         "Cancelled demand files are excluded.",
         "Cancelled S.O. and shortclosed S.O. rows remain included in S.O. value slabs for historical analysis.",
       ],
@@ -3840,10 +3844,10 @@ export function Dashboard() {
       title: "Payment pending by division",
       subtitle: "Delivery/job completion done but payment not completed",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Payment pending is calculated from the current payment status inside those selected files.",
-        "Includes main S.O. payments, stage-wise payments, returned main bills, advance payments, and supplementary bills.",
-        "This is a payment-case count, not a unique-file count. One file can contribute more than one pending payment case.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Each division's count is the number of unpaid payment cases in its matching files.",
+        "Main S.O., stage, returned-bill, advance, and supplementary payments are included.",
+        "The count is payment cases, not unique files. One file can contribute more than one pending case.",
         "For physical delivery/inspection cases, payment can become pending after material receipt.",
         "For Goods & Services where IR is No, payment can become pending after Job Completion.",
         "For File Types configured as Group B (Contract), payment can become pending from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
@@ -3884,8 +3888,8 @@ export function Dashboard() {
         ? `Month-wise Pre-Bid Meeting schedule for FY ${selectedPreBidFiscalYear}`
         : "FY-wise Pre-Bid Meeting schedule",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "FY/month rows here are grouped by Pre-Bid Meeting date.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Pre-Bid meetings are grouped by their meeting date and FY/month.",
         "Refloat Pre-Bid entries are included with Pre-Bid meeting counts where applicable.",
         "Active files excludes File Closed and all-S.O.-cancelled files.",
         "All files or a specific FY can include them if they belong to the selected set and their Pre-Bid dates exist.",
@@ -3917,15 +3921,15 @@ export function Dashboard() {
           ? "Pre-TCEC FY-wise review and minutes status"
           : "Post-TCEC FY-wise review and minutes status",
       helper: [
-        "Global Filter first decides the file set and, when it is a specific FY, restricts TCEC activity dates to that FY.",
-        "File Initiation Year only narrows which files can contribute.",
-        "FY rows here are grouped by TCEC meeting date.",
+        "Global Filter selects the files included.",
+        "File Initiation Year subfilter can narrow that file list.",
+        "Each TCEC row is grouped by meeting date and FY.",
         "Committee rows are grouped by the selected Pre-TCEC or Post-TCEC committee number.",
         "Pre-TCEC remains separate from Post-TCEC because they are different workflow stages.",
-        "Post-TCEC includes Refloat Post-TCEC where the stage meaning is the same.",
-        "Active files excludes File Closed and all-S.O.-cancelled files.",
-        "All files or a specific FY can include them if they belong to the selected set and their TCEC dates exist.",
-        "Shortclosed S.O. status does not remove the file from TCEC history.",
+        "Post-TCEC counts include Refloat Post-TCEC because both record the same stage.",
+        "Active files exclude File Closed and files whose S.O.s are all cancelled.",
+        "All files and Specific FY can include closed files when a TCEC date is recorded.",
+        "Shortclosing an S.O. does not remove its file from TCEC history.",
       ],
       helperExamples: {
         title: "TCEC examples",
@@ -3950,15 +3954,15 @@ export function Dashboard() {
         ? `CNC date-wise review, approval, financial sanction, and S.O. status for FY ${selectedCncFiscalYear}`
         : "FY-wise CNC review, approval, financial sanction, and S.O. status",
       helper: [
-        "Global Filter first decides the file set and, when it is a specific FY, restricts CNC Date to that FY.",
-        "File Initiation Year only narrows which files can contribute.",
-        "FY/date rows here are grouped by CNC Date.",
-        "Reviewed means CNC Date is filled.",
-        "Approval status is based on CNC Approval Date.",
-        "Financial Sanction is the next applicable stage after CNC approval.",
-        "Active files excludes File Closed and all-S.O.-cancelled files.",
-        "All files or a specific FY can include them if they belong to the selected set and their CNC Date exists.",
-        "Shortclosed S.O. status does not remove the file from CNC history.",
+        "Global Filter selects the files included.",
+        "File Initiation Year subfilter can narrow that file list.",
+        "Each CNC row is grouped by CNC date and FY.",
+        "A recorded CNC Date means the file was reviewed.",
+        "CNC Approval Date determines whether approval is complete.",
+        "After CNC approval, Financial Sanction is the next applicable stage.",
+        "Active files exclude File Closed and files whose S.O.s are all cancelled.",
+        "All files and Specific FY can include closed files when a CNC Date is recorded.",
+        "Shortclosing an S.O. does not remove its file from CNC history.",
       ],
       helperExamples: {
         title: "CNC examples",
@@ -3988,12 +3992,11 @@ export function Dashboard() {
               displayedSuspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
       helper: [
-        "The bell count and this list use the same file scope: Global Filter, File Initiation Year, initiation date, Division, and File Type, limited to files you are allowed to access.",
-        "Rows show suspected data issues detected inside the files selected by these filters.",
-        "For anomaly detection, inactive means File Closed, Cancelled demand, or every S.O. in the file is cancelled.",
-        "Inactive does not mean payment completed.",
-        "Active files with required Yes/No flags left blank are shown as data-completeness anomalies.",
-        "Accepted or suppressed anomaly rules may affect what remains visible.",
+        "The bell and list use the same filters: Global Filter, File Initiation Year, initiation date, Division, and File Type. Access permissions also apply.",
+        "Each row names a suspected data issue in a matching file.",
+        "Closed files, demand-cancelled files, and files with all S.O.s cancelled are excluded from duplicate file, S.O., and BG number checks; other applicable anomalies can still be reported for them.",
+        "A required Yes/No flag left blank on an active file appears as a data-completeness anomaly.",
+        "An accepted or suppressed rule may hide its anomaly from this list.",
       ],
       helperExamples: {
         title: "Anomaly examples",
@@ -4017,10 +4020,10 @@ export function Dashboard() {
       title: "Delay status",
       subtitle: `Live files currently stuck for more than ${Number.parseInt(analyticsDelayDays, 10) || 0} days. Average ${analyticsDelaySummary?.averageDays ?? 0} days; longest ${analyticsDelaySummary?.longestDays ?? 0} days.`,
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Delay is calculated only from the current pending milestone/order state inside those selected files.",
-        "Historical delays at milestones already cleared are excluded from Delay Status.",
-        "Panel filters such as Delay days and Milestone further narrow this view.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Delay Status checks only milestones or S.O. tasks that are currently pending.",
+        "Completed milestones are not counted as current delays.",
+        "Delay days and Milestone filters narrow the results further.",
       ],
       helperExamples: {
         title: "Delay examples",
@@ -4046,11 +4049,11 @@ export function Dashboard() {
           ? "Milestones in chronological workflow order"
           : "Slowest milestones by average clearing time",
       helper: [
-        "Global Filter and File Initiation Year first decide the file set.",
-        "Clearing duration is calculated from milestone dates inside those selected files.",
-        "From Supply Order onward, each valid S.O./stage/payment row contributes one sample to the average.",
-        "Cancelled S.O. rows are included for Supply Order placement clearing, but excluded from later S.O./payment-side clearing milestones.",
-        "Panel filters such as Value Threshold and Mode further narrow both the counts and Search landings.",
+        "Global Filter and File Initiation Year choose which files are included.",
+        "Average clearing times use milestone dates recorded in those files.",
+        "From Supply Order onward, each qualifying S.O., delivery stage, or payment counts once in the average.",
+        "Cancelled S.O.s count when measuring time to place an S.O.; they are excluded from later S.O. and payment averages.",
+        "Value Threshold and Mode filters narrow both the results and Search landings.",
       ],
       helperExamples: {
         title: "Milestone clearing examples",
@@ -4662,29 +4665,23 @@ export function Dashboard() {
                     </Tooltip>
                   </TooltipProvider>
                 </span>
-                <select
+                <SearchableDropdown
                   data-testid="dashboard-file-year-select"
                   value={activeFileYear}
-                  onChange={(event) => updateFileYearSelection(event.target.value)}
+                  options={[]}
+                  optionItems={[
+                    { value: "all", label: fileYearAllOptionLabel },
+                    ...availableFileYearOptions.map((year) => ({ value: year, label: year })),
+                  ]}
+                  deferChangeUntilSelect
+                  allowCustomValue={false}
+                  onChange={(value) => updateFileYearSelection(value || "all")}
                   disabled={fileYearSubfilterLockedByPage}
                   className={filterControlClass(
                     fileYearFilterActive,
                     "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-80",
                   )}
-                >
-                  {fileYearSubfilterLockedByPage ? (
-                    <option value={activeFileYear}>{activeFileYear || "Select FY"}</option>
-                  ) : (
-                    <>
-                      <option value="all">{fileYearAllOptionLabel}</option>
-                      {availableFileYearOptions.map((year) => (
-                        <option key={year} value={year}>
-                          {year}
-                        </option>
-                      ))}
-                    </>
-                  )}
-                </select>
+                />
               </label>
               <div className="flex flex-col items-center gap-1">
                 <FloatingHelp label="File initiation year lock help">{fileYearLockHelper}</FloatingHelp>
@@ -4732,21 +4729,24 @@ export function Dashboard() {
             )}
           >
             <span>Division</span>
-            <select
+            <SearchableDropdown
               value={activeDivision}
-              onChange={(event) => setSelectedDivision(event.target.value)}
+              options={[]}
+              optionItems={[
+                { value: "all", label: "All divisions" },
+                ...divisions.map((division) => ({
+                  value: division.name,
+                  label: division.name,
+                })),
+              ]}
+              deferChangeUntilSelect
+              allowCustomValue={false}
+              onChange={(value) => setSelectedDivision(value || "all")}
               className={filterControlClass(
                 divisionFilterActive,
                 "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
               )}
-            >
-              <option value="all">Divisions</option>
-              {divisions.map((division) => (
-                <option key={division.id} value={division.name}>
-                  {division.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
           <FileCategoryFilter
             selectedCategories={selectedFileCategories}
@@ -4787,7 +4787,7 @@ export function Dashboard() {
                 onClick={() =>
                   printSnapshotRowsToPdf(snapshotExportRows, "Snapshot", dashboardExportDescription, snapshotExportPlots)
                 }
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
                 title="Export Snapshot as PDF"
                 aria-label="Export Snapshot PDF"
               >
@@ -4804,7 +4804,7 @@ export function Dashboard() {
                     snapshotExportPlots,
                   )
                 }
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
                 title="Export Snapshot as Excel"
                 aria-label="Export Snapshot Excel"
               >
@@ -4941,7 +4941,7 @@ export function Dashboard() {
                           dashboardExportDescription,
                         )
                       }
-                      className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
                       title="Export Status-1 as PDF"
                       aria-label="Export Status-1 PDF"
                     >
@@ -4962,7 +4962,7 @@ export function Dashboard() {
                           dashboardExportDescription,
                         )
                       }
-                      className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
                       title="Export Status-1 as Excel"
                       aria-label="Export Status-1 Excel"
                     >
@@ -5006,11 +5006,11 @@ export function Dashboard() {
                     <span>Total files</span>
                     <FloatingHelp label="Total files cancellation helper">
                       {[
-                        "Shows files in the selected Global/Subfilter scope.",
+                        "Files matching the selected Global Filter and Subfilter appear here.",
                         "Demand-cancelled files are excluded except from cancellation-specific counters.",
-                        "Fully S.O.-cancelled files may remain in this total for history/context.",
+                        "Files with only cancelled S.O.s may remain in this total to show their history.",
                         "Live workflow, payment, delivery, BG, and liability counters exclude cancelled S.O. rows.",
-                        "Use the S.O. cancelled counter to review cancelled S.O. records.",
+                        "The S.O. cancelled counter opens the cancelled S.O. records.",
                       ]}
                     </FloatingHelp>
                   </div>
@@ -5114,7 +5114,7 @@ export function Dashboard() {
                           count: milestone.irPreparationPending,
                           onClick: () => handleStatusFilter("irPreparationPending"),
                           help: [
-                            "Includes files where IR preparation is still pending after delivery/job completion.",
+                            "Files with delivery or Job Completion recorded are included while IR preparation remains pending.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5124,7 +5124,7 @@ export function Dashboard() {
                           count: milestone.irReceiptPending,
                           onClick: () => handleStatusFilter("irReceiptPending"),
                           help: [
-                            "Includes files where IR has been prepared but IR receipt is still pending.",
+                            "Files with IR preparation recorded are included while IR receipt remains pending.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5134,7 +5134,7 @@ export function Dashboard() {
                           count: milestone.irCompleted,
                           onClick: () => handleStatusFilter("irCompleted"),
                           help: [
-                            "Includes files where IR receipt/completion is recorded.",
+                            "Files with IR receipt or completion recorded are included.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5166,7 +5166,7 @@ export function Dashboard() {
                           count: milestone.preBidDue,
                           onClick: () => handleStatusFilter("preBidMeeting:due"),
                           help: [
-                            "Includes files where Pre-bid Meeting is due and not yet completed.",
+                            "Files with a due, incomplete Pre-bid Meeting are included.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5176,7 +5176,7 @@ export function Dashboard() {
                           count: milestone.preBidCompleted,
                           onClick: () => handleStatusFilter("preBidMeeting:completed"),
                           help: [
-                            "Includes files where Pre-bid Meeting completion is recorded.",
+                            "Files with Pre-bid Meeting completion recorded are included.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5186,7 +5186,7 @@ export function Dashboard() {
                           count: milestone.refloatPreBidDue,
                           onClick: () => handleStatusFilter("refloatPreBidMeeting:due"),
                           help: [
-                            "Includes refloat files where Pre-bid Meeting is due and not yet completed.",
+                            "Refloat files with a due, incomplete Pre-bid Meeting are included.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5196,7 +5196,7 @@ export function Dashboard() {
                           count: milestone.refloatPreBidCompleted,
                           onClick: () => handleStatusFilter("refloatPreBidMeeting:completed"),
                           help: [
-                            "Includes refloat files where Pre-bid Meeting completion is recorded.",
+                            "Refloat files with Pre-bid Meeting completion recorded are included.",
                             "Cancelled demand files are excluded.",
                             "File Closed follows the selected Global Filter.",
                           ],
@@ -5331,7 +5331,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.liveFiles,
                     onClick: () => handleStatusFilter("miscLiveFiles"),
                     help: [
-                      "Includes non-closed files under the selected Dashboard filters.",
+                      "Non-closed files matching the selected Dashboard filters are included.",
                       "Cancelled demand files are excluded from the active base.",
                     ],
                   },
@@ -5340,7 +5340,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.fileClosed,
                     onClick: () => handleStatusFilter("miscFileClosed"),
                     help: [
-                      "Includes files marked as File Closed.",
+                      "Files marked File Closed are included.",
                       "Cancelled demand files are excluded.",
                       "Cancelled S.O. does not by itself remove a file from this count.",
                     ],
@@ -5350,7 +5350,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.demandCancelled,
                     onClick: () => handleStatusFilter("miscDemandCancelled"),
                     help: [
-                      "Shows only files specifically marked Demand Cancelled.",
+                      "Only files marked Demand Cancelled are included.",
                       "These files are excluded from other Status counters and clickers.",
                     ],
                   },
@@ -5359,7 +5359,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.multipleSupplyOrders,
                     onClick: () => handleStatusFilter("miscMultipleSupplyOrders"),
                     help: [
-                      "Counts files that have more than one S.O.; it is file based, not S.O.-row based.",
+                      "The count is files with more than one S.O., not individual S.O. rows.",
                       "A single file with three S.O.s counts as 1.",
                       "Cancelled demand files are excluded.",
                     ],
@@ -5369,7 +5369,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.soCancelled,
                     onClick: () => handleStatusFilter("miscSoCancelled"),
                     help: [
-                      "Includes files/S.O. rows where S.O. Cancelled is recorded.",
+                      "Files with an S.O. Cancelled record are included.",
                       "Cancelled demand files are excluded.",
                       "File Closed follows the selected Global Filter.",
                     ],
@@ -5379,7 +5379,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.shortclosedSo,
                     onClick: () => handleStatusFilter("miscShortclosedSo"),
                     help: [
-                      "Includes files/S.O. rows where Shortclosed S.O. is recorded.",
+                      "Files with a Shortclosed S.O. record are included.",
                       "Cancelled demand files are excluded.",
                       "File Closed follows the selected Global Filter.",
                     ],
@@ -5389,7 +5389,7 @@ export function Dashboard() {
                     count: miscellaneousCounts.ld,
                     onClick: () => handleStatusFilter("miscLd"),
                     help: [
-                      "Includes files/S.O. records where LD is applicable or recorded.",
+                      "Files with LD applicable or recorded are included.",
                       "Cancelled demand files are excluded.",
                       "File Closed follows the selected Global Filter.",
                     ],
@@ -5589,7 +5589,7 @@ export function Dashboard() {
                         "Choose a main firm to list firms that bid in the same tender files.",
                         "Count is the number of distinct files shared by the firm pair. A refloat cycle in the same file does not add another count.",
                         "A cancelled S.O. does not by itself exclude the file from co-bidding results.",
-                        "Co-bidding results use the same filtered file set as the rest of Analytics.",
+                        "Co-bidding results use the same filters as the rest of Analytics.",
                       ]
                     : displayedAnalyticsPanel.helper
                 }
@@ -5708,7 +5708,7 @@ export function Dashboard() {
                               analyticsExportPlot,
                             )
                           }
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
                           title="Export this Analytics report as PDF"
                           aria-label="Export Analytics PDF"
                         >
@@ -5740,7 +5740,7 @@ export function Dashboard() {
                               analyticsExportPlot,
                             )
                           }
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium hover:bg-accent"
+                          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
                           title="Export this Analytics report as Excel"
                           aria-label="Export Analytics Excel"
                         >
@@ -5842,21 +5842,24 @@ export function Dashboard() {
                       )}
                     >
                       <span>Milestone</span>
-                      <select
+                      <SearchableDropdown
                         value={analyticsDelayMilestoneKey}
-                        onChange={(event) => setAnalyticsDelayMilestoneKey(event.target.value)}
+                        options={[]}
+                        optionItems={[
+                          { value: "all", label: "All milestones" },
+                          ...effectiveDelayMilestoneOptions.map((milestone) => ({
+                            value: milestone.key,
+                            label: milestone.label,
+                          })),
+                        ]}
+                        deferChangeUntilSelect
+                        allowCustomValue={false}
+                        onChange={(value) => setAnalyticsDelayMilestoneKey(value || "all")}
                         className={filterControlClass(
                           analyticsDelayMilestoneKey !== "all",
                           "h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40",
                         )}
-                      >
-                        <option value="all">All milestones</option>
-                        {effectiveDelayMilestoneOptions.map((milestone) => (
-                          <option key={milestone.key} value={milestone.key}>
-                            {milestone.label}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </label>
                   </div>
                 ) : null}
@@ -5890,7 +5893,7 @@ export function Dashboard() {
                         )}
                         options={firmIndentorSource.map((item) => item.label)}
                         deferChangeUntilSelect
-                        typeAheadOnly
+                        typeAheadOnly={indentorFirmDirection === "firm"}
                         allowCustomValue={false}
                         placeholder={indentorFirmDirection === "indentor" ? "Select Indentor" : "Select Firm"}
                         className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
@@ -6300,20 +6303,22 @@ export function Dashboard() {
                     FY Snapshot - {finance1Summary.fiscalYear || "Select FY"}
                   </h2>
                   <p className="text-xs text-muted-foreground">
-                    Select an FY to see files started in that FY, their value, payments, pending
-                    liabilities, and present status. For a running FY, FY-end cards are provisional;
-                    today cards remain live.
+                    Snapshot FY follows the Global Filter: a specific FY uses that year; All Files,
+                    All Active Files, and Active + current FY closed use the current FY in Settings.
+                    File Initiation Year follows the Snapshot FY. File Initiation Date range,
+                    Division, and File Type filters still narrow the included files. For a running FY,
+                    FY-end cards are provisional; today cards remain live.
                   </p>
                 </div>
               </div>
               <SectionRuleToolbar
                   title="FY Snapshot rule"
                   items={[
-                    "Select an FY to review files started in that FY.",
+                    "A specific FY in Global Filter sets the Snapshot FY. All Files, All Active Files, and Active + current FY closed use the current FY in Settings.",
                     "For completed FYs, FY-end cards use dates available on or before the FY-end date.",
                     "For a running FY, FY-end cards are provisional because they use the selected FY-end cutoff and the data entered so far.",
-                    "Select any FY. Subfilter is locked to the same FY for this page.",
-                    "Division and File Type filters still apply.",
+                    "File Initiation Year follows the Snapshot FY.",
+                    "File Initiation Date range, Division, and File Type filters still narrow the included files.",
                     "Paid values include regular, stage, supplementary, and advance payments.",
                   ]}
               />
@@ -6323,7 +6328,7 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="File Group Summary"
                     help={[
-                      "This section is the selected-FY file group only.",
+                      "Selected-FY files only.",
                       "Previous-year files are not included.",
                       "Estimated value comes from demand/file value.",
                     ]}
@@ -6432,7 +6437,7 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="Workflow Position at FY-end"
                     help={[
-                      "Counts files from the selected file group at the FY-end cutoff.",
+                    "The selected files are evaluated as of the FY-end date.",
                       "These are file counts, not amount totals.",
                     ]}
                   />
@@ -6479,7 +6484,7 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="Pending Position at FY-end"
                     help={[
-                      "Pending position is only for selected-FY initiated files.",
+                    "Only files started in the selected FY are included.",
                       "Previous FY carry-forward is deliberately not included.",
                     ]}
                   />
@@ -6517,9 +6522,9 @@ export function Dashboard() {
                   <FinanceSectionTitle
                     title="Later Movement (live)"
                     help={[
-                      "Later movement tracks only the same selected-FY file group.",
-                      "Paid after FY-end includes regular, stage, supplementary, and advance payments.",
-                      "Today cards use current stored data and are not limited to the FY-end date.",
+                      "Activity after FY-end is tracked for the same files started in the selected FY.",
+                      "Payments after FY-end include regular, stage, supplementary, and advance payments.",
+                      "Today cards use data recorded to date, not only data up to FY-end.",
                     ]}
                   />
                   <div className="mt-3 grid grid-cols-1 gap-3">
@@ -6551,10 +6556,10 @@ export function Dashboard() {
                 <FinanceSectionTitle
                   title="File Type Distribution at FY-end"
                   help={[
-                    "Includes only files initiated in the selected FY; files initiated in earlier FYs are not included.",
-                    "Counts each included file once if it had at least one S.O. still valid at FY-end. Multiple S.O.s or delivery stages on one file still count as one file.",
+                    "Only files initiated in the selected FY are included; files initiated earlier are left out.",
+                    "Each file counts once if it had at least one S.O. still valid at FY-end. Multiple S.O.s or delivery stages on one file still count as one file.",
                     "Status columns are evaluated as on the FY-end cutoff date.",
-                    "Value is the file demand/estimated value of that selected FY file group.",
+                    "Value is the demand or estimated amount for files started in the selected FY.",
                   ]}
                 />
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
@@ -6825,7 +6830,7 @@ export function Dashboard() {
                         dashboardExportDescription,
                       )
                     }
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
                   >
                     <FileText className="size-3.5" />
                     PDF
@@ -6843,7 +6848,7 @@ export function Dashboard() {
                         dashboardExportDescription,
                       )
                     }
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
                   >
                     <FileSpreadsheet className="size-3.5" />
                     Excel
@@ -6925,7 +6930,7 @@ export function Dashboard() {
                       value={financeTotals.allocatedCapital}
                       help={[
                         "Capital allocation entered in division/year setup for the selected financial year.",
-                        "This is budget setup data, not file/S.O. transaction data.",
+                        "Budget setup data, not file/S.O. transaction data.",
                         "Future file activity does not update this value unless allocation setup is edited.",
                       ]}
                     />
@@ -6934,7 +6939,7 @@ export function Dashboard() {
                       value={financeTotals.allocatedRevenue}
                       help={[
                         "Revenue allocation entered in division/year setup for the selected financial year.",
-                        "This is budget setup data, not file/S.O. transaction data.",
+                        "Budget setup data, not file/S.O. transaction data.",
                         "Future file activity does not update this value unless allocation setup is edited.",
                       ]}
                     />
@@ -7310,32 +7315,29 @@ function SnapshotPieChart({
       <h3 className="absolute left-0 top-0 text-sm font-semibold text-foreground">{title}</h3>
       <div className="absolute right-0 top-0"><ChartCopyButton /></div>
       <div className="shrink-0" style={{ width: chartSize, height: chartSize }} aria-label={`${title} pie chart`}>
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="label"
-              innerRadius={Math.round(chartSize * (48 / 176))}
-              outerRadius={Math.round(chartSize * (76 / 176))}
-              paddingAngle={1}
-              onClick={(entry: { searchFilter?: string; payload?: { searchFilter?: string } }) => {
-                const filter = entry.payload?.searchFilter ?? entry.searchFilter;
-                if (filter) onSelect(filter);
-              }}
-            >
-              {data.map((row, index) => (
-                <Cell key={row.label} fill={colors[index % colors.length]} cursor={row.searchFilter ? "pointer" : "default"} />
-              ))}
-            </Pie>
-            <ChartTooltip
-              formatter={(value, _name, item) => {
-                const share = Number(item.payload?.share) || 0;
-                return [`${formatValue(Number(value))} (${share}%)`, item.payload?.label ?? title];
-              }}
-            />
-          </PieChart>
-        </ResponsiveContainer>
+        <PieChart width={chartSize} height={chartSize}>
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="label"
+            outerRadius={Math.round(chartSize * 0.44)}
+            paddingAngle={1}
+            onClick={(entry: { searchFilter?: string; payload?: { searchFilter?: string } }) => {
+              const filter = entry.payload?.searchFilter ?? entry.searchFilter;
+              if (filter) onSelect(filter);
+            }}
+          >
+            {data.map((row, index) => (
+              <Cell key={row.label} fill={colors[index % colors.length]} cursor={row.searchFilter ? "pointer" : "default"} />
+            ))}
+          </Pie>
+          <ChartTooltip
+            formatter={(value, _name, item) => {
+              const share = Number(item.payload?.share) || 0;
+              return [`${formatValue(Number(value))} (${share}%)`, item.payload?.label ?? title];
+            }}
+          />
+        </PieChart>
       </div>
       <div className="space-y-1.5 overflow-y-auto" style={{ maxHeight: chartSize }}>
         {data.map((row, index) => (
@@ -7923,7 +7925,7 @@ function LiveStatusSection({
           <div>
             <h3 className="text-sm font-bold">Division-wise current milestones</h3>
             <p className="text-xs text-muted-foreground">
-              Counts show how many files / S.O. are currently at each selected milestone.
+              Counts are workflow cases, not unique files. One file can contribute several cases; Search lists each matching file once.
             </p>
           </div>
           <div className="flex gap-2 text-right text-xs">
@@ -8326,7 +8328,7 @@ function Status4Section({
                 printStatus4RowsToPdf(rows, displayedMilestones, tableLabel, exportDescription, status4ChartPlot)
               }
               disabled={!canShowTable || !rows.length}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileText className="size-3.5" />
               PDF
@@ -8344,7 +8346,7 @@ function Status4Section({
                 )
               }
               disabled={!canShowTable || !rows.length}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileSpreadsheet className="size-3.5" />
               Excel
@@ -8783,30 +8785,30 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
     {
       label: "Total",
       items: [
-        "Shows the number of files in this row; it does not count stages or S.O.s.",
+        "The count is files, not stages or S.O.s.",
         "Cancelled demands are left out. Cancelling an S.O. does not remove the file from this total.",
       ],
     },
     {
       label: "Applicable",
       items: [
-        "Shows files that need to pass through this stage.",
+        "Files counted as applicable must pass through this stage.",
         "Example: IFA applies when IFA is marked Yes; TCEC stages apply to TCEC files.",
       ],
     },
     {
       label: "Cleared",
       items: [
-        "Shows applicable files that have completed this stage.",
+        "Cleared files are applicable files with this stage completed.",
         "A cancelled S.O. still counts as placed because it was placed before it was cancelled.",
-        "Click a non-zero count to see the matching files.",
+        "Click a non-zero count to open matching files.",
       ],
     },
     {
       label: "Current",
       items: [
-        "Shows files waiting at this stage now.",
-        "It is the current position, not a record of an earlier delay.",
+        "Files currently waiting at this stage are counted here.",
+        "This count identifies files waiting here now, not earlier delays.",
       ],
     },
     {
@@ -8844,7 +8846,7 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
       {
         label: "Monthwise",
         items: [
-          "Shows the months within the selected FY.",
+          "The month labels cover the selected FY.",
           "Months are based on when files were started/received, not when an S.O. was placed or items were delivered.",
           "Click a month to see its demand-value bands.",
         ],
@@ -9495,7 +9497,7 @@ function DashboardStatusSummarySection({
                 printStatusSummaryGroupsToPdf(exportGroups, "Status-3", exportDescription)
               }
               disabled={!exportGroups.length}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileText className="size-3.5" />
               PDF
@@ -9506,7 +9508,7 @@ function DashboardStatusSummarySection({
                 exportStatusSummaryGroupsToExcel(exportGroups, "Status-3", exportDescription)
               }
               disabled={!exportGroups.length}
-              className="flex h-8 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
             >
               <FileSpreadsheet className="size-3.5" />
               Excel
@@ -9713,10 +9715,10 @@ function getStatus3MilestoneHelper(name: string) {
     return "Shown after an S.O. has a D.P. date. Valid means the D.P. is today or later; Expired means it has passed; Extended means a revised D.P. applies. For IR = No and Contract files, completion is based on Job Completion.";
   }
   if (name === "Delivery") {
-    return "Tracks physical delivery and inspection for Goods & Services files with IR = Yes. It does not apply to IR = No files or Contract files; those use Job Completion.";
+    return "Delivery & Inspection covers physical delivery and inspection for Goods & Services files with IR = Yes. IR = No and Contract files use Job Completion instead.";
   }
   if (name === "Job Completion") {
-    return "Tracks completed work for Goods & Services files with IR = No and for Contract files. It becomes Due after the D.P. passes if Job Completion is still blank.";
+    return "Job Completion records finished work for Goods & Services files with IR = No and Contract files. It becomes Due after the D.P. passes if no completion date is entered.";
   }
   return undefined;
 }
@@ -10650,14 +10652,14 @@ function getStatusMetricTooltip(metric: StatusMetric) {
   if (metric.help) return metric.help;
   if (metric.statusKind === "live") {
     return [
-      "Shows files or cases that are still in progress.",
+      "Files or cases in this group are still in progress.",
       "Cancelled demands are not included.",
       "Closed files appear only when the Global Filter includes them.",
     ];
   }
   if (metric.statusKind === "history") {
     return [
-      "Shows work already recorded as complete.",
+      "This group contains work already recorded as complete.",
       "Cancelled demands are not included.",
       "Closed files appear only when the Global Filter includes them.",
     ];
@@ -11570,7 +11572,7 @@ function CoParticipantControls({
           onClick={() => onExport("pdf")}
           aria-label="Export co-participating firms as PDF"
           title="Export co-bidding firms as PDF"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium disabled:opacity-50"
         >
           <FileText className="size-3.5" />
           PDF
@@ -11581,7 +11583,7 @@ function CoParticipantControls({
           onClick={() => onExport("excel")}
           aria-label="Export co-participating firms as Excel"
           title="Export co-bidding firms as Excel"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium disabled:opacity-50"
         >
           <FileSpreadsheet className="size-3.5" />
           Excel
@@ -11616,7 +11618,7 @@ function CoBiddingFirmTable({
           Firms that co-bid with {mainFirm || "the selected firm"}
         </h3>
         <p className="text-xs text-muted-foreground">
-          Results use the same filtered file set currently applied to Analytics.
+          Results use the current Analytics filters.
         </p>
       </div>
       <div className="overflow-x-auto rounded-md border border-border">
@@ -15372,6 +15374,34 @@ function MetricButton({
 
 function getStatusMetricHelp(milestoneKey: string, label: string): string | string[] | undefined {
   const normalizedLabel = normalizeMilestoneName(label);
+  if (["total", "totalfiles", "totalcases"].includes(normalizedLabel)) {
+    const applicability: Record<string, string> = {
+      highValue: "High Value = Yes",
+      tcec: "TCEC = Yes",
+      ad: "AD = Yes",
+      rqa: "R&QA = Yes",
+      ifa: "IFA = Yes",
+      bidding: "bidding applies and Refloat is not Yes",
+      postTcec: "TCEC = Yes",
+      refloatBidding: "Refloat = Yes",
+      refloatPostTcec: "Refloat = Yes, TCEC = Yes, and Bidding Stage Over = Yes",
+      cnc: "TCEC = Yes",
+    };
+    const appliesWhen = applicability[milestoneKey];
+    return [
+      appliesWhen
+        ? `Includes files where ${appliesWhen}.`
+        : "Includes files in the selected Dashboard scope for this milestone.",
+      "Each file counts once, whether the milestone is pending or complete.",
+    ];
+  }
+  if (normalizedLabel === "due" && milestoneKey !== "payment") {
+    return [
+      "The file is currently at this stage.",
+      "This is a workflow position, not a date-based overdue count.",
+    ];
+  }
+
   if (milestoneKey === "bidding") {
     if (normalizedLabel === "live") {
       return [
@@ -15389,7 +15419,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
     if (normalizedLabel === "openingoverdue") {
       return [
         "Bidding is applicable and bid opening date has passed while Bid Opened is not Yes.",
-        "This is still inside bidding until Bidding Stage Over is Yes.",
+        "Bidding remains in progress until Bidding Stage Over is Yes.",
       ];
     }
     if (normalizedLabel === "completed") {
@@ -15404,7 +15434,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
     if (normalizedLabel === "live") {
       return [
         "Refloat is Yes, refloat bidding date exists, Tender Live is Yes, and Bidding Stage Over is not Yes.",
-        "This mirrors normal bidding live logic for refloat cases.",
+        "Bid Live follows the normal bidding rule and uses refloat dates when present.",
       ];
     }
     if (normalizedLabel === "inprocess") {
@@ -15461,6 +15491,45 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
   }
 
   if (milestoneKey === "payment") {
+    if (normalizedLabel === "advancepaid") {
+      return "An advance payment date is recorded. Each advance is counted as a payment case.";
+    }
+    if (normalizedLabel === "advancepending") {
+      return "Advance Payment is applicable, is the current step, and has no payment date.";
+    }
+    if (normalizedLabel === "billsreturned") {
+      return [
+        "Counts payment cases with recorded bill-return history.",
+        "A returned bill may still be awaiting resubmission, may have been resubmitted, or may already be paid.",
+      ];
+    }
+    if (normalizedLabel === "returnpending") {
+      return "The latest return cycle is open and awaiting resubmission.";
+    }
+    if (normalizedLabel === "returnedpaid") {
+      return "The latest return cycle was resubmitted, and a payment date is recorded.";
+    }
+    if (normalizedLabel === "supplementarysubmittedtotal") {
+      return "Counts supplementary bills with a bill-sent date, whether paid or unpaid.";
+    }
+    if (normalizedLabel === "suppreturnedtotal") {
+      return "Counts supplementary bills with recorded return-cycle details; it does not mean each is still awaiting resubmission.";
+    }
+    if (normalizedLabel === "suppreturnpending") {
+      return "A supplementary bill's latest return cycle is open and awaiting resubmission.";
+    }
+    if (normalizedLabel === "suppresubmittedtotal") {
+      return "Counts supplementary bills with a completed return-and-resubmission cycle, whether paid or unpaid.";
+    }
+    if (normalizedLabel === "suppreturnedpaid") {
+      return "A supplementary bill was resubmitted after return and its payment date is recorded.";
+    }
+    if (normalizedLabel === "normalsupplementarypaid") {
+      return "A supplementary bill has a payment date and no recorded return history.";
+    }
+    if (normalizedLabel === "supplementarypending") {
+      return "A supplementary bill has been submitted for payment and has no payment date.";
+    }
     if (normalizedLabel === "due") {
       return [
         "Payment workflow has become due, but bill preparation date and bill sent for payment date are still blank.",
@@ -15468,7 +15537,7 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
         "For Goods & Services where IR is No, due starts after Job Completion.",
         "For File Types configured as Group B (Contract), due can start from D.P./Revised D.P.; Job Completion can also trigger it when service is completed earlier.",
         "One file can contribute more than one payment case when it has multiple payable stages.",
-        "This does not mean the bill is already with payment authority; that is counted separately under Submitted and unpaid.",
+        "Bills already sent to the payment authority are counted separately under Submitted and unpaid.",
       ];
     }
     if (normalizedLabel === "inprocess") {
@@ -15882,7 +15951,7 @@ function getStatusMetrics({
         count: milestone.returnedBillsResubmitted ?? 0,
         onClick: onReturnedBillsResubmittedClick,
         statusKind: "live",
-        help: "Returned bill has been resubmitted, has no open return cycle, and is still unpaid. No Further Action = Yes stops this pending follow-up.",
+        help: "The latest return cycle has been resubmitted and the bill remains unpaid. No Further Action = Yes stops this pending follow-up.",
       },
       {
         label: "Returned paid",
@@ -16533,9 +16602,9 @@ function getAttributeSummaryStats(files: ReturnType<typeof useAccessibleFiles>):
       },
     ],
     hint: [
-      `${attribute.yesLabel} and ${attribute.noLabel} files from the selected Dashboard file set.`,
+      `${attribute.yesLabel} and ${attribute.noLabel} counts use files matching the Dashboard filters.`,
       attribute.key === "psb"
-        ? "PSB is treated as a snapshot statistic, so cancelled S.O. rows remain visible when PSB was applicable."
+        ? "PSB counts only when a non-cancelled S.O. has PSB applicable and a PSB coverage type."
         : "Cancelled demand files are excluded; File Closed follows the Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
   }));
@@ -16554,8 +16623,8 @@ function getSnapshotAttributeSubMetricHelp(
   ];
   if (key === "psb") {
     return [
-      `Includes files based on PSB applicability in S.O. details.`,
-      "Cancelled S.O. rows remain included here because Snapshot is statistical.",
+      "Includes files with at least one non-cancelled S.O. where PSB applicable is Yes and BG coverage is PSB or PSB and PWB separately.",
+      "Cancelled S.O.s do not make a file PSB-applicable.",
       ...common.slice(1),
     ];
   }
@@ -16580,6 +16649,7 @@ function isSnapshotAttributeYes(file: FileRecord, key: string) {
 function isPsbApplicableFile(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
+      !isYes(order.soCancelled) &&
       isYes(order.psbApplicable) &&
       (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately"),
   );
@@ -16603,7 +16673,7 @@ function getFileTypeSummaryStats(
       ],
     })),
     hint: [
-      "Files are grouped by File Type from the selected Dashboard file set.",
+      "Files matching the Dashboard filters are grouped by File Type.",
       "Custom file types added in Settings are included when they exist in the selected data.",
       "Cancelled demand files are excluded; File Closed follows the Global Filter; cancelled S.O. and shortclosed S.O. history can remain visible in Snapshot statistics.",
     ],
@@ -16651,7 +16721,7 @@ function getFirmTypeSummaryStats(
     })),
     hint: [
       "Files are grouped by firm type recorded in S.O. details.",
-      "This is firm-side history, so cancelled, closed, and shortclosed S.O. context can remain visible where a firm had an order.",
+      "Cancelled, closed, and shortclosed S.O.s remain in Firm Type statistics when an order was placed.",
       "The count is file-based; one matching S.O. firm type is enough for the file to appear in that firm type.",
     ],
   };
@@ -16707,7 +16777,10 @@ function countBillsReturnedForCorrection(files: FileRecord[]) {
 }
 
 function countReturnedBillsPending(files: FileRecord[]) {
-  return countReturnedBillOrders(files, hasOpenBillReturn);
+  return countReturnedBillOrders(
+    files,
+    (order) => !isYes(order.noFurtherAction) && hasOpenBillReturn(order),
+  );
 }
 
 function countReturnedBillsResubmitted(files: FileRecord[]) {
@@ -18785,9 +18858,7 @@ function isSupplyOrderPlacedByDate(file: FileRecord) {
 }
 
 function isPaymentPending(file: FileRecord) {
-  return effectivePaymentEntries([file]).some(({ order }) =>
-    isNormalPaymentOpenOrder(file, order),
-  );
+  return countPaymentPendingOrders([file]) > 0;
 }
 
 const milestoneDefinitions = [
@@ -20158,7 +20229,8 @@ function countPaymentPendingOrders(files: FileRecord[]) {
     ({ file, order }) =>
       hasPaymentWorkflowStarted(file, order) &&
       !hasFilledString(order.paymentDate) &&
-      isPaymentOrderActive(file, order),
+      isPaymentOrderActive(file, order) &&
+      !isYes(order.noFurtherAction),
   ).length;
 }
 
@@ -20224,12 +20296,15 @@ function countAdvancePaymentPaidOrders(files: FileRecord[]) {
 
 function countAdvancePaymentPendingOrders(files: FileRecord[]) {
   return advancePaymentEntries(files).filter(
-    ({ file, order }) => isAdvancePaymentPending(order) && isPaymentOrderActive(file, order),
+    ({ file, order }) =>
+      isAdvancePaymentPending(order) &&
+      isPaymentOrderActive(file, order) &&
+      !isYes(order.noFurtherAction),
   ).length;
 }
 
 function countSupplementaryBillPendingOrders(files: FileRecord[]) {
-  return countSupplementaryBillOrders(files, isSupplementaryBillPaymentPending);
+  return countSupplementaryBillOrders(files, isSupplementaryBillPaymentPending, true);
 }
 
 function countSupplementaryBillSubmittedOrders(files: FileRecord[]) {
@@ -20237,7 +20312,7 @@ function countSupplementaryBillSubmittedOrders(files: FileRecord[]) {
 }
 
 function countSupplementaryBillReturnedOrders(files: FileRecord[]) {
-  return countSupplementaryBillOrders(files, isSupplementaryBillReturned);
+  return countSupplementaryBillOrders(files, isSupplementaryBillReturned, true);
 }
 
 function countSupplementaryBillReturnHistoryOrders(files: FileRecord[]) {
@@ -20263,12 +20338,18 @@ function countReturnedSupplementaryBillPaidOrders(files: FileRecord[]) {
 function countSupplementaryBillOrders(
   files: FileRecord[],
   predicate: (bill: SupplementaryBillDetail) => boolean,
+  excludeNoFurtherAction = false,
 ) {
   return files.reduce((count, file) => {
     return (
       count +
       rawSupplyOrders(file).reduce((orderCount, order) => {
-        if (!isPaymentOrderActive(file, order)) return orderCount;
+        if (
+          !isPaymentOrderActive(file, order) ||
+          (excludeNoFurtherAction && isYes(order.noFurtherAction))
+        ) {
+          return orderCount;
+        }
         return orderCount + getSupplementaryBills(order).filter(predicate).length;
       }, 0)
     );
@@ -20277,7 +20358,7 @@ function countSupplementaryBillOrders(
 
 function hasSupplementaryBillPending(file: FileRecord) {
   return normalizedFilePaymentOrders(file).some((order) => {
-    if (!isPaymentOrderActive(file, order)) return false;
+    if (!isPaymentOrderActive(file, order) || isYes(order.noFurtherAction)) return false;
     return getSupplementaryBills(order).some(isSupplementaryBillPaymentPending);
   });
 }
@@ -20312,7 +20393,7 @@ function hasSupplementaryBillReturnHistoryFile(file: FileRecord) {
 
 function hasSupplementaryBillReturned(file: FileRecord) {
   return normalizedFilePaymentOrders(file).some((order) => {
-    if (!isPaymentOrderActive(file, order)) return false;
+    if (!isPaymentOrderActive(file, order) || isYes(order.noFurtherAction)) return false;
     return getSupplementaryBills(order).some(isSupplementaryBillReturned);
   });
 }
@@ -20599,7 +20680,9 @@ function hasAdvancePaymentPaid(file: FileRecord) {
 function hasAdvancePaymentPending(file: FileRecord) {
   return advancePaymentEntries([file]).some(
     ({ file: entryFile, order }) =>
-      isAdvancePaymentPending(order) && isPaymentOrderActive(entryFile, order),
+      isAdvancePaymentPending(order) &&
+      isPaymentOrderActive(entryFile, order) &&
+      !isYes(order.noFurtherAction),
   );
 }
 
@@ -22029,6 +22112,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     return fileSupplyOrders(file).some(
       (order) =>
         !isYes(order.soCancelled) &&
+        !isYes(order.noFurtherAction) &&
         isYes(order.advancePayment) &&
         normalizeMilestoneName(order.advancePaymentDetail?.currentMilestone) === "advancepayment" &&
         !hasFilledString(order.advancePaymentDetail?.paymentDate),

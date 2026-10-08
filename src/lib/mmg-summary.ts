@@ -16,6 +16,7 @@ import {
   getAdvancePaymentRevenue,
   getActualPaymentCapital,
   getActualPaymentRevenue,
+  hasUnpaidSupplyOrderPayment,
   isAdvancePaymentPaid,
   isAdvancePaymentPending,
   isExpiredDeliveryPeriodEntry,
@@ -69,16 +70,48 @@ const defaultMmgFileTypes = new Set(["goods & services", "amc", "mpc", "cars", "
 const customModePrefix = "mode:";
 const firmTypePrefix = "firmType:";
 const fileTypePrefix = "fileType:";
+const previousDefaultMmgLabels: Record<string, Record<string, string>> = {
+  intendedCapital: {
+    "Intended Capital (Lakhs / %)": "Intended Capital (Lakhs; % of allocation)",
+  },
+  intendedRevenue: {
+    "Intended Revenue (Lakhs / %)": "Intended Revenue (Lakhs; % of allocation)",
+  },
+  bookedCapital: { "Booked Capital (Lakhs / %)": "Booked Capital (Lakhs; % of allocation)" },
+  bookedRevenue: { "Booked Revenue (Lakhs / %)": "Booked Revenue (Lakhs; % of allocation)" },
+  committedCapital: {
+    "Committed Capital (Lakhs / %)": "Committed Capital (Lakhs; % of allocation)",
+  },
+  committedRevenue: {
+    "Committed Revenue (Lakhs / %)": "Committed Revenue (Lakhs; % of allocation)",
+  },
+  financialSanctionCompleted: {
+    "Financial Sanction completed": "Financial Sanction cases completed",
+  },
+  financialSanctionPending: {
+    "Financial Sanction pending": "Financial Sanction cases pending",
+  },
+  billSentForPaymentPending: {
+    "Bill sent for payment pending": "Bills prepared, awaiting submission",
+  },
+  billSentForPaymentCompleted: {
+    "Bill sent for payment completed": "Bills submitted for payment",
+  },
+  paymentPending: { "Payment pending": "Files with payment pending" },
+  supplementaryBillsSubmittedPaymentPending: {
+    "Supplementary bills submitted total": "Supplementary bills submitted",
+  },
+};
 
 export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "allocatedCapital", label: "Allocated Capital (Lakhs)", group: "Finance" },
   { key: "allocatedRevenue", label: "Allocated Revenue (Lakhs)", group: "Finance" },
-  { key: "intendedCapital", label: "Intended Capital (Lakhs / %)", group: "Finance" },
-  { key: "intendedRevenue", label: "Intended Revenue (Lakhs / %)", group: "Finance" },
-  { key: "bookedCapital", label: "Booked Capital (Lakhs / %)", group: "Finance" },
-  { key: "bookedRevenue", label: "Booked Revenue (Lakhs / %)", group: "Finance" },
-  { key: "committedCapital", label: "Committed Capital (Lakhs / %)", group: "Finance" },
-  { key: "committedRevenue", label: "Committed Revenue (Lakhs / %)", group: "Finance" },
+  { key: "intendedCapital", label: "Intended Capital (Lakhs; % of allocation)", group: "Finance" },
+  { key: "intendedRevenue", label: "Intended Revenue (Lakhs; % of allocation)", group: "Finance" },
+  { key: "bookedCapital", label: "Booked Capital (Lakhs; % of allocation)", group: "Finance" },
+  { key: "bookedRevenue", label: "Booked Revenue (Lakhs; % of allocation)", group: "Finance" },
+  { key: "committedCapital", label: "Committed Capital (Lakhs; % of allocation)", group: "Finance" },
+  { key: "committedRevenue", label: "Committed Revenue (Lakhs; % of allocation)", group: "Finance" },
   { key: "totalDemands", label: "Total No. of demands", group: "Demand summary" },
   { key: "nonTcecDemands", label: "Non-TCEC demands", group: "Demand summary" },
   { key: "tcecDemands", label: "TCEC demands", group: "Demand summary" },
@@ -152,16 +185,15 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "cncCompleted", label: "CNC completed", group: "Bidding and S.O." },
   {
     key: "financialSanctionCompleted",
-    label: "Financial Sanction completed",
+    label: "Financial Sanction cases completed",
     group: "Bidding and S.O.",
   },
   {
     key: "financialSanctionPending",
-    label: "Financial Sanction pending",
+    label: "Financial Sanction cases pending",
     group: "Bidding and S.O.",
   },
   { key: "soTotal", label: "S.O. total", group: "Bidding and S.O." },
-  { key: "soPlaced", label: "S.O. placed", group: "Bidding and S.O." },
   { key: "soPending", label: "S.O. pending", group: "Bidding and S.O." },
   { key: "soLive", label: "S.O. live", group: "Bidding and S.O." },
   { key: "deliveriesDueThisMonth", label: "No. of deliveries due this month", group: "Delivery" },
@@ -183,13 +215,17 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "totalIrReceived", label: "Total IR received", group: "Delivery" },
   { key: "billPreparationPending", label: "Bill preparation pending", group: "Payment" },
   { key: "billPreparationCompleted", label: "Bill preparation completed", group: "Payment" },
-  { key: "billSentForPaymentPending", label: "Bill sent for payment pending", group: "Payment" },
   {
-    key: "billSentForPaymentCompleted",
-    label: "Bill sent for payment completed",
+    key: "billSentForPaymentPending",
+    label: "Bills prepared, awaiting submission",
     group: "Payment",
   },
-  { key: "paymentPending", label: "Payment pending", group: "Payment" },
+  {
+    key: "billSentForPaymentCompleted",
+    label: "Bills submitted for payment",
+    group: "Payment",
+  },
+  { key: "paymentPending", label: "Files with payment pending", group: "Payment" },
   {
     key: "totalPendingPaymentStagesCases",
     label: "Total pending payment stages/cases",
@@ -206,7 +242,7 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "returnedBillPaid", label: "Returned bill paid", group: "Payment" },
   {
     key: "supplementaryBillsSubmittedPaymentPending",
-    label: "Supplementary bills submitted total",
+    label: "Supplementary bills submitted",
     group: "Payment",
   },
   { key: "supplementaryBillsPaid", label: "Normal supplementary bills paid", group: "Payment" },
@@ -303,6 +339,11 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     key: "filesClosedPercentage",
     label: "Files closed percentage of total demands",
     group: "Additional",
+  },
+  {
+    key: "filesWithUnresolvedAnomalies",
+    label: "Files with unresolved anomalies",
+    group: "Data quality",
   },
 ];
 
@@ -413,9 +454,12 @@ export function normalizeMmgSummaryFields(
     if (!optionByKey.has(normalizedKey)) return;
     const option = optionByKey.get(normalizedKey);
     const customLabel = typeof candidate.label === "string" ? candidate.label.trim() : "";
+    const label = customLabel
+      ? previousDefaultMmgLabels[normalizedKey]?.[customLabel] ?? customLabel
+      : option?.label || candidate.key;
     byKey.set(normalizedKey, {
       key: normalizedKey,
-      label: customLabel || option?.label || candidate.key,
+      label,
       enabled: candidate.enabled !== false,
     });
   });
@@ -751,9 +795,6 @@ function getMmgSummaryValues(
     soTotal: formatCount(
       rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
     ),
-    soPlaced: formatCount(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
-    ),
     soPending: formatCount(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
         isSupplyOrderPendingOrder(file, order),
@@ -762,7 +803,9 @@ function getMmgSummaryValues(
     soLive: formatCount(
       rawActiveOrders.filter(
         ({ file, order }) =>
-          isSupplyOrderTabComplete(file, order) && !hasFilledString(order.paymentDate),
+          isSupplyOrderTabComplete(file, order) &&
+          hasUnpaidSupplyOrderPayment(order) &&
+          !isYes(order.noFurtherAction),
       ).length,
     ),
     deliveriesDueThisMonth: formatCount(
@@ -1198,9 +1241,6 @@ function getMmgSummaryValues(
     soTotal: entryFileIds(
       rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
     ),
-    soPlaced: entryFileIds(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
-    ),
     soPending: entryFileIds(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
         isSupplyOrderPendingOrder(file, order),
@@ -1209,7 +1249,9 @@ function getMmgSummaryValues(
     soLive: entryFileIds(
       rawActiveOrders.filter(
         ({ file, order }) =>
-          isSupplyOrderTabComplete(file, order) && !hasFilledString(order.paymentDate),
+          isSupplyOrderTabComplete(file, order) &&
+          hasUnpaidSupplyOrderPayment(order) &&
+          !isYes(order.noFurtherAction),
       ),
     ),
     deliveriesDueThisMonth: entryFileIds(
@@ -1554,11 +1596,6 @@ function getMmgSummaryValues(
       rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
       "supplyorder",
       "any",
-    ),
-    soPlaced: entryFocusTargets(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
-      "supplyorder",
-      "placed",
     ),
     soPending: entryFocusTargets(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>

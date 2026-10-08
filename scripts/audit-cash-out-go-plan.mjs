@@ -108,6 +108,15 @@ function auditPlan(plan, pass, issues) {
         fyEnd: plan.selectedFinancialYearEnd,
       });
     }
+    if (row.baseDate && row.baseDate > plan.selectedFinancialYearEnd) {
+      issues.push({
+        pass,
+        key: row.rowKey,
+        issue: "Later-FY section includes activity dated after the selected FY end",
+        baseDate: row.baseDate,
+        fyEnd: plan.selectedFinancialYearEnd,
+      });
+    }
   }
   return {
     pass,

@@ -1,3 +1,5 @@
+import { buildDashboardSummary } from "../backend/src/utils/dashboard-summary.ts";
+
 const API_BASE_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:3000";
 const selectedYear = process.env.AUDIT_SELECTED_YEAR ?? "__all_active_files__";
 const fileYear = process.env.AUDIT_FILE_YEAR ?? "all";
@@ -476,23 +478,17 @@ function collectLiveStatusCounters(summary) {
 }
 
 function collectStatus3Counters(summary) {
-  const counters = [];
-  for (const group of summary.statusSummaryGroups ?? []) {
-    for (const row of group.rows ?? []) {
-      for (const column of group.columns ?? []) {
-        const value = row.counts?.[column];
-        if (value === undefined || value === "-") continue;
-        add(
-          counters,
-          "Status-3",
-          `${row.milestone} / ${column}`,
-          value,
-          `statusSummary:${encodeURIComponent(row.milestone)}:${encodeURIComponent(column)}`,
-        );
-      }
-    }
-  }
-  return counters;
+  return collectStatusCounters(summary)
+    .filter((counter) => / \/ At previous stages?$/.test(counter.label))
+    .map((counter) => {
+      const [milestone, displayedStage] = counter.label.split(" / ");
+      const stage = displayedStage === "At previous stages" ? displayedStage : "At previous stage";
+      return {
+        ...counter,
+        area: "Status-3",
+        filter: `statusSummary:${encodeURIComponent(milestone)}:${encodeURIComponent(stage)}`,
+      };
+    });
 }
 
 async function searchResult(filter, token, division, fileCategories) {
@@ -539,24 +535,23 @@ async function main() {
     if (fileCategories !== undefined) params.set("fileCategories", fileCategories);
     if (fileYear && fileYear !== "all") params.set("fileYear", fileYear);
     const { summary } = await api(`/api/dashboard/summary?${params.toString()}`, token);
-    const status3Params = new URLSearchParams({
-      selectedYear,
-      division: "all",
-      delayDays: "5",
-      expectedCashOutgoDays: "10",
-      delayMilestone: "all",
-    });
-    if (fileCategories !== undefined) status3Params.set("fileCategories", fileCategories);
-    if (fileYear && fileYear !== "all") status3Params.set("fileYear", fileYear);
-    const status3Payload = await api(`/api/reports/summary?${status3Params.toString()}`, token);
     const counters = [
       ...collectSnapshotCounters(summary),
       ...collectStatusCounters(summary),
       ...collectLiveStatusCounters(summary),
-      ...collectStatus3Counters(status3Payload.summary ?? {}),
+      ...collectStatus3Counters(summary),
     ];
     const issues = [];
     const notes = [];
+    const status3Counters = counters.filter((counter) => counter.area === "Status-3");
+    const scopeFiles = status3Counters.length
+      ? (await searchResult("totalFiles", token, undefined, fileCategories)).files
+      : [];
+    const perFileSummary = new Map();
+    for (const file of scopeFiles) {
+      const result = buildDashboardSummary({ files: [file], divisions: [], settings });
+      perFileSummary.set(String(file.id), result.statusFlow ?? []);
+    }
     for (const counter of counters) {
       const result = await searchResult(counter.filter, token, counter.division, fileCategories);
       const yearLeaks = result.files
@@ -610,6 +605,35 @@ async function main() {
           truncated: result.truncated,
         });
         continue;
+      }
+      if (counter.area === "Status-3") {
+        const milestone = counter.label.split(" / ")[0];
+        const expectedIds = scopeFiles
+          .filter((file) => {
+            const row = perFileSummary.get(String(file.id))?.find((entry) => entry.label === milestone);
+            return Number(row?.underProcess ?? 0) > 0;
+          })
+          .map((file) => String(file.id))
+          .sort();
+        const actualIds = result.files.map((file) => String(file.id)).sort();
+        const expectedSet = new Set(expectedIds);
+        const actualSet = new Set(actualIds);
+        const missing = expectedIds.filter((id) => !actualSet.has(id));
+        const extra = actualIds.filter((id) => !expectedSet.has(id));
+        if (missing.length || extra.length) {
+          issues.push({
+            type: "status3-contributor-id-mismatch",
+            ...counter,
+            searchTotal: result.total,
+            expectedFiles: expectedIds.length,
+            missing,
+            extra,
+            examples: scopeFiles
+              .filter((file) => missing.includes(String(file.id)) || extra.includes(String(file.id)))
+              .map((file) => ({ id: file.id, uniqueCode: file.uniqueCode, controlNo: file.controlNo })),
+          });
+          continue;
+        }
       }
       if (includeNotes && result.total !== counter.count) {
         notes.push({

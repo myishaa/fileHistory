@@ -1,6 +1,6 @@
 import { searchFiles } from "../backend/src/utils/file-search.ts";
 
-const base = process.env.BACKEND_URL ?? "http://127.0.0.1:3000";
+const base = process.env.BACKEND_URL ?? "http://localhost:3001";
 const username = process.env.AUDIT_USERNAME ?? "dashboard_audit";
 const password = process.env.AUDIT_PASSWORD ?? "dashboard_audit123";
 const filters = [
@@ -58,6 +58,8 @@ async function runSearch(pass, filter, token) {
     pageSize: "500",
   });
   if (pass.categories) params.set("fileCategories", pass.categories.join(","));
+  if (pass.fileYear && pass.fileYear !== "all") params.set("fileYear", pass.fileYear);
+  if (pass.division && pass.division !== "all") params.set("divisionFilter", pass.division);
   const first = await api("/api/files/search?" + params.toString(), token);
   const files = [...(first.files ?? [])];
   const total = Number(first.total ?? 0);
@@ -78,26 +80,68 @@ async function main() {
   const start = Number(String(currentYear).match(/\d{4}/)?.[0]);
   const previousYear = String(start - 1) + "-" + String(start % 100).padStart(2, "0");
   const categories = getCategories(settings.fileTypes);
-  const passes = [
-    { name: "All active", year: "__all_active_files__", categories },
-    { name: "All files", year: "__all_files__", categories },
-    { name: "Active + current-FY closed", year: "__active_plus_current_fy_closed__", categories },
-    { name: "Specific current FY", year: currentYear, categories },
-    { name: "Specific previous FY", year: previousYear, categories },
+  const fileYears = ["all", ...new Set([...(settings.financialYears ?? []), currentYear, previousYear])];
+  const divisions = [
+    "all",
+    ...new Set(
+      (await api("/api/files?year=__all_files__", token)).files
+        .map((file) => String(file.division ?? "").trim())
+        .filter(Boolean),
+    ),
   ];
+  const categoryChoices = [
+    { name: "All file types", keys: categories },
+    ...categories.map((key) => ({ name: key, keys: [key] })),
+  ];
+  const globalYears = [
+    { name: "All active", year: "__all_active_files__" },
+    { name: "All files", year: "__all_files__" },
+    { name: "Active + current-FY closed", year: "__active_plus_current_fy_closed__" },
+    ...[...(settings.financialYears ?? []), currentYear, previousYear]
+      .filter(Boolean)
+      .filter((year, index, values) => values.indexOf(year) === index)
+      .map((year) => ({ name: `Specific ${year}`, year })),
+  ];
+  const passes = [];
+  for (const global of globalYears) {
+    passes.push({ name: global.name, year: global.year, fileYear: "all", division: "all", categories });
+    for (const fileYear of fileYears.slice(1)) {
+      passes.push({ name: global.name, year: global.year, fileYear, division: "all", categories });
+    }
+    for (const division of divisions.slice(1)) {
+      passes.push({ name: global.name, year: global.year, fileYear: "all", division, categories });
+    }
+    for (const category of categoryChoices.slice(1)) {
+      passes.push({ name: global.name, year: global.year, fileYear: "all", division: "all", categories: category.keys, categoryName: category.name });
+    }
+  }
   const issues = [];
   let checked = 0;
 
+  const sourceByGlobalYear = new Map();
+  for (const year of globalYears.map((entry) => entry.year)) {
+    if (sourceByGlobalYear.has(year)) continue;
+    const visible = await api("/api/files?year=" + encodeURIComponent(year), token);
+    sourceByGlobalYear.set(year, visible.files ?? []);
+  }
+
   for (const pass of passes) {
-    const visible = await api("/api/files?year=" + encodeURIComponent(pass.year), token);
-    const sourceFiles = visible.files ?? [];
+    const sourceFiles = sourceByGlobalYear.get(pass.year) ?? [];
     for (const filter of filters) {
-      const expected = fileIds(searchFiles(sourceFiles, {
+      const scopedSourceFiles = sourceFiles.filter((file) =>
+        (pass.fileYear === "all" || file.year === pass.fileYear) &&
+        (pass.division === "all" || String(file.division ?? "").toLowerCase() === pass.division.toLowerCase()),
+      );
+      const expected = fileIds(searchFiles(scopedSourceFiles, {
         dashboardFilter: filter,
         fileCategories: pass.categories,
         sortColumnKey: "none",
       }));
-      const result = await runSearch(pass, filter, token);
+      const result = await runSearch({
+        ...pass,
+        categories: pass.categories,
+        fileCategories: pass.categories.join(","),
+      }, filter, token);
       const actual = fileIds(result.files);
       const missing = expected.filter((id) => !actual.includes(id));
       const extra = actual.filter((id) => !expected.includes(id));
@@ -105,6 +149,9 @@ async function main() {
       if (result.total !== expected.length || missing.length || extra.length) {
         issues.push({
           pass: pass.name,
+          fileYear: pass.fileYear,
+          division: pass.division,
+          fileTypes: pass.categoryName ?? "All file types",
           filter,
           tsFileCount: expected.length,
           sqlFileCount: result.total,
@@ -118,8 +165,19 @@ async function main() {
     }
   }
 
-  console.log(JSON.stringify({ checked, passes: passes.length, filters: filters.length, issues }, null, 2));
+  console.log(JSON.stringify({
+    checked,
+    globalFilterOptions: globalYears.length,
+    subfilterPasses: passes.length,
+    clickerFilters: filters.length,
+    coverage: "each global option crossed with every initiation-year, division, and individual file-type option; multi-filter cross-products are covered by audit-filter-scope-matrix.mjs",
+    issues,
+  }, null, 2));
   if (issues.length) process.exitCode = 1;
+  await fetch(base + "/api/auth/logout", {
+    method: "POST",
+    headers: { cookie: "recordkeeper_session=" + encodeURIComponent(token) },
+  }).catch(() => undefined);
 }
 
 main().catch((error) => {

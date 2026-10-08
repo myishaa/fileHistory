@@ -70,6 +70,7 @@ export type FileSearchParams = {
   description?: string;
   firm?: string;
   firmIdentityUniqueNo?: string;
+  firmIdentityName?: string;
   firmUniqueNo?: string;
   firmContactNo?: string;
   firmCity?: string;
@@ -591,8 +592,13 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
       return false;
     }
     if (
-      params.firmIdentityUniqueNo &&
-      !matchesFirmScopedExactUniqueNo(file, firmSearchScopes, params.firmIdentityUniqueNo)
+      (params.firmIdentityUniqueNo?.trim() || params.firmIdentityName?.trim()) &&
+      !matchesFirmScopedIdentity(
+        file,
+        firmSearchScopes,
+        params.firmIdentityName ?? "",
+        params.firmIdentityUniqueNo ?? "",
+      )
     ) {
       return false;
     }
@@ -1067,6 +1073,7 @@ function isFirmOriginatedSearch(params: FileSearchParams) {
     dashboardFilters.some((filter) => filter.startsWith("firmAnalysis:")) ||
     Boolean(params.firm?.trim()) ||
     Boolean(params.firmIdentityUniqueNo?.trim()) ||
+    Boolean(params.firmIdentityName?.trim()) ||
     Boolean(params.firmUniqueNo?.trim()) ||
     Boolean(params.firmContactNo?.trim()) ||
     Boolean(params.firmCity?.trim()) ||
@@ -1374,23 +1381,47 @@ function matchesFirmScopedText(
   });
 }
 
-function matchesFirmScopedExactUniqueNo(
+function matchesFirmIdentityValue(
+  rowName: string | undefined,
+  rowUniqueNo: string | undefined,
+  firmName: string,
+  firmUniqueNo: string,
+) {
+  return (
+    (Boolean(firmUniqueNo.trim()) && matchesExactText(rowUniqueNo, firmUniqueNo)) ||
+    (Boolean(firmName.trim()) && !rowUniqueNo?.trim() && matchesExactText(rowName, firmName))
+  );
+}
+
+function matchesFirmScopedIdentity(
   file: FileRecord,
   scopes: FirmSearchScope[],
+  firmName: string,
   uniqueNo: string,
 ) {
   return scopes.some((scope) => {
     if (scope !== "so" && !isBiddingApplicableForFile(file)) return false;
     if (scope === "bq") {
-      return (file.bqFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+      return (file.bqFirms ?? []).some((row) =>
+        matchesFirmIdentityValue(row.firmName, row.firmUniqueNo, firmName, uniqueNo),
+      );
     }
     if (scope === "invited") {
-      return (file.invitedFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+      return (file.invitedFirms ?? []).some((row) =>
+        matchesFirmIdentityValue(row.firmName, row.firmUniqueNo, firmName, uniqueNo),
+      );
     }
     if (scope === "bidder") {
-      return (file.bidderFirms ?? []).some((row) => matchesExactText(row.firmUniqueNo, uniqueNo));
+      return (file.bidderFirms ?? []).some((row) =>
+        matchesFirmIdentityValue(row.firmName, row.firmUniqueNo, firmName, uniqueNo),
+      );
     }
-    return fileSupplyOrders(file).some((order) => matchesExactText(order.firmUniqueNo, uniqueNo));
+    return (
+      (Boolean(firmName.trim()) && matchesExactText(file.firm, firmName)) ||
+      fileSupplyOrders(file).some((order) =>
+        matchesFirmIdentityValue(order.firm, order.firmUniqueNo, firmName, uniqueNo),
+      )
+    );
   });
 }
 
@@ -2058,6 +2089,7 @@ function isBgToBeReceived(file: FileRecord, category = "bankguarantee") {
 function isPsbApplicableFile(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
+      !isSupplyOrderCancelled(file, order) &&
       isYes(order.psbApplicable) &&
       (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately"),
   );

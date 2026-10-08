@@ -36,6 +36,7 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   Dialog,
   DialogContent,
@@ -117,6 +118,13 @@ export function TopBar() {
     dashboardTab,
     reportMode,
     settings.financialYear,
+  );
+  const recommendedGlobalFilterValue = getRecommendedGlobalFilterValue(
+    pathname,
+    dashboardTab,
+    reportMode,
+    settings.financialYear,
+    effectiveSelectedYear,
   );
   const globalFilterActive = isGlobalFilterNonSuggested(
     pathname,
@@ -392,6 +400,19 @@ export function TopBar() {
         ),
     ),
   ).sort((a, b) => b.localeCompare(a));
+  const globalYearOptions = [
+    ...(!isFinanceSnapshotContext
+      ? [
+          { value: ALL_FILES_YEAR, label: "All files" },
+          { value: ALL_ACTIVE_FILES_YEAR, label: "All active files" },
+          {
+            value: ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
+            label: "Active + current FY closed",
+          },
+        ]
+      : []),
+    ...yearOptions.map((year) => ({ value: year, label: displayFinancialYearLabel(year) })),
+  ];
   useEffect(() => {
     if (!isFinanceSnapshotContext) return;
     const normalizedSelectedYear = normalizeFinancialYearLabel(settings.selectedYear);
@@ -564,11 +585,17 @@ export function TopBar() {
                 >
                   Global Filter
                 </span>
-                <select
+                <SearchableDropdown
                   data-testid="global-year-select"
                   value={effectiveSelectedYear}
-                  onChange={(event) => {
-                    const selectedYear = event.target.value;
+                  options={[]}
+                  optionItems={globalYearOptions}
+                  deferChangeUntilSelect
+                  allowCustomValue={false}
+                  showClearOption={false}
+                  onChange={(selectedValue) => {
+                    const selectedYear =
+                      selectedValue || recommendedGlobalFilterValue;
                     store.updateSessionSelectedYear(selectedYear);
                     if (pathname === "/search" && typeof locationSearch.selectedYear === "string") {
                       navigate({
@@ -579,25 +606,11 @@ export function TopBar() {
                   }}
                   disabled={!canSelectYear}
                   className={
-                    "h-6 min-w-0 max-w-full bg-transparent text-sm font-semibold outline-none " +
+                    "h-6 min-w-0 max-w-full border-0 bg-transparent px-0 text-sm font-semibold outline-none focus:ring-0 " +
                     (globalFilterActive ? "text-destructive" : "text-foreground")
                   }
                 >
-                  {!isFinanceSnapshotContext ? (
-                    <>
-                      <option value={ALL_FILES_YEAR}>All files</option>
-                      <option value={ALL_ACTIVE_FILES_YEAR}>All active files</option>
-                      <option value={ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR}>
-                        Active + current FY closed
-                      </option>
-                    </>
-                  ) : null}
-                  {yearOptions.map((year) => (
-                    <option key={year} value={year}>
-                      {displayFinancialYearLabel(year)}
-                    </option>
-                  ))}
-                </select>
+                </SearchableDropdown>
               </label>
               <button
                 type="button"
@@ -736,13 +749,13 @@ function FilterCombinationGuideDialog({
         rows: [
           [
             "Specific FY",
-            "Includes files started in that FY and older files that were still open when it began. Cancelled files may also appear.",
+            "Files started in that FY appear, along with older files that were still open when it began. Cancelled files may also appear.",
             `For ${displayFinancialYearLabel(currentFinancialYear)}: files started in that FY are included. ${specificFyOlderFileRule} Files closed during that FY are included. Active + current FY closed excludes cancelled/all-S.O.-cancelled files.`,
           ],
           [
             "File Initiation Year",
             "The FY when the file started. It narrows the Global Filter to files from that year.",
-            `Global Filter ${displayFinancialYearLabel(currentFinancialYear)} + Subfilter 2025-26 means files started in 2025-26 that are visible in the ${displayFinancialYearLabel(currentFinancialYear)} context.`,
+          `Global Filter ${displayFinancialYearLabel(currentFinancialYear)} + Subfilter 2025-26 shows files started in 2025-26 that also meet the selected FY rules.`,
           ],
         ],
         columnWidths: [90, 210, 280],
@@ -794,7 +807,7 @@ function FilterCombinationGuideDialog({
         columnWidths: [95, 105, 100, 115, 125, 170],
       },
       {
-        title: "Global Filter Examples",
+        title: "Filter Examples",
         headers: ["Option", "Examples"],
         rows: meaningRows.map((row) => [row.filter, row.examples.join("; ")]),
         columnWidths: [130, 450],
@@ -836,7 +849,7 @@ function FilterCombinationGuideDialog({
         <DialogHeader className="border-b border-border px-5 py-4 pr-12">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <DialogTitle className="text-lg">Global Filter Guide</DialogTitle>
+              <DialogTitle className="text-lg">Filter Guide</DialogTitle>
               <DialogDescription className="mt-1 text-sm">
                 Recommended Global Filter and Subfilter combinations.
               </DialogDescription>
@@ -844,11 +857,11 @@ function FilterCombinationGuideDialog({
             <button
               type="button"
               onClick={exportPdf}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
               title="Export filter guide as PDF"
               aria-label="Export filter guide PDF"
             >
-              <FileText className="size-4" />
+              <FileText className="size-3.5" />
               PDF
             </button>
           </div>
@@ -995,7 +1008,7 @@ function FilterCombinationGuideDialog({
                     className="border-b border-border px-3 py-2 text-left text-sm font-bold text-foreground"
                     colSpan={2}
                   >
-                    Global Filter Examples
+                    Filter Examples
                   </th>
                 </tr>
                 <tr>
@@ -1111,7 +1124,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
     meaningRows: [
       {
         filter: `Specific FY, e.g. ${currentFyLabel}`,
-        useWhen: "You want to review files connected with one FY.",
+        useWhen: "Review files connected with one FY.",
         shows:
           `Files started in that FY, plus older files that were still open on 1 April. ${specificFyOlderFileRule} Files closed during that FY are also included.`,
         examples: [
@@ -1124,29 +1137,29 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
       {
         filter: "All files",
-        useWhen: "You want the full accessible database.",
+        useWhen: "Review the full accessible database.",
         shows: "All accessible files, irrespective of FY or open/closed status.",
         examples: [
           "Old open file: included.",
           "Old closed file: included.",
           "Cancelled file: included here, unless the selected panel excludes it.",
-          "Use for cumulative review.",
+          "Cumulative review across the accessible database.",
         ],
       },
       {
         filter: "All active files",
-        useWhen: "You want active files only.",
+        useWhen: "Review active files only.",
         shows: "Active, non-cancelled files across all initiation years.",
         examples: [
           "Old file still active today: included.",
           "File closed today or earlier: excluded.",
           "Cancelled file: excluded.",
-          "Use for today's live active-file list.",
+          "Today's live list of active files.",
         ],
       },
       {
         filter: "Active + current FY closed",
-        useWhen: "You want active files plus files closed this FY.",
+        useWhen: "Review active files plus files closed this FY.",
         shows: `Active, non-cancelled files plus files closed during ${currentFyLabel}.`,
         examples: [
           "Old file still active today: included.",
@@ -1157,10 +1170,10 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
       {
         filter: "File Initiation Year subfilter",
-        useWhen: "You want to narrow the view to files started in one FY.",
-        shows: "It narrows the Global Filter to files started in the selected FY.",
+        useWhen: "Select files started in one FY.",
+        shows: "Only files started in the selected FY remain from the Global Filter results.",
         examples: [
-          `Global Filter ${currentFyLabel} + Subfilter 2025-26: only 2025-26 files visible in ${currentFyLabel}.`,
+          `Global Filter ${currentFyLabel} + Subfilter 2025-26: files started in 2025-26 that also meet the ${currentFyLabel} rules.`,
           `Global Filter ${currentFyLabel} + All file years: all initiation years remain eligible.`,
           "FY Snapshot locks this subfilter to the same selected FY.",
         ],
@@ -1172,10 +1185,10 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: "User's current selection",
         fileInitiationYear: "User's current selection",
         useFor: "Investigation and drill-down from any module.",
-        note: "Search keeps the filters and source details you arrived with.",
+        note: "Search preserves the filters and source details from the originating view.",
         examples: [
           "Clicking Payment Pending opens the files behind that count.",
-          "Opening from Pre-bid Completed FY 2026-27 should preserve that breadcrumb context.",
+          "Opening from Pre-bid Completed FY 2026-27 should keep that FY and filter breadcrumb in Search.",
           "Manual Search can use any user-selected global/subfilter combination.",
         ],
       },
@@ -1184,11 +1197,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 	        activityYear: softwareDefault,
 	        fileInitiationYear: allFileYears,
 	        useFor: "Day-to-day current monitoring.",
-        note: "Shows active files and files closed this FY. Cancelled demands and files with only cancelled S.O.s are excluded.",
+        note: "Active files and files closed this FY appear. Cancelled demands and files with only cancelled S.O.s are excluded.",
         examples: [
           "Best starting point for today's pending and recently completed work.",
-          "Shows the files your team is still handling, plus files closed during the current FY.",
-          "Use this when you want the normal operational dashboard view.",
+          "Files still in progress appear alongside files closed during the current FY.",
+          "The standard view supports day-to-day workflow monitoring.",
         ],
         emphasis: "software",
       },
@@ -1197,10 +1210,10 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Current operational status view.",
-        note: "Uses the same file selection as Status-1.",
+        note: "Status-2 includes the same files as Status-1.",
         examples: [
-          "Use this to review the present stage-wise position of the working file set.",
-          "Good for checking where files are pending right now.",
+          "Check the stage each file is currently waiting at.",
+          "See which stages are pending across divisions.",
           "Keeps the view aligned with Status-1 for easier comparison.",
         ],
         emphasis: "software",
@@ -1210,11 +1223,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Current milestone/status breakup.",
-        note: "Uses the same file selection as Status-1; cancelled demands and files with only cancelled S.O.s are excluded.",
+        note: "Status-3 includes the same files as Status-1; cancelled demands and files with only cancelled S.O.s are excluded.",
         examples: [
-          "Use this when you want Status-1 information in a compact table form.",
-          "Good for comparing S.O., delivery, payment, and related workflow positions together.",
-          "Helps cross-check detailed status counts without changing the file context.",
+          "Status-3 presents Status-1 information in a compact table.",
+          "Compare S.O., delivery, payment, and related stage counts in one table.",
+          "Status-3 keeps the same file selection as Status-1.",
         ],
         emphasis: "software",
       },
@@ -1223,10 +1236,10 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
 	        useFor: "Pre-SO Live Status.",
-        note: "Shows the pre-S.O. workflow for active files and files closed this FY. Cancelled demands are excluded.",
+        note: "The pre-S.O. workflow includes active files and files closed this FY. Cancelled demands are excluded.",
         examples: [
-          "Use this for files before S.O. placement.",
-          "Good for seeing demand, approval, vetting, bidding, and pre-S.O. movement.",
+          "Pre-S.O. stages cover files before an S.O. is placed.",
+          "Follow demand, approval, vetting, bidding, and other steps before an S.O. is placed.",
           "Not meant for payment, delivery, or post-S.O. monitoring.",
         ],
         emphasis: "software",
@@ -1236,11 +1249,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
 	        useFor: "FY activity such as S.O., CNC, TCEC, pre-bid, BG expiry, delivery, and inflow.",
-        note: "Includes files connected with that FY. A panel may still exclude cancelled cases from its own count.",
+        note: "Files connected with that FY are included. A panel may still exclude cancelled cases from its own count.",
         examples: [
-          "Use this to study activity that happened during the selected FY, even for older files.",
-          "Good for FY-wise S.O., meeting, BG, delivery, payment-pending, and workload analysis.",
-          "Select a specific Subfilter only when you want to study one initiation-year batch.",
+          "Older files appear when their activity took place during the selected FY.",
+          "Review FY-wise S.O., meeting, BG, delivery, pending-payment, and workload results.",
+          "Select a specific Subfilter to study one initiation-year batch.",
         ],
         emphasis: "reports",
       },
@@ -1248,11 +1261,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Finance",
         activityYear: currentFy,
         fileInitiationYear: allFileYears,
-	        useFor: "Current FY payment, carry-forward movement, and firm-type activity.",
+        useFor: "Payments made in the current FY, older unpaid amounts, and firm-type totals.",
 	        note: "FY finance view; use Status pages for the operational non-cancelled set.",
         examples: [
-          "Use this for current FY finance movement across all file years.",
-          "Good for payments, carry-forward, cleared carry-forward, and firm-type finance analysis.",
+          "Review current-FY payments and unpaid amounts across files started in any FY.",
+          "Review payments, earlier unpaid amounts, cleared carry-forward, and firm-type totals.",
           "Older files remain included when their finance activity belongs to the selected FY.",
         ],
         emphasis: "reports",
@@ -1264,8 +1277,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         useFor: "Review files started in one selected FY, with value, payment, liability, and status.",
         note: "Only FY options are shown; for a running FY, figures are live and provisional.",
         examples: [
-          "Use this to review one initiation FY as a self-contained file group.",
-          "Good for year-end position, present paid/unpaid position, and file-type breakup.",
+          "Review all files started in one FY, including their recorded history.",
+          "Compare FY-end figures with payments and unpaid amounts recorded to date, by File Type.",
           "Running FY figures stay provisional until the FY is complete.",
         ],
       },
@@ -1276,8 +1289,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 	        useFor: "FY reports and event-date based report rows.",
 	        note: "FY/event-date view; individual reports may exclude cancelled rows by their own rules.",
         examples: [
-          "Use this for FY-wise report rows based on the report's event date.",
-          "Good for month-wise S.O., delivery, BG expiry, meetings, and similar schedules.",
+          "Report rows are grouped by each report's event date within the selected FY.",
+          "Review month-wise S.O., delivery, BG expiry, and meeting schedules.",
           "Older files can appear when the selected report event happened in the selected FY.",
         ],
         emphasis: "reports",
@@ -1289,8 +1302,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 	        useFor: "Current FY cash outgo and payment monitoring.",
 	        note: "For selected month reports, rows should stay within FY start to selected month.",
         examples: [
-          "Use this for actual and expected cash movement during the selected FY.",
-          "Good for month-wise payment, pending bills, due payments, and cash-out planning.",
+          "Review payments made and expected during the selected FY.",
+          "Review month-wise payments, pending bills, due payments, and cash-out plans.",
           "Older files can appear when their payment or cash-out event belongs to the selected FY.",
         ],
 	        emphasis: "reports",
@@ -1302,9 +1315,9 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
 	        useFor: "Live planning for files where S.O. is not yet placed.",
 	        note: "Fixed live-planning view; closed/cancelled files should not drive expected cash outgo.",
 	        examples: [
-	          "Use this for active pre-S.O. files only.",
-	          "Good for tentative S.O. date, tentative payment date, and month-wise expected cash outgo.",
-	          "This report intentionally does not use Specific FY as its main scope.",
+	          "Only active files without a placed S.O. appear here.",
+          "Plan tentative S.O. dates, payment dates, and expected monthly cash outgo.",
+          "Specific FY is not used as the main scope in this live-planning view.",
 	        ],
 	        emphasis: "reports",
 	      },
@@ -1315,8 +1328,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         useFor: "Barcode/status/file entry.",
         note: "Quick Entry opens exact files only and should not change analytical filters.",
         examples: [
-          "Use this for fast entry, barcode lookup, or direct file opening.",
-          "It should open the selected file without disturbing dashboard/report filters.",
+          "Quick Entry supports fast entry, barcode lookup, and direct file opening.",
+          "Opening a file here does not change Dashboard or Reports filters.",
         ],
       },
       {
@@ -1326,8 +1339,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         useFor: "Study how older files performed during the current FY.",
         note: "Example: Global Filter 2026-27 + Subfilter 2025-26.",
         examples: [
-          "Use this to study how one older initiation-year batch performed during a later FY.",
-          "Good for questions like: how did 2025-26 files move during 2026-27?",
+          "An older initiation-year group can be reviewed for its activity during a later FY.",
+          "Example question: how did files started in 2025-26 progress during 2026-27?",
           "Not suitable for overall FY reporting because other initiation years are intentionally excluded.",
         ],
       },
@@ -1335,11 +1348,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         page: "Full database cumulative view",
         activityYear: "All files",
         fileInitiationYear: "Entire database / All file years",
-        useFor: "Full historical/cumulative position.",
-        note: "Use carefully because it is not a current FY activity view.",
+        useFor: "Cumulative Finance totals across the accessible database.",
+        note: "Cumulative Finance totals do not represent activity in one selected FY.",
         examples: [
-          "Use this when you want a full-database cumulative position.",
-          "Good for total historical Finance values and broad database review.",
+          "Review cumulative Finance totals for the accessible database.",
+          "Review cumulative Finance values and the full accessible database.",
           "Not suitable for selected-FY activity analysis.",
         ],
       },
@@ -1348,8 +1361,8 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       "Global Filter chooses which files are included. File Initiation Year can then narrow that list.",
       "Do not auto-switch filters when entering Finance, Reports, Search, or Quick Entry.",
       "For current day-to-day operations, use the recommended combination shown below the Global Filter.",
-      `For Finance and Reports, the most useful default is Global Filter = Current FY ${currentFyLabel} with Subfilter = All file years.`,
-      "FY Snapshot shows only FY options in Global Filter and locks Subfilter to the same FY.",
+      `For Finance and Reports, the usual default is Global Filter = Current FY ${currentFyLabel} with Subfilter = All file years.`,
+      "FY Snapshot offers FY options in Global Filter and locks Subfilter to the same FY.",
       "Specific File Initiation Year is for studying files started in one FY.",
     ],
   };
@@ -1370,7 +1383,7 @@ function getRecommendedFilterLabel(
   }
   if (pathname === "/search") {
     return {
-      activityYear: "User's current selection",
+      activityYear: "Active + current FY closed",
       fileYear: "User's current selection",
     };
   }
@@ -1414,6 +1427,26 @@ function getRecommendedFilterLabel(
     activityYear: "Selected context",
     fileYear: "Selected file year",
   };
+}
+
+function getRecommendedGlobalFilterValue(
+  pathname: string,
+  dashboardTab: string | undefined,
+  reportMode: string | undefined,
+  currentFinancialYear: string,
+  currentSelectedYear: string,
+) {
+  if (pathname === "/search") return ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
+  if (pathname === "/reports") {
+    return reportMode === "preSoExpectedCashOutgo" ? ALL_ACTIVE_FILES_YEAR : currentFinancialYear;
+  }
+  if (pathname === "/dashboard") {
+    if (dashboardTab === "finance1" || dashboardTab === "finance" || dashboardTab === "analytics") {
+      return currentFinancialYear;
+    }
+    return ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
+  }
+  return currentSelectedYear || ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
 }
 
 function isGlobalFilterNonSuggested(
@@ -1477,9 +1510,9 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
           : `FY ${selectedFyLabel}`;
 	  const description =
 	    normalizedSelected === ALL_FILES_YEAR
-	      ? "Shows all accessible files. Use File Initiation Year to restrict by start FY."
+	      ? "All accessible files are included. File Initiation Year can restrict results by start FY."
 	      : normalizedSelected === ALL_ACTIVE_FILES_YEAR
-	        ? "Shows active, non-cancelled files. Use File Initiation Year to restrict by start FY."
+	        ? "Active, non-cancelled files are included. File Initiation Year can restrict results by start FY."
 	        : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
 	          ? `Shows active files plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
 	          : `Shows files started in FY ${selectedFyLabel}, plus older files that were still open on 1 April. ${specificFyOlderFileRule} Files closed during that FY are also included.`;
@@ -1512,7 +1545,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
     options: [
       {
         label: "Finance default",
-        description: `Global Filter = current FY ${currentFyLabel}; Subfilter = All file years. Use this for current-FY payments, carry-forward movement, and firm-type activity across all initiation years.`,
+        description: `Global Filter = current FY ${currentFyLabel}; Subfilter = All file years. Use this for payments made in the current FY, earlier unpaid amounts, and firm-type totals across all initiation years.`,
         className: "text-emerald-700 dark:text-emerald-300",
       },
       {
@@ -1533,12 +1566,12 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "All files",
         description:
-          "Shows all accessible database files, including active, closed, and cancelled. Use File Initiation Year = Entire database for no initiation-year restriction, or select one FY for files initiated in that FY.",
+          "All accessible files are included, whether active, closed, or cancelled. Choose File Initiation Year = Entire database for no start-year restriction, or select one FY to limit results to files started that year.",
       },
       {
         label: "All active files",
         description:
-          "Shows currently active files only. File Initiation Year subfilter can show all initiation years or restrict to files initiated in one FY.",
+          "Only currently active files are included. File Initiation Year can include every start year or limit results to one FY.",
       },
       {
         label: "Active + current FY closed",
@@ -1557,7 +1590,7 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "Value Reports",
         description:
-          "In active-file modes, allocation uses current FY allocation; intended, booked, committed, and S.O. values come from the selected files.",
+          "In active-file modes, allocation uses the current FY budget. Intended, booked, committed, and S.O. values come from the selected files.",
       },
       {
         label: "Previous FY cash outgo",

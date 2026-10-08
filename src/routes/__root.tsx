@@ -13,6 +13,7 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import appCss from "../styles.css?url";
 import { TopBar } from "@/components/top-bar";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
 
 function NotFoundComponent() {
@@ -145,9 +146,7 @@ function RootComponent() {
       <div
         className={
           `${themeClass} ${tintClass} min-h-screen w-full text-foreground ` +
-          (filterScopeWarningActive
-            ? "relative bg-destructive/10 after:pointer-events-none after:fixed after:inset-0 after:z-[60] after:bg-destructive/10"
-            : "bg-background")
+          (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
         }
       >
         {isPublicLivePage ? (
@@ -274,18 +273,19 @@ function LoginScreen() {
           ) : (
             <label className="block text-sm">
               <span className="mb-1 block text-xs font-medium text-muted-foreground">Division</span>
-              <select
+              <SearchableDropdown
                 value={divisionId}
-                onChange={(event) => setDivisionId(event.target.value)}
+                options={[]}
+                optionItems={divisions.map((division) => ({
+                  value: division.id,
+                  label: division.name,
+                }))}
+                deferChangeUntilSelect
+                allowCustomValue={false}
+                onChange={setDivisionId}
+                placeholder="Select division"
                 className="h-9 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                <option value="">Select division</option>
-                {divisions.map((division) => (
-                  <option key={division.id} value={division.id}>
-                    {division.name}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
           )}
           <label className="block text-sm">

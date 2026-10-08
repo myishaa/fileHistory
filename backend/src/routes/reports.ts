@@ -105,6 +105,9 @@ type CashOutGoPlanDetailRow = {
   section: "submitted" | "hand" | "delivered" | "dp" | "dpExpired" | "advance";
   fileId: string;
   fileRef: string;
+  uniqueCode: string;
+  soNo: string;
+  fileNo: string;
   sourceFocusTarget: string;
   description: string;
   firm: string;
@@ -232,7 +235,7 @@ type ReportsSummaryPayload = {
   delaySummary: {
     averageDays: number;
     longestDays: number;
-    byMilestone: Array<{ key: string; label: string; count: number }>;
+    byMilestone: Array<{ key: string; label: string; count: number; fileCount?: number }>;
   };
   delayMilestoneOptions: Array<{ key: string; label: string }>;
 };
@@ -270,8 +273,24 @@ function getReportsSqlDiffKeys(
   reference: Pick<ReportsSummaryPayload, (typeof reportsSqlCompareKeys)[number]>,
   candidate: Pick<ReportsSummaryPayload, (typeof reportsSqlCompareKeys)[number]>,
 ) {
+  const normalize = (value: unknown) => {
+    if (!Array.isArray(value)) return value;
+    const isCashOutgoRows = value.every(
+      (row) =>
+        row !== null &&
+        typeof row === "object" &&
+        "monthKey" in row &&
+        "month" in row &&
+        "capital" in row &&
+        "revenue" in row &&
+        "total" in row,
+    );
+    return isCashOutgoRows
+      ? value.map(({ month: _month, ...row }: CashOutgoRow) => row)
+      : value;
+  };
   return reportsSqlCompareKeys.filter(
-    (key) => JSON.stringify(reference[key]) !== JSON.stringify(candidate[key]),
+    (key) => JSON.stringify(normalize(reference[key])) !== JSON.stringify(normalize(candidate[key])),
   );
 }
 
@@ -1152,8 +1171,21 @@ function buildCashOutGoPlan(
 ): CashOutGoPlanPayload {
   const today = formatDate(new Date());
   const currentMonthKey = today.slice(0, 7);
+  const hasPositiveMerForPastExpectedPaymentMonth = (expectedPaymentDate?: string | null) => {
+    const expectedPaymentMonth = expectedPaymentDate?.slice(0, 7) ?? "";
+    if (!/^\d{4}-\d{2}$/.test(expectedPaymentMonth) || expectedPaymentMonth >= currentMonthKey) {
+      return false;
+    }
+    return merRows.some(
+      (row) =>
+        row.monthKey === expectedPaymentMonth &&
+        (row.capital !== 0 || row.revenue !== 0),
+    );
+  };
   const fyMonths = getFinancialYearMonthKeys(financialYear);
   const fyRange = getFinancialYearDateRange(financialYear);
+  const activityFallsAfterSelectedFy = (date?: string | null) =>
+    Boolean(fyRange && date && String(date).slice(0, 10) > fyRange.end);
   const paymentCutoffDate = getFinancialYearDateRange(currentFinancialYear)?.end;
   const expenditureTillDate = buildExpenditureTillDateRows(
     files,
@@ -1194,6 +1226,7 @@ function buildCashOutGoPlan(
 
       const openReturn = getOpenBillReturn(order);
       if (openReturn) {
+        if (activityFallsAfterSelectedFy(openReturn.returnedDate)) return;
         const expectedSentDate =
           assumption.expectedSentDate ??
           addDays(openReturn.returnedDate, billSubmissionOffsetDays) ??
@@ -1254,20 +1287,17 @@ function buildCashOutGoPlan(
             billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           });
-        const expectedPaymentMonth = submittedRow.expectedPaymentDate.slice(0, 7);
-        const merReceivedForExpectedMonth = Boolean(
-          expectedPaymentMonth && expectedPaymentMonth < currentMonthKey &&
-            merRows.some(
-              (row) => row.monthKey === expectedPaymentMonth,
-            ),
+        const merReceivedForPastExpectedMonth = hasPositiveMerForPastExpectedPaymentMonth(
+          submittedRow.expectedPaymentDate,
         );
-        (merReceivedForExpectedMonth ? chequeslipsNotReceivedRows : submittedRows).push(
+        (merReceivedForPastExpectedMonth ? chequeslipsNotReceivedRows : submittedRows).push(
           submittedRow,
         );
         return;
       }
 
       if (hasFilledString(order.billPreparationDate)) {
+        if (activityFallsAfterSelectedFy(order.billPreparationDate)) return;
         const expectedSentDate =
           assumption.expectedSentDate ??
           addDays(order.billPreparationDate, billSubmissionOffsetDays) ??
@@ -1329,6 +1359,7 @@ function buildCashOutGoPlan(
 
       const deliveryBaseDate = getDeliveredPendingBillDate(file, order);
       if (hasFilledString(deliveryBaseDate)) {
+        if (activityFallsAfterSelectedFy(deliveryBaseDate)) return;
         const expectedSentDate =
           assumption.expectedSentDate ?? addDays(deliveryBaseDate, dpOffsetDays) ?? "";
         deliveredRows.push(
@@ -1406,6 +1437,7 @@ function buildCashOutGoPlan(
         const assumption = assumptions.get(rowKey) ?? {};
         const openReturn = getOpenSupplementaryBillReturn(bill);
         if (openReturn) {
+          if (activityFallsAfterSelectedFy(openReturn.returnedDate)) return;
           const expectedSentDate =
             assumption.expectedSentDate ??
             addDays(openReturn.returnedDate, billSubmissionOffsetDays) ??
@@ -1474,14 +1506,10 @@ function buildCashOutGoPlan(
             billOffsetOverride: getRowBillPaymentOffsetOverride(assumption),
             today,
           });
-        const expectedPaymentMonth = submittedRow.expectedPaymentDate.slice(0, 7);
-        const merReceivedForExpectedMonth = Boolean(
-          expectedPaymentMonth && expectedPaymentMonth < currentMonthKey &&
-            merRows.some(
-              (row) => row.monthKey === expectedPaymentMonth,
-            ),
+        const merReceivedForPastExpectedMonth = hasPositiveMerForPastExpectedPaymentMonth(
+          submittedRow.expectedPaymentDate,
         );
-        (merReceivedForExpectedMonth ? chequeslipsNotReceivedRows : submittedRows).push(
+        (merReceivedForPastExpectedMonth ? chequeslipsNotReceivedRows : submittedRows).push(
           submittedRow,
         );
       });
@@ -1544,9 +1572,9 @@ function buildCashOutGoPlan(
       currentMonthKey,
       currentRows.flat().filter(
         (row) =>
-          !paymentCutoffDate ||
+          !fyRange?.end ||
           !row.expectedPaymentDate ||
-          row.expectedPaymentDate <= paymentCutoffDate,
+          row.expectedPaymentDate <= fyRange.end,
       ),
       files,
       paymentCutoffDate,
@@ -1715,6 +1743,9 @@ function makePlanDetailRow({
     section,
     fileId: file.id ?? "",
     fileRef: file.imms || "-",
+    uniqueCode: file.uniqueCode || "",
+    soNo: order.soNo || order.gemSoNo || "",
+    fileNo: file.fileNo || "",
     sourceFocusTarget,
     description: file.demandDescription || file.title || "",
     firm: order.firm || "",
@@ -4079,12 +4110,12 @@ async function loadCashOutgoRows(
         } between ${fromDatePlaceholder}::date and ${toDatePlaceholder}::date`
       : "";
   const usesActualAmount = mode === "actual" || mode === "returnedBillsPaid";
-  const plannedOrderCapitalExpression = `coalesce(${inrAmountExpression(
-    "so.bill_amount_capital",
-  )}, ${inrAmountExpression("so.so_value_capital")})`;
-  const plannedOrderRevenueExpression = `coalesce(${inrAmountExpression(
-    "so.bill_amount_revenue",
-  )}, ${inrAmountExpression("so.so_value_revenue")})`;
+  const plannedOrderCapitalExpression = inrAmountExpression(
+    "coalesce(so.bill_amount_capital, so.so_value_capital)",
+  );
+  const plannedOrderRevenueExpression = inrAmountExpression(
+    "coalesce(so.bill_amount_revenue, so.so_value_revenue)",
+  );
   const effectiveCapitalExpression = usesActualAmount
     ? `case
            when stage_row.is_advance_payment then ${inrAmountExpression("coalesce(nullif(so.advance_payment_detail ->> 'actualPaymentCapital', ''), nullif(so.advance_payment_detail ->> 'stageAmountCapital', ''))")}
@@ -5061,14 +5092,20 @@ async function loadDelayRows(
               (${startDate})::text as "stageStartDate",
               (current_date - (${startDate})::date)::integer as "daysInStage",
               coalesce((${lastFilled})::text, '') as "lastFilledDate",
-              'Milestones' as "focusSection",
-              null::text as "focusTarget",
+              'Supply order and payment' as "focusSection",
+              ('financialsanction:pending:' || (sanction_case.case_number - 1)::text) as "focusTarget",
               null::text as "biddingBreakupKey"
             from files f
             left join divisions d on d.id = f.division_id
+            cross join lateral generate_series(
+              (select count(*)::integer + 1 from supply_orders so_existing where so_existing.file_id = f.id),
+              greatest(
+                coalesce(f.no_of_so, 1),
+                (select count(*)::integer from supply_orders so_existing where so_existing.file_id = f.id)
+              )
+            ) as sanction_case(case_number)
             ${appendReportWhereClause(whereSql, [
-              `not ${supplyOrderRowExists()}`,
-              financialSanctionPendingExpression(),
+              financialSanctionReachedExpression(),
               `(${startDate}) is not null`,
               `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
             ])}`,
@@ -5105,21 +5142,43 @@ async function loadDelayRows(
      order by "daysInStage" desc, milestone asc`,
     values,
   );
-  return result.rows.map((row) => ({
+  const rows = result.rows.map((row) => ({
     ...row,
     daysInStage: Number(row.daysInStage ?? 0),
   }));
+  const filesWithOrderSanctionRows = new Set(
+    rows
+      .filter(
+        (row) =>
+          row.milestoneKey === "financialSanction" &&
+          row.focusSection === "Supply order and payment",
+      )
+      .map((row) => row.fileId),
+  );
+  return rows.filter(
+    (row) =>
+      !(
+        row.milestoneKey === "financialSanction" &&
+        row.focusSection === "Milestones" &&
+        filesWithOrderSanctionRows.has(row.fileId)
+      ),
+  );
 }
 
 function getDelaySummary(rows: DelayStatusRow[]) {
   const totalDays = rows.reduce((sum, row) => sum + row.daysInStage, 0);
-  const counts = new Map<string, { key: string; label: string; fileIds: Set<string> }>();
+  const counts = new Map<
+    string,
+    { key: string; label: string; caseCount: number; fileIds: Set<string> }
+  >();
   rows.forEach((row) => {
     const current = counts.get(row.milestoneKey) ?? {
       key: row.milestoneKey,
       label: row.milestone,
+      caseCount: 0,
       fileIds: new Set<string>(),
     };
+    current.caseCount += 1;
     current.fileIds.add(row.fileId);
     counts.set(row.milestoneKey, current);
   });
@@ -5127,7 +5186,12 @@ function getDelaySummary(rows: DelayStatusRow[]) {
     averageDays: rows.length ? Math.round(totalDays / rows.length) : 0,
     longestDays: rows.reduce((max, row) => Math.max(max, row.daysInStage), 0),
     byMilestone: Array.from(counts.values())
-      .map(({ key, label, fileIds }) => ({ key, label, count: fileIds.size }))
+      .map(({ key, label, caseCount, fileIds }) => ({
+        key,
+        label,
+        count: key === "financialSanction" ? caseCount : fileIds.size,
+        ...(key === "financialSanction" ? { fileCount: fileIds.size } : {}),
+      }))
       .sort((a, b) => b.count - a.count),
   };
 }

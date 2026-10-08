@@ -19,8 +19,10 @@ import {
   Info,
   Lock,
   RotateCcw,
+  Search,
   Save,
   Unlock,
+  X,
 } from "lucide-react";
 import {
   fetchMasterFirms,
@@ -45,6 +47,7 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
 import { HelperContent } from "@/components/helper-content";
 import { ChartCopyButton, TableChartToggle, type ResultView } from "@/components/table-chart-toggle";
@@ -63,6 +66,7 @@ import {
   YAxis,
 } from "recharts";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -401,7 +405,6 @@ function buildMmgSourceOverridesFromDashboard(
   );
   const supplyOrder = status("supplyOrder");
   set("soTotal", numberFrom(supplyOrder, "cleared"), "milestoneCleared:supplyOrder");
-  set("soPlaced", numberFrom(supplyOrder, "cleared"), "milestoneCleared:supplyOrder");
   set("soPending", numberFrom(supplyOrder, "pending"), "milestonePending:supplyOrder");
   set("soLive", numberFrom(supplyOrder, "liveSupplyOrders"), "liveSupplyOrders");
   const deliveryPeriod = status("deliveryPeriod");
@@ -569,6 +572,8 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
   totalPaymentsMadeThisYear: "Source: Finance actual paid capital + actual paid revenue.",
   advancePaymentCapital: "Source: Finance advance payment capital.",
   advancePaymentRevenue: "Source: Finance advance payment revenue.",
+  filesWithUnresolvedAnomalies:
+    "Each file is counted once when it has one or more unresolved anomalies. File-specific and universal acceptances are excluded.",
   totalExpectedPaymentRemainingThisYear:
     "Source: Cash Out Go Plan, calculated as Monthwise Revised Cash Out Go Plan minus Expenditure till date.",
   totalDemands: "Source: Dashboard selected file count.",
@@ -615,10 +620,9 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
   postTcecCompleted: "Source: Status-1 Post-TCEC completed.",
   cncInProgress: "Source: Status-1 CNC in process.",
   cncCompleted: "Source: Status-1 CNC completed.",
-  financialSanctionCompleted: "Source: Status-1 Financial Sanction completed.",
-  financialSanctionPending: "Source: Status-1 Financial Sanction pending.",
-  soTotal: "Source: Status-1 S.O. placed.",
-  soPlaced: "Source: Status-1 S.O. placed.",
+  financialSanctionCompleted: "Source: Status-1 completed Financial Sanction cases.",
+  financialSanctionPending: "Source: Status-1 pending Financial Sanction cases.",
+  soTotal: "Source: Status-1 completed Supply Orders.",
   soPending: "Source: Status-1 S.O. pending.",
   soLive: "Source: Status-1 S.O. live.",
   deliveriesDueThisMonth:
@@ -642,10 +646,10 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
     "Source: MMG Summary calculation for rows where billing workflow has started and Bill Preparation Date is blank.",
   billPreparationCompleted:
     "Source: MMG Summary calculation for rows having Bill Preparation Date.",
-  billSentForPaymentPending: "Source: Status-1 Payment in process.",
+  billSentForPaymentPending: "Source: Status-1 bills prepared and awaiting submission.",
   billSentForPaymentCompleted:
     "Source: MMG Summary calculation for rows having Bill Sent for Payment Date.",
-  paymentPending: "Source: Status-1 Payment pending.",
+  paymentPending: "Source: Status-1 unique files with payment pending.",
   totalPendingPaymentStagesCases:
     "Source: MMG Summary calculation for all pending payment stage/case rows.",
   paymentCompleted: "Source: Status-1 Payment completed.",
@@ -663,7 +667,7 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
   billsPendingCorrection: "Source: Status-1 Return pending.",
   billsResubmittedAfterCorrection: "Source: returned-bill history, including bills later paid.",
   returnedBillPaid: "Source: Status-1 Returned bill paid.",
-  supplementaryBillsSubmittedPaymentPending: "Source: Status-1 Supplementary submitted total.",
+  supplementaryBillsSubmittedPaymentPending: "Source: Status-1 supplementary bills submitted.",
   supplementaryBillsPending: "Source: Status-1 Supplementary pending.",
   supplementaryBillsPaid: "Source: Status-1 Normal supplementary paid.",
   supplementaryBillReturnedForCorrection: "Source: Status-1 Supplementary returned total.",
@@ -714,6 +718,13 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
 };
 
 function getMmgSummaryRowHelper(row: MmgSummaryRow): HelperText {
+  if (row.key === "filesWithUnresolvedAnomalies") {
+    return [
+      "Each file is counted once, even when several unresolved anomaly rules apply.",
+      "Approved file-level and universal acceptances are not included.",
+      "Click the count to open the Anomalies list with the same filters.",
+    ];
+  }
   const source = mmgSummarySourceDescriptions[row.key];
   if (source) {
     return [
@@ -752,6 +763,9 @@ type CashOutGoPlanDetailRow = {
   section: "submitted" | "hand" | "delivered" | "dp" | "dpExpired" | "advance";
   fileId: string;
   fileRef: string;
+  uniqueCode: string;
+  soNo: string;
+  fileNo: string;
   sourceFocusTarget: string;
   description: string;
   firm: string;
@@ -783,6 +797,22 @@ type CashOutGoPlanDetailSectionKey =
   | "expectedPaymentInLaterFys"
   | "expenditureTillDate"
   | "monthwisePlan";
+
+type CashOutGoPlanSearchSectionKey = Exclude<
+  CashOutGoPlanDetailSectionKey,
+  "expenditureTillDate" | "monthwisePlan"
+>;
+
+type CashOutGoPlanRowTarget = {
+  section: CashOutGoPlanSearchSectionKey;
+  rowKey: string;
+  sequence: number;
+};
+
+type CashOutGoPlanIdentifier = "uniqueCode" | "controlNo" | "soNo" | "fileNo";
+type CashOutGoPlanIdentifierSelections = Partial<
+  Record<CashOutGoPlanDetailSectionKey, CashOutGoPlanIdentifier>
+>;
 
 type CashOutGoPlanExpandedSections = Record<CashOutGoPlanDetailSectionKey, boolean>;
 
@@ -834,6 +864,8 @@ type CashOutGoPlanPayload = {
 
 type SoPaymentMatrixFieldKey =
   | "fileUniqueNo"
+  | "controlNo"
+  | "fileNo"
   | "demandDescription"
   | "soNo"
   | "paymentItem"
@@ -866,10 +898,16 @@ type SoPaymentMatrixRow = {
   orderIndex: number;
   paymentItem?: string;
   paymentBasis: string;
+  monthCapitalAmounts: Record<string, number>;
+  monthRevenueAmounts: Record<string, number>;
   monthAmounts: Record<string, number>;
   monthFocusTargets: Record<string, string>;
+  capitalTotal: number;
+  revenueTotal: number;
   total: number;
 };
+
+type PaymentMeasure = "capital" | "revenue" | "total";
 
 type PreSoCashOutgoTab = "stages" | "selectFiles" | "totals" | "monthwise";
 type PreSoMonthwiseGrouping = "month" | "fyMonth" | "stageMonth";
@@ -1058,7 +1096,9 @@ function ReportsPage() {
         activeUser.cashOutgoEditScope === "global"));
   const navigate = useNavigate();
   const [selectedDivision, setSelectedDivision] = useState("all");
-  const [reportMode, setReportMode] = useState<ReportMode>("mmgSummary");
+  const [reportMode, setReportMode] = useState<ReportMode>(() =>
+    isReportMode(locationSearch.mode) ? locationSearch.mode : "cashOutGoPlan",
+  );
   const [firmReportSortKey, setFirmReportSortKey] = useState<FirmDatabaseSortKey>("firmName");
   const [firmReportSortDirection, setFirmReportSortDirection] =
     useState<FirmDatabaseSortDirection>("asc");
@@ -1185,6 +1225,8 @@ function ReportsPage() {
   >();
   const [mmgFiles, setMmgFiles] = useState<FileRecord[]>([]);
   const [mmgPreviousFiles, setMmgPreviousFiles] = useState<FileRecord[]>([]);
+  const [mmgUnresolvedAnomalyFileCount, setMmgUnresolvedAnomalyFileCount] = useState<number>();
+  const [mmgUnresolvedAnomalyError, setMmgUnresolvedAnomalyError] = useState(false);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
   const [mmgLoading, setMmgLoading] = useState(false);
   const [mmgError, setMmgError] = useState<string | undefined>();
@@ -1210,9 +1252,7 @@ function ReportsPage() {
   const needsMerRows = reportMode === "merData" || reportMode === "merComparison";
   useEffect(() => {
     const requestedMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
-    if (isReportMode(requestedMode)) {
-      setReportMode(requestedMode);
-    }
+    setReportMode(isReportMode(requestedMode) ? requestedMode : "cashOutGoPlan");
   }, [locationSearch.mode]);
   const bgReceiptDelayStorageKey = `recordkeeper:bg-receipt-delay-days:${
     activeUser?.id ?? "anonymous"
@@ -1800,6 +1840,22 @@ function ReportsPage() {
   const activeFileCategoriesParam = fileCategoryFilterActive
     ? serializeFileCategories(selectedFileCategories)
     : undefined;
+  const mmgAnomalyQuery = useMemo(() => {
+    const params = new URLSearchParams({
+      division: activeDivision,
+      selectedYear: settings.selectedYear,
+    });
+    if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
+    Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
+    if (activeFileCategoriesParam) params.set("fileCategories", activeFileCategoriesParam);
+    return params.toString();
+  }, [
+    activeDivision,
+    activeFileYear,
+    activeFileCategoriesParam,
+    fileInitiationDateQueryParams,
+    settings.selectedYear,
+  ]);
   const merComparisonIsOrganizationWide =
     activeDivision === "all" &&
     !fileCategoryFilterActive &&
@@ -1970,6 +2026,36 @@ function ReportsPage() {
       active = false;
     };
   }, [needsMmgFiles, needsMmgPreviousFiles, reportMode, settings.selectedYear]);
+
+  useEffect(() => {
+    if (reportMode !== "mmgSummary") {
+      setMmgUnresolvedAnomalyFileCount(undefined);
+      setMmgUnresolvedAnomalyError(false);
+      return;
+    }
+    const controller = new AbortController();
+    setMmgUnresolvedAnomalyFileCount(undefined);
+    setMmgUnresolvedAnomalyError(false);
+    fetch(`${API_BASE_URL}/api/dashboard/suspected-anomalies?${mmgAnomalyQuery}`, {
+      credentials: "include",
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load unresolved anomaly files.");
+        return (await response.json()) as { rows: Array<{ fileId: string }> };
+      })
+      .then(({ rows }) => {
+        const fileIds = rows.map((row) => row.fileId).filter(Boolean);
+        setMmgUnresolvedAnomalyFileCount(new Set(fileIds).size);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error(error);
+        setMmgUnresolvedAnomalyError(true);
+      });
+    return () => controller.abort();
+  }, [mmgAnomalyQuery, reportMode]);
 
   useEffect(() => {
     if (!needsMasterFirms) {
@@ -2288,6 +2374,14 @@ function ReportsPage() {
   };
   const mmgSourceOverrides = useMemo(() => {
     const overrides = buildMmgSourceOverridesFromDashboard(mmgDashboardSummary);
+    overrides.filesWithUnresolvedAnomalies = {
+      value: mmgUnresolvedAnomalyError
+        ? "—"
+        : mmgUnresolvedAnomalyFileCount === undefined
+          ? "…"
+          : String(mmgUnresolvedAnomalyFileCount),
+      dashboardFilter: "openUnresolvedAnomalies",
+    };
     const remainingExpectedPayment = getCashOutGoPlanExpectedPaymentRemaining(cashOutGoPlan);
     if (remainingExpectedPayment !== undefined) {
       overrides.totalExpectedPaymentRemainingThisYear = {
@@ -2295,7 +2389,12 @@ function ReportsPage() {
       };
     }
     return overrides;
-  }, [cashOutGoPlan, mmgDashboardSummary]);
+  }, [
+    cashOutGoPlan,
+    mmgDashboardSummary,
+    mmgUnresolvedAnomalyError,
+    mmgUnresolvedAnomalyFileCount,
+  ]);
   const mmgSummaryRows = buildMmgSummaryRows({
     files: mmgFilteredFiles,
     divisions:
@@ -2932,12 +3031,15 @@ function ReportsPage() {
   );
   const pendingLiabilityDescription = [
     `Analysis basis: Liability ageing as of ${formatIsoDateForDisplay(historicalReportToDate)}.`,
-    "Shows unpaid liabilities based on completed delivery/job completion, bill preparation, or bill sent date.",
+    "Ordinary bills: ageing starts from the original Bill Sent date. A return and resubmission do not restart the age.",
+    "Supplementary bills: ageing starts from the original Bill Sent date. A return and resubmission do not restart the age.",
+    "Other liabilities start from the applicable delivery, Job Completion, or bill preparation date.",
+    "Cash Out Go forecasts from the active submission or resubmission date; Pending Liabilities ageing does not reset on resubmission.",
     "A liability is pending if payment is blank, or payment was made after the selected date.",
     "Ageing is counted from the liability start date up to the selected date.",
     "If the liability start date is after the selected date, it is not counted.",
     "Historical view uses the latest dates entered in the file.",
-    "Example: if Bill Sent date is 10-Sept and you select 31-Aug, it will not be counted as pending on 31-Aug.",
+    "Example: a Bill Sent date of 10 September is not pending as of 31 August.",
   ].join("\n");
   const exportAllCashOutgoReports = (format: "excel" | "pdf") => {
     const tables: ExportTable[] = combinedCashOutgoExportModes.map((mode) =>
@@ -3055,7 +3157,7 @@ function ReportsPage() {
   const exportPaymentCompletedMatrix = (format: "excel" | "pdf", plot?: ExportPlot) =>
     exportSoPaymentMatrixReport(
       paymentCompletedMatrixRows,
-      soPaymentMatrixColumns,
+      paymentCompletedMatrixColumns,
       soPaymentMatrixMonthKeys,
       selectedReportTitle,
       soPaymentMatrixExportDescription,
@@ -3078,7 +3180,7 @@ function ReportsPage() {
   const firmDatabaseExportDescription = getReportExportDescription(
     reportExportContextDescription,
     `Analysis basis: Sorted by ${firmDatabaseColumns.find((column) => column.key === firmReportSortKey)?.label ?? firmReportSortKey}, ${firmReportSortDirection === "asc" ? "ascending" : "descending"} order.`,
-    "Firm-wise supply order value, delivery, BG, rating, and coverage analysis. This report does not assess payment timeliness or whether bills were paid.",
+    "Firm-wise supply order value, delivery, BG, rating, and coverage analysis. Payment timeliness and paid-bill status are not assessed.",
   );
   const exportFirmDatabasePdf = (plot?: ExportPlot) =>
     exportFirmDatabaseReport(
@@ -3109,7 +3211,10 @@ function ReportsPage() {
   const getReportSearchDrillPath = (details: Array<string | undefined> = []) =>
     serializeDrillPath([
       { label: "Reports", href: "/reports" },
-      { label: selectedReportTitle, href: getReportModeHref(reportMode) },
+      {
+        label: reportMode === "cashOutGoPlan" ? "Cash Out Go Plan" : selectedReportTitle,
+        href: getReportModeHref(reportMode),
+      },
       ...details
         .map((detail) => detail?.trim())
         .filter((detail): detail is string => Boolean(detail))
@@ -3289,6 +3394,7 @@ function ReportsPage() {
         milestone: row.focusSection === "Milestones" ? row.milestone : undefined,
         focusTarget: row.focusTarget,
         quickFocus: false,
+        drillPath: getReportSearchDrillPath([row.milestone]),
       },
     });
   };
@@ -3301,6 +3407,7 @@ function ReportsPage() {
         section: "Supply order and payment",
         focusTarget: row.sourceFocusTarget || getFallbackCashOutGoPlanFocusTarget(row),
         quickFocus: false,
+        drillPath: getReportSearchDrillPath(),
       },
     });
   };
@@ -3482,6 +3589,43 @@ function ReportsPage() {
     });
   };
   const openMmgSummaryFiles = (row: MmgSummaryRow) => {
+    if (row.dashboardFilter === "openUnresolvedAnomalies") {
+      if (typeof window !== "undefined") {
+        const userKey = activeUser?.id ?? "anonymous";
+        const divisionKey = `recordkeeper:division-filter:${userKey}`;
+        const fileYearKey = `recordkeeper:file-year-filter:${userKey}`;
+        const fileCategoryKey = `recordkeeper:file-category-filter:${userKey}`;
+        const fileInitiationDateKey = `recordkeeper:file-initiation-date-range:${userKey}`;
+        let fileYearLocked = false;
+        try {
+          fileYearLocked =
+            JSON.parse(window.sessionStorage.getItem(fileYearKey) ?? "null")?.locked === true;
+        } catch {
+          fileYearLocked = false;
+        }
+        window.sessionStorage.setItem(divisionKey, activeDivision);
+        window.sessionStorage.setItem(
+          fileYearKey,
+          JSON.stringify({ locked: fileYearLocked, year: activeFileYear }),
+        );
+        window.sessionStorage.setItem(
+          fileCategoryKey,
+          JSON.stringify({
+            selected: activeFileCategoriesParam ? selectedFileCategories : allFileCategoryKeys,
+            touched: Boolean(activeFileCategoriesParam),
+          }),
+        );
+        window.sessionStorage.setItem(
+          fileInitiationDateKey,
+          JSON.stringify({ fromDate: fileInitiationFromDate, toDate: fileInitiationToDate }),
+        );
+      }
+      navigate({
+        to: "/dashboard",
+        search: { tab: "analytics", analyticsPanel: "suspectedAnomaly" },
+      });
+      return;
+    }
     const fileIds = row.fileIds ?? [];
     const uniqueFileIds = Array.from(new Set(fileIds.filter(Boolean)));
     if (!uniqueFileIds.length && !row.dashboardFilter) return;
@@ -4111,22 +4255,34 @@ function ReportsPage() {
               onOpenRowsSearch={openCashOutGoPlanRowsSearch}
               onSave={persistCashOutGoPlan}
               saveDisabled={!cashOutGoPlanDirty}
-              onPdf={(expandedSections) =>
+              onPdf={(expandedSections, identifiers) =>
                 cashOutGoPlan &&
                 exportCashOutGoPlan(
                   cashOutGoPlan,
                   "pdf",
                   cashOutGoPlanExportDescription,
                   expandedSections,
+                  identifiers,
                 )
               }
-              onExcel={(expandedSections) =>
+              onExcel={(expandedSections, identifiers) =>
                 cashOutGoPlan &&
                 exportCashOutGoPlan(
                   cashOutGoPlan,
                   "excel",
                   cashOutGoPlanExportDescription,
                   expandedSections,
+                  identifiers,
+                )
+              }
+              onExportSection={(section, format, identifier) =>
+                cashOutGoPlan &&
+                exportCashOutGoPlanSection(
+                  cashOutGoPlan,
+                  section,
+                  format,
+                  cashOutGoPlanExportDescription,
+                  identifier,
                 )
               }
             />
@@ -4162,9 +4318,9 @@ function ReportsPage() {
             <SoPaymentMatrixReport
               title={selectedReportTitle}
               titleHelper={reportModeHelperText.soPaymentMatrix}
-              description="Shows expected unpaid regular, stage, advance, and supplementary payments month-wise for the current filtered file set."
+              description="Expected unpaid regular, stage, advance, and supplementary payments are grouped by month for files matching the current filters."
               monthAmountHelper={[
-                "Shows expected pending payment amount falling in this month.",
+                "The amount due is totalled under the month of its expected payment date.",
                 "Regular, stage, advance, and each submitted/resubmitted supplementary bill are counted as separate payment items.",
                 "Supplementary bills are forecast from their latest active submission date plus the payment offset.",
                 "Click a non-zero amount to open the contributing file in Search.",
@@ -4203,9 +4359,9 @@ function ReportsPage() {
             <SoPaymentMatrixReport
               title={selectedReportTitle}
               titleHelper={reportModeHelperText.paymentCompletedMatrix}
-              description="Shows completed regular, stage, advance, and supplementary payments month-wise for the current filtered file set."
+              description="Completed regular, stage, advance, and supplementary payments are grouped by month for files matching the current filters."
               monthAmountHelper={[
-                "Shows actual completed payment amount falling in this month.",
+                "The amount paid is totalled under the month of its payment date.",
                 "Regular, stage, advance, and each supplementary bill are counted as separate payment items.",
                 "For supplementary bills, actual paid amount is used; if blank, the bill amount is used.",
                 "Click a non-zero amount to open the contributing file in Search.",
@@ -4683,7 +4839,7 @@ const reportModes = [
   { key: "firmDatabase", label: "Firm Performance" },
   { key: "merData", label: "MER Data" },
   { key: "merComparison", label: "MER vs Recorded Payments" },
-  { key: "unifiedFinanceReview", label: "Unified Finance Review" },
+  { key: "unifiedFinanceReview", label: "Unified Finance Reports" },
   { key: "cashOutGoPlan", label: "Cash Out Go Plan" },
   { key: "preSoExpectedCashOutgo", label: "Pre-S.O. based expected cash outgo" },
   { key: "soPaymentMatrix", label: "Month-wise Payment due Matrix" },
@@ -4732,32 +4888,32 @@ type ReportModeOption = (typeof reportModes)[number];
 type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {
   itemsDeliveredBillsPrepared: [
-    "This shows delivered or D.P.-complete work with a prepared bill that is not fully paid yet.",
+    "Delivered or D.P.-complete work appears here when its prepared bill is not fully paid.",
     "Cancelled demands and S.O.s are left out. For a shortclosed S.O., unpaid follow-up stays here while No Further Action is No.",
-    "Closed files follow your filters. Other S.O.s in the same file continue as usual.",
+    "Closed files follow the selected filters. Other S.O.s in the same file continue as usual.",
     "A supplementary bill returned for correction stays here while it waits to be resubmitted.",
-    "If you set a date range, it checks the Bill Preparation date. For example, a bill prepared in September is included when September is in range.",
+    "The date range checks Bill Preparation date. Example: a bill prepared in September is included when September is in range.",
   ],
   billsSubmitted: [
-    "This shows bills sent to PCDA with no payment recorded yet.",
+    "Bills sent to PCDA appear here while no payment is recorded.",
     "Cancelled demands and S.O.s are left out. For a shortclosed S.O., unpaid follow-up stays here while No Further Action is No.",
-    "Closed files follow your filters. Other S.O.s in the same file continue as usual.",
+    "Closed files follow the selected filters. Other S.O.s in the same file continue as usual.",
     "Unpaid supplementary bills are included after they are sent or resubmitted.",
-    "If you set a date range, it checks the latest Bill Sent/Submitted date. For example, a bill resubmitted in October is dated to October for this view.",
+    "The date range checks the latest Bill Sent/Submitted date. Example: a bill resubmitted in October is dated to October for this view.",
   ],
   spentTillDateFy: [
     "Paid supplementary bills appear in the FY of their payment date.",
-    "The report uses the actual paid amount, or the bill amount if that is blank.",
-    "MER is not used in this report.",
+    "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
+    "MER is not used.",
   ],
   billsPaidInMonth: [
     "Paid supplementary bills appear in the month of their payment date.",
-    "The report uses the actual paid amount, or the bill amount if that is blank.",
+    "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
   ],
   currentMonthLiability: [
-    "This adds up unpaid work through the selected month: bills not yet prepared, prepared bills, and bills sent but not paid.",
+    "Adds unpaid work through the selected month: bills not yet prepared, prepared bills, and bills sent but not paid.",
     "Cancelled demands and S.O.s are left out. Unpaid amounts for a shortclosed S.O. remain while No Further Action is No.",
-    "Closed files follow your filters. Other S.O.s in the same file continue as usual.",
+    "Closed files follow the selected filters. Other S.O.s in the same file continue as usual.",
     "Unpaid supplementary bills are included after they are sent or resubmitted.",
   ],
   cashOutgoForMonth: [
@@ -4765,91 +4921,98 @@ const supplementaryBillInclusionNotes = {
     "Unpaid work for a shortclosed S.O. stops counting when No Further Action is Yes.",
   ],
   expectedExpenditureTillMonth: [
-    "This includes submitted, resubmitted, and returned supplementary bills in the selected period.",
+    "Submitted, resubmitted, and returned supplementary bills are included in the selected period.",
     "Unpaid work for a shortclosed S.O. stops counting when No Further Action is Yes; payments already made remain in the history.",
   ],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 const reportModeHelperText = {
+  unifiedFinanceReview: [
+    "Finance Position and FY Snapshot show financial values for their selected scope.",
+    "Cash Out Go compares the plan with payments recorded for its Plan FY.",
+  ],
   mmgSummary: [
-    "File Initiation Year can narrow the summary to files started in a particular FY.",
-    "The date range checks when each demand was received. For example, a demand received in June appears in June when June is inside your selected range.",
+    "Date range checks when each demand was received. Example: a demand received in June appears when June is within the range.",
   ],
   demandProcessingAnalysis: [
-    "File Initiation Year can narrow the files. Cancelled demands are left out; closed files follow the Global Filter you chose.",
-    "Cancelled S.O.s are left out of S.O., stage, advance, and payment comparisons. Earlier steps through CFA can still be compared.",
-    "Shortclosed S.O.s remain in a comparison when both dates are available.",
-    "Choose two dates and the report shows how many days passed between them. Date pairs that cannot happen in the normal workflow are not offered.",
-    "If the second date is earlier than the first, the result is listed under Negative results and is not included in averages or range totals.",
-    "Unified payment treats regular, stage, advance, returned/resubmitted, and supplementary bills as separate payment events. For example, a resubmitted bill is timed from its latest resubmission to payment.",
-    "When you set a date range, it checks the selected From date.",
+    "Purpose: Choose the dates to compare and see how many days elapsed between them. Available pairings depend on whether the dates belong to a file, S.O., stage, advance, or bill/payment event.",
+    "Each result needs both dates. One file can contribute multiple S.O., stage, advance, or bill/payment results; File count shows unique files.",
+    "Regular, stage, advance, and supplementary bills are separate payment events. For a returned bill, the latest resubmission before payment is used; without a return, the original submission date is used.",
+    "Cancelled demands are excluded; closed files follow the Global Filter.",
+    "Cancelled S.O.s are excluded from S.O.-linked, stage, advance, and payment comparisons. File-level date pairs can still be compared.",
+    "Shortclosed S.O.s are not excluded; an S.O.-linked comparison appears when both selected dates are present.",
+    "If the To date is earlier than the From date, the negative result is shown separately and excluded from average, median, minimum, maximum, and day-range totals.",
+    "Example: A bill submitted on 1 May, resubmitted on 15 May, and paid on 20 May has a 5-day payment gap, measured from the latest resubmission.",
   ],
   firmDatabase: [
-    "File Initiation Year can narrow the files. Cancelled demands are left out; closed files follow your Global Filter.",
-    "Cancelled and shortclosed S.O.s stay in the historical list. Performance, value, BG, rating, and delay measures use non-cancelled S.O.s.",
-    "Total S.O. is a historical count, so it includes cancelled orders. The other measures do not.",
-    "Average Delay Days compares completed, delayed S.O.s with their original D.P.",
-    "Leave the date range blank to use all S.O.s in the selected files. Add a range to use only S.O.s placed during that period.",
+    "Purpose: Compare firms by S.O. count and value, order progress, delivery, BG status, delay, and rating.",
+    "Total S.O. counts each order with the required S.O. details entered, including cancelled orders. Cancelled S.O. is shown separately.",
+    "Counts are by S.O., not by file: one file can contribute several S.O.s, while a click-through lists each file once.",
+    "Completed S.O. is counted when every material-receipt stage has a receipt date for IR = Yes; otherwise, Job Completion must be dated or marked done. Running S.O. has not met that completion rule.",
+    "Cancelled demands are excluded. File Closed files appear only when included by the Global Filter. Cancelled S.O.s are excluded from value, Running/Completed, BG, rating, and delay measures. Shortclosed S.O.s remain included unless cancelled.",
+    "Average Delay Days includes completed S.O.s that finished after the original D.P. An S.O. that is past D.P. but not complete appears under Active Delayed S.O.",
+    "Example: If a firm has two S.O.s with complete order details and one is cancelled, Total S.O. is 2; the value total uses only the non-cancelled S.O.",
   ],
   merData: [
-    "This is the monthly cash-outgo amount your team recorded as MER.",
-    "Enter amounts in lakh: 12.50 means ₹12.50 lakh. The table and exports also show lakh.",
-    "Global Filter selects the FY. For Active Files, the report uses the Current FY set in Settings. File Initiation Year does not change MER.",
-    "A past month's positive MER is shown as entered. If both MER amounts are zero, the report may use recorded payments instead; cancelled demands and S.O.s are left out of that fallback.",
+    "Enter or review monthly Capital and Revenue amounts for the selected FY. Enter amounts in Lakhs.",
+    "Positive MER amounts replace recorded payments in past Cash Out Go months only when neither Division nor File Type is selected. MER vs Recorded Payments shows MER alongside recorded payments.",
+  ],
+  merComparison: [
+    "Recorded payments are compared with the MER values entered for the selected FY.",
   ],
   supplementaryBillsPaid: [
     "A supplementary bill appears in the FY and month when it was paid.",
-    "The report uses the actual paid amount, or the bill amount if that is blank.",
+    "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
     "Cancelled demands and S.O.s are left out. A paid bill remains in the history even if its S.O. was shortclosed or the bill was returned earlier.",
   ],
   supplementaryBillsSubmitted: [
-    "This shows supplementary bills sent or resubmitted with no payment recorded yet.",
+    "Supplementary bills appear here after submission or resubmission while no payment is recorded.",
     "Cancelled demands and S.O.s are left out. For a shortclosed S.O., unpaid follow-up continues only while No Further Action is No.",
     "Unfinished supplementary work under a cancelled S.O. is flagged as an anomaly instead.",
   ],
   supplementaryPendingReturnedBills: [
-    "This shows supplementary bills returned for correction that have not been resubmitted yet.",
+    "Returned supplementary bills appear here while they wait to be resubmitted.",
     "Cancelled demands and cancelled S.O.s are left out. For a shortclosed S.O., unpaid follow-up continues only while No Further Action is No.",
     "Unfinished supplementary work under a cancelled S.O. is flagged as an anomaly instead.",
   ],
   supplementaryReturnedBillsResubmitted: [
-    "This shows returned supplementary bills that were resubmitted but remain unpaid.",
+    "Resubmitted supplementary bills appear here while they remain unpaid.",
     "Cancelled demands and cancelled S.O.s are left out. For a shortclosed S.O., unpaid follow-up continues only while No Further Action is No.",
     "Unfinished supplementary work under a cancelled S.O. is flagged as an anomaly instead.",
   ],
   supplementaryReturnedBillsPaid: [
-    "This shows supplementary bills that were returned and later paid.",
-    "The report uses the actual paid amount, or the bill amount if that is blank.",
+    "Returned supplementary bills appear here after payment.",
+    "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
     "Cancelled demands and S.O.s are left out; completed payments for shortclosed S.O.s remain included.",
   ],
   pendingReturnedBills: [
-    "This shows bills returned for correction that are still waiting to be resubmitted.",
+    "Returned bills waiting for resubmission appear here.",
     "Cancelled demands and cancelled S.O.s are left out. For a shortclosed S.O., unpaid follow-up continues only while No Further Action is No.",
   ],
   returnedBillsResubmitted: [
-    "This shows returned bills that were resubmitted but remain unpaid.",
+    "Resubmitted bills appear here while they remain unpaid.",
     "Cancelled demands and cancelled S.O.s are left out. For a shortclosed S.O., unpaid follow-up continues only while No Further Action is No.",
   ],
   returnedBillsPaid: [
-    "This shows bills that were returned and later paid.",
+    "Returned bills appear here after payment.",
     "Cancelled demands and cancelled S.O.s are left out; completed payments for shortclosed S.O.s remain included.",
   ],
   soPaymentMatrix: [
-    "This places unpaid regular, stage, advance, and supplementary payments in the month they are expected.",
+    "Unpaid regular, stage, advance, and supplementary payments are placed in the month they are expected.",
     "A supplementary bill's estimate starts from its latest submission or resubmission date. A returned bill is not forecast again until it is resubmitted.",
     "Regular and stage payments follow the schedule for their file type.",
     "Cancelled demands and S.O.s are left out. No Further Action = Yes stops unpaid delivery and payment follow-up, but keeps recorded history and BG/warranty tracking. Other S.O.s in the file continue as usual.",
-    "The months run April to March. A payment appears only when its expected date falls in the selected FY.",
+    "Only payments whose expected date falls within the matrix's April-to-March cycle are included.",
   ],
   paymentCompletedMatrix: [
-    "This places regular, stage, advance, and supplementary payments in the month they were paid.",
-    "For a supplementary bill, the report uses the actual paid amount, or the bill amount if that is blank.",
+    "Regular, stage, advance, and supplementary payments are placed in the month they were paid.",
+    "For a supplementary bill, use the actual paid amount, or the bill amount if that is blank.",
     "Cancelled demands and S.O.s are left out. Payments already made for shortclosed S.O.s remain included; other S.O.s in the file continue as usual.",
     "The months run April to March. A payment appears only when its payment date falls in the selected FY.",
   ],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 type HelperText = string | string[];
 const CASH_OUT_GO_RED_ROW_HELPER =
-  "A row turns red when its planned bill-submission date has passed but no actual submission date is recorded. A row expected to be paid after the selected FY-end stays here for you to review and edit, but is left out of that FY's totals and forecast.";
+  "A row is highlighted when its planned bill-submission date has passed but no actual submission date is recorded. A row expected to be paid after the selected FY-end stays in its section for review and editing, but is left out of that FY's totals and forecast.";
 const soPaymentMatrixDefaultFields: SoPaymentMatrixFieldKey[] = [
   "fileUniqueNo",
   "demandDescription",
@@ -4862,45 +5025,47 @@ const soPaymentMatrixDefaultFields: SoPaymentMatrixFieldKey[] = [
 const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   {
     key: "fileUniqueNo",
-    label: "File unique no.",
-    helper: "Shows the file's unique code or control number.",
+    label: "Unique Code",
+    helper: "The file's Unique Code.",
   },
+  { key: "controlNo", label: "Control No.", helper: "The file's Control No." },
+  { key: "fileNo", label: "File No.", helper: "The file's File No., when recorded." },
   {
     key: "demandDescription",
     label: "Demand description",
-    helper: "Shows the Demand Description from File Details.",
+    helper: "The Demand Description recorded in File Details.",
   },
-  { key: "soNo", label: "S.O. No.", helper: "Shows the S.O. No., or the GeM S.O. No. if the first is blank." },
+  { key: "soNo", label: "S.O. No.", helper: "The S.O. No., or the GeM S.O. No. when the first is blank." },
   {
     key: "paymentItem",
     label: "Payment item",
-    helper: "Tells you whether this is a regular, stage, advance, or supplementary payment. Shows the supplementary bill number when available.",
+    helper: "The payment type: regular, stage, advance, or supplementary. Supplementary bill number appears when available.",
   },
-  { key: "soDate", label: "S.O. date", helper: "Shows when the S.O. was placed." },
-  { key: "firmName", label: "Firm name", helper: "Shows the firm named on the S.O." },
-  { key: "division", label: "Division", helper: "Shows the division handling the file." },
+  { key: "soDate", label: "S.O. date", helper: "The date the S.O. was placed." },
+  { key: "firmName", label: "Firm name", helper: "The firm named on the S.O." },
+  { key: "division", label: "Division", helper: "The division handling the file." },
   {
     key: "fileCategory",
     label: "File category",
-    helper: "Shows whether the file follows Goods & Services or Contract workflow rules.",
+    helper: "The workflow group: Goods & Services or Contract.",
   },
-  { key: "fileType", label: "File type", helper: "Shows the selected file type, such as AMC or MPC." },
-  { key: "indentor", label: "Indentor", helper: "Shows who raised the demand." },
-  { key: "mode", label: "Mode", helper: "Shows the procurement mode recorded for the file." },
-  { key: "firmType", label: "Firm type", helper: "Shows the firm type recorded on the S.O." },
+  { key: "fileType", label: "File type", helper: "The selected file type, such as AMC or MPC." },
+  { key: "indentor", label: "Indentor", helper: "The person or office that raised the demand." },
+  { key: "mode", label: "Mode", helper: "The procurement mode recorded for the file." },
+  { key: "firmType", label: "Firm type", helper: "The firm type recorded on the S.O." },
   {
     key: "demandInitiationYear",
     label: "Demand initiation year",
-    helper: "Shows the FY when the file was started.",
+    helper: "The FY when the file was started.",
   },
   {
     key: "demandValue",
     label: "Demand value",
-    helper: "Shows the file's Capital and Revenue demand values combined.",
+    helper: "The file's combined Capital and Revenue demand value.",
   },
-  { key: "capitalValue", label: "Capital value", helper: "Shows the file's Capital demand value." },
-  { key: "revenueValue", label: "Revenue value", helper: "Shows the file's Revenue demand value." },
-  { key: "soValue", label: "S.O. value", helper: "Shows the S.O.'s Capital and Revenue values combined." },
+  { key: "capitalValue", label: "Capital value", helper: "The file's Capital demand value." },
+  { key: "revenueValue", label: "Revenue value", helper: "The file's Revenue demand value." },
+  { key: "soValue", label: "S.O. value", helper: "The S.O.'s combined Capital and Revenue value." },
   {
     key: "paymentBasis",
     label: "Payment basis",
@@ -4908,14 +5073,14 @@ const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   },
 ];
 const fileYearSubfilterHelper = [
-  "Global Filter sets which files this report can use. File Initiation Year can narrow that list to files started in one FY.",
-  "Choose All file years when you do not want to narrow the list by start year. With Global Filter = All files, this means the entire database.",
+  "Global Filter sets the file scope. File Initiation Year can narrow it to files started in one FY.",
+  "Select All file years to include every start year. With Global Filter = All files, this means the entire database.",
   "Example: Global Filter 2026-27 with File Initiation Year 2025-26 shows files started in 2025-26 that are included in the 2026-27 view.",
   "For month columns, MER, and default dates, broad file views use the Current FY set in Settings.",
-  "Your selection and lock are saved for this browser tab only.",
+  "The selection and lock last for this browser tab only.",
 ];
 const fileInitiationDateRangeHelper = [
-  "Use this range to narrow the files selected by File Initiation Year.",
+  "The date range narrows files already selected by File Initiation Year.",
   "Leave both dates blank to skip the extra date restriction.",
 ];
 type ReportModeSection = {
@@ -5227,39 +5392,70 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   const custom = (reportModeHelperText as Partial<Record<ReportMode, HelperText>>)[mode];
   const supplementary = (supplementaryBillInclusionNotes as Partial<Record<ReportMode, HelperText>>)[mode];
   const commonFilters =
-    "The report follows your Global Filter, File Initiation Year, Division, File Type, and date range wherever those filters apply. Your access permissions also limit which files you can see.";
-  if (custom && supplementary) return [...flattenHelperText(custom), ...flattenHelperText(supplementary)];
-  if (custom) return custom;
-  if (supplementary) return [commonFilters, ...flattenHelperText(supplementary)];
+    "Global Filter, Division, File Type, File Initiation Year, available date ranges, and access permissions narrow results.";
+  const scopeNotes: HelperText =
+    mode === "unifiedFinanceReview"
+      ? [
+          "Finance Position and FY Snapshot follow Global Filter, Division, File Type, File Initiation Year, and access permissions.",
+          "Cash Out Go follows its Plan FY and Division. File Initiation Year and File Type do not narrow its rows; access permissions apply.",
+        ]
+      : mode === "merData"
+        ? [
+            "A specific FY in Global Filter selects that FY. All Files, All Active Files, and Active + current FY closed use the current FY in Settings.",
+            "Division, File Type, File Initiation Year, and date range do not narrow MER values. Editing is limited by access permissions.",
+          ]
+      : mode === "merComparison"
+        ? [
+            "Global Filter selects the FY. Division, File Type, and access permissions narrow recorded payment rows; MER values remain as entered.",
+            "File Initiation Year and date range do not apply.",
+          ]
+      : mode === "demandProcessingAnalysis"
+        ? [
+            "Global Filter, Division, File Type, File Initiation Year, and access permissions determine which files are included.",
+            "The activity date range checks the date selected in the From field; it does not filter by the selected To event date.",
+          ]
+        : mode === "firmDatabase"
+          ? [
+              "Global Filter selects the files. Division, File Type, File Initiation Year, and access permissions narrow that file set.",
+            ]
+          : [commonFilters];
+  if (custom && supplementary) {
+    return [...flattenHelperText(custom), ...flattenHelperText(supplementary), ...flattenHelperText(scopeNotes)];
+  }
+  if (custom) return [...flattenHelperText(custom), ...flattenHelperText(scopeNotes)];
+  if (supplementary) return [...flattenHelperText(supplementary), ...flattenHelperText(scopeNotes)];
   if (mode === "cashOutGoPlan") {
     return [
-      "For past months, positive MER replaces recorded payments; if both MER amounts are zero, recorded payments are used. Pending bills use the Cash Out Go forecast.",
-      "Cancelled demands and S.O.s are left out of calculated actuals and forecasts.",
-      "Shortclosed S.O.s stay in the plan while real billing, delivery, or payment work remains. Shortclosure can stop future work that has not started.",
-      "What you can edit depends on your Cash Out Go Plan access.",
-      commonFilters,
+      "Purpose: Shows monthly cash outgo for the selected FY and groups unpaid bills and work items by the follow-up step they need next.",
+      "The current month uses recorded payments. Past months use positive MER instead of recorded payments only when neither Division nor File Type is selected; filtered views use recorded payments. Future months use expected payments from the plan rows.",
+      "Items with an expected payment date after FY-end, an overdue expected payment date, or no expected date stay visible in their follow-up sections but are excluded from the selected FY's monthly forecast. Cheque Slips Not Received is a warning section and is not added to the forecast.",
+      "Cancelled demands and S.O.s are excluded. A shortclosed S.O. remains in follow-up while delivery or payment is pending; No Further Action = Yes stops that unpaid follow-up.",
+      "Global Filter selects the Plan FY. Division and File Type narrow the files shown. File Initiation Year and date range do not apply; access permissions limit which files appear.",
+      "Example: An unpaid, unsubmitted item expected in April 2027 remains visible under Expected Payment in later FYs for Plan FY 2026-27, but is not included in that FY's monthly forecast.",
     ];
   }
   if (mode === "preSoExpectedCashOutgo") {
     return [
-      "This estimates cash outgo for active files that do not yet have a live S.O.",
-      "Cancelled demands, closed files, and files with a live S.O. are left out.",
-      "This report always uses All Active Files and All file years. You cannot narrow it by initiation date.",
+      "Forecasts cash outgo for active files that do not yet have a current S.O.",
+      "Cancelled demands, closed files, and files with a current S.O. are excluded.",
+      "Global Filter is fixed to All Active Files and File Initiation Year to All file years.",
+      "Division and File Type narrow the files shown; access permissions limit which files appear.",
+      "File Initiation Year and date range cannot narrow this view.",
     ];
   }
   if (mode === "itemsDeliveredBillsPending") {
     return [
-      "This shows delivered or completed work whose bill is not prepared yet.",
-      "The expected date starts from the relevant delivery, Job Completion, or D.P. date, then uses the configured offset.",
+      "Delivered or completed work appears here while its bill is not prepared.",
+      "Expected bill submission is based on the applicable delivery, Job Completion, or D.P. date plus its configured offset.",
       "Unpaid follow-up for a shortclosed S.O. stops when No Further Action is Yes.",
       "Cancelled demands and S.O.s are left out. Shortclosed S.O.s remain while payment work is still active.",
-      "Closed files follow the Global Filter and File Initiation Year. Other S.O.s in the same file continue normally.",
+      "Global Filter and File Initiation Year decide whether a closed file appears. Each other S.O. in the same file is checked separately.",
       commonFilters,
     ];
   }
   if (mode === "itemsDeliveredBillsPrepared") {
     return [
-      "This shows delivered or completed work with a prepared bill that is not fully paid yet.",
+      "Delivered or completed work appears here when its prepared bill is not fully paid.",
       "When enabled, the date range checks the Bill Preparation date.",
       "Unpaid follow-up for a shortclosed S.O. stops when No Further Action is Yes.",
       commonFilters,
@@ -5267,7 +5463,7 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "billsSubmitted") {
     return [
-      "This shows bills sent to PCDA with no payment recorded yet.",
+      "Bills sent to PCDA appear here while no payment is recorded.",
       "When enabled, the date range checks the Bill Sent/Submission date.",
       "Unpaid follow-up for a shortclosed S.O. stops when No Further Action is Yes.",
       commonFilters,
@@ -5275,16 +5471,16 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "expectedCashOutgoFy") {
     return [
-      "This estimates payment follow-up by each unpaid S.O.'s D.P. or Revised D.P.",
-      "The expected month uses that D.P. date and the configured offsets.",
-      "For a specific FY, only dates inside that FY are counted.",
+      "Forecasts payment for each unpaid S.O. from its D.P. or Revised D.P. date.",
+      "The configured offsets determine the expected payment date and month.",
+      "A specific FY includes only D.P. dates in that FY.",
       "Unpaid follow-up for a shortclosed S.O. stops when No Further Action is Yes.",
       commonFilters,
     ];
   }
   if (mode === "spentTillDateFy") {
     return [
-      "This shows payments by the date they were actually recorded as paid.",
+      "Payments are grouped by their recorded payment date.",
       "MER is not used here.",
       "For a specific FY, only payment dates inside that FY are counted.",
       commonFilters,
@@ -5292,56 +5488,56 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "billsPaidInMonth") {
     return [
-      "This shows payments made in the selected month.",
+      "Payments are grouped under the selected month when their payment date falls in it.",
       "Regular, supplementary, and applicable advance payments are included.",
       commonFilters,
     ];
   }
   if (mode === "cashOutgoForMonth") {
     return [
-      "This shows the planned cash outgo for the selected month only.",
-      "It combines prepared bills, submitted bills still unpaid, and eligible D.P.-based items.",
+      "Forecast cash outgo is grouped under the selected month when its expected date falls in it.",
+      "Prepared bills, unpaid submitted bills, and eligible D.P.-based items contribute to this forecast.",
       commonFilters,
     ];
   }
   if (mode === "expectedExpenditureTillMonth") {
     return [
-      "This adds actual outgo and expected pending expenditure from the start of the FY through the selected month.",
+      "Adds recorded payments and expected unpaid amounts from the start of the FY through the selected month.",
       commonFilters,
     ];
   }
   if (mode === "currentMonthLiability") {
     return [
-      "This adds unpaid liabilities through the selected month.",
-      "A bill is included only while payment is still pending at that point.",
+      "Unpaid liabilities are totalled through the selected month.",
+      "A bill is included only if it was still unpaid at the selected cutoff.",
       commonFilters,
     ];
   }
   if (isReturnedBillReportMode(mode)) {
     return [
-      "This follows bills according to their current return, resubmission, or payment status.",
-      "When enabled, the date range checks the return, resubmission, or payment event shown here.",
+      "Returned bills appear under their latest status: awaiting resubmission, resubmitted but unpaid, or paid.",
+      "When enabled, the date range checks the return, resubmission, or payment date shown here.",
       commonFilters,
     ];
   }
   if (mode === "supplementaryBillsSubmitted") {
     return [
-      "This follows supplementary bills according to their submission and payment status.",
-      "When enabled, the date range checks the relevant supplementary-bill event.",
+      "Supplementary bills are grouped by their submission, return, resubmission, or payment status.",
+      "When enabled, the date range checks the supplementary-bill date shown here.",
       commonFilters,
     ];
   }
   if (mode === "monthlyFileInflow") {
     return [
-      "This groups files by when the demand was received or the file was initiated.",
-      "For a specific FY, only those dates inside that FY are counted.",
+      "Files are grouped by Demand Received date or File Initiation date.",
+      "A specific FY includes only dates that fall within that FY.",
       "Cancelled demands are left out. Closed files and files with cancelled or shortclosed S.O.s can still appear.",
       commonFilters,
     ];
   }
   if (mode === "monthWiseSupplyOrder") {
     return [
-      "This counts S.O.s by the month they were placed.",
+      "S.O.s are grouped by the month they were placed.",
       "For a specific FY, only S.O. dates inside that FY are counted. File Initiation Year can also narrow the files.",
       "Cancelled demands are left out. Closed files and cancelled or shortclosed S.O.s can still appear in the history.",
       commonFilters,
@@ -5349,17 +5545,17 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "monthWiseDeliverySchedule") {
     return [
-      "This groups delivery dates and contract periods by their D.P., Revised D.P., or contract-period date.",
-      "For a specific FY, only dates inside that FY are counted. File Initiation Year can also narrow the files.",
-      "The pending count leaves out items already delivered or completed.",
+      "Scheduled deliveries and contract periods are grouped by D.P., Revised D.P., or contract-period date.",
+      "A specific FY includes only dates in that FY; File Initiation Year can further narrow the files.",
+      "The pending count excludes items already delivered or completed.",
       "Cancelled demands and S.O.s are left out. No Further Action stops future delivery follow-up for a shortclosed S.O.",
-      "Closed files follow your filters. Contract and IR No. files use their contract-period or Job Completion dates.",
+      "Closed files follow the selected filters. Contract and IR=No files use their contract-period or Job Completion dates.",
       commonFilters,
     ];
   }
   if (mode === "monthWiseCompletedDeliveries") {
     return [
-      "This groups completed deliveries and Job Completions by the date each was recorded.",
+      "Completed deliveries and jobs are grouped by their recorded completion date.",
       "For a specific FY, only completion dates inside that FY are counted. File Initiation Year can also narrow the files.",
       "Goods use the material receipt date; applicable contract work uses Job Completion.",
       "Cancelled demands and S.O.s are left out. Closed files and shortclosed S.O.s remain when completion was recorded.",
@@ -5368,15 +5564,15 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "monthWiseBgExpiry") {
     return [
-      "This groups bank guarantees by their validity/expiry date.",
+      "Bank guarantees are grouped by their validity/expiry date.",
       "For a specific FY, only expiry dates inside that FY are counted. File Initiation Year can also narrow the files.",
-      "Cancelled demands are left out. Received, unreturned BGs can remain in the report for closed, cancelled, or shortclosed S.O.s.",
+      "Cancelled demands are left out. Received, unreturned BGs can remain visible for closed, cancelled, or shortclosed S.O.s.",
       commonFilters,
     ];
   }
   if (mode === "preBidMeetings") {
     return [
-      "This shows pre-bid meetings by the date each meeting took place.",
+      "Pre-bid meetings are grouped by the date each meeting took place.",
       "For a specific FY, only meeting dates inside that FY are counted.",
       "Cancelled demands are left out. S.O. cancellation or shortclosure does not change this file-processing report.",
       commonFilters,
@@ -5384,33 +5580,36 @@ function getReportModeButtonHelper(mode: ReportMode): HelperText {
   }
   if (mode === "bgReceiptDelay") {
     return [
-      "This shows guarantees that are late to arrive, using the selected day threshold.",
-      "A delay is counted only when BG is required and receipt is still pending.",
+      "Required bank guarantees appear here when receipt is overdue by the selected number of days.",
+      "A BG is counted only while its receipt is pending.",
       "Cancelled demands and S.O.s are left out. A shortclosed S.O. remains if its required BG has not arrived.",
       commonFilters,
     ];
   }
   if (mode === "warrantyBgMismatch") {
     return [
-      "This finds differences between warranty and BG validity dates using the selected buffer.",
-      "The comparison uses the dates recorded on the file and S.O.",
+      "Compares warranty end dates with BG validity dates using the selected buffer.",
+      "The comparison uses dates saved on the file and S.O.",
       "Cancelled demands and S.O.s are left out. A shortclosed S.O. remains while warranty or BG obligations continue.",
       commonFilters,
     ];
   }
   if (mode === "delayStatus") {
     return [
-      "This shows work that is still at its current stage beyond the selected delay limit.",
+      "Current milestones and S.O. tasks appear here when they have been pending longer than the selected day limit.",
       "A file can have more than one delayed S.O. or stage case. The Search clicker opens each matching file once.",
-      "A stage cleared before the delay limit is not shown as currently delayed.",
+      "A stage completed before reaching the delay limit is not shown as currently delayed.",
       "Cancelled demands and S.O.s are left out. A shortclosed S.O. remains if a current workflow task is still pending.",
       commonFilters,
     ];
   }
   if (mode === "pendingLiabilityAgeing") {
     return [
-      "This groups unpaid work by how long it has been pending, as of the selected date.",
-      "The age starts from the applicable delivery, Job Completion, bill preparation, or submission date.",
+      "Each unpaid bill or payment shows the number of days outstanding as of the selected date.",
+      "Ordinary bills age from the original Bill Sent date; a return and resubmission do not restart the age.",
+      "Supplementary bills age from the original Bill Sent date; a return and resubmission do not restart the age.",
+      "Other liabilities age from the applicable delivery, Job Completion, or bill preparation date.",
+      "Cash Out Go forecasts from the active submission or resubmission date; Pending Liabilities ageing does not reset on resubmission.",
       "Cancelled demands and S.O.s are left out. Shortclosed S.O.s remain while payment work is active; other S.O.s in the file continue normally.",
       commonFilters,
     ];
@@ -5683,7 +5882,7 @@ function isReportScopeDateFilterReport(mode: ReportMode) {
 
 function getDateRangeHelperText(mode: ReportMode): HelperText {
   const commonPrefix =
-    "First, the other filters choose the files. This date range then checks the event named above.";
+      "Other filters choose the files; the date range checks the event named above.";
   if (mode === "mmgSummary") {
     return ["The date range checks when the demand was received.", commonPrefix];
   }
@@ -5694,7 +5893,7 @@ function getDateRangeHelperText(mode: ReportMode): HelperText {
     ];
   }
   if (mode === "firmDatabase") {
-    return ["The date range checks when the S.O. was placed.", commonPrefix];
+    return "The date range checks the S.O. placement date, not delivery or payment dates.";
   }
   if (mode === "itemsDeliveredBillsPending") {
     return [
@@ -5726,7 +5925,7 @@ function getDateRangeHelperText(mode: ReportMode): HelperText {
     mode === "returnedBillsPaid"
   ) {
     return [
-      "The date range checks the return, resubmission, or payment event shown by this report.",
+      "The date range checks the return, resubmission, or payment event shown here.",
       commonPrefix,
     ];
   }
@@ -5743,11 +5942,11 @@ function getDateRangeHelperText(mode: ReportMode): HelperText {
     mode === "supplementaryReturnedBillsPaid"
   ) {
     return [
-      "The date range checks the return, resubmission, or payment event shown in the report.",
+      "Date range checks the return, resubmission, or payment event shown here.",
       commonPrefix,
     ];
   }
-  return ["The date range checks the main event date shown in this report.", commonPrefix];
+  return ["The date range checks the main event date shown in the results.", commonPrefix];
 }
 
 function isMonthSelectionReport(mode: ReportMode) {
@@ -5770,6 +5969,7 @@ function getEightReportTitle(
   const asOnDate = formatDateTitle(context.today);
   const monthLabel = formatMonthTitle(context.monthKey);
   const fyLabel = displayFinancialYearLabel(context.financialYear);
+  if (mode === "unifiedFinanceReview") return "Unified Finance Reports";
   if (mode === "merData") return `MER Data for FY ${fyLabel}`;
   if (mode === "merComparison") return `MER vs Recorded Payments - FY ${fyLabel}`;
   if (mode === "soPaymentMatrix") return `Month-wise Payment due Matrix for FY ${fyLabel}`;
@@ -7277,17 +7477,17 @@ function DemandProcessingAnalysisReport({
           <button
             type="button"
             onClick={() => exportAnalysis("pdf")}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileText className="size-4" />
+            <FileText className="size-3.5" />
             PDF
           </button>
           <button
             type="button"
             onClick={() => exportAnalysis("excel")}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileSpreadsheet className="size-4" />
+            <FileSpreadsheet className="size-3.5" />
             Excel
           </button>
           <Dialog>
@@ -7311,8 +7511,8 @@ function DemandProcessingAnalysisReport({
                 <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
                   <h3 className="font-semibold">Payment timing</h3>
                   <p>
-                    For a returned bill, the report uses the last resubmission date before final payment. If the bill
-                    was never returned, it uses the original bill-sent date. The bill contributes one duration, even
+                    For a returned bill, timing starts from its last resubmission before final payment. If it was
+                    never returned, timing starts from the original bill-sent date. The bill contributes one duration, even
                     if it had several return cycles.
                   </p>
                 </section>
@@ -7336,7 +7536,7 @@ function DemandProcessingAnalysisReport({
                   <h3 className="font-semibold">Averages and day ranges</h3>
                   <p>
                     Averages and day-range buckets use the same observations. For example, if one S.O. has an advance
-                    paid in 10 days and two stage bills paid in 20 and 75 days, the report counts three observations:
+                    paid in 10 days and two stage bills paid in 20 and 75 days, three observations are counted:
                     two in 0–30 days and one in 61–90 days. A file clicker opens unique files, not duplicate rows.
                   </p>
                 </section>
@@ -7425,7 +7625,7 @@ function DemandProcessingAnalysisReport({
             helperText={[
               analysisUnit === "bill"
                 ? "Each regular, stage, advance, or supplementary bill contributes at most one observation for the selected date pair."
-                : "Counts matching date-pair observations, not unique files.",
+                : "The count is matching date-pair observations, not unique files.",
               "Both dates must be filled. Negative gaps are shown separately.",
             ]}
           />
@@ -7450,7 +7650,7 @@ function DemandProcessingAnalysisReport({
               "These are unique files with at least one result where the selected To date is earlier than the selected From date.",
               "They can happen even for logically correct pairs, for example delivery completed before D.P. date.",
               "Negative results are excluded from average, median, minimum, and maximum days.",
-              "This tile shows unique file count because the clicker opens matching files in Search.",
+              "Each matching file is counted once because the click-through opens files in Search.",
             ]}
           />
         </div>
@@ -8589,7 +8789,7 @@ function ActualCashOutgoReport({
     <CashOutgoReport
       rows={rows}
       title="Actual cash out go monthly"
-      description="Uses payment date, excluding S.O. cancelled rows only when cancellation date is filled."
+      description="Recorded payment dates determine the month. Cancelled S.O. rows are excluded only when a cancellation date is filled."
       emptyMessage="No actual cash out go rows found."
       onOpenMonth={onOpenMonth}
       onOpenAll={onOpenAll}
@@ -8703,7 +8903,7 @@ function CashOutgoOffsetDaysControl({
       <span className="mb-1 flex items-center gap-1.5 whitespace-nowrap text-muted-foreground">
         Days after base date
         <FloatingHelper
-          text="This report follows the shared offset in Settings → Analytics and Reports → Offset days setting. Unlock and save to keep a personal override. Reset removes your override so this report follows the current shared value, including future Admin updates."
+          text="The shared offset comes from Settings → Analytics and Reports → Offset days setting. Unlock and save to keep a personal override. Reset removes the override and restores the current shared value, including future Admin updates."
           className="size-5 border-0 bg-transparent shadow-none"
           iconClassName="size-3"
         />
@@ -8756,7 +8956,7 @@ function CashOutgoOffsetDaysControl({
       {error ? <span className="mt-1 block text-xs text-destructive">{error}</span> : null}
       {!error && saved ? (
         <span className="mt-1 block text-xs text-muted-foreground">
-          {personalOverride ? "Personal offset saved for your account." : "Offset saved for your account."}
+          {personalOverride ? "Personal offset saved for this account." : "Offset saved for this account."}
         </span>
       ) : null}
       {!error && !unlocked && !personalOverride ? (
@@ -8924,10 +9124,10 @@ function WarrantyBgBufferControls({
         </button>
         <FloatingHelper
           text={[
-            "Locked buffer cannot be edited.",
-            "This personal buffer is used only by the Warranty/BG mismatch report. It does not change when a BG becomes due for return; that system-wide offset is set in Settings → Workspace.",
-            "Unlock to change the warranty BG buffer.",
-            "Reset restores this report filter to its default 60 days for this browser/user.",
+            "The locked buffer cannot be edited.",
+            "Personal buffer for the Warranty/BG mismatch report only. It does not change when a BG becomes due for return; that shared offset is set in Settings → Workspace.",
+            "Unlock to change the Warranty/BG buffer.",
+            "Reset restores this account's report buffer to 60 days.",
           ]}
           label="Warranty BG buffer lock help"
           className="size-8 border-0 bg-transparent shadow-none"
@@ -8943,7 +9143,7 @@ function WarrantyBgBufferControls({
         <span className="inline-flex items-center gap-1.5">
             Mismatch buffer days
             <FloatingHelper
-            text="Used only in this report to compare BG validity with the warranty period. It does not control the BG return-due date."
+            text="Compares BG validity with the warranty period only. It does not control the BG return-due date."
             className="size-5 border-0 bg-transparent shadow-none"
             iconClassName="size-3"
           />
@@ -8970,8 +9170,8 @@ function WarrantyBgBufferControls({
         <RotateCcw className="size-3.5" />
         Reset
       </button>
-      <FloatingHelper
-        text="Reset restores this report-only mismatch buffer to 60 days for the current logged-in user."
+        <FloatingHelper
+        text="Reset restores this account's report-only mismatch buffer to 60 days."
         label="Reset warranty BG buffer help"
         className="ml-2 inline-flex size-8 border-0 bg-transparent shadow-none"
         iconClassName="size-3"
@@ -9111,17 +9311,17 @@ function MonthlyOperationalReport({
           <button
             type="button"
             onClick={() => onPdf(exportPlot)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileText className="size-4" />
+            <FileText className="size-3.5" />
             PDF
           </button>
           <button
             type="button"
             onClick={() => onExcel(exportPlot)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileSpreadsheet className="size-4" />
+            <FileSpreadsheet className="size-3.5" />
             Excel
           </button>
         </div>
@@ -9172,7 +9372,7 @@ function MonthlyOperationalReport({
                 <ChartCopyButton />
               </div>
               <div className="overflow-x-auto">
-                <div className="h-[320px] min-w-[1120px]">
+                <div className="h-[320px] w-full min-w-[900px] xl:min-w-0">
                   <ResponsiveContainer width="100%" height="100%">
                   {resultView === "line" ? (
                     <LineChart
@@ -9491,21 +9691,24 @@ function DivisionFilter({
       )}
     >
       <span>Division</span>
-      <select
+      <SearchableDropdown
         value={activeDivision}
-        onChange={(event) => onDivisionChange(event.target.value)}
+        options={[]}
+        optionItems={[
+          { value: "all", label: "All divisions" },
+          ...divisions.map((division) => ({
+            value: division.name,
+            label: division.name,
+          })),
+        ]}
+        deferChangeUntilSelect
+        allowCustomValue={false}
+        onChange={(division) => onDivisionChange(division || "all")}
         className={filterControlClass(
           divisionFilterActive,
           "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
         )}
-      >
-        <option value="all">All divisions</option>
-        {divisions.map((division) => (
-          <option key={division.id} value={division.name}>
-            {division.name}
-          </option>
-        ))}
-      </select>
+      />
     </label>
   );
 }
@@ -9527,7 +9730,7 @@ function ReportHeaderActions({
   return (
     <>
       {onPdf || onExcel ? (
-        <div className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-card">
+        <div className="inline-flex h-8 items-center overflow-hidden rounded-md border border-border bg-background p-0.5">
           {onPdf ? (
             <button
               type="button"
@@ -9535,9 +9738,9 @@ function ReportHeaderActions({
               disabled={disabled}
               aria-label="Export PDF"
               title="Export PDF"
-              className="inline-flex h-full items-center gap-1.5 px-3 text-sm font-medium hover:bg-accent"
+              className="inline-flex h-full items-center gap-1 rounded px-2 text-xs font-medium hover:bg-accent"
             >
-              <FileText className="size-4" />
+              <FileText className="size-3.5" />
               PDF
             </button>
           ) : null}
@@ -9549,9 +9752,9 @@ function ReportHeaderActions({
               disabled={disabled}
               aria-label="Export Excel"
               title="Export Excel"
-              className="inline-flex h-full items-center gap-1.5 px-3 text-sm font-medium hover:bg-accent"
+              className="inline-flex h-full items-center gap-1 rounded px-2 text-xs font-medium hover:bg-accent"
             >
-              <FileSpreadsheet className="size-4" />
+              <FileSpreadsheet className="size-3.5" />
               Excel
             </button>
           ) : null}
@@ -9648,7 +9851,7 @@ function FileCategoryFilter({
         <FloatingHelper
           text={browserOnly
             ? "Lock saves these File Type choices in this browser for the shared viewer. Unlock to change them."
-            : "Lock saves these File Type choices for your account. They return when you sign in again. Unlock to change them."}
+            : "Lock saves these File Type choices to the account. They return after the next sign-in. Unlock to change them."}
           label="File Type lock help"
           className="size-8 border-0 bg-transparent shadow-none"
           iconClassName="size-3"
@@ -9745,8 +9948,8 @@ function FileYearFilter({
   const disabledValue = "__not_applied__";
   const helperText = disabled
     ? [
-        "File Initiation Year is not used for this report.",
-        "This report uses the effective FY from the Global Filter.",
+        "File Initiation Year is not applied here.",
+        "The effective FY comes from the Global Filter.",
       ]
     : fileYearSubfilterHelper;
   return (
@@ -9767,28 +9970,26 @@ function FileYearFilter({
             iconClassName="size-3"
           />
         </span>
-        <select
+        <SearchableDropdown
           value={disabled ? disabledValue : value}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
+          options={[]}
+          optionItems={
+            disabled
+              ? [{ value: disabledValue, label: "Not applied" }]
+              : [
+                  { value: "all", label: allOptionLabel },
+                  ...options.map((year) => ({ value: year, label: year })),
+                ]
+          }
+          deferChangeUntilSelect
+          allowCustomValue={false}
+          onChange={(year) => onChange(year || "all")}
           className={filterControlClass(
             active,
             "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground",
           )}
-        >
-          {disabled ? (
-            <option value={disabledValue}>Not applied</option>
-          ) : (
-            <>
-              <option value="all">{allOptionLabel}</option>
-              {options.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </>
-          )}
-        </select>
+        />
       </label>
       <button
         type="button"
@@ -9797,14 +9998,14 @@ function FileYearFilter({
         className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
         title={
           disabled
-            ? "File initiation year is not used for this report"
+            ? "File initiation year is not applied"
             : locked
               ? "Unlock file initiation year"
               : "Lock file initiation year"
         }
         aria-label={
           disabled
-            ? "File initiation year is not used for this report"
+            ? "File initiation year is not applied"
             : locked
               ? "Unlock file initiation year"
               : "Lock file initiation year"
@@ -9814,8 +10015,8 @@ function FileYearFilter({
       </button>
       <FloatingHelper
         text={[
-          "This lock is session based; it is kept only for the current browser session/tab.",
-          "Lock keeps this File Initiation Year selection fixed on Dashboard and Reports until you unlock it or the session resets.",
+          "Lock lasts only for the current browser session or tab.",
+          "Lock keeps the File Initiation Year selection fixed on Dashboard and Reports until unlocked or the session resets.",
           "Unlock allows the File Initiation Year subfilter to follow changes again.",
         ]}
         label="File initiation year lock help"
@@ -9934,7 +10135,7 @@ function FirmDatabaseReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">
-            Firm-wise supply order, value, delivery, BG, rating, and coverage analysis.
+            Compare firms by S.O. count and value, completion, delivery, BG status, delay, and rating.
           </p>
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
@@ -10025,7 +10226,7 @@ function FirmDatabaseReport({
               onClick={onLockToggle}
               disabled={saving}
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent disabled:opacity-50"
-              title={locked ? "Unlock your saved Firm Performance layout" : "Save and lock your Firm Performance layout"}
+              title={locked ? "Unlock saved Firm Performance layout" : "Save and lock Firm Performance layout"}
               aria-label={locked ? "Unlock Firm Performance layout" : "Save and lock Firm Performance layout"}
             >
               {locked ? <Unlock className="size-3.5" /> : <Lock className="size-3.5" />}
@@ -10112,7 +10313,7 @@ function FirmDatabaseReport({
       </div>
 
       <p className="mb-3 text-xs text-muted-foreground">
-        Lock and save stores your displayed fields and analysis sort for your account across future visits.
+        Lock and save stores the displayed fields and analysis sort for the account across future visits.
       </p>
       {layoutError ? (
         <p className="mb-3 text-xs text-destructive" role="alert">
@@ -10513,9 +10714,9 @@ function getMmgSummarySourceFocus(rowKey: string): MmgSummarySourceFocus {
 
   const sourceByKey: Record<string, MmgSummarySourceFocus> = {
     intendedCapital: fileDetails("valueCapital"),
-    intendedRevenue: fileDetails("valueCapital"),
+    intendedRevenue: fileDetails("valueRevenue"),
     bookedCapital: fileDetails("valueCapital"),
-    bookedRevenue: fileDetails("valueCapital"),
+    bookedRevenue: fileDetails("valueRevenue"),
     committedCapital: supplyOrder("supplyorder:any"),
     committedRevenue: supplyOrder("supplyorder:any"),
     totalDemands: fileDetails("receivedDate"),
@@ -10564,7 +10765,6 @@ function getMmgSummarySourceFocus(rowKey: string): MmgSummarySourceFocus {
     financialSanctionCompleted: supplyOrder("financialsanction:completed"),
     financialSanctionPending: supplyOrder("financialsanction:pending"),
     soTotal: supplyOrder("supplyorder:any"),
-    soPlaced: supplyOrder("supplyorder:placed"),
     soPending: supplyOrder("supplyorder:pending"),
     soLive: supplyOrder("supplyorder:live"),
     deliveriesDueThisMonth: supplyOrder("deliveryperiod:pending"),
@@ -10666,7 +10866,7 @@ function MmgSummaryReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">
-            Selected fields and labels are managed from Settings.
+            Field labels are shared between this screen and PDF/Excel exports; edit them in Settings.
           </p>
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">{actions}</div>
@@ -10814,7 +11014,7 @@ function MerDataReport({
         <div>
           <h2 className="text-base font-bold">{title}</h2>
           <p className="text-xs text-muted-foreground">
-            Month-wise MER values for FY {displayFinancialYearLabel(financialYear)}. Enter amounts in Lakh.
+            Month-wise MER values for FY {displayFinancialYearLabel(financialYear)}. Enter amounts in Lakhs.
           </p>
         </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
@@ -11040,7 +11240,7 @@ function CashOutGoPlanOffsetControl({
           <RotateCcw className="size-4" />
         </button>
         <FloatingHelper
-          text={`Reset restores ${label} to the shared default of ${defaultDays} days. Save the plan to keep the selected value for future visits; it remains in your permitted personal or shared plan until changed and saved again.`}
+        text={`Reset restores ${label} to the shared default of ${defaultDays} days. Save the plan to keep the selected value for future visits; it remains in the permitted personal or shared plan until changed and saved again.`}
           label={`${label} reset help`}
           className="size-8 border-0 bg-transparent shadow-none"
           iconClassName="size-3"
@@ -11113,7 +11313,7 @@ function MerSoftwareComparisonReport({
         <div>
           <h2 className="text-sm font-bold">{title}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            MER compared with Recorded Payments by payment month. Recorded Payments include S.O./stage, advance, and supplementary payments.
+            Compares monthly MER with recorded S.O., stage, advance, and supplementary payments.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -11126,7 +11326,7 @@ function MerSoftwareComparisonReport({
       </div>
       {!showDifference ? (
         <p className="text-xs text-muted-foreground">
-          MER is an all-division reference; recorded payments follow the selected scope. Difference is shown only for an all-division, all-file-type view.
+          Recorded Payments follow the selected scope. Difference is omitted when the selected scope does not support a like-for-like comparison.
         </p>
       ) : null}
       {error ? (
@@ -11139,7 +11339,7 @@ function MerSoftwareComparisonReport({
         <div data-chart-copy-area className="rounded-md border border-border bg-background p-4">
           <h3 className="mb-2 text-sm font-semibold text-foreground">{title}</h3>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">Monthly MER and Recorded Payments, using the same FY rows as the table.</p>
+            <p className="text-xs text-muted-foreground">The chart uses the same FY and monthly values as the table.</p>
             {resultView === "bar" ? <span className="text-xs text-muted-foreground">Amount (Lakhs)</span> : null}
             <label data-chart-copy-exclude className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
               Measure
@@ -11245,7 +11445,7 @@ function MerSoftwareComparisonReport({
       )}
       {showDifference ? (
         <p className="text-xs text-muted-foreground">
-          Difference = MER minus Recorded Payments. MER is an all-division total; recorded payments use the full accessible organization scope.
+          Difference = MER minus Recorded Payments.
         </p>
       ) : null}
     </section>
@@ -11272,6 +11472,7 @@ function CashOutGoPlanReport({
   saveDisabled,
   onPdf,
   onExcel,
+  onExportSection,
 }: {
   plan?: CashOutGoPlanPayload;
   loading: boolean;
@@ -11297,11 +11498,32 @@ function CashOutGoPlanReport({
   onOpenRowsSearch: (rows: CashOutGoPlanDetailRow[]) => void;
   onSave: () => void;
   saveDisabled: boolean;
-  onPdf: (expandedSections: CashOutGoPlanExpandedSections) => void;
-  onExcel: (expandedSections: CashOutGoPlanExpandedSections) => void;
+  onPdf: (
+    expandedSections: CashOutGoPlanExpandedSections,
+    identifiers: CashOutGoPlanIdentifierSelections,
+  ) => void;
+  onExcel: (
+    expandedSections: CashOutGoPlanExpandedSections,
+    identifiers: CashOutGoPlanIdentifierSelections,
+  ) => void;
+  onExportSection: (
+    section: CashOutGoPlanDetailSectionKey,
+    format: "pdf" | "excel",
+    identifier: CashOutGoPlanIdentifier,
+  ) => void;
 }) {
   const [expandedDetailSections, setExpandedDetailSections] =
     useState<CashOutGoPlanExpandedSections>(defaultCashOutGoPlanExpandedSections);
+  const [identifierSelections, setIdentifierSelections] =
+    useState<CashOutGoPlanIdentifierSelections>({});
+  const [rowSearch, setRowSearch] = useState("");
+  const [focusedPlanRow, setFocusedPlanRow] = useState<CashOutGoPlanRowTarget>();
+  const identifierFor = (section: CashOutGoPlanDetailSectionKey) =>
+    identifierSelections[section] ?? "controlNo";
+  const selectIdentifier = (
+    section: CashOutGoPlanDetailSectionKey,
+    identifier: CashOutGoPlanIdentifier,
+  ) => setIdentifierSelections((current) => ({ ...current, [section]: identifier }));
   const totals = getExpectedCashOutgoTotals(plan?.monthwisePlan ?? []);
   const capitalPercent = plan
     ? getCashOutGoAllocationPercent(totals.capital, plan.allocation.capital)
@@ -11318,6 +11540,44 @@ function CashOutGoPlanReport({
   const dpOffsetActive = Boolean(
     plan && plan.settings.dpOffsetDays !== plan.settings.defaultDpOffsetDays,
   );
+  const searchSections = plan
+    ? [
+        { key: "billsSubmitted" as const, title: "Bills Submitted to PCDA", rows: plan.billsSubmitted },
+        { key: "chequeslipsNotReceived" as const, title: "Cheque Slips Not Received", rows: plan.chequeslipsNotReceived ?? [] },
+        { key: "expectedPaymentDateInPast" as const, title: "Expected Payment Date in Past", rows: plan.expectedPaymentDateInPast ?? [] },
+        { key: "billsAtHand" as const, title: "Bills at Hand", rows: plan.billsAtHand },
+        { key: "deliveredBillsPending" as const, title: "Items Delivered and Bills Yet to Be Prepared", rows: plan.deliveredBillsPending },
+        { key: "dpBasedForecast" as const, title: "Items Based on D.P.", rows: plan.dpBasedForecast ?? [] },
+        { key: "dpExpired" as const, title: "D.P. Expired", rows: plan.dpExpired ?? [] },
+        { key: "expectedPaymentInLaterFys" as const, title: "Expected Payment in later FYs", rows: plan.expectedPaymentInLaterFys ?? [] },
+      ]
+    : [];
+  const normalizedSearch = rowSearch.trim().toLocaleLowerCase();
+  const searchMatches = normalizedSearch
+    ? searchSections.flatMap((section) =>
+        section.rows
+          .filter((row) => {
+            const searchableText = [
+              row.uniqueCode,
+              row.fileRef,
+              row.soNo,
+              row.fileNo,
+              row.description,
+              row.firm,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLocaleLowerCase();
+            return searchableText.includes(normalizedSearch);
+          })
+          .map((row) => ({ sectionKey: section.key, sectionTitle: section.title, row })),
+      )
+    : [];
+
+  const locatePlanRow = (section: CashOutGoPlanSearchSectionKey, rowKey: string) => {
+    setExpandedDetailSections((current) => ({ ...current, [section]: true }));
+    setFocusedPlanRow((current) => ({ section, rowKey, sequence: (current?.sequence ?? 0) + 1 }));
+  };
   return (
     <div className="space-y-4">
       <div className="bg-card border border-border rounded-xl p-6 shadow-[var(--shadow-card)]">
@@ -11339,12 +11599,12 @@ function CashOutGoPlanReport({
                 iconClassName="size-3"
               />
             </div>
-            <ReportDescription description="Global FY cash-outgo plan using MER for past months and gross forecast values for pending bills." />
+            <ReportDescription description="Shows payments recorded or reported and amounts still expected in the selected FY, with unpaid bills and work items grouped by their current follow-up step." />
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <ReportHeaderActions
-              onPdf={() => onPdf(expandedDetailSections)}
-              onExcel={() => onExcel(expandedDetailSections)}
+              onPdf={() => onPdf(expandedDetailSections, identifierSelections)}
+              onExcel={() => onExcel(expandedDetailSections, identifierSelections)}
               disabled={!plan}
             />
           </div>
@@ -11359,7 +11619,7 @@ function CashOutGoPlanReport({
             disabled={!plan || !canEditSettings}
             active={handSubmissionOffsetActive}
             helperText={[
-              "This sets the planned submission date for Bills at Hand.",
+              "Sets the planned submission date for Bills at Hand.",
               `The shared default is ${plan?.settings.defaultHandSubmissionOffsetDays ?? DEFAULT_BILL_SUBMISSION_OFFSET_DAYS} days after the bill-preparation or return date.`,
               "Reset returns to the shared default.",
             ]}
@@ -11374,9 +11634,9 @@ function CashOutGoPlanReport({
             disabled={!plan || !canEditSettings}
             active={billPaymentOffsetActive}
             helperText={[
-              "This sets the planned payment date after a bill is sent or resubmitted.",
+              "Sets the planned payment date after a bill is sent or resubmitted.",
               `The shared default is ${plan?.settings.defaultBillOffsetDays ?? DEFAULT_BILL_PAYMENT_OFFSET_DAYS} days after the submission date.`,
-              "You can still set a different payment date for an individual row.",
+              "A different payment date can be set for an individual row.",
               "Reset returns to the shared default.",
             ]}
             onCustomDaysChange={(value) => onSettingChange("billOffsetDays", value)}
@@ -11390,7 +11650,7 @@ function CashOutGoPlanReport({
             disabled={!plan || !canEditSettings}
             active={dpOffsetActive}
             helperText={[
-              "This helps estimate when an undelivered item can be billed after its D.P.",
+              "Estimates when an undelivered item can be billed after its D.P.",
               "For Items Based on D.P., the plan adds one day after D.P., then this offset.",
               `The shared default for this offset is ${plan?.settings.defaultDpOffsetDays ?? DEFAULT_DP_OFFSET_DAYS} days, after the one-day step.`,
               "Reset returns to the shared default.",
@@ -11413,8 +11673,8 @@ function CashOutGoPlanReport({
               </button>
               <FloatingHelper
                 text={[
-                  "Save plan stores permitted Cash Out Go Plan changes in the software, not just in this browser session.",
-                  "Saved offsets and row dates remain in your permitted personal or shared plan on future visits until changed and saved again.",
+                  "Save plan stores permitted Cash Out Go Plan changes beyond the current browser session.",
+                  "Saved offsets and row dates remain in the permitted personal or shared plan on future visits until changed and saved again.",
                   "Admin/Sub-admin and Universal Viewer type 3 can save official top offsets and individual forecast dates.",
                   "Editor can save official row dates only.",
                   "Universal Viewer type 2 saves only that viewer's personal plan.",
@@ -11474,6 +11734,63 @@ function CashOutGoPlanReport({
             All the values are in Lakh.
           </div>
           <CashOutGoSummaryTable plan={plan} onOpenRowsSearch={onOpenRowsSearch} />
+          <section className="space-y-3" aria-label="Find a row in Cash Out Go Plan">
+            <label className="relative block max-w-2xl">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={rowSearch}
+                onChange={(event) => setRowSearch(event.target.value)}
+                placeholder="Find by Unique Code, Control No., S.O. No., File No., description, or firm"
+                aria-label="Find a file or bill in Cash Out Go Plan"
+                className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-10 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+              {rowSearch ? (
+                <button
+                  type="button"
+                  onClick={() => setRowSearch("")}
+                  aria-label="Clear Cash Out Go Plan search"
+                  title="Clear search"
+                  className="absolute right-2 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <X className="size-4" />
+                </button>
+              ) : null}
+            </label>
+            {normalizedSearch ? (
+              <div className="max-w-5xl rounded-md border border-border bg-card">
+                <div className="border-b border-border px-3 py-2 text-xs text-muted-foreground" aria-live="polite">
+                  {searchMatches.length
+                    ? `${searchMatches.length} matching row${searchMatches.length === 1 ? "" : "s"} across ${new Set(searchMatches.map((match) => match.sectionKey)).size} sub-report${new Set(searchMatches.map((match) => match.sectionKey)).size === 1 ? "" : "s"}`
+                    : "No matching rows in the current Cash Out Go Plan scope."}
+                </div>
+                {searchMatches.length ? (
+                  <ul className="max-h-80 divide-y divide-border overflow-y-auto">
+                    {searchMatches.map(({ sectionKey, sectionTitle, row }) => (
+                      <li key={`${sectionKey}:${row.rowKey}`} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-primary">{sectionTitle}</p>
+                          <p className="truncate text-sm font-medium" title={row.description}>
+                            {row.uniqueCode || row.fileRef || row.fileNo || "File"}
+                            {row.soNo ? ` · S.O. ${row.soNo}` : ""}
+                            {row.description ? ` · ${row.description}` : ""}
+                          </p>
+                          {row.firm ? <p className="truncate text-xs text-muted-foreground" title={row.firm}>{row.firm}</p> : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => locatePlanRow(sectionKey, row.rowKey)}
+                          className="shrink-0 rounded border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-accent"
+                        >
+                          View row
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
           <CashOutGoMonthTable
             rows={plan.expenditureTillDate}
             title="Expenditure Till Date"
@@ -11482,18 +11799,25 @@ function CashOutGoPlanReport({
               setExpandedDetailSections((current) => ({ ...current, expenditureTillDate: open }))
             }
             titleHelper={[
-              "For a past month with a positive MER amount, the table shows MER instead of recorded payments.",
-              "If both MER amounts are zero, the table uses recorded payments instead.",
-              "The current month is always listed, even when its total is zero.",
+              "For past months, a positive MER replaces recorded payments only when Division and File Type are unfiltered. Otherwise, recorded payments are shown.",
+              "The current month uses recorded payments. Past-month MER values of zero or dash also use recorded payments.",
+              "The table shows selected-FY months through the current month. Past FYs show all 12 months; the current month appears even when its total is zero.",
             ]}
           />
           <CashOutGoDetailTable
             title="Bills Submitted to PCDA"
+            searchSectionKey="billsSubmitted"
+            focusedRowKey={focusedPlanRow?.section === "billsSubmitted" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "billsSubmitted" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("billsSubmitted")}
+            onIdentifierChange={(value) => selectIdentifier("billsSubmitted", value)}
+            onPdf={() => onExportSection("billsSubmitted", "pdf", identifierFor("billsSubmitted"))}
+            onExcel={() => onExportSection("billsSubmitted", "excel", identifierFor("billsSubmitted"))}
             showExpectedSentDate={false}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
-              "These bills have already been sent to PCDA, but no payment is recorded yet.",
-              "Expected payment is based on the submission date plus the payment offset, unless you set a different date for that row.",
+              "These bills were sent to PCDA, but no payment is recorded yet.",
+              "Expected payment uses the submission date plus the payment offset, unless a different date is saved for the row.",
               CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.billsSubmitted}
@@ -11512,10 +11836,17 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="Bills at Hand"
+            searchSectionKey="billsAtHand"
+            focusedRowKey={focusedPlanRow?.section === "billsAtHand" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "billsAtHand" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("billsAtHand")}
+            onIdentifierChange={(value) => selectIdentifier("billsAtHand", value)}
+            onPdf={() => onExportSection("billsAtHand", "pdf", identifierFor("billsAtHand"))}
+            onExcel={() => onExportSection("billsAtHand", "excel", identifierFor("billsAtHand"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
               "These bills are prepared or returned, but are not currently submitted.",
-              "The planned submission date starts from the preparation or return date plus the bill-submission offset. Change it when you expect a different date.",
+              "The planned submission date starts from the preparation or return date plus the bill-submission offset. Edit it when a different date is expected.",
               `The shared default is ${plan.settings.defaultHandSubmissionOffsetDays} days; a different plan-level offset or row date can change the result.`,
               CASH_OUT_GO_RED_ROW_HELPER,
             ]}
@@ -11535,6 +11866,13 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="Items Delivered and Bills Yet to Be Prepared"
+            searchSectionKey="deliveredBillsPending"
+            focusedRowKey={focusedPlanRow?.section === "deliveredBillsPending" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "deliveredBillsPending" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("deliveredBillsPending")}
+            onIdentifierChange={(value) => selectIdentifier("deliveredBillsPending", value)}
+            onPdf={() => onExportSection("deliveredBillsPending", "pdf", identifierFor("deliveredBillsPending"))}
+            onExcel={() => onExportSection("deliveredBillsPending", "excel", identifierFor("deliveredBillsPending"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
               "These items are delivered or complete, but their bills are not prepared yet.",
@@ -11561,10 +11899,17 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="Items Based on D.P."
+            searchSectionKey="dpBasedForecast"
+            focusedRowKey={focusedPlanRow?.section === "dpBasedForecast" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "dpBasedForecast" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("dpBasedForecast")}
+            onIdentifierChange={(value) => selectIdentifier("dpBasedForecast", value)}
+            onPdf={() => onExportSection("dpBasedForecast", "pdf", identifierFor("dpBasedForecast"))}
+            onExcel={() => onExportSection("dpBasedForecast", "excel", identifierFor("dpBasedForecast"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
-              "This section includes items not yet delivered or completed, plus eligible unpaid advances.",
-              "For an item, the planned submission date starts one day after D.P. plus the D.P. offset. You can change it; payment is then planned using the bill-payment offset.",
+              "Items not yet delivered or completed are included, along with eligible unpaid advances.",
+              "For an item, the planned submission date starts one day after D.P. plus the D.P. offset. An edited date is used to plan payment with the bill-payment offset.",
               "An advance uses its own expected payment date, not the S.O.'s D.P.",
               "D.P. dates after 31 March of the selected FY are not included here.",
               "An advance appears only after its required PSB/PWB is received. Set its expected date in Add/Edit File → Supply Order → Advance Payment.",
@@ -11586,29 +11931,21 @@ function CashOutGoPlanReport({
             allowDpExpectedSentDateEdit
             dpOnly
           />
-          <CashOutGoMonthTable
-            rows={plan.monthwisePlan}
-            title="Monthwise Revised Cash Out Go Plan"
-            open={expandedDetailSections.monthwisePlan}
-            onOpenChange={(open) =>
-              setExpandedDetailSections((current) => ({ ...current, monthwisePlan: open }))
-            }
-            singleRowBars
-            showSerial={false}
-            titleHelper={[
-              "For past months, positive MER replaces recorded payments; if both MER amounts are zero, recorded payments are used.",
-              "Current and future months combine recorded payments with the plan's pending bill, delivery, D.P., and eligible advance forecasts.",
-              "This is the combined month-by-month view of expected expenditure.",
-            ]}
-          />
           <CashOutGoDetailTable
             title="Cheque Slips Not Received"
+            searchSectionKey="chequeslipsNotReceived"
+            focusedRowKey={focusedPlanRow?.section === "chequeslipsNotReceived" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "chequeslipsNotReceived" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("chequeslipsNotReceived")}
+            onIdentifierChange={(value) => selectIdentifier("chequeslipsNotReceived", value)}
+            onPdf={() => onExportSection("chequeslipsNotReceived", "pdf", identifierFor("chequeslipsNotReceived"))}
+            onExcel={() => onExportSection("chequeslipsNotReceived", "excel", identifierFor("chequeslipsNotReceived"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
-              "These bills are still unpaid in the file, but a positive MER amount is recorded for their expected-payment month, after that month has passed. Bills expected this month stay in Bills Submitted to PCDA and remain in the current-month forecast.",
-              "That is a warning, not proof that this particular bill was paid. For example, MER may include a different bill paid in the same month.",
-              "If a bill is returned, it moves to Bills at Hand. After resubmission, its new expected-payment month is checked.",
-              "A recorded payment removes it from this list. This history does not add to Cash Out Go totals or forecasts.",
+              "MER is entered in the following month. After positive MER is recorded for a bill's expected-payment month and that month has ended, the unpaid bill moves here. Bills expected in the running month stay in Bills Submitted to PCDA and remain in its forecast.",
+              "Warning only; it does not prove this bill was paid. MER may include a different bill paid in the same month.",
+              "A returned bill moves to Bills at Hand. After resubmission, its new expected-payment month is checked.",
+              "A recorded payment removes the bill from this list. These rows do not add to Cash Out Go totals or forecasts.",
             ]}
             rows={plan.chequeslipsNotReceived ?? []}
             open={expandedDetailSections.chequeslipsNotReceived}
@@ -11621,13 +11958,35 @@ function CashOutGoPlanReport({
             editable={false}
             showExpectedSentDate={false}
           />
+          <CashOutGoMonthTable
+            rows={plan.monthwisePlan}
+            title="Monthwise Revised Cash Out Go Plan"
+            open={expandedDetailSections.monthwisePlan}
+            onOpenChange={(open) =>
+              setExpandedDetailSections((current) => ({ ...current, monthwisePlan: open }))
+            }
+            singleRowBars
+            showSerial={false}
+            titleHelper={[
+              "Current and future monthly forecasts use dated rows from Bills Submitted to PCDA, Bills at Hand, Items Delivered and Bills Yet to Be Prepared, Items Based on D.P. (including eligible advances), and D.P. Expired. Each row contributes in the month of its Expected Payment Date, and only within the selected FY.",
+              "Cheque Slips Not Received, Expected Payment Date in Past, and Expected Payment in later FYs are separate tracking sections; their rows are not added to this FY's monthly forecast. Undated backlog rows also do not enter a month.",
+              "For past months, positive MER replaces recorded payments when Division and File Type are unfiltered. Otherwise, recorded payments are used.",
+            ]}
+          />
           <CashOutGoDetailTable
             title="Expected Payment Date in Past"
+            searchSectionKey="expectedPaymentDateInPast"
+            focusedRowKey={focusedPlanRow?.section === "expectedPaymentDateInPast" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "expectedPaymentDateInPast" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("expectedPaymentDateInPast")}
+            onIdentifierChange={(value) => selectIdentifier("expectedPaymentDateInPast", value)}
+            onPdf={() => onExportSection("expectedPaymentDateInPast", "pdf", identifierFor("expectedPaymentDateInPast"))}
+            onExcel={() => onExportSection("expectedPaymentDateInPast", "excel", identifierFor("expectedPaymentDateInPast"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
               "These items are still unpaid, and their planned payment date has already passed.",
-              "They stay out of monthly forecasts until you set a new date and save.",
-              "You can change Expected bill submission or Expected payment. Changing submission recalculates payment using the bill-payment offset, then moves the row to the section and month that match the new date.",
+              "They stay out of monthly forecasts until a new date is saved.",
+              "Expected bill submission or Expected payment can be changed. Changing submission recalculates payment using the bill-payment offset, then moves the row to the section and month that match the new date.",
               "A returned bill waiting for correction stays in Bills at Hand. Cheque Slips Not Received is a separate MER warning.",
             ]}
             rows={plan.expectedPaymentDateInPast ?? []}
@@ -11649,10 +12008,17 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="D.P. Expired"
+            searchSectionKey="dpExpired"
+            focusedRowKey={focusedPlanRow?.section === "dpExpired" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "dpExpired" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("dpExpired")}
+            onIdentifierChange={(value) => selectIdentifier("dpExpired", value)}
+            onPdf={() => onExportSection("dpExpired", "pdf", identifierFor("dpExpired"))}
+            onExcel={() => onExportSection("dpExpired", "excel", identifierFor("dpExpired"))}
             currentFinancialYearEnd={plan.selectedFinancialYearEnd}
             helperText={[
               "These items have an expired D.P. If their planned payment date has also passed, they move to Expected Payment Date in Past.",
-              "Set Expected bill submission to calculate payment from the bill-payment offset, or enter Expected payment directly. With neither date, the item stays as an unscheduled backlog and is not plotted by month.",
+              "Enter Expected bill submission to calculate payment from the bill-payment offset, or enter Expected payment directly. With neither date, the item stays as an unscheduled backlog and is not plotted by month.",
               "The section total includes undated items; monthly totals include only dated items within the selected FY.",
               "If a revised D.P. is still ahead, the item moves back to Items Based on D.P.",
               CASH_OUT_GO_RED_ROW_HELPER,
@@ -11675,11 +12041,18 @@ function CashOutGoPlanReport({
           />
           <CashOutGoDetailTable
             title="Expected Payment in later FYs"
+            searchSectionKey="expectedPaymentInLaterFys"
+            focusedRowKey={focusedPlanRow?.section === "expectedPaymentInLaterFys" ? focusedPlanRow.rowKey : undefined}
+            focusSequence={focusedPlanRow?.section === "expectedPaymentInLaterFys" ? focusedPlanRow.sequence : undefined}
+            identifier={identifierFor("expectedPaymentInLaterFys")}
+            onIdentifierChange={(value) => selectIdentifier("expectedPaymentInLaterFys", value)}
+            onPdf={() => onExportSection("expectedPaymentInLaterFys", "pdf", identifierFor("expectedPaymentInLaterFys"))}
+            onExcel={() => onExportSection("expectedPaymentInLaterFys", "excel", identifierFor("expectedPaymentInLaterFys"))}
             helperText={[
               "These unsubmitted items have an Expected payment date after the selected FY.",
               "They remain visible for follow-up but do not add to this FY's totals or monthly forecast.",
-              "For example, a payment planned for April 2027 appears here when the selected FY is 2026-27.",
-              "When you select that later FY, an unpaid item returns to its usual work section.",
+              "Example: a payment planned for April 2027 appears here when the selected FY is 2026-27.",
+              "When the later FY is selected, an unpaid item returns to its usual work section.",
               CASH_OUT_GO_RED_ROW_HELPER,
             ]}
             rows={plan.expectedPaymentInLaterFys ?? []}
@@ -11699,6 +12072,156 @@ function CashOutGoPlanReport({
         </>
       ) : null}
     </div>
+  );
+}
+
+const paymentTablePageSizes = [10, 25, 50, 100] as const;
+
+function formatPaymentMeasureLabel(measure: PaymentMeasure) {
+  return measure === "total" ? "Total" : measure === "capital" ? "Capital" : "Revenue";
+}
+
+function PaymentMeasureTabs({ value, onChange, label }: {
+  value: PaymentMeasure;
+  onChange: (measure: PaymentMeasure) => void;
+  label: string;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className="mb-4 inline-flex max-w-full flex-wrap rounded-md border border-border bg-muted/30 p-1">
+      {(["revenue", "capital", "total"] as const).map((measure) => (
+        <button
+          key={measure}
+          type="button"
+          role="tab"
+          aria-selected={value === measure}
+          onClick={() => onChange(measure)}
+          className={`min-w-24 rounded px-3 py-1.5 text-sm font-medium transition-colors ${value === measure ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          {formatPaymentMeasureLabel(measure)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PaymentTablePagination({
+  label,
+  page,
+  pageSize,
+  totalRows,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  label: string;
+  page: number;
+  pageSize: (typeof paymentTablePageSizes)[number];
+  totalRows: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: (typeof paymentTablePageSizes)[number]) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const firstRow = totalRows ? (safePage - 1) * pageSize + 1 : 0;
+  const lastRow = Math.min(safePage * pageSize, totalRows);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground" aria-label={`${label} pagination`}>
+      <span>{totalRows ? `Showing ${firstRow}-${lastRow} of ${totalRows}` : "No rows"}</span>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2">
+          Rows per page
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value) as (typeof paymentTablePageSizes)[number])}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+          >
+            {paymentTablePageSizes.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <button type="button" onClick={() => onPageChange(1)} disabled={safePage === 1} className="h-8 rounded-md border border-border px-2 disabled:opacity-40">First</button>
+        <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={safePage === 1} className="h-8 rounded-md border border-border px-2 disabled:opacity-40">Previous</button>
+        <span>Page {safePage} of {totalPages}</span>
+        <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={safePage === totalPages} className="h-8 rounded-md border border-border px-2 disabled:opacity-40">Next</button>
+        <button type="button" onClick={() => onPageChange(totalPages)} disabled={safePage === totalPages} className="h-8 rounded-md border border-border px-2 disabled:opacity-40">Last</button>
+      </div>
+    </div>
+  );
+}
+
+type PreSoMonthwiseRow = {
+  monthKey: string;
+  capital: number;
+  revenue: number;
+  total: number;
+  count: number;
+  groupKey?: string;
+  groupLabel?: string;
+};
+
+function getPreSoMonthwiseMeasureRows(rows: PreSoMonthwiseRow[], measure: PaymentMeasure) {
+  return rows.filter((row) => row[measure] > 0);
+}
+
+function PreSoMonthwiseMeasureTable({
+  measure,
+  rows,
+  grouping,
+}: {
+  measure: PaymentMeasure;
+  rows: PreSoMonthwiseRow[];
+  grouping: PreSoMonthwiseGrouping;
+}) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<(typeof paymentTablePageSizes)[number]>(10);
+  const measureRows = getPreSoMonthwiseMeasureRows(rows, measure);
+  const safePage = Math.min(page, Math.max(1, Math.ceil(measureRows.length / pageSize)));
+  const visibleRows = measureRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const label = formatPaymentMeasureLabel(measure);
+  const pagination = (
+    <PaymentTablePagination
+      label={`Pre-S.O. ${label}`}
+      page={safePage}
+      pageSize={pageSize}
+      totalRows={measureRows.length}
+      onPageChange={setPage}
+      onPageSizeChange={(next) => { setPageSize(next); setPage(1); }}
+    />
+  );
+  return (
+    <section className="space-y-2" aria-label={`${label} monthwise cash outgo`}>
+      <h4 className="text-sm font-semibold">{label}</h4>
+      {pagination}
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead className="bg-secondary text-xs text-muted-foreground">
+            <tr>
+              {grouping !== "month" ? <th className="px-3 py-2 text-left font-medium">{grouping === "fyMonth" ? "FY" : "Stage"}</th> : null}
+              <th className="px-3 py-2 text-left font-medium">Month</th>
+              {measure === "total" ? <th className="px-3 py-2 text-right font-medium">Files</th> : null}
+              <th className="px-3 py-2 text-right font-medium">{label}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.length ? visibleRows.map((row) => (
+              <tr key={`${row.groupKey ?? "all"}:${row.monthKey}`} className="border-t border-border">
+                {grouping !== "month" ? <td className="px-3 py-2">{row.groupLabel || "-"}</td> : null}
+                <td className="px-3 py-2">{formatMonthKeyLabel(row.monthKey)}</td>
+                {measure === "total" ? <td className="px-3 py-2 text-right tabular-nums">{row.count}</td> : null}
+                <td className="px-3 py-2 text-right tabular-nums">{formatLakhValue(row[measure])}</td>
+              </tr>
+            )) : (
+              <tr><td colSpan={(grouping !== "month" ? 1 : 0) + (measure === "total" ? 1 : 0) + 2} className="px-3 py-6 text-center text-muted-foreground">No {label.toLowerCase()} payments planned.</td></tr>
+            )}
+          </tbody>
+          <tfoot className="border-t border-border bg-muted/30 font-semibold">
+            <tr>
+              <td colSpan={(grouping !== "month" ? 1 : 0) + (measure === "total" ? 1 : 0) + 1} className="px-3 py-2">All rows total</td>
+              <td className="px-3 py-2 text-right tabular-nums">{formatLakhValue(measureRows.reduce((sum, row) => sum + row[measure], 0))}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {pagination}
+    </section>
   );
 }
 
@@ -11759,6 +12282,7 @@ function PreSoExpectedCashOutgoReport({
   ) => void;
   onOpenFile: (row: PreSoFileRow) => void;
 }) {
+  const [monthwiseMeasure, setMonthwiseMeasure] = useState<PaymentMeasure>("total");
   const selectedStageSet = new Set(selectedStageKeys);
   const selectedStageOptions = stageOptions.filter((stage) => selectedStageSet.has(stage.key));
   const groupedRowsByYear = getPreSoRowsGroupedByYearAndStage(rows, selectedStageOptions);
@@ -11792,27 +12316,30 @@ function PreSoExpectedCashOutgoReport({
         `Grouped by ${monthwiseGrouping === "month" ? "month" : monthwiseGrouping === "fyMonth" ? "FY and month" : "stage and month"}.`,
         "All monetary values are shown in Lakhs.",
       ].join("\n"),
-      tables: [
-        {
-          title: "Monthwise cash outgo",
+      tables: (["revenue", "capital", "total"] as const).map((measure) => {
+        const measureRows = getPreSoMonthwiseMeasureRows(visibleMonthwiseRows, measure);
+        return {
+          title: `${formatPaymentMeasureLabel(measure)} - Monthwise cash outgo`,
           headers: [
             ...(groupLabel ? [groupLabel] : []),
             "Month",
-            "Files",
-            "Capital",
-            "Revenue",
-            "Total",
+            ...(measure === "total" ? ["Files"] : []),
+            formatPaymentMeasureLabel(measure),
           ],
-          rows: visibleMonthwiseRows.map((row) => [
-            ...("groupLabel" in row ? [String(row.groupLabel)] : []),
-            formatMonthKeyLabel(row.monthKey),
-            row.count,
-            formatLakhValue(row.capital),
-            formatLakhValue(row.revenue),
-            formatLakhValue(row.total),
-          ]),
-        },
-      ],
+          rows: [
+            ...measureRows.map((row) => [
+              ...(groupLabel ? [row.groupLabel || ""] : []),
+              formatMonthKeyLabel(row.monthKey),
+              ...(measure === "total" ? [row.count] : []),
+              formatLakhValue(row[measure]),
+            ]),
+            [
+              ...Array.from({ length: (groupLabel ? 1 : 0) + (measure === "total" ? 1 : 0) + 1 }, (_, index) => index === 0 ? "All rows total" : ""),
+              formatLakhValue(measureRows.reduce((sum, row) => sum + row[measure], 0)),
+            ],
+          ],
+        };
+      }),
     });
   };
   const toggleStage = (stageKey: string, checked: boolean) => {
@@ -11851,7 +12378,7 @@ function PreSoExpectedCashOutgoReport({
               description={
                 "Planning report for demands where S.O. is not yet placed.\n" +
                 "Only checked files contribute to the totals and monthwise cash outgo.\n" +
-                "Use Save plan to lock the checked files and tentative dates for future use."
+                "Save Plan locks the checked files and tentative dates for future use."
               }
             />
           </div>
@@ -11869,7 +12396,7 @@ function PreSoExpectedCashOutgoReport({
                 </button>
                 <FloatingHelper
                   text={[
-                    "Save plan stores selected Pre-S.O. files, stage offsets, and tentative dates according to your permitted scope.",
+                    "Save plan stores selected Pre-S.O. files, stage offsets, and tentative dates within the permitted scope.",
                     "Saved offsets and dates remain available on future visits until changed and saved again.",
                     "Editors can save file-level tentative dates globally, but cannot change stage-wise offset defaults.",
                     "Stage-wise offset defaults are controlled by Admin/Sub-admin and Universal Viewer with Global Cash Out Go permission.",
@@ -11894,7 +12421,7 @@ function PreSoExpectedCashOutgoReport({
         ) : null}
         {!currentYearContext ? (
           <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            This report is meant for active/current FY contexts only. Change the Global FY filter to
+            Intended for active/current FY contexts only. Change the Global FY filter to
             current FY / All active files / Active + current FY closed to use it.
           </div>
         ) : null}
@@ -12060,8 +12587,9 @@ function PreSoExpectedCashOutgoReport({
                       className="rounded-lg border border-border bg-background p-4"
                     >
                       <summary className="cursor-pointer text-sm font-semibold">
-                        {stageGroup.stage.label} ({stageGroup.count} files,{" "}
-                        {formatPreSoSelectFilesCurrency(stageGroup.total.total)})
+                        {stageGroup.stage.label} ({stageGroup.count} files, Rev:{" "}
+                        {formatPreSoSelectFilesCurrency(stageGroup.total.revenue)}, Cap:{" "}
+                        {formatPreSoSelectFilesCurrency(stageGroup.total.capital)})
                       </summary>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button
@@ -12103,7 +12631,7 @@ function PreSoExpectedCashOutgoReport({
                                       "Auto date = today plus S.O. offset days for the file's current Pre-S.O. stage.",
                                       `The offset comes from the current stage's setting (default ${defaultOffset.soOffsetDays} days); a saved stage-specific value takes precedence.`,
                                       "Latest milestone date is shown for reference only; it is not currently used as the calculation base.",
-                                      "If you manually enter a date, that date is used for this file and is saved when Save plan is clicked.",
+                                      "A manually entered date is used for this file and saved with Save plan.",
                                     ]}
                                   />
                                 </span>
@@ -12116,7 +12644,7 @@ function PreSoExpectedCashOutgoReport({
                                     text={[
                                       "Auto date = tentative S.O. date plus payment offset days for the file's current Pre-S.O. stage.",
                                       "If Tentative S.O. is manually changed, tentative payment follows that changed S.O. date unless payment date is also manually edited.",
-                                      "If you manually enter a payment date, that date is used for this file and is saved when Save plan is clicked.",
+                                      "A manually entered payment date is used for this file and saved with Save plan.",
                                     ]}
                                   />
                                 </span>
@@ -12317,61 +12845,14 @@ function PreSoExpectedCashOutgoReport({
               />
             </div>
           </div>
-          <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[620px] text-sm">
-              <thead className="bg-secondary text-xs text-muted-foreground">
-                <tr>
-                  {monthwiseGrouping === "month" ? null : (
-                    <th className="px-3 py-2 text-left font-medium">
-                      {monthwiseGrouping === "fyMonth" ? "FY" : "Stage"}
-                    </th>
-                  )}
-                  <th className="px-3 py-2 text-left font-medium">Month</th>
-                  <th className="px-3 py-2 text-right font-medium">Files</th>
-                  <th className="px-3 py-2 text-right font-medium">Capital</th>
-                  <th className="px-3 py-2 text-right font-medium">Revenue</th>
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(monthwiseGrouping === "month" ? monthwiseRows : groupedMonthwiseRows).length ? (
-                  (monthwiseGrouping === "month" ? monthwiseRows : groupedMonthwiseRows).map((row) => (
-                    <tr
-                      key={
-                        "groupKey" in row && typeof row.groupKey === "string"
-                          ? `${row.groupKey}:${row.monthKey}`
-                          : row.monthKey
-                      }
-                      className="border-t border-border"
-                    >
-                      {"groupLabel" in row ? (
-                        <td className="px-3 py-2">{String(row.groupLabel)}</td>
-                      ) : null}
-                      <td className="px-3 py-2">{formatMonthKeyLabel(row.monthKey)}</td>
-                      <td className="px-3 py-2 text-right">{row.count}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatLakhValue(row.capital)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatLakhValue(row.revenue)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatLakhValue(row.total)}
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td
-                      colSpan={monthwiseGrouping === "month" ? 5 : 6}
-                      className="px-3 py-6 text-center text-muted-foreground"
-                    >
-                      No selected files with tentative payment dates.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <PaymentMeasureTabs value={monthwiseMeasure} onChange={setMonthwiseMeasure} label="Monthwise cash outgo tables" />
+          <div role="tabpanel" aria-label={`${formatPaymentMeasureLabel(monthwiseMeasure)} monthwise cash outgo`}>
+            <PreSoMonthwiseMeasureTable
+              key={monthwiseMeasure}
+              measure={monthwiseMeasure}
+              rows={visibleMonthwiseRows}
+              grouping={monthwiseGrouping}
+            />
           </div>
         </div>
       ) : null}
@@ -12418,6 +12899,7 @@ function SoPaymentMatrixReport({
 }) {
   const [fieldsDropdownOpen, setFieldsDropdownOpen] = useState(false);
   const [resultView, setResultView] = useState<ResultView>("table");
+  const [tableMeasure, setTableMeasure] = useState<PaymentMeasure>("total");
   const monthTotals = monthKeys.map((monthKey) => ({
     monthKey,
     amount: rows.reduce((sum, row) => sum + (row.monthAmounts[monthKey] ?? 0), 0),
@@ -12468,7 +12950,7 @@ function SoPaymentMatrixReport({
                 "Select one or more file/S.O. fields to show on the left side of the matrix.",
                 "Apr-Mar month columns are fixed; they show expected unpaid amounts in the Due matrix and actual paid amounts in the Completed matrix.",
                 "Changing these fields does not change report filtering or payment calculation.",
-                "Lock fields to save this matrix layout for your user across future visits. The Due and Completed matrices have separate saved layouts.",
+                "Lock fields to save this matrix layout for the account across future visits. The Due and Completed matrices have separate saved layouts.",
               ]}
               label="S.O. payment matrix field selector help"
               className="size-5"
@@ -12548,7 +13030,7 @@ function SoPaymentMatrixReport({
               onClick={onLockToggle}
               disabled={preferenceLoading || preferenceSaving}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground hover:bg-accent disabled:opacity-50"
-              title={fieldsLocked ? "Unlock this matrix's saved fields" : "Save and lock these fields for your user"}
+              title={fieldsLocked ? "Unlock this matrix's saved fields" : "Save and lock these fields for the account"}
               aria-label={fieldsLocked ? "Unlock saved matrix fields" : "Lock and save matrix fields"}
             >
               {fieldsLocked ? (
@@ -12625,24 +13107,88 @@ function SoPaymentMatrixReport({
           )}
         </div>
       ) : (
+        <div>
+          <PaymentMeasureTabs value={tableMeasure} onChange={setTableMeasure} label={`${title} tables`} />
+          <div role="tabpanel" aria-label={`${formatPaymentMeasureLabel(tableMeasure)} ${title}`}>
+            <SoPaymentMatrixMeasureTable
+              key={tableMeasure}
+              measure={tableMeasure}
+              rows={rows}
+              columns={columns}
+              monthKeys={monthKeys}
+              monthAmountHelper={monthAmountHelper}
+              onOpenRows={onOpenRows}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getSoPaymentMatrixMonthAmount(
+  row: SoPaymentMatrixRow,
+  monthKey: string,
+  measure: PaymentMeasure,
+) {
+  if (measure === "capital") return row.monthCapitalAmounts[monthKey] ?? 0;
+  if (measure === "revenue") return row.monthRevenueAmounts[monthKey] ?? 0;
+  return row.monthAmounts[monthKey] ?? 0;
+}
+
+function getSoPaymentMatrixRowTotal(row: SoPaymentMatrixRow, measure: PaymentMeasure) {
+  return measure === "capital" ? row.capitalTotal : measure === "revenue" ? row.revenueTotal : row.total;
+}
+
+function SoPaymentMatrixMeasureTable({
+  measure,
+  rows,
+  columns,
+  monthKeys,
+  monthAmountHelper,
+  onOpenRows,
+}: {
+  measure: PaymentMeasure;
+  rows: SoPaymentMatrixRow[];
+  columns: SoPaymentMatrixColumnOption[];
+  monthKeys: string[];
+  monthAmountHelper: HelperText;
+  onOpenRows: (rows: SoPaymentMatrixRow[], monthKey?: string) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<(typeof paymentTablePageSizes)[number]>(10);
+  const measureRows = rows.filter((row) => getSoPaymentMatrixRowTotal(row, measure) > 0);
+  const safePage = Math.min(page, Math.max(1, Math.ceil(measureRows.length / pageSize)));
+  const visibleRows = measureRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const monthTotals = monthKeys.map((monthKey) => ({
+    monthKey,
+    amount: measureRows.reduce((sum, row) => sum + getSoPaymentMatrixMonthAmount(row, monthKey, measure), 0),
+  }));
+  const label = formatPaymentMeasureLabel(measure);
+  const pagination = (
+    <PaymentTablePagination
+      label={`${label} payment matrix`}
+      page={safePage}
+      pageSize={pageSize}
+      totalRows={measureRows.length}
+      onPageChange={setPage}
+      onPageSizeChange={(next) => { setPageSize(next); setPage(1); }}
+    />
+  );
+  return (
+    <section className="space-y-2" aria-label={`${label} payment matrix`}>
+      <h3 className="text-sm font-semibold">{label}</h3>
+      {pagination}
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full min-w-[1180px] border-collapse text-sm">
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
-              {columns.map((column) => (
-                <th key={column.key} className="px-3 py-2 text-left font-medium">
-                  {column.label}
-                </th>
-              ))}
+              {columns.map((column) => <th key={column.key} className="px-3 py-2 text-left font-medium">{column.label}</th>)}
               {monthKeys.map((monthKey) => (
                 <th key={monthKey} className="px-3 py-2 text-right font-medium">
                   <span className="inline-flex items-center justify-end gap-1">
                     {formatSoPaymentMatrixMonthLabel(monthKey)}
-                    <FloatingHelper
-                      text={monthAmountHelper}
-                      label={`${formatSoPaymentMatrixMonthLabel(monthKey)} column help`}
-                      className="size-5"
-                    />
+                    <FloatingHelper text={monthAmountHelper} label={`${label} ${formatSoPaymentMatrixMonthLabel(monthKey)} column help`} className="size-5" />
                   </span>
                 </th>
               ))}
@@ -12650,97 +13196,48 @@ function SoPaymentMatrixReport({
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((row) => (
-                <tr key={row.rowKey} className="border-t border-border">
-                  {columns.map((column) => (
-                    <td key={column.key} className="px-3 py-2 align-top">
-                      {getCompactTableTextWidth(column.key) ? (
-                        <CompactTableText
-                          value={String(getSoPaymentMatrixFieldValue(row, column.key))}
-                          width={getCompactTableTextWidth(column.key)!}
-                        />
-                      ) : (
-                        getSoPaymentMatrixFieldValue(row, column.key)
-                      )}
-                    </td>
-                  ))}
-                  {monthKeys.map((monthKey) => {
-                    const amount = row.monthAmounts[monthKey] ?? 0;
-                    return (
-                      <td key={monthKey} className="px-3 py-2 text-right tabular-nums">
-                        {amount ? (
-                          <button
-                            type="button"
-                            onClick={() => onOpenRows([row], monthKey)}
-                            className="font-semibold text-primary underline-offset-2 hover:underline"
-                          >
-                        {formatSoPaymentMatrixAmount(amount)}
-                          </button>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                    );
-                  })}
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                    <button
-                      type="button"
-                      onClick={() => onOpenRows([row])}
-                      className="text-primary underline-offset-2 hover:underline"
-                    >
-                      {formatSoPaymentMatrixAmount(row.total)}
-                    </button>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td
-                  colSpan={columns.length + monthKeys.length + 1}
-                  className="px-3 py-8 text-center text-muted-foreground"
-                >
-                  No S.O. payment rows found for the current filters.
-                </td>
-              </tr>
-            )}
-          </tbody>
-          {rows.length ? (
-            <tfoot className="border-t border-border bg-muted/30 font-semibold">
-              <tr>
-                <td colSpan={columns.length} className="px-3 py-2">
-                  Total
-                </td>
-                {monthTotals.map((total) => (
-                  <td key={total.monthKey} className="px-3 py-2 text-right tabular-nums">
-                    {total.amount ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onOpenRows(
-                            rows.filter((row) => (row.monthAmounts[total.monthKey] ?? 0) > 0),
-                            total.monthKey,
-                          )
-                        }
-                        className="text-primary underline-offset-2 hover:underline"
-                      >
-                        {formatSoPaymentMatrixAmount(total.amount)}
-                      </button>
-                    ) : (
-                      "-"
-                    )}
+            {visibleRows.length ? visibleRows.map((row) => (
+              <tr key={row.rowKey} className="border-t border-border">
+                {columns.map((column) => (
+                  <td key={column.key} className="px-3 py-2 align-top">
+                    {getCompactTableTextWidth(column.key) ? (
+                      <CompactTableText value={String(getSoPaymentMatrixFieldValue(row, column.key))} width={getCompactTableTextWidth(column.key)!} />
+                    ) : getSoPaymentMatrixFieldValue(row, column.key)}
                   </td>
                 ))}
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {formatSoPaymentMatrixAmount(grandTotal)}
+                {monthKeys.map((monthKey) => {
+                  const amount = getSoPaymentMatrixMonthAmount(row, monthKey, measure);
+                  return (
+                    <td key={monthKey} className="px-3 py-2 text-right tabular-nums">
+                      {amount ? <button type="button" onClick={() => onOpenRows([row], monthKey)} className="font-semibold text-primary underline-offset-2 hover:underline">{formatSoPaymentMatrixAmount(amount)}</button> : "-"}
+                    </td>
+                  );
+                })}
+                <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                  <button type="button" onClick={() => onOpenRows([row])} className="text-primary underline-offset-2 hover:underline">{formatSoPaymentMatrixAmount(getSoPaymentMatrixRowTotal(row, measure))}</button>
                 </td>
+              </tr>
+            )) : (
+              <tr><td colSpan={columns.length + monthKeys.length + 1} className="px-3 py-8 text-center text-muted-foreground">No {label.toLowerCase()} payment rows found for the current filters.</td></tr>
+            )}
+          </tbody>
+          {measureRows.length ? (
+            <tfoot className="border-t border-border bg-muted/30 font-semibold">
+              <tr>
+                <td colSpan={columns.length} className="px-3 py-2">All rows total</td>
+                {monthTotals.map(({ monthKey, amount }) => (
+                  <td key={monthKey} className="px-3 py-2 text-right tabular-nums">
+                    {amount ? <button type="button" onClick={() => onOpenRows(measureRows.filter((row) => getSoPaymentMatrixMonthAmount(row, monthKey, measure) > 0), monthKey)} className="text-primary underline-offset-2 hover:underline">{formatSoPaymentMatrixAmount(amount)}</button> : "-"}
+                  </td>
+                ))}
+                <td className="px-3 py-2 text-right tabular-nums">{formatSoPaymentMatrixAmount(measureRows.reduce((sum, row) => sum + getSoPaymentMatrixRowTotal(row, measure), 0))}</td>
               </tr>
             </tfoot>
           ) : null}
         </table>
       </div>
-      )}
-    </div>
+      {pagination}
+    </section>
   );
 }
 
@@ -13422,7 +13919,7 @@ function rebuildCashOutGoMonthwisePlan(plan: CashOutGoPlanPayload): ExpectedCash
   ];
   const inFyForecastRows = getCashOutGoPlanIncludedRows(
     forecastRows,
-    plan.currentFinancialYearEnd,
+    plan.selectedFinancialYearEnd,
   );
 
   return getFinancialYearMonthKeys(plan.financialYear).map((monthKey) => {
@@ -13476,11 +13973,17 @@ function exportCashOutGoPlan(
   format: "excel" | "pdf",
   description?: string,
   expandedSections: CashOutGoPlanExpandedSections = defaultCashOutGoPlanExpandedSections,
+  identifiers: CashOutGoPlanIdentifierSelections = {},
 ) {
   const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(plan.settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(plan.settings);
-  const expandedDetailTables = getCashOutGoPlanExpandedDetailExportTables(plan, expandedSections);
+  const expandedDetailTables = getCashOutGoPlanExpandedDetailExportTables(
+    plan,
+    expandedSections,
+    identifiers,
+    format,
+  );
   void downloadBackendExport({
     format,
     title: "Cash Out Go Plan",
@@ -13535,6 +14038,35 @@ function exportCashOutGoPlan(
   });
 }
 
+function exportCashOutGoPlanSection(
+  plan: CashOutGoPlanPayload,
+  section: CashOutGoPlanDetailSectionKey,
+  format: "pdf" | "excel",
+  description?: string,
+  identifier: CashOutGoPlanIdentifier = "controlNo",
+) {
+  const [table] = getCashOutGoPlanExpandedDetailExportTables(plan, {
+    ...defaultCashOutGoPlanExpandedSections,
+    [section]: true,
+  }, { [section]: identifier }, format);
+  if (!table) return;
+
+  void downloadBackendExport({
+    format,
+    title: table.title ?? "Cash Out Go Plan",
+    description: getReportExportDescription(
+      description,
+      `Plan FY: ${plan.financialYear}`,
+      `Bill payment offset: ${getEffectiveBillPaymentOffsetDays(plan.settings)} days`,
+      `Bill submission offset: ${getEffectiveBillSubmissionOffsetDays(plan.settings)} days`,
+      `D.P. offset: ${getEffectiveDpOffsetDays(plan.settings)} days`,
+      "All the values are in Lakh.",
+    ),
+    fileName: `cash-out-go-${section}-${plan.financialYear}.${format === "excel" ? "xlsx" : "pdf"}`,
+    tables: [table],
+  });
+}
+
 const cashOutGoPlanDetailExportColumns = [
   "S. No.",
   "Control No.",
@@ -13546,12 +14078,33 @@ const cashOutGoPlanDetailExportColumns = [
   "Expected payment",
   "Capital",
   "Revenue",
-  "Selected FY treatment",
 ];
+
+const cashOutGoPlanIdentifierOptions: Array<{
+  key: CashOutGoPlanIdentifier;
+  label: string;
+}> = [
+  { key: "uniqueCode", label: "Unique Code" },
+  { key: "controlNo", label: "Control No." },
+  { key: "soNo", label: "S.O. No." },
+  { key: "fileNo", label: "File No." },
+];
+
+function getCashOutGoPlanIdentifierValue(
+  row: CashOutGoPlanDetailRow,
+  identifier: CashOutGoPlanIdentifier,
+) {
+  if (identifier === "uniqueCode") return row.uniqueCode || "-";
+  if (identifier === "soNo") return row.soNo || "-";
+  if (identifier === "fileNo") return row.fileNo || "-";
+  return row.fileRef || "-";
+}
 
 function getCashOutGoPlanExpandedDetailExportTables(
   plan: CashOutGoPlanPayload,
   expandedSections: CashOutGoPlanExpandedSections,
+  identifiers: CashOutGoPlanIdentifierSelections = {},
+  format: "pdf" | "excel" = "excel",
 ): ExportTable[] {
   const sections: Array<{
     key: CashOutGoPlanDetailSectionKey;
@@ -13587,28 +14140,30 @@ function getCashOutGoPlanExpandedDetailExportTables(
   return sections
     .filter((section) => expandedSections[section.key])
     .map((section) => {
+      const identifier = identifiers[section.key] ?? "controlNo";
+      const identifierLabel = cashOutGoPlanIdentifierOptions.find(
+        (option) => option.key === identifier,
+      )?.label ?? "Control No.";
+      const selectedColumns = cashOutGoPlanDetailExportColumns.map((column, index) =>
+        index === 1 ? identifierLabel : column,
+      );
       const headers =
         section.key === "billsSubmitted"
-          ? cashOutGoPlanDetailExportColumns.filter((_, index) => index !== 6)
-          : cashOutGoPlanDetailExportColumns;
+          ? selectedColumns.filter((_, index) => index !== 6)
+          : selectedColumns;
       return {
         title: section.title,
         headers,
+        columnWidths: format === "pdf"
+          ? section.key === "billsSubmitted"
+            ? [28, 73, 158, 112, 84, 75, 75, 65, 65]
+            : [28, 73, 145, 100, 80, 74, 74, 74, 60, 60]
+          : undefined,
         rows: section.rows.map((row, index) => {
           const values = [
             index + 1,
-            ...getCashOutGoPlanDetailExportRow(row, plan.selectedFinancialYearEnd),
+            ...getCashOutGoPlanDetailExportRow(row, identifier),
           ];
-          if (section.key === "chequeslipsNotReceived") {
-            values[values.length - 1] =
-              "Historical MER warning only; excluded from Cash Out Go totals and forecasts";
-          } else if (section.key === "expectedPaymentDateInPast") {
-            values[values.length - 1] =
-              "Past expected date; excluded until date is updated and saved";
-          } else if (section.key === "expectedPaymentInLaterFys") {
-            values[values.length - 1] =
-              "Expected after selected Plan FY; excluded from selected FY totals and monthly forecast";
-          }
           return section.key === "billsSubmitted"
             ? values.filter((_, valueIndex) => valueIndex !== 6)
             : values;
@@ -13619,14 +14174,12 @@ function getCashOutGoPlanExpandedDetailExportTables(
 
 function getCashOutGoPlanDetailExportRow(
   row: CashOutGoPlanDetailRow,
-  currentFinancialYearEnd: string,
+  identifier: CashOutGoPlanIdentifier,
 ) {
-  const sentOrExpectedDate = row.actualSentDate
-    ? `Actual sent: ${row.actualSentDate}`
-    : row.expectedSentDate || "";
+  const sentOrExpectedDate = row.actualSentDate ? "Submitted" : row.expectedSentDate || "";
 
   return [
-    row.fileRef,
+    getCashOutGoPlanIdentifierValue(row, identifier),
     row.description,
     row.firm,
     row.amountSource,
@@ -13635,12 +14188,6 @@ function getCashOutGoPlanDetailExportRow(
     row.expectedPaymentDate,
     formatLakhValue(row.capital),
     formatLakhValue(row.revenue),
-    !row.expectedPaymentDate
-      ? "No expected payment date; backlog is not in a monthly forecast"
-      : row.expectedPaymentDate && currentFinancialYearEnd &&
-          row.expectedPaymentDate > currentFinancialYearEnd
-        ? "Excluded: expected payment is after selected FY-end"
-        : "Included in selected FY forecast",
   ];
 }
 
@@ -13683,6 +14230,13 @@ function CashOutGoMonthTable({
 
 function CashOutGoDetailTable({
   title,
+  searchSectionKey,
+  focusedRowKey,
+  focusSequence,
+  identifier,
+  onIdentifierChange,
+  onPdf,
+  onExcel,
   currentFinancialYearEnd = "",
   helperText,
   rows,
@@ -13704,6 +14258,13 @@ function CashOutGoDetailTable({
   onOpenChange,
 }: {
   title: string;
+  searchSectionKey: CashOutGoPlanSearchSectionKey;
+  focusedRowKey?: string;
+  focusSequence?: number;
+  identifier: CashOutGoPlanIdentifier;
+  onIdentifierChange: (identifier: CashOutGoPlanIdentifier) => void;
+  onPdf?: () => void;
+  onExcel?: () => void;
   currentFinancialYearEnd?: string;
   helperText?: HelperText;
   rows: CashOutGoPlanDetailRow[];
@@ -13732,6 +14293,9 @@ function CashOutGoDetailTable({
   const [pageSize, setPageSize] = useState<(typeof cashOutGoDetailPageSizeOptions)[number]>(25);
   const totals = getCashOutGoSectionTotals(rows, currentFinancialYearEnd);
   const columnCount = showExpectedSentDate ? 10 : 9;
+  const detailColumnWidths = showExpectedSentDate
+    ? ["4%", "10%", "16%", "14%", "11.25%", "11.25%", "11.25%", "11.25%", "5.5%", "5.5%"]
+    : ["4%", "10%", "16%", "14%", "14%", "14%", "14%", "7%", "7%"];
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageStart = rows.length ? (safePage - 1) * pageSize : 0;
@@ -13742,14 +14306,62 @@ function CashOutGoDetailTable({
     setPage((current) => Math.min(current, totalPages));
   }, [totalPages]);
 
+  useEffect(() => {
+    if (!focusedRowKey) return;
+    const rowIndex = rows.findIndex((row) => row.rowKey === focusedRowKey);
+    if (rowIndex < 0) return;
+    const targetPage = Math.floor(rowIndex / pageSize) + 1;
+    if (targetPage !== page) {
+      setPage(targetPage);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document
+        .getElementById(`cash-out-go-${searchSectionKey}-${encodeURIComponent(focusedRowKey)}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusSequence, focusedRowKey, page, pageSize, rows, searchSectionKey]);
+
   const renderPagination = (position: "top" | "bottom") => (
     <div
       className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
       aria-label={`${title} pagination, ${position}`}
     >
-      <span>
-        {rows.length ? `Showing ${pageStart + 1}-${pageEnd} of ${rows.length} rows` : "No rows"}
-      </span>
+      <div className="flex flex-wrap items-center gap-3">
+        <span>
+          {rows.length ? `Showing ${pageStart + 1}-${pageEnd} of ${rows.length} rows` : "No rows"}
+        </span>
+        {position === "top" && (onPdf || onExcel) ? (
+          <div className="inline-flex h-7 overflow-hidden rounded-md border border-border bg-background text-foreground">
+            {onPdf ? (
+              <button
+                type="button"
+                onClick={onPdf}
+                aria-label={`Export ${title} PDF`}
+                title={`Export ${title} PDF`}
+                className="inline-flex items-center gap-1 px-2 text-xs font-medium hover:bg-accent"
+              >
+                <FileText className="size-3.5" />
+                PDF
+              </button>
+            ) : null}
+            {onPdf && onExcel ? <span className="w-px bg-border" aria-hidden="true" /> : null}
+            {onExcel ? (
+              <button
+                type="button"
+                onClick={onExcel}
+                aria-label={`Export ${title} Excel`}
+                title={`Export ${title} Excel`}
+                className="inline-flex items-center gap-1 px-2 text-xs font-medium hover:bg-accent"
+              >
+                <FileSpreadsheet className="size-3.5" />
+                Excel
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2">
           <span>Rows per page</span>
@@ -13858,18 +14470,11 @@ function CashOutGoDetailTable({
       </summary>
       <div className="mb-3 mt-4">{renderPagination("top")}</div>
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[1360px] table-fixed border-collapse text-sm">
+        <table className="w-full min-w-[1500px] table-fixed border-collapse text-sm">
           <colgroup>
-            <col className={showExpectedSentDate ? "w-[4%]" : "w-[5%]"} />
-            <col className={showExpectedSentDate ? "w-[10.5%]" : "w-[11.5%]"} />
-            <col className={showExpectedSentDate ? "w-[17%]" : "w-[18%]"} />
-            <col className={showExpectedSentDate ? "w-[15.5%]" : "w-[16%]"} />
-            <col className={showExpectedSentDate ? "w-[9%]" : "w-[10.5%]"} />
-            <col className={showExpectedSentDate ? "w-[9%]" : "w-[10.5%]"} />
-            {showExpectedSentDate ? <col className="w-[11.5%]" /> : null}
-            <col className={showExpectedSentDate ? "w-[9.5%]" : "w-[12.5%]"} />
-            <col className={showExpectedSentDate ? "w-[7%]" : "w-[8%]"} />
-            <col className={showExpectedSentDate ? "w-[7%]" : "w-[8%]"} />
+            {detailColumnWidths.map((width, index) => (
+              <col key={index} style={{ width }} />
+            ))}
           </colgroup>
           <thead>
             <tr className="border-b border-border/60 bg-background text-left">
@@ -13879,10 +14484,10 @@ function CashOutGoDetailTable({
                   <FloatingHelper
                   text={[
                       "Expected bill submission and Expected payment dates can be adjusted for an individual row where enabled.",
-                      "Save stores your changes using the access scope for your account.",
+                      "Save stores changes within the access scope for this account.",
                       "Reset clears that row's manual date in the draft. Save afterward to persist the change.",
                       "For an advance, editing or clearing Expected payment updates that S.O.'s Advance Payment date in Add/Edit File. It is not a separate plan-only override.",
-                      "For other rows, Expected payment uses the sent/resubmission date and payment offset unless you set a row-specific date.",
+                      "For other rows, Expected payment uses the sent/resubmission date and payment offset unless a row-specific date is entered.",
                     ]}
                     label="Cash Out Go forecast date editing"
                     className="size-5 border-0 bg-transparent shadow-none"
@@ -13893,7 +14498,18 @@ function CashOutGoDetailTable({
             </tr>
             <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
               <th className="w-16 px-3 py-2 text-right">S. No.</th>
-              <th className="px-3 py-2">Control No.</th>
+              <th className="px-2 py-2">
+                <select
+                  value={identifier}
+                  onChange={(event) => onIdentifierChange(event.target.value as CashOutGoPlanIdentifier)}
+                  aria-label={`${title} identifier column`}
+                  className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-1 text-xs font-semibold normal-case text-foreground"
+                >
+                  {cashOutGoPlanIdentifierOptions.map((option) => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
+              </th>
               <th className="px-3 py-2 pr-1">Description</th>
               <th className="px-3 py-2 pl-1">Firm</th>
               <th className="px-3 py-2">Source</th>
@@ -13911,6 +14527,7 @@ function CashOutGoDetailTable({
           <tbody>
             {rows.length ? (
               visibleRows.map((row, index) => {
+                const identifierValue = getCashOutGoPlanIdentifierValue(row, identifier);
                 const highlightOverdue = showOverdueHighlight && row.overdue;
                 const beyondCurrentFy = Boolean(
                   currentFinancialYearEnd &&
@@ -13929,10 +14546,12 @@ function CashOutGoDetailTable({
                 return (
                 <tr
                   key={row.rowKey}
+                  id={`cash-out-go-${searchSectionKey}-${encodeURIComponent(row.rowKey)}`}
                   title={beyondCurrentFy ? "Expected payment is after the selected FY-end; excluded from that FY's forecast totals." : undefined}
                   className={
                     "border-b border-border/60 last:border-0 " +
                     (beyondCurrentFy ? "bg-muted/60 text-muted-foreground opacity-60 " : "") +
+                    (focusedRowKey === row.rowKey ? "bg-primary/10 outline outline-2 outline-primary/40 outline-offset-[-2px] " : "") +
                     (highlightOverdue ? "text-destructive" : "")
                   }
                 >
@@ -13946,13 +14565,13 @@ function CashOutGoDetailTable({
                           "block max-w-full truncate text-left font-semibold underline-offset-2 hover:underline " +
                           (highlightOverdue ? "text-destructive" : "text-primary")
                         }
-                        title={row.fileRef}
+                        title={identifierValue}
                       >
-                        {row.fileRef}
+                        {identifierValue}
                       </button>
                     ) : (
-                      <span className="block max-w-full truncate" title={row.fileRef}>
-                        {row.fileRef}
+                      <span className="block max-w-full truncate" title={identifierValue}>
+                        {identifierValue}
                       </span>
                     )}
                   </td>
@@ -14850,36 +15469,39 @@ function DelayStatusReport({
             )}
           >
             <span>Milestone</span>
-            <select
+            <SearchableDropdown
               value={selectedMilestoneKey}
-              onChange={(event) => onMilestoneChange(event.target.value)}
+              options={[]}
+              optionItems={[
+                { value: "all", label: "All milestones" },
+                ...delayMilestoneOptions.map((milestone) => ({
+                  value: milestone.key,
+                  label: milestone.label,
+                })),
+              ]}
+              deferChangeUntilSelect
+              allowCustomValue={false}
+              onChange={(milestone) => onMilestoneChange(milestone || "all")}
               className={filterControlClass(
                 milestoneFilterActive,
                 "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
               )}
-            >
-              <option value="all">All milestones</option>
-              {delayMilestoneOptions.map((milestone) => (
-                <option key={milestone.key} value={milestone.key}>
-                  {milestone.label}
-                </option>
-              ))}
-            </select>
+            />
           </label>
           <button
             type="button"
             onClick={onPdf}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileText className="size-4" />
+            <FileText className="size-3.5" />
             PDF
           </button>
           <button
             type="button"
             onClick={onExcel}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
           >
-            <FileSpreadsheet className="size-4" />
+            <FileSpreadsheet className="size-3.5" />
             Excel
           </button>
         </div>
@@ -14891,8 +15513,15 @@ function DelayStatusReport({
           onClick={onOpenSearch}
           className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-left hover:bg-accent"
         >
-          <div className="text-muted-foreground">Delayed stages</div>
+          <div className="text-muted-foreground">
+            {selectedMilestoneKey === "financialSanction" ? "Sanction cases" : "Delayed stages"}
+          </div>
           <div className="font-semibold tabular-nums">{rows.length}</div>
+          {selectedMilestoneKey === "financialSanction" ? (
+            <div className="text-[11px] text-muted-foreground">
+              Across {new Set(rows.map((row) => row.fileId)).size} files
+            </div>
+          ) : null}
         </button>
         <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
           <div className="text-muted-foreground">Average days</div>
@@ -14922,7 +15551,11 @@ function DelayStatusReport({
               className="rounded-md border border-border bg-background px-2.5 py-1.5 text-left text-xs hover:bg-accent"
             >
               <span className="text-muted-foreground">{item.label}</span>{" "}
-              <span className="font-semibold tabular-nums">{item.count}</span>
+              <span className="font-semibold tabular-nums">
+                {item.key === "financialSanction" && item.fileCount !== undefined
+                  ? `${item.count} cases · ${item.fileCount} files`
+                  : item.count}
+              </span>
             </button>
           ))}
         </div>
@@ -15958,6 +16591,8 @@ function escapeHtml(value: string | number | undefined) {
     .replace(/'/g, "&#39;");
 }
 
+type UnifiedFinanceTab = "financePosition" | "fySnapshot" | "cashOutGo";
+
 function UnifiedFinanceReviewReport({
   title,
   summary,
@@ -15973,6 +16608,7 @@ function UnifiedFinanceReviewReport({
   error?: string;
   contextDescription: string;
 }) {
+  const [activeTab, setActiveTab] = useState<UnifiedFinanceTab>("financePosition");
   const [view, setView] = useState<ResultView>("table");
   const finance = summary?.financeTotals;
   const snapshot = summary?.finance1Summary;
@@ -16015,7 +16651,6 @@ function UnifiedFinanceReviewReport({
       (finance?.paidCapital ?? 0) + (finance?.advanceCapital ?? 0),
       (finance?.paidRevenue ?? 0) + (finance?.advanceRevenue ?? 0),
     ],
-    ["Paid till today (live)", finance?.paidTillDateCapital ?? 0, finance?.paidTillDateRevenue ?? 0],
   ];
   const snapshotRows: Array<[string, FinanceReviewMetric | undefined]> = [
     ["Intended at FY-end", snapshot?.intendedAtFyEnd],
@@ -16026,8 +16661,8 @@ function UnifiedFinanceReviewReport({
     ["Paid till today (live)", snapshot?.paidTillDate],
     ["Balance unpaid till today (live)", snapshot?.balanceUnpaidToday],
   ];
-  const exportTables: ExportTable[] = [
-    {
+  const exportTables: Record<UnifiedFinanceTab, ExportTable> = {
+    financePosition: {
       title: "Finance Position · Active dashboard finance context",
       headers: ["Measure", "Capital", "Revenue", "Total"],
       rows: positionRows.map(([label, capital, revenue]) => [
@@ -16037,7 +16672,7 @@ function UnifiedFinanceReviewReport({
         formatLakhValue(capital + revenue),
       ]),
     },
-    {
+    fySnapshot: {
       title: `FY Snapshot · ${snapshot?.fiscalYear ?? "Selected FY"}`,
       headers: ["Measure", "Capital", "Revenue", "Total"],
       rows: snapshotRows.map(([label, metric]) => [
@@ -16047,7 +16682,7 @@ function UnifiedFinanceReviewReport({
         formatLakhValue(metric?.total ?? 0),
       ]),
     },
-    {
+    cashOutGo: {
       title: `Cash Out Go · ${plan?.financialYear ?? "Selected FY"}`,
       headers: ["Month", "Planned outgo", "Recorded payments", "Plan less recorded"],
       rows: cashRows.map((row) => [
@@ -16057,112 +16692,126 @@ function UnifiedFinanceReviewReport({
         formatLakhValue(row.variance),
       ]),
     },
-  ];
+  };
+  const activeReportLabel =
+    activeTab === "financePosition"
+      ? "Finance Position"
+      : activeTab === "fySnapshot"
+        ? "FY Snapshot"
+        : "Cash Out Go";
+  const exportDescription = [
+    contextDescription,
+    activeTab === "financePosition"
+      ? "Finance Position follows the active dashboard finance context. Paid includes advance payments."
+      : activeTab === "fySnapshot"
+        ? "FY Snapshot separates frozen FY-end values from live paid and unpaid balances."
+        : "Cash Out Go follows its plan FY and selected division; it does not inherit File Initiation Year or File Type filters.",
+    "All monetary values are shown in Lakhs.",
+  ].join("\n");
   const exportUnified = (format: "pdf" | "excel") =>
     downloadBackendExport({
       format,
-      title,
-      description: [
-        contextDescription,
-        "Finance Position follows the active dashboard finance context.",
-        "FY Snapshot separates frozen FY-end values from live paid/unpaid balances.",
-        "Cash Out Go follows its plan FY and selected division; it does not inherit File Initiation Year or File Type filters.",
-        "All monetary values are shown in Lakhs.",
-      ].join("\n"),
-      plot,
-      tables: exportTables,
+      title: `${title} · ${activeReportLabel}`,
+      description: exportDescription,
+      plot: activeTab === "cashOutGo" ? plot : undefined,
+      tables: [exportTables[activeTab]],
     });
 
   return (
     <div className="space-y-5">
-      <section className="rounded-lg border border-border bg-card p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-bold">{title}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Finance Position, FY Snapshot, and Cash Out Go are shown separately because each uses a different time basis.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <TableChartToggle value={view} onChange={setView} label="Cash Out Go comparison view" views={["table", "bar", "line"]} />
-            <ReportHeaderActions onPdf={() => void exportUnified("pdf")} onExcel={() => void exportUnified("excel")} />
-          </div>
-        </div>
-        {loading ? <div className="py-2 text-sm text-muted-foreground">Loading finance data…</div> : null}
-        {error ? <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
-      </section>
-
-      <section className="rounded-lg border border-border bg-card p-5">
-        <h3 className="text-sm font-bold">1. Finance Position</h3>
-        <p className="mb-3 mt-1 text-xs text-muted-foreground">Uses the active dashboard Global Filter, File Initiation Year, Division, and File Type context. Paid includes advance payments.</p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-sm">
-            <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Measure</th><th className="py-2 text-right">Capital</th><th className="py-2 text-right">Revenue</th><th className="py-2 text-right">Total</th></tr></thead>
-            <tbody>{positionRows.map(([label, capital, revenue]) => <tr key={label} className="border-b border-border/70"><th className="py-2 text-left font-medium">{label}</th><td className="py-2 text-right tabular-nums">{formatCurrency(capital)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(revenue)}</td><td className="py-2 text-right font-semibold tabular-nums">{formatCurrency(capital + revenue)}</td></tr>)}</tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-border bg-card p-5">
-        <h3 className="text-sm font-bold">2. FY Snapshot · {snapshot?.fiscalYear ?? "Selected FY"}</h3>
-        <p className="mb-3 mt-1 text-xs text-muted-foreground">The first five rows are frozen at FY-end. The final two are live and change as payments are entered.</p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-sm">
-            <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Measure</th><th className="py-2 text-right">Capital</th><th className="py-2 text-right">Revenue</th><th className="py-2 text-right">Total</th></tr></thead>
-            <tbody>{snapshotRows.map(([label, metric]) => <tr key={label} className="border-b border-border/70"><th className="py-2 text-left font-medium">{label}</th><td className="py-2 text-right tabular-nums">{formatCurrency(metric?.capital ?? 0)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(metric?.revenue ?? 0)}</td><td className="py-2 text-right font-semibold tabular-nums">{formatCurrency(metric?.total ?? 0)}</td></tr>)}</tbody>
-          </table>
-        </div>
-        {!snapshot ? <p className="mt-2 text-xs text-muted-foreground">Snapshot values are unavailable for this filter context.</p> : null}
-      </section>
-
-      <section className="rounded-lg border border-border bg-card p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold">3. Cash Out Go · {plan?.financialYear ?? "Selected FY"}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">Plan and recorded payment values use this plan FY and Division. “Plan less recorded” is a comparison, not a new liability calculation.</p>
-          </div>
-        </div>
-        {view !== "table" && cashRows.length ? (
-          <div data-chart-copy-area className="mb-4 rounded-md border border-border bg-background p-3">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <h4 className="text-sm font-semibold text-foreground">Cash Out Go · Planned outgo and Recorded payments</h4>
-              <ChartCopyButton />
-            </div>
-            <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              {view === "line" ? (
-                <LineChart data={cashRows} margin={{ top: 12, right: 18, left: 8, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="month" tick={{ fontSize: 13 }} />
-                  <YAxis tick={{ fontSize: 13 }} width={64}
-                    label={{ value: "Lakhs", angle: -90, position: "insideLeft", fontSize: 13 }} />
-                  <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
-                  <ChartLegend />
-                  <Line type="monotone" dataKey="planned" name="Planned outgo" stroke="#0f766e" strokeWidth={2} />
-                  <Line type="monotone" dataKey="recorded" name="Recorded payments" stroke="#2563eb" strokeWidth={2} />
-                </LineChart>
-              ) : (
-                <BarChart data={cashRows} margin={{ top: 12, right: 18, left: 8, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="month" tick={{ fontSize: 13 }} />
-                  <YAxis tick={{ fontSize: 13 }} width={64}
-                    label={{ value: "Lakhs", angle: -90, position: "insideLeft", fontSize: 13 }} />
-                  <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
-                  <ChartLegend />
-                  <Bar dataKey="planned" name="Planned outgo" fill="#0f766e" />
-                  <Bar dataKey="recorded" name="Recorded payments" fill="#2563eb" />
-                </BarChart>
-              )}
-            </ResponsiveContainer>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as UnifiedFinanceTab)} className="space-y-4">
+        <section className="rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <TabsList aria-label="Unified Finance Reports" className="grid h-auto w-full grid-cols-3 sm:w-auto">
+              <TabsTrigger value="financePosition" className="px-2 text-xs sm:px-3 sm:text-sm">Finance Position</TabsTrigger>
+              <TabsTrigger value="fySnapshot" className="px-2 text-xs sm:px-3 sm:text-sm">FY Snapshot</TabsTrigger>
+              <TabsTrigger value="cashOutGo" className="px-2 text-xs sm:px-3 sm:text-sm">Cash Out Go</TabsTrigger>
+            </TabsList>
+            <div className="flex items-center gap-2">
+              {activeTab === "cashOutGo" ? (
+                <TableChartToggle value={view} onChange={setView} label="Cash Out Go comparison view" views={["table", "bar", "line"]} />
+              ) : null}
+              <ReportHeaderActions onPdf={() => void exportUnified("pdf")} onExcel={() => void exportUnified("excel")} />
             </div>
           </div>
-        ) : null}
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[700px] text-sm">
-            <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Month</th><th className="py-2 text-right">Planned outgo</th><th className="py-2 text-right">Recorded payments</th><th className="py-2 text-right">Plan less recorded</th></tr></thead>
-            <tbody>{cashRows.map((row) => <tr key={row.monthKey} className="border-b border-border/70"><th className="py-2 text-left font-medium">{row.month}</th><td className="py-2 text-right tabular-nums">{formatCurrency(row.planned)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(row.recorded)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(row.variance)}</td></tr>)}</tbody>
-          </table>
-          {!cashRows.length ? <p className="py-4 text-sm text-muted-foreground">Cash Out Go plan data is not available.</p> : null}
-        </div>
-      </section>
+          {loading ? <div className="pt-3 text-sm text-muted-foreground">Loading finance data…</div> : null}
+          {error ? <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+        </section>
+
+        <TabsContent value="financePosition" className="mt-0">
+          <section className="rounded-lg border border-border bg-card p-5">
+            <h3 className="text-sm font-bold">Finance Position</h3>
+            <p className="mb-3 mt-1 text-xs text-muted-foreground">Finance values include files matching the Dashboard filters. Paid during Activity Year includes regular, stage, supplementary, and advance payments dated in that year.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px] text-sm">
+                <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Measure</th><th className="py-2 text-right">Capital</th><th className="py-2 text-right">Revenue</th><th className="py-2 text-right">Total</th></tr></thead>
+                <tbody>{positionRows.map(([label, capital, revenue]) => <tr key={label} className="border-b border-border/70"><th className="py-2 text-left font-medium">{label}</th><td className="py-2 text-right tabular-nums">{formatCurrency(capital)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(revenue)}</td><td className="py-2 text-right font-semibold tabular-nums">{formatCurrency(capital + revenue)}</td></tr>)}</tbody>
+              </table>
+            </div>
+          </section>
+        </TabsContent>
+
+        <TabsContent value="fySnapshot" className="mt-0">
+          <section className="rounded-lg border border-border bg-card p-5">
+            <h3 className="text-sm font-bold">FY Snapshot · {snapshot?.fiscalYear ?? "Selected FY"}</h3>
+              <p className="mb-3 mt-1 text-xs text-muted-foreground">The first five measures use records dated on or before this FY-end. Later-dated activity does not change them, but corrections to earlier records can. Live measures show payments and unpaid balance recorded to date, so they change when new activity is entered.</p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px] text-sm">
+                <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Measure</th><th className="py-2 text-right">Capital</th><th className="py-2 text-right">Revenue</th><th className="py-2 text-right">Total</th></tr></thead>
+                <tbody>{snapshotRows.map(([label, metric]) => <tr key={label} className="border-b border-border/70"><th className="py-2 text-left font-medium">{label}</th><td className="py-2 text-right tabular-nums">{formatCurrency(metric?.capital ?? 0)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(metric?.revenue ?? 0)}</td><td className="py-2 text-right font-semibold tabular-nums">{formatCurrency(metric?.total ?? 0)}</td></tr>)}</tbody>
+              </table>
+            </div>
+            {!snapshot ? <p className="mt-2 text-xs text-muted-foreground">Snapshot values are unavailable for this filter context.</p> : null}
+          </section>
+        </TabsContent>
+
+        <TabsContent value="cashOutGo" className="mt-0">
+          <section className="rounded-lg border border-border bg-card p-5">
+            <h3 className="text-sm font-bold">Cash Out Go · {plan?.financialYear ?? "Selected FY"}</h3>
+            <p className="mb-3 mt-1 text-xs text-muted-foreground">Uses the selected Plan FY and Division; File Initiation Year and File Type filters don’t apply. It compares planned outgo with payments recorded for that FY. “Plan less recorded” is a comparison, not a liability total.</p>
+            {view !== "table" && cashRows.length ? (
+              <div data-chart-copy-area className="mb-4 rounded-md border border-border bg-background p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold text-foreground">Cash Out Go · Planned outgo and Recorded payments</h4>
+                  <ChartCopyButton />
+                </div>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    {view === "line" ? (
+                      <LineChart data={cashRows} margin={{ top: 12, right: 18, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis dataKey="month" tick={{ fontSize: 13 }} />
+                        <YAxis tick={{ fontSize: 13 }} width={64} label={{ value: "Lakhs", angle: -90, position: "insideLeft", fontSize: 13 }} />
+                        <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
+                        <ChartLegend />
+                        <Line type="monotone" dataKey="planned" name="Planned outgo" stroke="#0f766e" strokeWidth={2} />
+                        <Line type="monotone" dataKey="recorded" name="Recorded payments" stroke="#2563eb" strokeWidth={2} />
+                      </LineChart>
+                    ) : (
+                      <BarChart data={cashRows} margin={{ top: 12, right: 18, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis dataKey="month" tick={{ fontSize: 13 }} />
+                        <YAxis tick={{ fontSize: 13 }} width={64} label={{ value: "Lakhs", angle: -90, position: "insideLeft", fontSize: 13 }} />
+                        <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
+                        <ChartLegend />
+                        <Bar dataKey="planned" name="Planned outgo" fill="#0f766e" />
+                        <Bar dataKey="recorded" name="Recorded payments" fill="#2563eb" />
+                      </BarChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            ) : null}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[700px] text-sm">
+                <thead><tr className="border-b border-border text-left text-xs text-muted-foreground"><th className="py-2">Month</th><th className="py-2 text-right">Planned outgo</th><th className="py-2 text-right">Recorded payments</th><th className="py-2 text-right">Plan less recorded</th></tr></thead>
+                <tbody>{cashRows.map((row) => <tr key={row.monthKey} className="border-b border-border/70"><th className="py-2 text-left font-medium">{row.month}</th><td className="py-2 text-right tabular-nums">{formatCurrency(row.planned)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(row.recorded)}</td><td className="py-2 text-right tabular-nums">{formatCurrency(row.variance)}</td></tr>)}</tbody>
+              </table>
+              {!cashRows.length ? <p className="py-4 text-sm text-muted-foreground">Cash Out Go plan data is not available.</p> : null}
+            </div>
+          </section>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -16589,7 +17238,7 @@ function buildSoPaymentMatrixRows({
         ) return;
         const entry = getOrderPaymentMatrixEntry(file, order, orderIndex, paymentOffsetDays);
         if (entry && allowedMonths.has(entry.monthKey) && entry.amount > 0) {
-          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.capital, entry.revenue, entry.focusTarget, entry.basis);
         }
         if (row.total > 0) rows.push(row);
         return;
@@ -16600,13 +17249,13 @@ function buildSoPaymentMatrixRows({
           if (isShortclosureNoFurtherAction(order)) return;
           const entry = getStagePaymentMatrixEntry(file, order, stage, stageIndex, paymentOffsetDays);
           if (!entry || !allowedMonths.has(entry.monthKey) || entry.amount <= 0) return;
-          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.capital, entry.revenue, entry.focusTarget, entry.basis);
         });
       } else if (!hasFilledString(order.paymentDate)) {
         if (isShortclosureNoFurtherAction(order)) return;
         const entry = getOrderPaymentMatrixEntry(file, order, orderIndex, paymentOffsetDays);
         if (entry && allowedMonths.has(entry.monthKey) && entry.amount > 0) {
-          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.capital, entry.revenue, entry.focusTarget, entry.basis);
         }
       }
       if (row.total > 0) rows.push(row);
@@ -16634,7 +17283,8 @@ function buildSoPaymentMatrixRows({
         addSoPaymentMatrixAmount(
           row,
           monthKey,
-          Math.round(capital + revenue),
+          capital,
+          revenue,
           `supplementarybill:submitted:${orderIndex}:${billIndex}`,
           "Supplementary bill submitted",
         );
@@ -16665,7 +17315,8 @@ function buildPaymentCompletedMatrixRows({
           addSoPaymentMatrixAmount(
             row,
             entry.monthKey,
-            entry.amount,
+            entry.capital,
+            entry.revenue,
             `advancepayment:paid:${orderIndex}`,
             "Advance payment paid",
           );
@@ -16674,12 +17325,12 @@ function buildPaymentCompletedMatrixRows({
         order.stageDeliveries.forEach((stage, stageIndex) => {
           const entry = getCompletedStagePaymentMatrixEntry(file, stage, stageIndex);
           if (!entry || !allowedMonths.has(entry.monthKey) || entry.amount <= 0) return;
-          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.capital, entry.revenue, entry.focusTarget, entry.basis);
         });
       } else {
         const entry = getCompletedOrderPaymentMatrixEntry(file, order, orderIndex);
         if (entry && allowedMonths.has(entry.monthKey) && entry.amount > 0) {
-          addSoPaymentMatrixAmount(row, entry.monthKey, entry.amount, entry.focusTarget, entry.basis);
+          addSoPaymentMatrixAmount(row, entry.monthKey, entry.capital, entry.revenue, entry.focusTarget, entry.basis);
         }
       }
       if (row.total > 0) rows.push(row);
@@ -16701,7 +17352,8 @@ function buildPaymentCompletedMatrixRows({
         addSoPaymentMatrixAmount(
           row,
           monthKey,
-          Math.round(capital + revenue),
+          capital,
+          revenue,
           `supplementarybill:paid:${orderIndex}:${billIndex}`,
           "Supplementary bill paid",
         );
@@ -16739,8 +17391,12 @@ function createEmptySoPaymentMatrixRow(
     orderIndex,
     paymentBasis: "",
     paymentItem: order.stageDeliveryLabel || "S.O. payment",
+    monthCapitalAmounts: {},
+    monthRevenueAmounts: {},
     monthAmounts: {},
     monthFocusTargets: {},
+    capitalTotal: 0,
+    revenueTotal: 0,
     total: 0,
   };
 }
@@ -16748,12 +17404,20 @@ function createEmptySoPaymentMatrixRow(
 function addSoPaymentMatrixAmount(
   row: SoPaymentMatrixRow,
   monthKey: string,
-  amount: number,
+  capital: number,
+  revenue: number,
   focusTarget: string,
   basis: string,
 ) {
+  const roundedCapital = Math.round(capital);
+  const roundedRevenue = Math.round(capital + revenue) - roundedCapital;
+  const amount = roundedCapital + roundedRevenue;
+  row.monthCapitalAmounts[monthKey] = (row.monthCapitalAmounts[monthKey] ?? 0) + roundedCapital;
+  row.monthRevenueAmounts[monthKey] = (row.monthRevenueAmounts[monthKey] ?? 0) + roundedRevenue;
   row.monthAmounts[monthKey] = (row.monthAmounts[monthKey] ?? 0) + amount;
   row.monthFocusTargets[monthKey] = row.monthFocusTargets[monthKey] ?? focusTarget;
+  row.capitalTotal += roundedCapital;
+  row.revenueTotal += roundedRevenue;
   row.total += amount;
   if (!row.paymentBasis) {
     row.paymentBasis = basis;
@@ -16775,6 +17439,8 @@ function getStagePaymentMatrixEntry(
   const revenue = getInrAmount(stage.stageAmountRevenue, file) ?? 0;
   return {
     monthKey: dateInfo.date.slice(0, 7),
+    capital,
+    revenue,
     amount: Math.round(capital + revenue),
     basis: `Stage payment - ${dateInfo.basis}`,
     focusTarget: `stagepayment:pending:${stageIndex}`,
@@ -16794,6 +17460,8 @@ function getOrderPaymentMatrixEntry(
     const revenue = getInrAmount(order.advancePaymentDetail?.stageAmountRevenue, file) ?? 0;
     return {
       monthKey: date!.slice(0, 7),
+      capital,
+      revenue,
       amount: Math.round(capital + revenue),
       basis: "Expected Advance Payment Date",
       focusTarget: `advancepayment:pending:${orderIndex}`,
@@ -16805,6 +17473,8 @@ function getOrderPaymentMatrixEntry(
   const revenue = getInrAmount(getPlannedCashOutgoRevenue(order), file) ?? 0;
   return {
     monthKey: dateInfo.date.slice(0, 7),
+    capital,
+    revenue,
     amount: Math.round(capital + revenue),
     basis: dateInfo.basis,
     focusTarget: `payment:pending:${orderIndex}`,
@@ -16821,6 +17491,8 @@ function getCompletedStagePaymentMatrixEntry(
   const revenue = getInrAmount(stage.actualPaymentRevenue || stage.stageAmountRevenue, file) ?? 0;
   return {
     monthKey: stage.paymentDate!.slice(0, 7),
+    capital,
+    revenue,
     amount: Math.round(capital + revenue),
     basis: "Completed stage payment",
     focusTarget: `stagepayment:completed:${stageIndex}`,
@@ -16837,6 +17509,8 @@ function getCompletedOrderPaymentMatrixEntry(
   const revenue = getInrAmount(getActualPaymentRevenue(order) || getPlannedCashOutgoRevenue(order), file) ?? 0;
   return {
     monthKey: order.paymentDate!.slice(0, 7),
+    capital,
+    revenue,
     amount: Math.round(capital + revenue),
     basis: "Completed payment",
     focusTarget: `payment:completed:${orderIndex}`,
@@ -16883,7 +17557,9 @@ function getExpectedPaymentDateInfo(
 function getSoPaymentMatrixFieldValue(row: SoPaymentMatrixRow, fieldKey: SoPaymentMatrixFieldKey) {
   const file = row.file;
   const order = row.order;
-  if (fieldKey === "fileUniqueNo") return getPreSoFileRef(file);
+  if (fieldKey === "fileUniqueNo") return file.uniqueCode || "-";
+  if (fieldKey === "controlNo") return file.imms || "-";
+  if (fieldKey === "fileNo") return file.fileNo || "-";
   if (fieldKey === "demandDescription") return file.demandDescription || "-";
   if (fieldKey === "soNo") return getSupplyOrderRef(order) || "-";
   if (fieldKey === "paymentItem") return row.paymentItem || "S.O. payment";
@@ -16955,40 +17631,42 @@ function exportSoPaymentMatrixReport(
   format: "excel" | "pdf",
   plot?: ExportPlot,
 ) {
-  const monthTotals = monthKeys.map((monthKey) =>
-    rows.reduce((sum, row) => sum + (row.monthAmounts[monthKey] ?? 0), 0),
-  );
   void downloadBackendExport({
     format,
     title,
     description: getReportExportDescription(description, "All the values are in Lakh."),
     plot,
-    tables: [
-      {
+    tables: (["revenue", "capital", "total"] as const).map((measure) => {
+      const measureRows = rows.filter((row) => getSoPaymentMatrixRowTotal(row, measure) > 0);
+      const monthTotals = monthKeys.map((monthKey) =>
+        measureRows.reduce((sum, row) => sum + getSoPaymentMatrixMonthAmount(row, monthKey, measure), 0),
+      );
+      return {
+        title: `${formatPaymentMeasureLabel(measure)} payments`,
         headers: [
           ...columns.map((column) => column.label),
           ...monthKeys.map(formatSoPaymentMatrixMonthLabel),
           "Total",
         ],
-        rows: rows.length
+        rows: measureRows.length
           ? [
-              ...rows.map((row) => [
+              ...measureRows.map((row) => [
                 ...columns.map((column) => getSoPaymentMatrixExportFieldValue(row, column.key)),
                 ...monthKeys.map((monthKey) => {
-                  const amount = row.monthAmounts[monthKey] ?? 0;
+                  const amount = getSoPaymentMatrixMonthAmount(row, monthKey, measure);
                   return amount ? formatSoPaymentMatrixAmount(amount) : "";
                 }),
-                formatSoPaymentMatrixAmount(row.total),
+                formatSoPaymentMatrixAmount(getSoPaymentMatrixRowTotal(row, measure)),
               ]),
               [
-                ...columns.map((_, index) => (index === 0 ? "Total" : "")),
+                ...columns.map((_, index) => (index === 0 ? "All rows total" : "")),
                 ...monthTotals.map((amount) => (amount ? formatSoPaymentMatrixAmount(amount) : "")),
-                formatSoPaymentMatrixAmount(rows.reduce((sum, row) => sum + row.total, 0)),
+                formatSoPaymentMatrixAmount(measureRows.reduce((sum, row) => sum + getSoPaymentMatrixRowTotal(row, measure), 0)),
               ],
             ]
-          : [["No S.O. payment rows found for the current filters."]],
-      },
-    ],
+          : [[`No ${measure} payment rows found for the current filters.`]],
+      };
+    }),
   });
 }
 
@@ -17359,8 +18037,7 @@ function isSupplementaryBillPaymentPendingAsOf(bill: SupplementaryBillDetail, as
 }
 
 function getSupplementaryPendingLiabilityStartDate(bill: SupplementaryBillDetail) {
-  const latest = latestBillReturnCycle(bill.billReturnCycles);
-  return latest?.resubmittedDate ?? latest?.returnedDate ?? bill.billSentForPaymentDate;
+  return bill.billSentForPaymentDate;
 }
 
 function getAgeingBucket(days: number) {
@@ -17537,6 +18214,7 @@ function getCurrentMilestoneDelay(
 ) {
   const milestone = getActiveDelayMilestone(file);
   if (!milestone) return undefined;
+  if (milestone.key === "financialSanction") return undefined;
   if (milestone.key === biddingDelayMilestoneKey) return undefined;
   if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return undefined;
   if (isMilestoneComplete(file, milestone)) return undefined;
@@ -18182,13 +18860,18 @@ function getCashOutgoAnyDashboardFilter(
 
 function getDelayStatusSummary(rows: DelayStatusRow[]) {
   const totalDays = rows.reduce((sum, row) => sum + row.daysInStage, 0);
-  const counts = new Map<string, { key: string; label: string; fileIds: Set<string> }>();
+  const counts = new Map<
+    string,
+    { key: string; label: string; caseCount: number; fileIds: Set<string> }
+  >();
   rows.forEach((row) => {
     const current = counts.get(row.milestoneKey) ?? {
       key: row.milestoneKey,
       label: row.milestone,
+      caseCount: 0,
       fileIds: new Set<string>(),
     };
+    current.caseCount += 1;
     current.fileIds.add(row.fileId);
     counts.set(row.milestoneKey, current);
   });
@@ -18197,7 +18880,12 @@ function getDelayStatusSummary(rows: DelayStatusRow[]) {
     averageDays: rows.length ? Math.round(totalDays / rows.length) : 0,
     longestDays: rows.reduce((max, row) => Math.max(max, row.daysInStage), 0),
     byMilestone: Array.from(counts.values())
-      .map(({ key, label, fileIds }) => ({ key, label, count: fileIds.size }))
+      .map(({ key, label, caseCount, fileIds }) => ({
+        key,
+        label,
+        count: key === "financialSanction" ? caseCount : fileIds.size,
+        ...(key === "financialSanction" ? { fileCount: fileIds.size } : {}),
+      }))
       .sort((a, b) => b.count - a.count),
   };
 }

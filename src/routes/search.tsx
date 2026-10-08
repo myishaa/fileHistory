@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchQuickStatusContext,
   fetchMasterFirms,
+  fetchAllIndentors,
   store,
   type BillReturnCycle,
   type FileRecord,
@@ -124,6 +125,7 @@ export const Route = createFileRoute("/search")({
       focusTarget?: string;
       focusTargets?: string;
       drillPath?: string;
+      localFilters?: string;
       anomalyPresenceFilter?: "has" | "none";
     } = {};
     if (typeof search.dashboardFilter === "string")
@@ -171,6 +173,8 @@ export const Route = createFileRoute("/search")({
     if (typeof search.focusTarget === "string") validated.focusTarget = search.focusTarget;
     if (typeof search.focusTargets === "string") validated.focusTargets = search.focusTargets;
     if (typeof search.drillPath === "string") validated.drillPath = search.drillPath;
+    else if (Array.isArray(search.drillPath)) validated.drillPath = JSON.stringify(search.drillPath);
+    if (typeof search.localFilters === "string") validated.localFilters = search.localFilters;
     if (search.anomalyPresenceFilter === "has" || search.anomalyPresenceFilter === "none") {
       validated.anomalyPresenceFilter = search.anomalyPresenceFilter;
     }
@@ -307,12 +311,12 @@ const defaultFirmSearchScopes = firmSearchScopeOptions.map((option) => option.ke
 const paymentModeOptions = ["Online", "Offline"];
 const searchFilterHelpers = {
   freeSearch: [
-    "Looks for your text across several file fields at once.",
+    "Searches entered text across several file fields at once.",
     "For a specific year, date, value, firm, or status, use the matching filter.",
   ],
   filters: [
     "A Dashboard or Report click-through can bring its filters here with it.",
-    "Reset filters clears your choices and any filters brought in from another page.",
+    "Reset filters clears selected conditions and filters brought in from another page.",
     "A click-through may also focus a particular row or section in each file.",
     "For a date filter, Only means a date is recorded when no range is entered, or that it falls in the range when one is entered.",
     "Exclude means no date is recorded when the range is blank, or that dated activity falls outside the range when a range is entered.",
@@ -321,29 +325,29 @@ const searchFilterHelpers = {
     "When several filters are set, a file must match every selected condition.",
   ],
   year: [
-    "Finds files initiated in the selected FY.",
-    "This narrows the file set chosen by the main Global Filter.",
+    "Files started in the selected FY are included.",
+    "Narrows the files selected by the main Global Filter.",
   ],
   fileType: [
-    "Finds files with the selected type recorded in File Details.",
+    "Matching files have the selected type recorded in File Details.",
     "Select several types to include files matching any of them.",
   ],
   indentor: [
-    "Finds files raised by the selected indentor.",
+    "Matching files were raised by the selected indentor.",
   ],
   division: [
-    "Finds files recorded under the selected division.",
-    "Your account access may limit which divisions you can see.",
+    "Matching files are recorded under the selected division.",
+    "Access permissions may limit the divisions shown.",
   ],
   value: [
     "Filters by the demand value in File Details, not by S.O. value.",
-    "All value bands are included unless you choose a band.",
+    "All value bands are included unless a band is selected.",
     "The bands use the same limits as Dashboard Analytics.",
     "Choose Capital or Revenue to limit which part of the demand value is checked.",
   ],
   soValue: [
     "Filters by the value recorded on a Supply Order.",
-    "All S.O. value bands are included unless you choose a band; the limits match Dashboard Analytics.",
+    "All S.O. value bands are included unless a band is selected; the limits match Dashboard Analytics.",
     "A file can have more than one S.O.",
     "Choose Capital or Revenue to limit which part of each S.O. value is checked.",
   ],
@@ -354,27 +358,27 @@ const searchFilterHelpers = {
     "One file may match more than one payment filter.",
   ],
   description: [
-    "Finds text in the Demand Description field.",
-    "Use Free Search to look across several text fields at once.",
+    "Demand Description matches the text entered here.",
+    "Free Search checks several text fields at once.",
   ],
   firmType: [
-    "Finds files with the selected firm type in their S.O. details.",
+    "Matching files have the selected firm type in their S.O. details.",
     "The extra firm-type detail applies when the S.O. type is Other.",
     "Select several types to include files matching any of them.",
   ],
   supplyOrderPresence: [
-    "Only shows files with at least one Supply Order; Exclude shows files with none.",
+    "Only returns files with at least one Supply Order; Exclude returns files with none.",
     "Click the selected option again to clear it. None leaves this condition unused.",
   ],
   biddingMode: [
-    "Only keeps one selected bidding mode. You can exclude more than one mode.",
+    "Only returns files with the selected bidding mode; Exclude can remove several modes.",
   ],
   gemBiddingMode: [
-    "Only keeps one selected GeM bidding mode; you can exclude several.",
-    "This filter applies to files marked as GeM.",
+    "Only returns files with the selected GeM bidding mode; Exclude can remove several.",
+    "Applies only to files marked as GeM.",
   ],
   workflowFlags: [
-    "Use these options to find files by a workflow flag or milestone.",
+    "Workflow flags and milestones narrow results to matching files.",
     "Each selected option narrows the results further.",
     "IFA and CNC offer Only, Exclude, and None because a missing entry can matter too.",
     "Click Only or Exclude again to clear that choice.",
@@ -388,7 +392,7 @@ const searchFilterHelpers = {
     "Pre-TCEC is separate. Post-TCEC dates, minutes, and committee include both normal and refloat Post-TCEC.",
     "Pre-Bid and bidding dates include both the original and refloat rounds.",
     "TCEC minutes, IFA final, CFA approval, and CNC dates are checked separately.",
-    "The Global Filter controls whether closed or cancelled files appear, unless you use their specific Only/Exclude filter.",
+    "The Global Filter controls whether closed or cancelled files appear, unless the corresponding Only/Exclude filter is used.",
   ],
   supplyDeliveryDates: [
     "Each option checks the S.O. or delivery date named on it.",
@@ -404,36 +408,36 @@ const searchFilterHelpers = {
     "It does not check when materials were received or the job was completed.",
   ],
   tcecCommittee: [
-    "Finds files with the selected TCEC committee number.",
+    "Matching files have the selected TCEC committee number.",
     "Add the matching TCEC date filter if the meeting date also matters.",
   ],
   firm: [
     "Choose where to look: BQ, invited firms, bidders, or S.O. firms.",
     "Firm history can include closed files and cancelled or shortclosed S.O.s.",
-    "Choose a firm name or Unique No. to match that firm's recorded Unique No.",
-    "For older records without a Unique No., use name-only search. City and Contact No. remain separate filters.",
+    "Choose a firm by name or Unique No. The exact Unique No. is matched first; older records with no Unique No. can match the exact firm name.",
+    "City and Contact No. are independent text filters.",
   ],
   freeDate: [
-    "Looks for the date across several date fields.",
-    "Choose a specific date filter when you know which field to check.",
+    "The entered date is checked across several date fields.",
+    "Choose a specific date filter when the date field is known.",
   ],
   tableFields: [
     "Choose which columns appear in the results and export.",
-    "This does not change which files match your search.",
+    "Visible columns do not change which files match the search.",
   ],
   requiredFields: [
-    "Select a column to show only files where that field has a value.",
-    "This filters the results; it is separate from choosing visible columns.",
+    "The selected field must have a value for a file to appear.",
+    "Filters results separately from the visible-column selection.",
   ],
   closureAndCancellation: [
     "For File Closed, Cancelled S.O., Shortclosed S.O., and Multiple S.O., choose Only, Exclude, or None.",
     "Only keeps files with that condition; Exclude removes them. Click the selected choice again to clear it.",
     "Multiple S.O. means the file has more than one expected S.O. entry.",
-    "Only for File Closed or cancellation history can also show matching files outside the Active-files Global Filter scope.",
-    "None leaves the Global Filter's normal file set unchanged.",
+    "Only for File Closed or cancellation history can include matching files outside the Active-files Global Filter scope.",
+    "None leaves the results governed by the Global Filter as usual.",
   ],
   specialFileMarker: [
-    "Finds files with the selected marker codes.",
+    "Matching files have one or more of the selected marker codes.",
     "Select several markers to include files with any of them.",
     "No matching marker means no files will appear.",
   ],
@@ -450,7 +454,7 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
       "Capital checked only: only demand capital value is considered.",
       "Revenue checked only: only demand revenue value is considered.",
       "Capital and Revenue checked together: either side can make the file match.",
-      "This filter does not check S.O. value.",
+      "Checks demand value, not S.O. value.",
     ],
   },
   "S.O. Value help": {
@@ -495,7 +499,7 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
       "Bill sent/submitted date can match original bill submission or returned-bill resubmission.",
       "BG receipt date does not automatically mean BG return date is filled.",
       "File Closure Date is separate from payment date and BG return date.",
-      "Use specific date fields when you need exact activity-date matching.",
+      "A specific date filter matches only the named activity date.",
     ],
   },
   "D.P. period help": {
@@ -514,8 +518,8 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
       "Invited selected: firm is searched in invited firm rows.",
       "Bidders selected: firm is searched in bidder rows.",
       "S.O. selected: firm is searched in S.O. firm rows, including cancelled or shortclosed S.O. history where applicable.",
-      "Selecting a firm searches its exact Unique No.; it does not add a separate name condition.",
-      "Use name-only search for older firm records without a Unique No. City and Contact No. filter independently.",
+      "The selected firm's exact Unique No. is matched. Older records with no Unique No. can match the exact firm name.",
+      "City and Contact No. are independent filters.",
     ],
   },
   "Closure & cancellation help": {
@@ -623,7 +627,14 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
       { label: "Bill returned for correction", filter: "billReturn:any" },
       { label: "Returned bill pending", filter: "billReturn:pending" },
       { label: "Returned bill resubmitted and unpaid", filter: "billReturn:resubmittedUnpaid" },
-      { label: "Returned bill resubmitted (history)", filter: "billReturn:resubmitted" },
+      {
+        label: "Returned bill resubmitted (history)",
+        filter: "billReturn:resubmitted",
+        helper: [
+          "Matches bills whose latest return cycle was resubmitted, whether they were paid afterward or are still unpaid.",
+          "For only bills still unpaid, choose Returned bill resubmitted and unpaid.",
+        ],
+      },
       { label: "Returned bill paid", filter: "billReturn:paid" },
       { label: "Supplementary bill pending", filter: "supplementaryBill:pending" },
       { label: "Supplementary bill returned", filter: "supplementaryBill:returned" },
@@ -644,6 +655,38 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
 const importantWorkflowFilterOptions = importantWorkflowFilterGroups.flatMap(
   (group) => group.options,
 );
+const FilterLocatorContext = createContext("");
+
+function filterLocatorMatches(query: string, label: string) {
+  return Boolean(query) && label.toLocaleLowerCase().includes(query);
+}
+
+function filterLocatorMatchesAny(query: string, labels: string[]) {
+  return labels.some((label) => filterLocatorMatches(query, label));
+}
+
+const workflowFilterLocatorExtras: Record<string, string[]> = {
+  "Demand / Initiation": ["File type", "Year", "Indentor", "Division", "GTE", "Demand cancelled"],
+  "Bidding / Pre-Bid": ["Bidding mode", "GeM Bidding Mode"],
+  "Supply Order / Firm": ["Firm type", "Firm name", "Firm Unique No.", "Contact No.", "City"],
+};
+
+const dateFilterLocatorLabels: Record<string, string[]> = {
+  "dates:demand-control": ["Demand Receipt Date", "Demand Control Date"],
+  "dates:approval-committee": [
+    "High Value Minutes Date", "Pre-TCEC date", "Pre-TCEC Minutes date", "Pre-TCEC committee",
+    "R&QA approval date", "IFA Final date", "CFA Approval Date", "Post-TCEC date",
+    "Post-TCEC Minutes date", "Post-TCEC committee", "CNC Date", "Pre-Bid date",
+    "Bidding date", "Bid opening date",
+  ],
+  "dates:supply-delivery": [
+    "Financial Sanction date", "S.O. date", "Expected Advance Payment Date", "D.P. period", "Material receipt date",
+  ],
+  "dates:bg-payment-closure": [
+    "BG received date", "BG validity date", "BG return date", "Bill sent/submitted date",
+    "Payment date", "File Closure Date",
+  ],
+};
 const defaultMilestones = [
   "Scrutiny",
   "High Value",
@@ -1255,6 +1298,7 @@ type SnapshotReportSection = {
 type ImportantWorkflowFilterOption = {
   label: string;
   filter: string;
+  helper?: string[];
 };
 type ImportantWorkflowFilterGroup = {
   title: string;
@@ -1502,10 +1546,12 @@ function getImportantWorkflowFilterLabel(filter: string) {
   return importantWorkflowFilterOptions.find((option) => option.filter === filter)?.label ?? filter;
 }
 
-function parseDrillPath(value: string | undefined): DrillPathItem[] {
+function parseDrillPath(value: unknown): DrillPathItem[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value);
+    let parsed: unknown = value;
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
     if (!Array.isArray(parsed)) return [];
     return parsed
       .map((item) => {
@@ -1518,11 +1564,11 @@ function parseDrillPath(value: string | undefined): DrillPathItem[] {
       .filter((item): item is DrillPathItem => Boolean(item))
       .slice(0, 12);
   } catch {
-    return value
+    return typeof value === "string" ? value
       .split(">")
       .map((item) => ({ label: item.trim() }))
       .filter((item) => item.label)
-      .slice(0, 12);
+      .slice(0, 12) : [];
   }
 }
 
@@ -1586,6 +1632,17 @@ function getCurrentHref() {
   return `${window.location.pathname}${window.location.search}`;
 }
 
+function getSearchReturnHref(localFilterQuery: string) {
+  const href = getCurrentHref();
+  if (!href) return undefined;
+  const [path, query = ""] = href.split("?");
+  const params = new URLSearchParams(query);
+  const localFilters = new URLSearchParams(localFilterQuery);
+  ["anomalyFileIds", "anomalyFileIdsReady", "drillPath"].forEach((key) => localFilters.delete(key));
+  params.set("localFilters", localFilters.toString());
+  return `${path}?${params.toString()}`;
+}
+
 function uniqueSortedOptions(values: Array<string | undefined>) {
   return Array.from(new Set(values.map((value) => value?.trim()).filter(Boolean) as string[])).sort(
     (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
@@ -1630,6 +1687,8 @@ function SearchPage() {
 
   const [yearFilter, setYearFilter] = useState("");
   const [indentor, setIndentor] = useState("");
+  const [indentorSearch, setIndentorSearch] = useState("");
+  const [indentorOptions, setIndentorOptions] = useState<string[]>([]);
   const [divisionFilter, setDivisionFilter] = useState(search.division ?? "");
   const [valueThresholdFilter, setValueThresholdFilter] = useState(
     search.valueThresholdFilter ?? "all",
@@ -1646,15 +1705,14 @@ function SearchPage() {
   const [capitalOnly, setCapitalOnly] = useState(search.capitalOnly ?? false);
   const [revenueOnly, setRevenueOnly] = useState(search.revenueOnly ?? false);
   const [description, setDescription] = useState("");
-  const [firm, setFirm] = useState("");
   const [selectedFirmIdentity, setSelectedFirmIdentity] = useState<MasterFirm | null>(null);
   const [firmPickerQuery, setFirmPickerQuery] = useState("");
   const [firmPickerMatches, setFirmPickerMatches] = useState<MasterFirm[]>([]);
+  const firmIdentityName = selectedFirmIdentity?.firmName?.trim() ?? "";
   const firmUniqueNo = selectedFirmIdentity?.firmUniqueNo?.trim() ?? "";
   const [firmContactNo, setFirmContactNo] = useState("");
   const [firmCity, setFirmCity] = useState("");
   const [firmSearchScopes, setFirmSearchScopes] = useState<string[]>(defaultFirmSearchScopes);
-  const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
   const [modeFilters, setModeFilters] = useState<Record<string, IncludeExcludeFilter>>(() =>
     includeOnlyFilterState(parseSearchListParam(search.includeModes)),
   );
@@ -1809,6 +1867,7 @@ function SearchPage() {
   const [divisionWiseSort, setDivisionWiseSort] = useState(false);
   const [showAllFilterChips, setShowAllFilterChips] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filterLocatorQuery, setFilterLocatorQuery] = useState("");
   const [keepFilterDrawersOpen, setKeepFilterDrawersOpen] = useState(false);
   const [openFilterDrawerIds, setOpenFilterDrawerIds] = useState<string[]>([]);
   const [showTableOptions, setShowTableOptions] = useState(false);
@@ -1907,10 +1966,125 @@ function SearchPage() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [hasLoadedSearchResults, setHasLoadedSearchResults] = useState(false);
   const [searchError, setSearchError] = useState<string | undefined>();
+  const [localFiltersRestored, setLocalFiltersRestored] = useState(!search.localFilters);
+  useEffect(() => {
+    if (!search.localFilters) {
+      setLocalFiltersRestored(true);
+      return;
+    }
+    let active = true;
+    setLocalFiltersRestored(false);
+    const params = new URLSearchParams(search.localFilters);
+    const read = (key: string) => params.get(key) ?? "";
+    const readList = (key: string) => parseSearchListParam(params.get(key) ?? undefined);
+    const stringFilters: Array<[string, (value: string) => void]> = [
+      ["yearFilter", setYearFilter], ["indentor", setIndentor], ["divisionFilter", setDivisionFilter],
+      ["description", setDescription], ["firmContactNo", setFirmContactNo],
+      ["firmCity", setFirmCity], ["valueFrom", setValueFrom], ["valueTo", setValueTo],
+      ["soValueFrom", setSoValueFrom], ["soValueTo", setSoValueTo],
+      ["preTcecCommittee", setPreTcecCommittee], ["postTcecCommittee", setPostTcecCommittee],
+      ["dpFrom", setDpFrom], ["dpTo", setDpTo],
+      ["demandReceiptFrom", setDemandReceiptFrom], ["demandReceiptTo", setDemandReceiptTo],
+      ["demandControlFrom", setDemandControlFrom], ["demandControlTo", setDemandControlTo],
+      ["highValueMinutesFrom", setHighValueMinutesFrom], ["highValueMinutesTo", setHighValueMinutesTo],
+      ["preTcecDateFrom", setPreTcecDateFrom], ["preTcecDateTo", setPreTcecDateTo],
+      ["preTcecMinutesFrom", setPreTcecMinutesFrom], ["preTcecMinutesTo", setPreTcecMinutesTo],
+      ["rqaApprovalFrom", setRqaApprovalFrom], ["rqaApprovalTo", setRqaApprovalTo],
+      ["ifaFinalFrom", setIfaFinalFrom], ["ifaFinalTo", setIfaFinalTo],
+      ["cfaApprovalFrom", setCfaApprovalFrom], ["cfaApprovalTo", setCfaApprovalTo],
+      ["postTcecDateFrom", setPostTcecDateFrom], ["postTcecDateTo", setPostTcecDateTo],
+      ["postTcecMinutesFrom", setPostTcecMinutesFrom], ["postTcecMinutesTo", setPostTcecMinutesTo],
+      ["cncDateFrom", setCncDateFrom], ["cncDateTo", setCncDateTo],
+      ["preBidDateFrom", setPreBidDateFrom], ["preBidDateTo", setPreBidDateTo],
+      ["biddingDateFrom", setBiddingDateFrom], ["biddingDateTo", setBiddingDateTo],
+      ["bidOpeningDateFrom", setBidOpeningDateFrom], ["bidOpeningDateTo", setBidOpeningDateTo],
+      ["billSubmittedFrom", setBillSubmittedFrom], ["billSubmittedTo", setBillSubmittedTo],
+      ["financialSanctionFrom", setFinancialSanctionFrom], ["financialSanctionTo", setFinancialSanctionTo],
+      ["soDateFrom", setSoDateFrom], ["soDateTo", setSoDateTo],
+      ["advanceExpectedPaymentDateFrom", setAdvanceExpectedPaymentDateFrom],
+      ["advanceExpectedPaymentDateTo", setAdvanceExpectedPaymentDateTo],
+      ["materialReceiptFrom", setMaterialReceiptFrom], ["materialReceiptTo", setMaterialReceiptTo],
+      ["paymentDateFrom", setPaymentDateFrom], ["paymentDateTo", setPaymentDateTo],
+      ["bgReceivedFrom", setBgReceivedFrom], ["bgReceivedTo", setBgReceivedTo],
+      ["bgValidityFrom", setBgValidityFrom], ["bgValidityTo", setBgValidityTo],
+      ["bgReturnFrom", setBgReturnFrom], ["bgReturnTo", setBgReturnTo],
+      ["fileClosureFrom", setFileClosureFrom], ["fileClosureTo", setFileClosureTo],
+      ["freeText", setFreeText], ["freeDate", setFreeDate],
+    ];
+    stringFilters.forEach(([key, setter]) => setter(read(key)));
+    setValueThresholdFilter(read("valueThresholdFilter") || "all");
+    setSoValueThresholdFilter(read("soValueThresholdFilter") || "all");
+    const booleanFilters: Array<[string, (value: boolean) => void]> = [
+      ["soCapitalOnly", setSoCapitalOnly], ["soRevenueOnly", setSoRevenueOnly],
+      ["capitalOnly", setCapitalOnly], ["revenueOnly", setRevenueOnly],
+      ["advancePaymentFilter", setAdvancePaymentFilter], ["actualPaymentFilter", setActualPaymentFilter],
+      ["stageDeliveryFilter", setStageDeliveryFilter], ["stagePaymentFilter", setStagePaymentFilter],
+      ["dpExtensionFilter", setDpExtensionFilter], ["ldFilter", setLdFilter],
+      ["highValue", setHighValue], ["gte", setGte], ["ad", setAd], ["rqa", setRqa],
+      ["psbFilter", setPsbFilter], ["pwbFilter", setPwbFilter], ["psbPwbFilter", setPsbPwbFilter],
+      ["bgFilter", setBgFilter], ["rfpVettingFilter", setRfpVettingFilter], ["refloat", setRefloat],
+      ["tcec", setTcec], ["preBidMeetingFilter", setPreBidMeetingFilter], ["rstFilter", setRstFilter],
+      ["divisionWiseSort", setDivisionWiseSort],
+    ];
+    booleanFilters.forEach(([key, setter]) => setter(read(key) === "true"));
+    setSelectedFirmTypes(readList("selectedFirmTypes"));
+    setSelectedFileTypes(readList("selectedFileTypes"));
+    setSpecialFileMarkers(readList("specialFileMarkers"));
+    setFirmSearchScopes(params.has("firmSearchScopes") ? readList("firmSearchScopes") : defaultFirmSearchScopes);
+    setRequiredFilledColumnKeys(readList("requiredFilledFields"));
+    const modeState: Record<string, IncludeExcludeFilter> = {};
+    readList("includeModes").forEach((mode) => { modeState[mode] = "include"; });
+    readList("excludeModes").forEach((mode) => { modeState[mode] = "exclude"; });
+    setModeFilters(modeState);
+    const gemModeState: Record<string, IncludeExcludeFilter> = {};
+    readList("includeGemBiddingModes").forEach((mode) => { gemModeState[mode] = "include"; });
+    readList("excludeGemBiddingModes").forEach((mode) => { gemModeState[mode] = "exclude"; });
+    setGemModeFilters(gemModeState);
+    const dateModes: Partial<Record<DateRangeFilterKey, DateFilterMode>> = {};
+    readList("dateFilterModes").forEach((entry) => {
+      const [key, mode] = entry.split(":");
+      if (key && (mode === "only" || mode === "exclude")) dateModes[key as DateRangeFilterKey] = mode;
+    });
+    setDateFilterModes(dateModes);
+    const workflowModes: Record<string, IncludeExcludeFilter> = {};
+    const routeFilters = new Set(parseDashboardFilterListParam(search.extraDashboardFilters));
+    readList("extraDashboardFilters").filter((filter) => !routeFilters.has(filter))
+      .forEach((filter) => { workflowModes[filter] = "include"; });
+    readList("excludeDashboardFilters").forEach((filter) => { workflowModes[filter] = "exclude"; });
+    setImportantWorkflowFilterModes(workflowModes);
+    setSoPresenceFilter(parseIncludeExcludeFilter(read("soPresenceFilter")));
+    setIfaPresenceFilter(parseIncludeExcludeFilter(read("ifaPresenceFilter")));
+    setCncPresenceFilter(parseIncludeExcludeFilter(read("cncPresenceFilter")));
+    setFileClosedPresenceFilter(parseIncludeExcludeFilter(read("fileClosedPresenceFilter")));
+    setSoCancelledPresenceFilter(parseIncludeExcludeFilter(read("soCancelledPresenceFilter")));
+    setShortclosedSoPresenceFilter(parseIncludeExcludeFilter(read("shortclosedSoPresenceFilter")));
+    setMultipleSupplyOrdersPresenceFilter(parseIncludeExcludeFilter(read("multipleSupplyOrdersPresenceFilter")));
+    setAnomalyPresenceFilter(read("anomalyPresenceFilter") === "has" ? "has" : read("anomalyPresenceFilter") === "none" ? "none" : "all");
+    setSortColumnKey(read("sortColumnKey") || "none");
+    setSortDirection(read("sortDirection") === "desc" ? "desc" : "asc");
+    const uniqueNo = read("firmIdentityUniqueNo");
+    if (uniqueNo) {
+      void fetchMasterFirms({ q: uniqueNo, pageSize: 100 })
+        .then((result) => {
+          if (active) {
+            setSelectedFirmIdentity(result.firms.find((firm) => firm.firmUniqueNo?.trim() === uniqueNo) ?? null);
+          }
+        })
+        .catch((error) => console.error(error))
+        .finally(() => { if (active) setLocalFiltersRestored(true); });
+    } else {
+      setSelectedFirmIdentity(null);
+      setLocalFiltersRestored(true);
+    }
+    return () => { active = false; };
+  }, [search.localFilters]);
   const hasLoadedSearchResultsRef = useRef(false);
   useEffect(() => {
-    setAnomalyPresenceFilter(search.anomalyPresenceFilter ?? "all");
-  }, [search.anomalyPresenceFilter]);
+    const savedStatus = new URLSearchParams(search.localFilters ?? "").get("anomalyPresenceFilter");
+    setAnomalyPresenceFilter(
+      search.anomalyPresenceFilter ?? (savedStatus === "has" || savedStatus === "none" ? savedStatus : "all"),
+    );
+  }, [search.anomalyPresenceFilter, search.localFilters]);
   useEffect(() => {
     if (!activeUser) {
       setAnomalousFileIds(new Set());
@@ -2017,9 +2191,16 @@ function SearchPage() {
     });
   };
   const openTimeline = (file: FileRecord) => {
-    const nextDrillPath = currentSearchHref
-      ? serializeDrillPath([...drillPath, { label: "Search Files", href: currentSearchHref }])
+    const returnHref = getSearchReturnHref(searchFilterQuery) ?? currentSearchHref;
+    const nextDrillPath = returnHref
+      ? serializeDrillPath([...drillPath, { label: "Search Files", href: returnHref }])
       : search.drillPath;
+    const hasExplicitRouteFocus = Boolean(
+      search.focusSection || search.focusMilestone || search.focusTarget,
+    );
+    const focus = !hasExplicitRouteFocus && destinationFocus.section === "Timeline"
+      ? getLocalSearchDestinationFocus(activeFilterChips) ?? destinationFocus
+      : destinationFocus;
     const fileFocusTarget = file.id ? destinationFocusTargets.get(file.id) : undefined;
     const dashboardFileFocusTarget = getDashboardFilterFileFocusTarget(
       file,
@@ -2032,13 +2213,13 @@ function SearchPage() {
       to: "/add",
       search: {
         fileId: file.id,
-        section: destinationFocus.section,
-        milestone: destinationFocus.milestone,
+        section: focus.section,
+        milestone: focus.milestone,
         focusTarget:
           fileFocusTarget ??
           dashboardFileFocusTarget ??
           checkboxFileFocusTarget ??
-          destinationFocus.focusTarget,
+          focus.focusTarget,
         quickFocus: false,
         drillPath: nextDrillPath,
       },
@@ -2076,23 +2257,39 @@ function SearchPage() {
   }, [activeTablePresetId, defaultTableColumnKeys, tableFieldPresets]);
 
   useEffect(() => {
-    if (search.division) setDivisionFilter(search.division);
-  }, [search.division]);
+    if (search.division && !search.localFilters) setDivisionFilter(search.division);
+  }, [search.division, search.localFilters]);
 
   useEffect(() => {
-    fetchMasterFirms({ pageSize: 500 })
-      .then((result) => setMasterFirms(result.firms))
-      .catch((error) => console.error(error));
-  }, []);
+    const query = indentorSearch.trim();
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      fetchAllIndentors({ q: query || undefined, prefix: Boolean(query) })
+        .then((indentors) => {
+          if (!cancelled) setIndentorOptions(indentors.map((item) => item.name));
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            console.error(error);
+            setIndentorOptions([]);
+          }
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [indentorSearch]);
 
   useEffect(() => {
     if (!firmPickerQuery.trim()) {
-      setFirmPickerMatches(masterFirms);
+      setFirmPickerMatches([]);
       return;
     }
     let cancelled = false;
     const timeoutId = window.setTimeout(() => {
-      fetchMasterFirms({ q: firmPickerQuery, pageSize: 100 })
+      fetchMasterFirms({ q: firmPickerQuery, prefix: true, pageSize: 100 })
         .then((result) => {
           if (!cancelled) setFirmPickerMatches(result.firms);
         })
@@ -2104,7 +2301,7 @@ function SearchPage() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [firmPickerQuery, masterFirms]);
+  }, [firmPickerQuery]);
 
   const firmIdentityOptions = useMemo(() => {
     const options = new Map<string, MasterFirm>();
@@ -2118,19 +2315,18 @@ function SearchPage() {
   const selectedFirmIdentityLabel = selectedFirmIdentity && firmUniqueNo
     ? `${selectedFirmIdentity.firmName?.trim() || "Unnamed firm"} (${firmUniqueNo})`
     : "";
+  const firmIdentityOptionItems = useMemo(
+    () =>
+      Array.from(firmIdentityOptions.entries()).map(([label, item]) => ({
+        value: label,
+        label,
+        searchTerms: [item.firmName, item.firmUniqueNo].filter(
+          (term): term is string => Boolean(term?.trim()),
+        ),
+      })),
+    [firmIdentityOptions],
+  );
 
-  const firmNameOptions = useMemo(
-    () => uniqueSortedOptions(masterFirms.map((item) => item.firmName)),
-    [masterFirms],
-  );
-  const firmContactNoOptions = useMemo(
-    () => uniqueSortedOptions(masterFirms.map((item) => item.contactNo)),
-    [masterFirms],
-  );
-  const firmCityOptions = useMemo(
-    () => uniqueSortedOptions(masterFirms.map((item) => item.city)),
-    [masterFirms],
-  );
   const preTcecCommitteeOptions = useMemo(
     () => getTcecCommitteeOptions(settings.tcecCommittees, preTcecCommittee),
     [preTcecCommittee, settings.tcecCommittees],
@@ -2259,7 +2455,6 @@ function SearchPage() {
     addFilterChip("Exclude GeM mode", excludeGemModeFilters.join(", "));
   }
   if (selectedFirmTypes.length) addFilterChip("Firm type", selectedFirmTypes.join(", "));
-  addFilterChipIf(activeFilterChips, Boolean(firm), "Firm name-only", firm);
   addFilterChipIf(activeFilterChips, Boolean(firmUniqueNo), "Firm", selectedFirmIdentityLabel);
   addFilterChipIf(activeFilterChips, Boolean(firmContactNo), "Contact", firmContactNo);
   addFilterChipIf(activeFilterChips, Boolean(firmCity), "City", firmCity);
@@ -2388,7 +2583,6 @@ function SearchPage() {
     capitalOnly ||
     revenueOnly ||
     description ||
-    firm ||
     firmUniqueNo ||
     firmContactNo ||
     firmCity ||
@@ -2512,8 +2706,8 @@ function SearchPage() {
     appendSearchBool(params, "soCapitalOnly", soCapitalOnly);
     appendSearchBool(params, "soRevenueOnly", soRevenueOnly);
     appendSearchParam(params, "description", description);
-    appendSearchParam(params, "firm", firm);
     appendSearchParam(params, "firmIdentityUniqueNo", firmUniqueNo);
+    appendSearchParam(params, "firmIdentityName", firmIdentityName);
     appendSearchParam(params, "firmContactNo", firmContactNo);
     appendSearchParam(params, "firmCity", firmCity);
     appendSearchList(params, "firmSearchScopes", firmSearchScopes);
@@ -2719,7 +2913,7 @@ function SearchPage() {
     capitalOnly,
     revenueOnly,
     description,
-    firm,
+    firmIdentityName,
     selectedModes,
     selectedGemBiddingModes,
     includeModeFilters,
@@ -2836,6 +3030,7 @@ function SearchPage() {
   }, [page, pageSize, searchFilterQuery]);
 
   useEffect(() => {
+    if (!localFiltersRestored) return;
     const controller = new AbortController();
     const delay = hasLoadedSearchResultsRef.current ? 180 : 0;
     const timeoutId = window.setTimeout(() => {
@@ -2868,7 +3063,7 @@ function SearchPage() {
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [searchQuery]);
+  }, [localFiltersRestored, searchQuery]);
 
   const results = backendResults;
   useEffect(() => {
@@ -2905,6 +3100,33 @@ function SearchPage() {
     visibleExpandableFileIds.length > 0 &&
     visibleExpandableFileIds.every((fileId) => expandedSearchFileIds.has(fileId));
   const isFilterDrawerOpen = (id: string) => openFilterDrawerIds.includes(id);
+  const filterLocatorTerm = filterLocatorQuery.trim().toLocaleLowerCase();
+  const workflowDrawerMatches = (group: ImportantWorkflowFilterGroup) =>
+    filterLocatorMatchesAny(filterLocatorTerm, [
+      group.title,
+      ...group.options.map((option) => option.label),
+      ...(workflowFilterLocatorExtras[group.title] ?? []),
+      ...(group.title === "Demand / Initiation"
+        ? getConfiguredFileTypeOptions(settings.fileTypes, selectedFileTypes)
+        : []),
+      ...(group.title === "Bidding / Pre-Bid"
+        ? [...modeFilterOptions, ...gemBiddingModeOptions]
+        : []),
+      ...(group.title === "Supply Order / Firm"
+        ? [...firmTypeOptions, ...firmSearchScopeOptions.map((scope) => scope.label)]
+        : []),
+    ]);
+  const otherFilterMatches = filterLocatorMatchesAny(filterLocatorTerm, [
+    "Other filters", "Description", "Value filters", "Value", "S.O. value",
+    "Capital", "Revenue", "Special File Marker",
+  ]) || importantWorkflowFilterGroups.some(workflowDrawerMatches);
+  const dateFilterMatches = filterLocatorMatchesAny(filterLocatorTerm, [
+    "Date filters", "Free search date",
+    ...Object.values(dateFilterLocatorLabels).flat(),
+    "Demand & Control Dates", "Approval & Committee Dates",
+    "Supply Order & Delivery Dates", "BG, Payment & Closure Dates",
+  ]);
+  const hasFilterLocatorMatch = otherFilterMatches || dateFilterMatches;
   const setFilterDrawerOpen = (id: string, open: boolean) => {
     setOpenFilterDrawerIds((current) => {
       if (open) {
@@ -3073,7 +3295,6 @@ function SearchPage() {
     setCapitalOnly(false);
     setRevenueOnly(false);
     setDescription("");
-    setFirm("");
     setSelectedFirmIdentity(null);
     setFirmContactNo("");
     setFirmCity("");
@@ -3305,7 +3526,6 @@ function SearchPage() {
         setGemModeFilters((current) => Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "exclude")));
         break;
       case "Firm type": setSelectedFirmTypes([]); break;
-      case "Firm name-only": setFirm(""); break;
       case "Firm": setSelectedFirmIdentity(null); break;
       case "Contact": setFirmContactNo(""); break;
       case "City": setFirmCity(""); break;
@@ -3384,8 +3604,8 @@ function SearchPage() {
             <h2 className="text-lg font-semibold tracking-tight">Search Files</h2>
             {drillPath.length ? (
               <DrillPathTrail
-                items={[...drillPath, { label: "Search Files", href: currentSearchHref }]}
-                fallbackHref={currentSearchHref}
+                items={[...drillPath, { label: "Search Files", href: getSearchReturnHref(searchFilterQuery) ?? currentSearchHref }]}
+                fallbackHref={getSearchReturnHref(searchFilterQuery) ?? currentSearchHref}
               />
             ) : null}
             <p className="mt-1 text-sm text-muted-foreground">
@@ -3466,7 +3686,7 @@ function SearchPage() {
                   ? "Export selected files as PDF"
                   : "Export all search results as PDF"
               }
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             >
               <FileText className="size-3.5" /> PDF
             </button>
@@ -3503,7 +3723,7 @@ function SearchPage() {
                   ? "Export selected files as Excel"
                   : "Export all search results as Excel"
               }
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             >
               <FileSpreadsheet className="size-3.5" /> Excel
             </button>
@@ -3534,6 +3754,17 @@ function SearchPage() {
           placeholder="Free search"
           className="flex-1 h-10 bg-transparent outline-none text-sm"
         />
+        {freeText ? (
+          <button
+            type="button"
+            onClick={() => setFreeText("")}
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Clear free search"
+            title="Clear free search"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        ) : null}
         <SearchHelper items={searchFilterHelpers.freeSearch} label="Free search help" />
       </div>
 
@@ -3686,6 +3917,7 @@ function SearchPage() {
       >
         {filtersOpen ? (
           <aside className="bg-card border border-border rounded-md p-4 shadow-[var(--shadow-card)] h-fit min-w-0 space-y-4">
+            <FilterLocatorContext.Provider value={filterLocatorTerm}>
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2 text-sm font-bold">
                 <SlidersHorizontal className="size-4 text-muted-foreground" /> Filters
@@ -3715,7 +3947,36 @@ function SearchPage() {
 	              </button>
 	            </div>
 
-	            <section className="rounded-md border border-primary/15 bg-primary/5 p-3 space-y-3">
+            <div className="space-y-1.5">
+              <label htmlFor="find-search-filter" className="block text-xs font-semibold text-foreground">Find filter</label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
+                <input
+                  id="find-search-filter"
+                  type="text"
+                  value={filterLocatorQuery}
+                  onChange={(event) => setFilterLocatorQuery(event.target.value)}
+                  placeholder="Type a filter name"
+                  className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                {filterLocatorQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setFilterLocatorQuery("")}
+                    className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                    aria-label="Clear filter search"
+                    title="Clear filter search"
+                  >
+                    <X className="size-4" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+              {filterLocatorTerm && !hasFilterLocatorMatch ? (
+                <p className="text-xs text-muted-foreground" role="status">No matching filters.</p>
+              ) : null}
+            </div>
+
+	            <section className={"rounded-md border bg-primary/5 p-3 space-y-3 " + (otherFilterMatches ? "border-destructive ring-2 ring-destructive/60" : "border-primary/15")}>
 	              <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
 	                Other filters
 	              </h3>
@@ -3744,7 +4005,9 @@ function SearchPage() {
                   onToggle={(event) => setFilterDrawerOpen(drawerId, event.currentTarget.open)}
                   className={
                     "rounded-md border bg-background/60 " +
-                    (activeInGroup ? "border-primary/50" : "border-border")
+                    (workflowDrawerMatches(group)
+                      ? "border-destructive ring-2 ring-destructive/60"
+                      : activeInGroup ? "border-primary/50" : "border-border")
                   }
                 >
                   <summary
@@ -3768,6 +4031,7 @@ function SearchPage() {
                         <ThreeWayFilter
                           key={option.filter}
                           label={option.label}
+                          helper={option.helper}
                           value={importantWorkflowFilterModes[option.filter] ?? "none"}
                           onChange={(mode) => setImportantWorkflowFilterMode(option.filter, mode)}
                         />
@@ -3797,13 +4061,26 @@ function SearchPage() {
                             onChange={setYearFilter}
                             placeholder="All years"
                             options={years}
+                            deferChangeUntilSelect
+                            allowCustomValue={false}
                           />
                         </FilterGroup>
                         <FilterGroup label="Indentor" helper={searchFilterHelpers.indentor}>
-                          <FilterInput
+                          <SearchableDropdown
                             value={indentor}
                             onChange={setIndentor}
+                            onSearchChange={(query) => {
+                              setIndentorSearch(query);
+                              if (query.trim() && query.trim() !== indentor) setIndentor("");
+                            }}
+                            options={indentorOptions}
                             placeholder="Indentor"
+                            deferChangeUntilSelect
+                            allowCustomValue={false}
+                            className={filterControlClass(
+                              Boolean(indentor),
+                              "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+                            )}
                           />
                         </FilterGroup>
                         <FilterGroup label="Division" helper={searchFilterHelpers.division}>
@@ -3812,6 +4089,8 @@ function SearchPage() {
                             onChange={setDivisionFilter}
                             placeholder="All divisions"
                             options={divisionOptions}
+                            deferChangeUntilSelect
+                            allowCustomValue={false}
                           />
                         </FilterGroup>
                         <ThreeWayFilter
@@ -3863,78 +4142,90 @@ function SearchPage() {
                       </>
                     ) : null}
 
-                    {group.title === "Supply Order / Firm" ? (
-                      <>
-                        <FilterGroup label="Firm type" helper={searchFilterHelpers.firmType}>
-                          <div className="grid grid-cols-2 gap-2">
-                            {firmTypeOptions.map((firmType) => (
-                              <CheckFilter
-                                key={firmType}
-                                label={firmType}
-                                checked={selectedFirmTypes.includes(firmType)}
-                                onChange={(checked) => toggleFirmTypeFilter(firmType, checked)}
+                        {group.title === "Supply Order / Firm" ? (
+                          <>
+                            <FilterGroup label="Firm type" helper={searchFilterHelpers.firmType}>
+                              <div className="grid grid-cols-2 gap-2">
+                                {firmTypeOptions.map((firmType) => (
+                                  <CheckFilter
+                                    key={firmType}
+                                    label={firmType}
+                                    checked={selectedFirmTypes.includes(firmType)}
+                                    onChange={(checked) => toggleFirmTypeFilter(firmType, checked)}
+                                  />
+                                ))}
+                              </div>
+                            </FilterGroup>
+                            <div className="grid grid-cols-2 gap-2">
+                              {firmSearchScopeOptions.map((scope) => (
+                                <CheckFilter
+                                  key={scope.key}
+                                  label={scope.label}
+                                  checked={firmSearchScopes.includes(scope.key)}
+                                  onChange={(checked) => toggleFirmSearchScope(scope.key, checked)}
+                                  activeOverride={
+                                    !sameStringList(firmSearchScopes, defaultFirmSearchScopes)
+                                  }
+                                />
+                              ))}
+                            </div>
+                            <div
+                              className={
+                                filterLocatorMatchesAny(filterLocatorTerm, [
+                                  "Firm name",
+                                  "Firm Unique No.",
+                                ])
+                                  ? "rounded-md ring-2 ring-destructive/70"
+                                  : undefined
+                              }
+                            >
+                              <SearchableDropdown
+                                value={selectedFirmIdentityLabel}
+                                onChange={(label) => {
+                                  const selected = firmIdentityOptions.get(label);
+                                  setSelectedFirmIdentity(selected ?? null);
+                                }}
+                                onSearchChange={setFirmPickerQuery}
+                                options={[]}
+                                optionItems={firmIdentityOptionItems}
+                                placeholder="Select firm by name or Unique No."
+                                deferChangeUntilSelect
+                                typeAheadOnly
+                                allowCustomValue={false}
+                                className={filterControlClass(
+                                  Boolean(firmUniqueNo),
+                                  "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+                                )}
                               />
-                            ))}
-                          </div>
-                        </FilterGroup>
-                        <div className="grid grid-cols-2 gap-2">
-                          {firmSearchScopeOptions.map((scope) => (
-                            <CheckFilter
-                              key={scope.key}
-                              label={scope.label}
-                              checked={firmSearchScopes.includes(scope.key)}
-                              onChange={(checked) => toggleFirmSearchScope(scope.key, checked)}
-                              activeOverride={!sameStringList(
-                                firmSearchScopes,
-                                defaultFirmSearchScopes,
-                              )}
-                            />
-                          ))}
-                        </div>
-                        <SearchableDropdown
-                          value={selectedFirmIdentityLabel}
-                          onChange={(label) => {
-                            const selected = firmIdentityOptions.get(label);
-                            setSelectedFirmIdentity(selected ?? null);
-                            if (selected) setFirm("");
-                          }}
-                          onSearchChange={setFirmPickerQuery}
-                          options={Array.from(firmIdentityOptions.keys())}
-                          placeholder="Select firm by name or Unique No."
-                          deferChangeUntilSelect
-                          typeAheadOnly
-                          allowCustomValue={false}
-                          className={filterControlClass(
-                            Boolean(firmUniqueNo),
-                            "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
-                          )}
-                        />
-                        <label className="block text-xs text-muted-foreground">
-                          <span className="mb-1 block">Name-only search (older records)</span>
-                          <FilterInput
-                            value={firm}
-                            onChange={(value) => {
-                              setFirm(value);
-                              if (value) setSelectedFirmIdentity(null);
-                            }}
-                            placeholder="Firm name"
-                            options={firmNameOptions}
-                          />
-                        </label>
-                        <FilterInput
-                          value={firmContactNo}
-                          onChange={(value) => setFirmContactNo(value.replace(/\D/g, ""))}
-                          placeholder="Contact No."
-                          options={firmContactNoOptions}
-                        />
-                        <FilterInput
-                          value={firmCity}
-                          onChange={setFirmCity}
-                          placeholder="City"
-                          options={firmCityOptions}
-                        />
-                      </>
-                    ) : null}
+                            </div>
+                            <div
+                              className={
+                                filterLocatorMatches(filterLocatorTerm, "Contact No.")
+                                  ? "rounded-md ring-2 ring-destructive/70"
+                                  : undefined
+                              }
+                            >
+                              <FilterInput
+                                value={firmContactNo}
+                                onChange={(value) => setFirmContactNo(value.replace(/\D/g, ""))}
+                                placeholder="Contact No."
+                              />
+                            </div>
+                            <div
+                              className={
+                                filterLocatorMatches(filterLocatorTerm, "City")
+                                  ? "rounded-md ring-2 ring-destructive/70"
+                                  : undefined
+                              }
+                            >
+                              <FilterInput
+                                value={firmCity}
+                                onChange={setFirmCity}
+                                placeholder="City"
+                              />
+                            </div>
+                          </>
+                        ) : null}
                   </div>
                 </details>
               );
@@ -3942,6 +4233,7 @@ function SearchPage() {
 
             <CollapsibleFilterGroup
               label="Value filters"
+              locatorLabels={["Value", "S.O. value", "Capital", "Revenue"]}
               open={isFilterDrawerOpen("value")}
               onOpenChange={(open) => setFilterDrawerOpen("value", open)}
             >
@@ -4042,7 +4334,7 @@ function SearchPage() {
 	            </FilterGroup>
 	            </section>
 
-	            <section className="rounded-md border border-primary/15 bg-primary/5 p-3 space-y-3">
+	            <section className={"rounded-md border bg-primary/5 p-3 space-y-3 " + (dateFilterMatches ? "border-destructive ring-2 ring-destructive/60" : "border-primary/15")}>
 	              <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
 	                Date filters
 	              </h3>
@@ -4052,6 +4344,7 @@ function SearchPage() {
 
 	            <CollapsibleFilterGroup
               label="Demand & Control Dates"
+              locatorLabels={dateFilterLocatorLabels["dates:demand-control"]}
               helper={searchFilterHelpers.demandControlDates}
               open={isFilterDrawerOpen("dates:demand-control")}
               onOpenChange={(open) => setFilterDrawerOpen("dates:demand-control", open)}
@@ -4076,6 +4369,7 @@ function SearchPage() {
 
             <CollapsibleFilterGroup
               label="Approval & Committee Dates"
+              locatorLabels={dateFilterLocatorLabels["dates:approval-committee"]}
               helper={searchFilterHelpers.approvalDates}
               open={isFilterDrawerOpen("dates:approval-committee")}
               onOpenChange={(open) => setFilterDrawerOpen("dates:approval-committee", open)}
@@ -4204,6 +4498,7 @@ function SearchPage() {
 
             <CollapsibleFilterGroup
               label="Supply Order & Delivery Dates"
+              locatorLabels={dateFilterLocatorLabels["dates:supply-delivery"]}
               helper={searchFilterHelpers.supplyDeliveryDates}
               open={isFilterDrawerOpen("dates:supply-delivery")}
               onOpenChange={(open) => setFilterDrawerOpen("dates:supply-delivery", open)}
@@ -4253,6 +4548,7 @@ function SearchPage() {
 
             <CollapsibleFilterGroup
               label="BG, Payment & Closure Dates"
+              locatorLabels={dateFilterLocatorLabels["dates:bg-payment-closure"]}
               helper={searchFilterHelpers.bgPaymentClosureDates}
               open={isFilterDrawerOpen("dates:bg-payment-closure")}
               onOpenChange={(open) => setFilterDrawerOpen("dates:bg-payment-closure", open)}
@@ -4307,6 +4603,7 @@ function SearchPage() {
               />
             </CollapsibleFilterGroup>
 	            </section>
+            </FilterLocatorContext.Provider>
           </aside>
         ) : null}
 
@@ -4594,7 +4891,7 @@ function SearchPage() {
                         colSpan={searchDisplayColumns.length + 3}
                         className="text-center text-sm text-muted-foreground py-10"
                       >
-                        No files match your filters.
+                        No files match the selected filters.
                       </td>
                     </tr>
                   )}
@@ -4796,7 +5093,7 @@ function FileSnapshotDialog({
                 type="button"
                 onClick={() => exportSnapshot("pdf")}
                 disabled={!file || loading}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Printer className="size-3.5" /> PDF
               </button>
@@ -4804,7 +5101,7 @@ function FileSnapshotDialog({
                 type="button"
                 onClick={() => exportSnapshot("excel")}
                 disabled={!file || loading}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <FileSpreadsheet className="size-3.5" /> Excel
               </button>
@@ -5556,8 +5853,9 @@ function FilterGroup({
   active?: boolean;
   children: React.ReactNode;
 }) {
+  const locatorQuery = useContext(FilterLocatorContext);
   return (
-    <div>
+    <div className={filterLocatorMatches(locatorQuery, label) ? "rounded-md bg-destructive/5 p-2 ring-2 ring-destructive/60" : undefined}>
       <HelperLabel label={label} helper={helper} active={active} />
       {children}
     </div>
@@ -5567,6 +5865,7 @@ function FilterGroup({
 function CollapsibleFilterGroup({
   label,
   helper,
+  locatorLabels = [],
   children,
   defaultOpen = false,
   open,
@@ -5574,17 +5873,23 @@ function CollapsibleFilterGroup({
 }: {
   label: string;
   helper?: string[];
+  locatorLabels?: string[];
   children: React.ReactNode;
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
   const isControlled = open !== undefined;
+  const locatorQuery = useContext(FilterLocatorContext);
+  const locatorMatch = filterLocatorMatchesAny(locatorQuery, [label, ...locatorLabels]);
   return (
     <details
       open={isControlled ? open : defaultOpen}
       onToggle={(event) => onOpenChange?.(event.currentTarget.open)}
-      className="rounded-md border border-border bg-background/40 shadow-sm"
+      className={
+        "rounded-md border bg-background/40 shadow-sm " +
+        (locatorMatch ? "border-destructive ring-2 ring-destructive/60" : "border-border")
+      }
     >
       <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground outline-none hover:text-foreground">
         <span className="inline-flex items-center gap-1.5">
@@ -5773,6 +6078,10 @@ function FilterInput({
   type = "text",
   decimalOnly = false,
   options,
+  typeAheadOnly = false,
+  deferChangeUntilSelect = false,
+  allowCustomValue = true,
+  onSearchChange,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -5780,20 +6089,14 @@ function FilterInput({
   type?: string;
   decimalOnly?: boolean;
   options?: string[];
+  typeAheadOnly?: boolean;
+  deferChangeUntilSelect?: boolean;
+  allowCustomValue?: boolean;
+  onSearchChange?: (query: string) => void;
 }) {
   const active = Boolean(value);
   if (type === "date") {
-    return (
-      <DateInput
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        className={filterControlClass(
-          active,
-          "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
-        )}
-      />
-    );
+    return <ClearableDateFilterInput value={value} onChange={onChange} placeholder={placeholder} />;
   }
   if (options?.length) {
     return (
@@ -5802,6 +6105,10 @@ function FilterInput({
         onChange={(next) => onChange(decimalOnly ? formatDecimalInput(next) : next)}
         options={options}
         placeholder={placeholder}
+        typeAheadOnly={typeAheadOnly}
+        deferChangeUntilSelect={deferChangeUntilSelect}
+        allowCustomValue={allowCustomValue}
+        onSearchChange={onSearchChange}
         className={filterControlClass(
           active,
           "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
@@ -5810,19 +6117,79 @@ function FilterInput({
     );
   }
   return (
-    <input
-      type={type}
-      inputMode={decimalOnly ? "decimal" : undefined}
-      value={value}
-      onChange={(event) =>
-        onChange(decimalOnly ? formatDecimalInput(event.target.value) : event.target.value)
-      }
-      placeholder={placeholder}
-      className={filterControlClass(
-        active,
-        "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
-      )}
-    />
+    <div className="relative">
+      <input
+        type={type}
+        inputMode={decimalOnly ? "decimal" : undefined}
+        value={value}
+        onChange={(event) =>
+          onChange(decimalOnly ? formatDecimalInput(event.target.value) : event.target.value)
+        }
+        placeholder={placeholder}
+        className={filterControlClass(
+          active,
+          "w-full h-9 px-2.5 pr-9 rounded-md border border-input bg-background text-sm",
+        )}
+      />
+      {active ? (
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onChange("")}
+          className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label={`Clear ${placeholder || "filter"}`}
+          title={`Clear ${placeholder || "filter"}`}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ClearableDateFilterInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const [hasText, setHasText] = useState(Boolean(value));
+
+  useEffect(() => {
+    setHasText(Boolean(value));
+  }, [value]);
+
+  return (
+    <div className="relative">
+      <DateInput
+        value={value}
+        onChange={onChange}
+        onInput={(event) => setHasText(Boolean(event.currentTarget.value))}
+        placeholder={placeholder}
+        className={filterControlClass(
+          Boolean(value),
+          "w-full h-9 px-2.5 pr-9 rounded-md border border-input bg-background text-sm",
+        )}
+      />
+      {hasText ? (
+        <button
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            onChange("");
+            setHasText(false);
+          }}
+          className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label={`Clear ${placeholder || "date filter"}`}
+          title={`Clear ${placeholder || "date filter"}`}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -5969,12 +6336,13 @@ function CheckFilter({
   activeOverride?: boolean;
 }) {
   const active = activeOverride ?? checked;
+  const locatorQuery = useContext(FilterLocatorContext);
   return (
     <label
       className={filterControlClass(
         active,
         "flex items-center gap-2 text-sm cursor-pointer rounded-md border border-border bg-background px-2.5 py-2",
-      )}
+      ) + (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")}
     >
       <input
         type="checkbox"
@@ -5989,14 +6357,17 @@ function CheckFilter({
 
 function ThreeWayFilter({
   label,
+  helper,
   value,
   onChange,
 }: {
   label: string;
+  helper?: string[];
   value: IncludeExcludeFilter;
   onChange: (value: IncludeExcludeFilter) => void;
 }) {
   const active = value !== "none";
+  const locatorQuery = useContext(FilterLocatorContext);
   const options: Array<{ value: Exclude<IncludeExcludeFilter, "none">; label: string }> = [
     { value: "include", label: "Only" },
     { value: "exclude", label: "Exclude" },
@@ -6006,9 +6377,12 @@ function ThreeWayFilter({
       className={filterControlClass(
         active,
         "rounded-md border border-border bg-background p-2 text-sm",
-      )}
+      ) + (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")}
     >
-      <div className={filterLabelClass(active, "mb-1.5 text-xs font-medium")}>{label}</div>
+      <div className={filterLabelClass(active, "mb-1.5 inline-flex items-center gap-1 text-xs font-medium")}>
+        {label}
+        {helper ? <SearchHelper items={helper} label={`${label} help`} /> : null}
+      </div>
       <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border">
         {options.map((option) => {
           const selected = value === option.value;
@@ -7601,6 +7975,7 @@ function isBgToBeReceived(file: FileRecord, category = "psb") {
 function isPsbApplicableFile(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
+      !isYes(order.soCancelled) &&
       isYes(order.psbApplicable) &&
       (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately"),
   );
@@ -11030,6 +11405,79 @@ function getSearchCheckboxDestinationFocus(filters: {
   return { section: "Timeline", milestone: undefined, focusTarget: undefined };
 }
 
+function getLocalSearchDestinationFocus(chips: ActiveSearchFilterChip[]) {
+  const fieldFocus: Record<string, { section: string; focusTarget?: string; milestone?: string }> = {
+    Description: { section: "File details", focusTarget: "demandDescription" },
+    Division: { section: "File details", focusTarget: "division" },
+    Indentor: { section: "File details", focusTarget: "indentor" },
+    "File type": { section: "File details", focusTarget: "fileType" },
+    "Only Mode": { section: "File details", focusTarget: "mode" },
+    "Exclude Mode": { section: "File details", focusTarget: "mode" },
+    "Only GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
+    "Exclude GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
+    "Value band": { section: "File details", focusTarget: "valueCapital" },
+    Value: { section: "File details", focusTarget: "valueCapital" },
+    "Capital demand": { section: "File details", focusTarget: "valueCapital" },
+    "Revenue demand": { section: "File details", focusTarget: "valueRevenue" },
+    "S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    "S.O. value": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    "S.O. value band": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    "Capital S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    "Revenue S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    "Firm type": { section: "Supply order and payment", focusTarget: "firmtype:any" },
+    Firm: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+    Contact: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+    City: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+    "Firm scope": { section: "Supply order and payment", focusTarget: "firmtype:any" },
+    Marker: { section: "File Markers" },
+    "Pre-TCEC committee": { section: "TCEC block", focusTarget: "preTcecCommitteeNo" },
+    "Post-TCEC committee": { section: "TCEC block", focusTarget: "postTcecCommitteeNumber" },
+    "File Closed": { section: "Milestones", milestone: "File Closed" },
+    "Cancelled S.O.": { section: "Supply order and payment", focusTarget: "socancelled:yes" },
+    "Shortclosed S.O.": { section: "Supply order and payment", focusTarget: "shortclosure:yes" },
+    "Files with Multiple S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+  };
+  const dateFocus: Partial<Record<DateRangeFilterKey, { section: string; focusTarget?: string; milestone?: string }>> = {
+    demandReceipt: { section: "File details", focusTarget: "receivedDate" },
+    demandControl: { section: "Scrutiny and control", focusTarget: "immsDate" },
+    highValueMinutes: { section: "Approval block", focusTarget: "highValueMinutesDate" },
+    preTcecDate: { section: "TCEC block", focusTarget: "preTcecDate" },
+    preTcecMinutes: { section: "TCEC block", focusTarget: "preTcecMinutesDate" },
+    rqaApproval: { section: "Approval block", focusTarget: "rqaApprovalDate" },
+    ifaFinal: { section: "Approval block", focusTarget: "ifaFinalDate" },
+    cfaApproval: { section: "Approval block", focusTarget: "cfaDate" },
+    postTcecDate: { section: "TCEC block", focusTarget: "postTcecDate" },
+    postTcecMinutes: { section: "TCEC block", focusTarget: "postTcecMinutesDate" },
+    cncDate: { section: "Approval block", focusTarget: "cncDate" },
+    preBidDate: { section: "Bidding details", focusTarget: "preBidMeetingDate" },
+    biddingDate: { section: "Bidding details", focusTarget: "bidDate" },
+    bidOpeningDate: { section: "Bidding details", focusTarget: "bidOpeningDate" },
+    financialSanction: { section: "Supply order and payment", focusTarget: "financialsanction:any" },
+    soDate: { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+    advanceExpectedPaymentDate: { section: "Supply order and payment", focusTarget: "advancepayment:yes" },
+    dpPeriod: { section: "Supply order and payment", focusTarget: "deliveryperiod:any" },
+    materialReceipt: { section: "Supply order and payment", focusTarget: "delivery:any" },
+    bgReceived: { section: "Supply order and payment", focusTarget: "bankguarantee:any" },
+    bgValidity: { section: "Supply order and payment", focusTarget: "bankguarantee:any" },
+    bgReturn: { section: "Supply order and payment", focusTarget: "bankguarantee:any" },
+    billSubmitted: { section: "Supply order and payment", focusTarget: "billsentforpayment:any" },
+    paymentDate: { section: "Supply order and payment", focusTarget: "payment:any" },
+    fileClosure: { section: "Milestones", milestone: "File Closed" },
+  };
+  for (const chip of chips) {
+    const directFocus = fieldFocus[chip.key];
+    if (directFocus) return directFocus;
+    if (chip.key.startsWith("dateRange:")) {
+      const key = chip.key.slice("dateRange:".length) as DateRangeFilterKey;
+      if (dateFocus[key]) return dateFocus[key];
+    }
+    if (chip.key.startsWith("workflow:")) {
+      return getDestinationFocus(chip.key.slice("workflow:".length), undefined, undefined, undefined);
+    }
+  }
+  return undefined;
+}
+
 function getSearchCheckboxFileFocusTarget(
   file: FileRecord,
   filters: {
@@ -11082,6 +11530,15 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "total" || stageKey === "totalfiles") return completed;
     if (stageKey === "atpreviousstage") return isFinancialSanctionPreviousStageFile(file);
     if (stageKey === "pending") return pending;
+  }
+
+  if (milestoneKey === "refloatposttcec" && stageKey === "atpreviousstage") {
+    return (
+      !isCancelledFile(file) &&
+      isYes(file.refloat) &&
+      isYes(file.tcec) &&
+      !isYes(file.biddingStageOver)
+    );
   }
 
   if (milestoneKey === "advancepayment") {
@@ -11795,25 +12252,19 @@ function buildRowwiseSearchExportTable(
   const headers = [
     "S.No.",
     ...fileColumns.map((column) => column.label),
-    "S.O.",
-    "Delivery stage",
-    "Supplementary bill",
-    "Bill return cycle",
     ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: Array<Array<string | number>> = [];
   files.forEach((file, fileIndex) => {
-    const rowEntries = getRowwiseSearchExportEntries(file, supplyOrderColumns);
+    const rowEntries = supplyOrderColumns.length
+      ? getRowwiseSearchExportEntries(file, supplyOrderColumns)
+      : [{ orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 }];
     rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         fileIndex + 1,
         ...fileColumns.map((column) =>
           entryIndex === 0 ? getSearchExportFileValue(file, column) || "" : "",
         ),
-        entry.order && isFirstRowwiseOrderRow(entry) ? String(entry.orderIndex + 1) : "",
-        entry.stage ? `Delivery-${entry.stageIndex + 1}` : "",
-        entry.supplementaryBill ? String(entry.supplementaryBillIndex + 1) : "",
-        entry.billReturnCycle ? String(entry.billReturnCycleIndex + 1) : "",
         ...supplyOrderColumns.flatMap((column) =>
           getRowwiseSupplyOrderExportValues(file, column.key as SupplyOrderKey, entry),
         ),
@@ -11832,6 +12283,7 @@ type RowwiseSearchExportEntry = {
   supplementaryBillIndex: number;
   billReturnCycle?: BillReturnCycle;
   billReturnCycleIndex: number;
+  isPrimaryOrderRow?: boolean;
 };
 
 function getRowwiseSearchExportEntries(
@@ -11844,15 +12296,23 @@ function getRowwiseSearchExportEntries(
       { orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 },
     ];
   }
-  const needsSupplementaryRows = supplyOrderColumns.some((column) =>
-    supplementaryBillTableKeys.has(column.key),
+  const needsSupplementaryBillRows = supplyOrderColumns.some(
+    (column) =>
+      supplementaryBillTableKeys.has(column.key) &&
+      column.key !== "supplementaryBillReturnCycles",
   );
   const needsBillReturnRows = supplyOrderColumns.some(
     (column) => column.key === "billReturnCycles",
   );
+  const needsSupplementaryReturnRows = supplyOrderColumns.some(
+    (column) => column.key === "supplementaryBillReturnCycles",
+  );
   return orders.flatMap((order, orderIndex) => {
     const entries: RowwiseSearchExportEntry[] = [];
-    if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+    const needsStageRows = supplyOrderColumns.some((column) =>
+      isSupplyOrderKey(column.key) && shouldUseStageValueForRowwiseExport(order, column.key),
+    );
+    if (needsStageRows && isYes(order.stageDelivery) && order.stageDeliveries?.length) {
       entries.push(
         ...order.stageDeliveries.map((stage, stageIndex) => ({
           order,
@@ -11863,14 +12323,6 @@ function getRowwiseSearchExportEntries(
           billReturnCycleIndex: -1,
         })),
       );
-    } else {
-      entries.push({
-        order,
-        orderIndex,
-        stageIndex: -1,
-        supplementaryBillIndex: -1,
-        billReturnCycleIndex: -1,
-      });
     }
 
     if (needsBillReturnRows) {
@@ -11888,14 +12340,11 @@ function getRowwiseSearchExportEntries(
       );
     }
 
-    if (needsSupplementaryRows) {
+    if (needsSupplementaryBillRows || needsSupplementaryReturnRows) {
       normalizeSupplementaryBillsForTable(order.supplementaryBills).forEach(
         (supplementaryBill, supplementaryBillIndex) => {
           const cycles = normalizeBillReturnCycles(supplementaryBill.billReturnCycles);
-          if (
-            cycles.length &&
-            supplyOrderColumns.some((column) => column.key === "supplementaryBillReturnCycles")
-          ) {
+          if (cycles.length && needsSupplementaryReturnRows) {
             cycles.forEach((billReturnCycle, billReturnCycleIndex) => {
               entries.push({
                 order,
@@ -11909,19 +12358,30 @@ function getRowwiseSearchExportEntries(
             });
             return;
           }
-          entries.push({
-            order,
-            orderIndex,
-            stageIndex: -1,
-            supplementaryBill,
-            supplementaryBillIndex,
-            billReturnCycleIndex: -1,
-          });
+          if (needsSupplementaryBillRows) {
+            entries.push({
+              order,
+              orderIndex,
+              stageIndex: -1,
+              supplementaryBill,
+              supplementaryBillIndex,
+              billReturnCycleIndex: -1,
+            });
+          }
         },
       );
     }
 
-    return entries;
+    if (!entries.length) {
+      entries.push({
+        order,
+        orderIndex,
+        stageIndex: -1,
+        supplementaryBillIndex: -1,
+        billReturnCycleIndex: -1,
+      });
+    }
+    return entries.map((entry, index) => ({ ...entry, isPrimaryOrderRow: index === 0 }));
   });
 }
 
@@ -11981,7 +12441,7 @@ function getRowwiseSupplyOrderExportValues(
   if (entry.stage && shouldUseStageValueForRowwiseExport(entry.order, key)) {
     return [getStageSupplyOrderExportValueFromStage(entry.stage, key, entry.stageIndex)];
   }
-  if (!isFirstRowwiseOrderRow(entry)) return [""];
+  if (!entry.isPrimaryOrderRow) return [""];
   return [getSupplyOrderValue(entry.order, key)];
 }
 
@@ -12031,10 +12491,6 @@ function getSupplementaryBillSingleValue(bill: SupplementaryBillDetail, key: Sup
   if (key === "supplementaryBillActualPaymentRevenue") return bill.actualPaymentRevenue ?? "";
   if (key === "supplementaryBillRemarks") return bill.remarks ?? "";
   return "";
-}
-
-function isFirstRowwiseOrderRow(entry: RowwiseSearchExportEntry) {
-  return entry.stageIndex <= 0;
 }
 
 function shouldUseStageValueForRowwiseExport(order: SupplyOrderDetail, key: SupplyOrderKey) {

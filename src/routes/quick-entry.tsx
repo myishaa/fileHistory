@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -14,16 +14,20 @@ import {
 import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
 import { CompactTableText } from "@/components/compact-table-text";
 import {
+  fetchFileIdentifierSuggestions,
   createFileStatusUpdate,
+  fetchFile,
   fetchFilesByIdentifier,
   fetchQuickStatusContext,
   lookupQuickStatusFiles,
   updateFileStatusUpdate,
+  type FileIdentifierSuggestion,
   type FileRecord,
   type FileStatusUpdate,
   type QuickStatusFileSummary,
   useActiveUser,
 } from "@/lib/files-store";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   isBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
@@ -112,11 +116,21 @@ function QuickEntryEditor() {
   const canOpenCurrentStage = canEditFiles || isReadOnlyQuickEntry;
   const canCreateFileStatus = canEditFiles || activeUser?.role === "universal_viewer";
   const [entryIdentifier, setEntryIdentifier] = useState("");
+  const [entryIdentifierQuery, setEntryIdentifierQuery] = useState("");
+  const [entrySuggestions, setEntrySuggestions] = useState<FileIdentifierSuggestion[]>([]);
+  const [selectedEntrySuggestion, setSelectedEntrySuggestion] =
+    useState<FileIdentifierSuggestion | null>(null);
   const [message, setMessage] = useState<QuickEntryError | null>(null);
   const [milestoneFileId, setMilestoneFileId] = useState("");
   const [loading, setLoading] = useState(false);
 
   const [fileIdentifier, setFileIdentifier] = useState("");
+  const [statusIdentifierQuery, setStatusIdentifierQuery] = useState("");
+  const [statusIdentifierSuggestions, setStatusIdentifierSuggestions] = useState<
+    FileIdentifierSuggestion[]
+  >([]);
+  const [selectedStatusSuggestion, setSelectedStatusSuggestion] =
+    useState<FileIdentifierSuggestion | null>(null);
   const [description, setDescription] = useState("");
   const [descriptionAutoFilled, setDescriptionAutoFilled] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
@@ -127,10 +141,77 @@ function QuickEntryEditor() {
   const [editingStatusId, setEditingStatusId] = useState("");
   const [editingStatusText, setEditingStatusText] = useState("");
 
+  useEffect(() => {
+    const query = entryIdentifierQuery.trim();
+    if (!query) {
+      setEntrySuggestions(selectedEntrySuggestion ? [selectedEntrySuggestion] : []);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      fetchFileIdentifierSuggestions(query)
+        .then(({ files }) => {
+          if (!cancelled) setEntrySuggestions(files);
+        })
+        .catch(() => {
+          if (!cancelled) setEntrySuggestions([]);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [entryIdentifierQuery, selectedEntrySuggestion]);
+
+  useEffect(() => {
+    const query = statusIdentifierQuery.trim();
+    if (!query) {
+      setStatusIdentifierSuggestions(
+        selectedStatusSuggestion ? [selectedStatusSuggestion] : [],
+      );
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      fetchFileIdentifierSuggestions(query)
+        .then(({ files }) => {
+          if (!cancelled) setStatusIdentifierSuggestions(files);
+        })
+        .catch(() => {
+          if (!cancelled) setStatusIdentifierSuggestions([]);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [statusIdentifierQuery, selectedStatusSuggestion]);
+
+  const entrySuggestionOptions = makeIdentifierSuggestionOptions([
+    ...entrySuggestions,
+    ...(selectedEntrySuggestion ? [selectedEntrySuggestion] : []),
+  ]);
+  const statusSuggestionOptions = makeIdentifierSuggestionOptions([
+    ...statusIdentifierSuggestions,
+    ...(selectedStatusSuggestion ? [selectedStatusSuggestion] : []),
+  ]);
+
   const findFile = async () => {
+    if (selectedEntrySuggestion) {
+      setLoading(true);
+      const selected = await fetchFile(selectedEntrySuggestion.id)
+        .then((result) => result.file)
+        .catch((error) => {
+          console.error(error);
+          setMessage({ tone: "error", text: "File lookup failed. Please try again." });
+          return undefined;
+        })
+        .finally(() => setLoading(false));
+      return selected;
+    }
     const code = normalizeQuickEntryCode(entryIdentifier);
     if (!code) {
-      setMessage({ tone: "error", text: "Scan or enter the Unique Code / Control No. first." });
+      setMessage({ tone: "error", text: "Scan or enter a file identifier first." });
       return undefined;
     }
 
@@ -146,7 +227,7 @@ function QuickEntryEditor() {
     if (found.length === 0) {
       setMessage({
         tone: "error",
-        text: "No accessible file was found for this Unique Code / Control No.",
+        text: "No accessible file matches that identifier.",
       });
       return undefined;
     }
@@ -211,6 +292,16 @@ function QuickEntryEditor() {
     setLookupLoading(true);
     setLookupMessage(null);
     setContext(undefined);
+    if (selectedStatusSuggestion) {
+      const loaded = await loadStatusContext(selectedStatusSuggestion.id).catch((error) => {
+        console.error(error);
+        setLookupMessage({ tone: "error", text: "File lookup failed." });
+        return undefined;
+      });
+      setLookupLoading(false);
+      if (loaded) setLookupMessage({ tone: "success", text: "File matched." });
+      return;
+    }
     const result = await lookupQuickStatusFiles({
       controlNo: cleanIdentifier,
       description: cleanDescription,
@@ -236,6 +327,8 @@ function QuickEntryEditor() {
 
   const resetLookup = () => {
     setFileIdentifier("");
+    setSelectedStatusSuggestion(null);
+    setStatusIdentifierQuery("");
     setDescription("");
     setDescriptionAutoFilled(false);
     setLookupMessage(null);
@@ -309,7 +402,7 @@ function QuickEntryEditor() {
             <div>
               <h2 className="text-base font-semibold">Quick Entry</h2>
               <p className="text-xs text-muted-foreground">
-                Scan or enter the Unique Code / Control No. to open the file's current stage.
+                Scan or enter a file identifier to open the file's current stage.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Viewers open it read-only. Quick Entry opens exact files only; it does not change
@@ -320,23 +413,29 @@ function QuickEntryEditor() {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
             <label className="block">
-              <div className="mb-1.5 text-xs font-medium">Unique Code / Control No.</div>
-              <input
-                value={entryIdentifier}
-                onChange={(event) => {
-                  setEntryIdentifier(event.target.value);
+              <div className="mb-1.5 text-xs font-medium">
+                Unique Code / Control No. / File No. / S.O. No.
+              </div>
+              <SearchableDropdown
+                value={selectedEntrySuggestion?.id ?? entryIdentifier}
+                onChange={(value) => {
+                  const selected = entrySuggestions.find((file) => file.id === value);
+                  setSelectedEntrySuggestion(selected ?? null);
+                  setEntryIdentifier(selected ? "" : value);
                   setMessage(null);
                   setMilestoneFileId("");
                 }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && canOpenCurrentStage) {
-                    event.preventDefault();
-                    void continueToCurrentStage();
-                  }
+                onSearchChange={setEntryIdentifierQuery}
+                options={[]}
+                optionItems={entrySuggestionOptions}
+                typeAheadOnly
+                onEnter={() => {
+                  if (canOpenCurrentStage) void continueToCurrentStage();
                 }}
+                disabled={!canOpenCurrentStage}
                 autoFocus
-                placeholder="Scan barcode or type Unique Code / Control No."
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+                placeholder="Scan barcode or type an identifier"
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <button
@@ -401,24 +500,48 @@ function QuickEntryEditor() {
 
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(180px,0.9fr)_minmax(260px,1.4fr)_auto_auto]">
           <label>
-            <div className="mb-1.5 text-xs font-medium">Unique Code / Control No.</div>
-            <input
-              value={fileIdentifier}
-              onChange={(event) => {
-                setFileIdentifier(event.target.value);
-                if (descriptionAutoFilled) {
+            <div className="mb-1.5 text-xs font-medium">
+              Unique Code / Control No. / File No. / S.O. No.
+            </div>
+            <SearchableDropdown
+              value={selectedStatusSuggestion?.id ?? fileIdentifier}
+              onChange={(value) => {
+                const selected = statusIdentifierSuggestions.find((file) => file.id === value);
+                setSelectedStatusSuggestion(selected ?? null);
+                setFileIdentifier(
+                  selected
+                    ? selected.uniqueCode ||
+                        selected.controlNo ||
+                        selected.fileNo ||
+                        selected.soNumbers?.split(",")[0]?.trim() ||
+                        ""
+                    : value,
+                );
+                if (!selected && descriptionAutoFilled) {
                   setDescription("");
                   setDescriptionAutoFilled(false);
                 }
                 setContext(undefined);
                 setMatches([]);
                 setLookupMessage(null);
+                if (selected) {
+                  setLookupLoading(true);
+                  void loadStatusContext(selected.id)
+                    .then(() => setLookupMessage({ tone: "success", text: "File matched." }))
+                    .catch((error) => {
+                      console.error(error);
+                      setLookupMessage({ tone: "error", text: "File lookup failed." });
+                    })
+                    .finally(() => setLookupLoading(false));
+                }
               }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void lookupFile();
-              }}
-              placeholder="Enter Unique Code or Control No."
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              onSearchChange={setStatusIdentifierQuery}
+              options={[]}
+              optionItems={statusSuggestionOptions}
+              typeAheadOnly
+              onEnter={() => void lookupFile()}
+              placeholder="Type any identifier"
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
           <label>
@@ -542,7 +665,13 @@ function QuickEntryEditor() {
 }
 
 function getQuickStatusMatchedIdentifier(
-  file: { uniqueCode?: string; controlNo?: string; imms?: string },
+  file: {
+    uniqueCode?: string;
+    controlNo?: string;
+    imms?: string;
+    fileNo?: string;
+    soNumbers?: string;
+  },
   query: string,
 ) {
   const identifier = query.trim().toLowerCase();
@@ -550,11 +679,38 @@ function getQuickStatusMatchedIdentifier(
   const values = [
     { label: "Unique Code", value: file.uniqueCode?.trim() || "" },
     { label: "Control No.", value: (file.controlNo || file.imms)?.trim() || "" },
+    { label: "File No.", value: file.fileNo?.trim() || "" },
+    { label: "S.O. No.", value: file.soNumbers?.split(",").map((item) => item.trim()).find(Boolean) || "" },
   ];
   return (
     values.find((item) => item.value.toLowerCase() === identifier) ||
     values.find((item) => item.value.toLowerCase().includes(identifier))
   );
+}
+
+function makeIdentifierSuggestionOptions(files: FileIdentifierSuggestion[]) {
+  const uniqueFiles = Array.from(new Map(files.map((file) => [file.id, file])).values());
+  return uniqueFiles.map((file) => {
+    const primaryIdentifier =
+      file.uniqueCode ||
+      file.controlNo ||
+      file.fileNo ||
+      file.soNumbers?.split(",")[0]?.trim() ||
+      "File";
+    const description = file.itemDescription?.trim();
+    return {
+      value: file.id,
+      label: description ? `${primaryIdentifier} · ${description}` : primaryIdentifier,
+      searchTerms: [
+        file.uniqueCode,
+        file.controlNo,
+        file.fileNo,
+        ...(file.soNumbers?.split(",") ?? []),
+      ]
+        .filter((term): term is string => Boolean(term?.trim()))
+        .map((term) => term.trim()),
+    };
+  });
 }
 
 function FileConfirmation({

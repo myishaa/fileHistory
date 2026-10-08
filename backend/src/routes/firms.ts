@@ -326,20 +326,29 @@ firmsRouter.get(
     const values: unknown[] = [];
     const where: string[] = ["mf.archived_at is null"];
     const q = typeof request.query.q === "string" ? request.query.q.trim() : "";
+    const prefix = request.query.prefix === "true";
     const page = readPositiveInteger(request.query.page, 1, 1_000_000);
     const pageSize = readPositiveInteger(request.query.pageSize, 50, 500);
     const offset = (page - 1) * pageSize;
 
     if (q) {
-      values.push(`%${q.toLowerCase()}%`);
-      where.push(
-        `(lower(coalesce(mf.firm_name, '')) like $${values.length}
-          or lower(coalesce(mf.email_id, '')) like $${values.length}
-          or lower(coalesce(mf.firm_unique_no, '')) like $${values.length}
-          or lower(coalesce(mf.firm_type, '')) like $${values.length}
-          or lower(coalesce(mf.firm_type_other, '')) like $${values.length}
-          or lower(coalesce(mf.contact_no, '')) like $${values.length})`,
-      );
+      if (prefix) {
+        values.push(q.toLowerCase());
+        where.push(
+          `(left(lower(coalesce(mf.firm_name, '')), char_length($${values.length})) = $${values.length}
+            or left(lower(coalesce(mf.firm_unique_no, '')), char_length($${values.length})) = $${values.length})`,
+        );
+      } else {
+        values.push(`%${q.toLowerCase()}%`);
+        where.push(
+          `(lower(coalesce(mf.firm_name, '')) like $${values.length}
+            or lower(coalesce(mf.email_id, '')) like $${values.length}
+            or lower(coalesce(mf.firm_unique_no, '')) like $${values.length}
+            or lower(coalesce(mf.firm_type, '')) like $${values.length}
+            or lower(coalesce(mf.firm_type_other, '')) like $${values.length}
+            or lower(coalesce(mf.contact_no, '')) like $${values.length})`,
+        );
+      }
     }
 
     const whereSql = where.length ? `where ${where.join(" and ")}` : "";

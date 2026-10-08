@@ -1571,6 +1571,7 @@ function getCurrentMilestoneDelay(
 ): DelayStatusRow | undefined {
   const milestone = getActiveDelayMilestone(file);
   if (!milestone) return undefined;
+  if (milestone.key === "financialSanction") return undefined;
   if (milestone.key === biddingDelayMilestoneKey) return undefined;
   if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return undefined;
   if (isMilestoneComplete(file, milestone)) return undefined;
@@ -2198,13 +2199,18 @@ function getFileReference(file: FileRecord) {
 
 function getDelayStatusSummary(rows: DelayStatusRow[]) {
   const totalDays = rows.reduce((sum, row) => sum + row.daysInStage, 0);
-  const counts = new Map<string, { key: string; label: string; fileIds: Set<string> }>();
+  const counts = new Map<
+    string,
+    { key: string; label: string; caseCount: number; fileIds: Set<string> }
+  >();
   rows.forEach((row) => {
     const current = counts.get(row.milestoneKey) ?? {
       key: row.milestoneKey,
       label: row.milestone,
+      caseCount: 0,
       fileIds: new Set<string>(),
     };
+    current.caseCount += 1;
     current.fileIds.add(row.fileId);
     counts.set(row.milestoneKey, current);
   });
@@ -2213,7 +2219,12 @@ function getDelayStatusSummary(rows: DelayStatusRow[]) {
     averageDays: rows.length ? Math.round(totalDays / rows.length) : 0,
     longestDays: rows.reduce((max, row) => Math.max(max, row.daysInStage), 0),
     byMilestone: Array.from(counts.values())
-      .map(({ key, label, fileIds }) => ({ key, label, count: fileIds.size }))
+      .map(({ key, label, caseCount, fileIds }) => ({
+        key,
+        label,
+        count: key === "financialSanction" ? caseCount : fileIds.size,
+        ...(key === "financialSanction" ? { fileCount: fileIds.size } : {}),
+      }))
       .sort((a, b) => b.count - a.count),
   };
 }

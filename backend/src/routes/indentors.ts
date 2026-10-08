@@ -294,6 +294,7 @@ indentorsRouter.get(
         : "";
     const q =
       typeof request.query.q === "string" && request.query.q.trim() ? request.query.q.trim() : "";
+    const prefix = request.query.prefix === "true";
     const page = readPositiveInteger(request.query.page, 1, 1_000_000);
     const pageSize = readPositiveInteger(request.query.pageSize, 50, 200);
     const offset = (page - 1) * pageSize;
@@ -313,7 +314,10 @@ indentorsRouter.get(
       where.push(`i.division_id = any($${values.length}::uuid[])`);
     }
 
-    if (q) {
+    if (q && prefix) {
+      values.push(q.toLowerCase());
+      where.push(`left(lower(i.name), char_length($${values.length})) = $${values.length}`);
+    } else if (q) {
       values.push(`%${q.toLowerCase()}%`);
       where.push(`(
 	        lower(i.name) like $${values.length}

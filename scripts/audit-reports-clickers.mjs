@@ -15,6 +15,16 @@ function n(value) {
   return Number(value ?? 0) || 0;
 }
 
+function isYes(value) {
+  return String(value ?? "").trim().toLowerCase() === "yes";
+}
+
+function isCountedByReports(file) {
+  if (isYes(file.demandCancelled)) return false;
+  const orders = file.supplyOrders ?? [];
+  return orders.length === 0 || orders.some((order) => !isYes(order.soCancelled));
+}
+
 async function login() {
   const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
     method: "POST",
@@ -77,8 +87,8 @@ function searchPath(pass, dashboardFilter, options = {}) {
   return `/api/files/search?${params.toString()}`;
 }
 
-function addCheck(checks, passName, area, label, count, filter, mode = "not-exceed") {
-  checks.push({ passName, area, label, count: n(count), filter, mode });
+function addCheck(checks, passName, area, label, count, filter, mode = "not-exceed", searchCount = count) {
+  checks.push({ passName, area, label, count: n(count), searchCount: n(searchCount), filter, mode });
 }
 
 function collectStatus3(checks, passName, summary) {
@@ -150,6 +160,7 @@ function collectDelay(checks, passName, summary, pass) {
       row.count,
       `delayStatus:${pass.delayDays ?? 5}:${row.key}`,
       "exact",
+      row.fileCount ?? row.count,
     );
   }
 }
@@ -356,7 +367,8 @@ async function main() {
       const checks = [];
       const totalFilesResult = await api(searchPath(pass, "totalFiles"), token);
       const totalFilesSearchTotal = n(totalFilesResult.total);
-      if (n(summary.reportFileCount) !== totalFilesSearchTotal) {
+      const reportsEligibleSearchTotal = (totalFilesResult.files ?? []).filter(isCountedByReports).length;
+      if (n(summary.reportFileCount) !== reportsEligibleSearchTotal) {
         issues.push({
           passName: pass.name,
           area: "Report scope",
@@ -364,7 +376,9 @@ async function main() {
           count: n(summary.reportFileCount),
           filter: "totalFiles",
           searchTotal: totalFilesSearchTotal,
-          issue: "reportFileCount mismatch",
+          reportsEligibleSearchTotal,
+          cancelledFilesExcluded: totalFilesSearchTotal - reportsEligibleSearchTotal,
+          issue: "reportFileCount differs from Search after Reports cancellation exclusions",
         });
       }
       collectStatus3(checks, pass.name, summary);
@@ -378,8 +392,8 @@ async function main() {
         nonZero += 1;
         const result = await api(searchPath(pass, check.filter), token);
         const searchTotal = n(result.total);
-        if (check.mode === "exact" && searchTotal !== check.count) {
-          issues.push({ ...check, searchTotal, issue: "exact count mismatch" });
+        if (check.mode === "exact" && searchTotal !== check.searchCount) {
+          issues.push({ ...check, searchTotal, issue: "Search file count mismatch" });
         } else if (check.mode === "not-exceed" && searchTotal > check.count) {
           issues.push({ ...check, searchTotal, issue: "landing exceeds counter" });
         } else if (check.mode === "nonzero" && searchTotal === 0) {

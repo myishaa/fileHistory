@@ -262,14 +262,27 @@ const adminSectionKeys = new Set([
   "archive",
 ]);
 
+const milestoneHelperSectionOrder = [
+  "What is counted",
+  "Details",
+  "Included and Excluded",
+  "Filter",
+  "Add or activate",
+  "Reorder",
+  "Remove",
+  "Clicking a result",
+  "Caution",
+  "Example",
+];
+
 const settingsSectionHelpers = {
   theme: [
-    "Choose how the software looks for your account.",
-    "This changes appearance only; it does not change files or workflow rules.",
+    "Sets the appearance for this account.",
+    "Appearance only; file data and workflow rules stay unchanged.",
   ],
   user: [
-    "See your account, role, and the divisions you can access.",
-    "Display preferences apply only to your account.",
+    "Account details include the assigned role and accessible divisions.",
+    "Display preferences are saved per account.",
   ],
   workspace: [
     "These are shared settings for everyone.",
@@ -282,15 +295,15 @@ const settingsSectionHelpers = {
     "Resetting a local override restores the latest value set here.",
   ],
   yearSetup: [
-    "Choose the FY whose division budgets you want to set up.",
-    "This is separate from the Global Filter, which chooses which files you view.",
+    "Select the FY for division budget setup.",
+    "Global Filter separately controls which files are shown.",
     "Example: save a budget under 2026-27. It stays with that FY even if the Global Filter shows 2025-26 files.",
   ],
   mmgSummary: [
     "These choices appear in Reports > MMG Summary.",
-    "Each checked field appears as a report row and in PDF/Excel exports. Your label is used for that row.",
+    "Each checked field appears as a row in MMG Summary and in PDF/Excel exports. Its label is used both on screen and in exports.",
     "Unchecking a field hides the row; its calculation and file data stay unchanged.",
-    "Example: hide 'Total demands' to remove that row, or rename it 'Demand count' without changing its value.",
+    "Example: rename 'Total demands' to 'Demand count'. The new label appears in the report and its exports; the value stays the same.",
   ],
   demandProcessing: [
     "Presets choose which demand-processing dates are compared.",
@@ -307,10 +320,12 @@ const settingsSectionHelpers = {
     "Manage indentor contact details and division assignment here.",
     "Changing a name updates the directory only. Existing files keep the name saved when they were entered.",
     "An indentor used by an active or archived file cannot be deleted.",
-    "Example: change 'Rina Sharma' to 'Reena Sharma'. New files use the corrected name; older files keep 'Rina Sharma'.",
+    "Example: change 'Rina Sharma' to 'Reena Sharma'.",
+    "Example: New files use 'Reena Sharma'; older files keep 'Rina Sharma'.",
   ],
   firms: [
     "Maintain the firm directory and Firm Unique No. here.",
+    "Admin or sub-admin can add a firm type beside the selector; it becomes available here and in S.O. details.",
     "For Firm Type 'Other', enter the specific type here. Choosing this firm for a new S.O. copies both values.",
     "Change a firm name only to correct that same firm's directory entry. Existing files and S.O.s keep their saved name.",
     "A firm used by an active or archived file/S.O. cannot be deleted.",
@@ -324,12 +339,12 @@ const settingsSectionHelpers = {
   fileTypes: [
     "Choose whether each new file type follows Goods & Services or Contract rules.",
     "Once a file uses a type, its name and group are locked. Inactivate it to keep it off new files.",
-    "Example: add a new AMC-type as Contract. You cannot change a used Goods & Services type into Contract.",
+    "Example: Add a new AMC type under Contract; a Goods & Services type already used by a file cannot later be changed to Contract.",
   ],
   modes: [
     "Modes such as OBM, PBM, SBM, LBM, and LPC appear in file entry, filters, and reports.",
     "A mode already used on a file cannot be renamed. Inactivate it to stop offering it for new files.",
-    "Example: if a mode's meaning changes, add a new mode and inactivate the old one. Existing files keep their original mode.",
+    "Example: when a mode's meaning changes, add a new mode and inactivate the old one. Existing files keep their original mode.",
   ],
   firmTypes: [
     "Firm types such as MSE and Non-MSE are used in S.O. details and firm-type reports.",
@@ -339,7 +354,7 @@ const settingsSectionHelpers = {
   fileMarkers: [
     "Marker codes tag special situations so files can be found later.",
     "A code already used on a file cannot be renamed. Inactivate it to stop using it on new files.",
-    "Example: if 'URG' is being given a new meaning, create a new code. Existing files keep the original URG tag.",
+    "Example: if 'URG' gets a new meaning, create a new code. Existing files keep the original URG tag.",
   ],
   tcec: [
     "Committee names can be selected in TCEC fields and are shown in related reports.",
@@ -351,35 +366,39 @@ const settingsSectionHelpers = {
     "Choose whether each band applies to demand value, S.O. value, or both.",
   ],
   anomalyGovernance: [
-    "Shows suspected data issues and accepted/rejected anomaly decisions.",
-    "Use this to review anomaly decisions and reopen accepted/rejected items if needed.",
+    "The anomaly list contains suspected data issues and accepted/rejected decisions.",
+    "Anomaly decisions can be reviewed here; accepted or rejected items can be reopened when needed.",
     "Example: revoking an accepted decision makes that anomaly available for review again; it does not change the underlying file data.",
   ],
   milestones: [
-    "This list controls the order of stages shown on file workflow boards and in Status-2 and Status-4.",
-    "Add: Choose where a new stage should appear. A custom stage applies to every file, so add only steps every file must follow.",
-    "Activate: Brings an inactive stage back at the end, just before File Closed. You can then move it with the arrows.",
-    "Activating a stage makes it available again; it does not add dates or mark existing files complete.",
-    "Move a stage to change where it appears, not a file's actual progress.",
-    "Reorder: In Add/Edit File > Milestones, it changes the order of applicable stages on the file's milestone board. On the Dashboard, it changes the configured stage order in Status-2 and Status-4.",
-    "Reorder: Status-1 and Status-3 use their own standard stage logic, so changing this sequence does not change their counters.",
-    "Moving a stage does not change file dates, completion marks, automatic rules, or whether one stage waits for another.",
-    "Timeline uses the dates entered on the file. An event with an earlier date appears first, even if its stage is lower in this list. This list breaks ties for same-day events; undated events follow it in Show all dates.",
-    "Reorder: File Closed stays last, and the software positions some standard stages automatically.",
-    "Inactivate: Hides a stage from the active list. Its saved data is not erased immediately, but it may disappear from file checklists.",
-    "If you later edit and save a file that used an inactive stage, its completion tick for that stage may be removed.",
-    "A used stage can only be inactivated. An unused stage can be deleted permanently.",
-    "Caution: Changes affect workflow displays across the software. Check the usage count and make sure you understand the effect before changing this list.",
-    "Example: add 'Technical Review' only if every file must pass it. If it applies only to contract files, do not add it as a general milestone.",
-    "Example: activating an inactive 'Committee Review' stage puts it back at the end of the list for future use. It does not add dates or mark the stage complete on existing files.",
-    "Example: if you move 'Financial Sanction' above 'Bidding', the Milestones board and Status-2/Status-4 display that order. If the Bidding date on a file is earlier than its Financial Sanction date, the Timeline still shows Bidding first; neither date nor the file's progress is changed by the reorder.",
+    "The 'Used in N files' figure counts unique files, including archived files, where this milestone is current or completed on the file, an S.O., or its advance-payment record.",
+    "Each file is counted once, even if the milestone appears in several places.",
+    "Details: This list controls the active milestone sequence in Add/Edit File > Milestones and the configured stage order in Dashboard Status-2 and Status-4.",
+    "Details: Changing the sequence changes where milestones are displayed.",
+    "Details: It does not change saved dates, completion marks, current progress, or the rules that move a file through its workflow.",
+    "Details: Status-1 and Status-3 use their own standard workflow logic, so this sequence does not change their counters.",
+    "Included and Excluded: Inactive milestones are excluded from the active sequence, but their saved dates and completion data are not erased immediately.",
+    "Included and Excluded: An inactive milestone may no longer appear on a file's checklist.",
+    "Add or activate: Add places a new milestone at the selected position.",
+    "Add or activate: A custom milestone applies to every file, so add it only when every file must follow that step.",
+    "Add or activate: Activate restores an inactive milestone at the end of the active sequence, just before File Closed.",
+    "Add or activate: The milestone becomes available again; no dates or completion marks are added to existing files.",
+    "Reorder: Use the arrows to change the displayed sequence.",
+    "Reorder: File Closed remains last, and some standard milestones stay in positions controlled by the software.",
+    "Reorder: Timeline places dated events by their recorded dates, even when that differs from this sequence.",
+    "Reorder: This sequence breaks ties for events on the same day and orders undated milestones in Show all dates.",
+    "Remove: A milestone used by a file can only be inactivated. An unused milestone can be deleted permanently.",
+    "Remove: If a file using an inactive milestone is edited and saved, its completion mark for that milestone may be removed.",
+    "Caution: Review the 'Used in files' figure before inactivating a milestone, because it may disappear from checklists on files that use it.",
+    "Example: Add 'Technical Review' only if every file must pass it. If it applies only to contract files, do not add it as a general milestone.",
+    "Example: Move Financial Sanction above Bidding to change their display order. If a file's Bidding date is earlier, Timeline still shows Bidding first; neither date nor file progress changes.",
   ],
   presets: [
-    "Use these presets on the Search File page from the 'Preset fields' menu above the results table.",
+    "Search File presets are available from the 'Preset fields' menu above the results table.",
     "A preset chooses which columns appear in the results and in PDF/Excel exports. It does not change the search, matching files, or counts.",
-    "Create a preset when you often need the same set of columns. Use Manual for a one-time column change.",
-    "Admin-created presets are shared with users. Other users can create personal presets visible only to their own login.",
-    "Example: create a 'Payment review' preset with Control No., Indentor, S.O. and payment details if you regularly export those columns together.",
+    "Create a preset for a column set used regularly. Use Manual for a one-time column change.",
+    "Admin-created presets are shared. Personal presets are visible only to the account that created them.",
+    "Example: a 'Payment review' preset can group Control No., Indentor, S.O., and payment details for recurring exports.",
     "Example: choosing a preset changes the table/export columns, but the same files remain in the results.",
   ],
   users: [
@@ -389,11 +408,11 @@ const settingsSectionHelpers = {
   ipAccess: [
     "Controls login access by trusted IP address.",
     "Default mode is Off, so existing login behavior is unchanged unless Admin enables monitoring or restriction.",
-    "Use Notify mode first to collect real IP addresses before switching to Restrict mode.",
+    "Notify mode collects real IP addresses before Restrict mode is enabled.",
     "Archived IP attempts can be permanently deleted with the configured deletion password.",
   ],
   archive: [
-    "Shows archived records and their restore or permanent-delete actions.",
+    "Archived records appear here with restore and permanent-delete actions.",
     "Restore returns an archived setting to active use; permanent deletion removes it and needs the configured deletion password.",
   ],
 } satisfies Record<string, string[]>;
@@ -403,12 +422,12 @@ const workspaceYearHelpers = {
     "Makes the chosen FY the software's official current FY.",
     "New files will use this year as the current FY.",
     "Global Active-files filter options will treat this FY as the current FY.",
-    "Use this when the office has moved to a new financial year.",
+    "Set the Current FY when the office moves to a new financial year.",
   ],
   lockSelection: [
     "When unlocked, new files can be added by selecting any of the two FYs options available on Add File page.",
     "When locked, new files can be added only to current FY.",
-    "Use Unlocked during the FY transition period when it is permitted to raise demands for next FY in current FY itself.",
+    "Unlocked keeps next-FY demands available during an approved transition period.",
   ],
 } satisfies Record<string, string[]>;
 
@@ -426,7 +445,7 @@ const settingsControlHelpers = {
   workspaceDelete: [
     "Deletes only the selected FY from workspace year options.",
     "Current FY and any FY having files cannot be deleted.",
-    "This action needs the deletion password.",
+    "Deletion password required.",
   ],
   firmTypeName: [
     "Firm Type is chosen in Supply Order details.",
@@ -435,16 +454,16 @@ const settingsControlHelpers = {
   ],
   firmTypeAdd: [
     "Adds a new firm type option for Supply Order firm details.",
-    "The option becomes available wherever firm type selection or reporting is used.",
+    "Users can select this type in S.O. details and see it in related reports.",
   ],
   firmTypeDelete: [
     "Removes this firm type option from Settings.",
     "Unused firm types can be deleted.",
-    "Used firm types should be inactivated for future selection; old S.O. rows keep their saved text.",
+    "To stop offering a used type on new S.O.s, inactivate it. Older S.O.s keep their saved value.",
   ],
   fileTypeGroup: [
     "Goods & Services and Contract file types follow different steps.",
-    "Choose the correct group when you add a type. Once a file uses it, the type's name and group cannot be changed.",
+    "Select the correct group when adding a type. Once a file uses it, the type's name and group cannot be changed.",
     "Example: add a new AMC type under Contract so its files use the contract workflow.",
   ],
   fileTypeDelete: [
@@ -454,17 +473,17 @@ const settingsControlHelpers = {
   ],
   demandProcessingDayRanges: [
     "Used in Reports > Demand processing analysis.",
-    "The report puts the number of days between two dates into one of these ranges.",
+    "Demand Processing Analysis groups the number of days between two dates into these ranges.",
     "Changing a range changes the grouping only; file dates and measured gaps stay the same.",
   ],
   genericDelete: [
-    "You can delete a choice that no file uses.",
-    "If files already use it, keep it for history and inactivate it when possible.",
+    "Unused choices can be deleted.",
+    "Choices already used by files should be retained for history and inactivated when available.",
     "Example: inactivate an old mode to hide it from new entries. Existing files keep their saved mode.",
   ],
   userDelete: [
     "Moves this user account out of active use.",
-    "This action needs the deletion password.",
+    "Deletion password required.",
   ],
   universalViewerCashOutgoScope: [
     "View-only users cannot save MER or Cash Out Go Plan changes.",
@@ -477,7 +496,7 @@ const settingsControlHelpers = {
   ],
   archiveDelete: [
     "Permanently deletes the archived item.",
-    "This action needs the deletion password and cannot be undone from this screen.",
+    "Deletion password required. This action cannot be undone from this screen.",
   ],
   ipMode: [
     "Off leaves login unchanged.",
@@ -485,19 +504,19 @@ const settingsControlHelpers = {
     "Restrict allows login only from active addresses in the trusted list.",
   ],
   ipCurrent: [
-    "Shows the IP address detected for the current browser/backend request.",
+    "The detected IP address belongs to the current browser/backend request.",
     "Add it as trusted before enabling Restrict mode.",
   ],
   ipAddCurrent: [
     "Adds the currently detected IP to the trusted list.",
-    "Use this when you are logged in from an authorised PC.",
+    "Add it only when the detected address belongs to an authorised PC.",
   ],
   ipManualAddress: [
     "Enter an IP address that should be trusted for login.",
     "Keep the value exact because Restrict mode checks this address.",
   ],
   ipRemarks: [
-    "Use remarks to identify the PC, office, user, or location.",
+    "Remarks can identify the PC, office, user, or location.",
     "Remarks help Admin review trusted IPs later.",
   ],
   ipAddTrusted: [
@@ -517,17 +536,17 @@ const settingsControlHelpers = {
     "It is hidden from the active list but not permanently deleted.",
   ],
   ipAttemptBin: [
-    "Shows archived new-IP login attempts.",
+    "Archived new-IP login attempts appear here.",
     "Permanent deletion from this bin needs the configured deletion password.",
   ],
   anomalyWorkflow: [
-    "Current shows active suspected issues, including rejected or revoked items if the data issue still exists.",
-    "Received request shows user acceptance requests waiting for Admin.",
-    "Accepted, rejected, and revoked tabs show decision history.",
+    "Current lists active suspected issues, including rejected or revoked items while the data issue remains.",
+    "Received request lists acceptance requests waiting for Admin.",
+    "Accepted, rejected, and revoked tabs contain decision history.",
   ],
   anomalyRefresh: [
-    "Reloads anomaly requests and decision history.",
-    "Use this after another user has submitted or reviewed an anomaly.",
+    "Refresh reloads anomaly requests and decision history.",
+    "Refresh after another user submits or reviews an anomaly.",
   ],
   anomalyFileAccept: [
     "Accepts this anomaly only for the selected file.",
@@ -547,7 +566,7 @@ const settingsControlHelpers = {
   ],
   anomalyClear: [
     "Clears selected rejected or revoked decision rows from the visible history.",
-    "This action asks for your account password.",
+    "The account password is required.",
   ],
   anomalyRuleToggle: [
     "Enables or disables this custom anomaly rule.",
@@ -1172,12 +1191,24 @@ function SettingsTabTrigger({
   return (
     <span className="inline-flex items-center gap-1">
       <TabsTrigger value={value}>{label}</TabsTrigger>
-      <SettingsHelper items={settingsSectionHelpers[helperKey]} label={`${label} help`} />
+      <SettingsHelper
+        items={settingsSectionHelpers[helperKey]}
+        label={`${label} help`}
+        sectionOrder={helperKey === "milestones" ? milestoneHelperSectionOrder : undefined}
+      />
     </span>
   );
 }
 
-function SettingsHelper({ items, label }: { items: string[]; label: string }) {
+function SettingsHelper({
+  items,
+  label,
+  sectionOrder,
+}: {
+  items: string[];
+  label: string;
+  sectionOrder?: string[];
+}) {
   const bullets = splitHelperText(items);
   return (
     <TooltipProvider delayDuration={150}>
@@ -1197,7 +1228,7 @@ function SettingsHelper({ items, label }: { items: string[]; label: string }) {
           align="start"
           className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
-          <HelperContent lines={bullets} />
+          <HelperContent lines={bullets} sectionOrder={sectionOrder} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -1387,7 +1418,7 @@ function CashOutGoOffsetSettings({
     <div className="mt-4 rounded-md border border-border bg-background p-4">
       <h4 className="text-sm font-semibold">Cash Out Go forecast offsets</h4>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
-        {scopeNote} Click Save shared offsets to keep your change for future visits. It remains in effect until changed and saved again. Row-specific overrides remain separate where the report allows them.
+        {scopeNote} Save shared offsets to keep changes for future visits. They remain in effect until changed and saved again. Row-specific overrides remain separate where the report allows them.
       </p>
       {loading ? <p className="text-xs text-muted-foreground">Loading shared offsets...</p> : null}
       <div className="grid gap-3 md:grid-cols-3">
@@ -1423,7 +1454,7 @@ function CashOutGoOffsetSettings({
           {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : null}
         </div>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">You can view these values; your role cannot change shared Cash Out Go offsets.</p>
+        <p className="mt-3 text-xs text-muted-foreground">These values are view-only for this role; shared Cash Out Go offsets cannot be changed here.</p>
       )}
     </div>
   );
@@ -1466,7 +1497,7 @@ function PreferenceSettings() {
       <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <h2 className="text-sm font-semibold mb-1">UI theme</h2>
         <p className="text-xs text-muted-foreground mb-5">
-          Choose the display theme for your own login.
+          Sets the display theme for this account.
         </p>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -1502,7 +1533,7 @@ function AccountSettings() {
   return (
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">User settings</h2>
-      <p className="text-xs text-muted-foreground mb-5">View your account and access details.</p>
+      <p className="text-xs text-muted-foreground mb-5">Account and access details.</p>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Name" value={activeUser?.name ?? "Not signed in"} />
@@ -1548,7 +1579,7 @@ function AddEditRibbonSettings() {
       <h2 className="text-sm font-semibold mb-1">Add/Edit file top ribbon</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Demand description is always shown on the first line. Choose the second and third line for
-        your own login.
+        this account.
       </p>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -1580,7 +1611,7 @@ function OffsetDaysSettings() {
         activeUser.cashOutgoEditScope === "global"));
   const cashOutGoScopeNote =
     activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal"
-      ? "Your edits apply only to your personal Cash Out Go view."
+      ? "Edits apply only to this account's personal Cash Out Go view."
       : "Authorized edits apply to the shared Cash Out Go Plan.";
 
   const offsets = [
@@ -1591,7 +1622,7 @@ function OffsetDaysSettings() {
       onChange: (value: number) => store.updateSettings({ preSoDefaultSoOffsetDays: value }),
       helper: [
         "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
-        "Counts from the selected pre-S.O. milestone date to estimate when the S.O. may be placed.",
+        "The selected pre-S.O. milestone date starts the interval used to estimate the S.O. date.",
       ],
     },
     {
@@ -1601,7 +1632,7 @@ function OffsetDaysSettings() {
       onChange: (value: number) => store.updateSettings({ preSoDefaultPaymentOffsetDays: value }),
       helper: [
         "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
-        "Counts from the estimated S.O. date to estimate the payment date.",
+        "The estimated S.O. date starts the interval used to estimate the payment date.",
       ],
     },
     {
@@ -1769,18 +1800,20 @@ function WorkspaceSettings() {
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(220px,0.7fr)_minmax(260px,1fr)]">
             <label className="block">
               <div className="mb-1.5 text-xs font-medium">FY</div>
-              <select
+              <SearchableDropdown
                 value={workspaceYear}
-                onChange={(event) => setWorkspaceYear(event.target.value)}
+                onChange={(year) => setWorkspaceYear(year || settings.financialYear)}
+                options={[]}
+                optionItems={financialYears.map((year) => ({
+                  value: year,
+                  label: displayFinancialYearLabel(year),
+                }))}
+                placeholder="Select financial year"
+                deferChangeUntilSelect
+                allowCustomValue={false}
                 disabled={!canEditWorkspaceGlobals}
-                className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-              >
-                {financialYears.map((year) => (
-                  <option key={year} value={year}>
-                    {displayFinancialYearLabel(year)}
-                  </option>
-                ))}
-              </select>
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+              />
             </label>
 
             <div className="block">
@@ -3704,10 +3737,14 @@ function MilestoneSettings() {
     <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-1 inline-flex items-center gap-1.5">
         <h2 className="text-sm font-semibold">Milestones</h2>
-        <SettingsHelper items={settingsSectionHelpers.milestones} label="Milestones help" />
+        <SettingsHelper
+          items={settingsSectionHelpers.milestones}
+          label="Milestones help"
+          sectionOrder={milestoneHelperSectionOrder}
+        />
       </div>
       <p className="text-xs text-muted-foreground mb-5">
-        Milestones affect workflow boards and Status views. Review the guidance before changing them.
+        Controls the active milestone order on file boards and in Dashboard Status-2 and Status-4.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
@@ -3880,7 +3917,7 @@ function TableFieldPresetSettings() {
           </div>
           <p className="text-xs text-muted-foreground">
             Shared presets are set by admin and visible to all. Add personal presets visible only to
-            your own login.
+            the account that created them.
           </p>
         </div>
         <button
@@ -3969,8 +4006,8 @@ function TableFieldPresetSettings() {
               </div>
               {!selectedPresetEditable ? (
                 <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
-                  This shared preset is managed by admin. Add a preset to create your own editable
-                  version.
+                  This shared preset is managed by Admin. Add a personal preset to create an
+                  editable version.
                 </div>
               ) : null}
 
@@ -4429,7 +4466,7 @@ function MmgSummarySettings() {
             <SettingsHelper items={settingsSectionHelpers.mmgSummary} label="MMG Summary help" />
           </div>
           <p className="text-xs text-muted-foreground">
-            Choose the rows and row labels shown in Reports &gt; MMG Summary.
+            Choose the rows and labels shown in Reports &gt; MMG Summary and its exports.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -4498,7 +4535,7 @@ function MmgSummarySettings() {
                         <span>{option.label}</span>
                       </label>
                       <label className="text-xs text-muted-foreground">
-                        <span className="mb-1 block">Export label</span>
+                        <span className="mb-1 block">Display and export label</span>
                         <input
                           value={field.label}
                           onChange={(event) =>
@@ -4903,6 +4940,7 @@ function FirmDatabaseSettings() {
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     activeUser?.role === "editor";
+  const canManageFirmTypes = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const canDeleteFirms = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
   const [draft, setDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [search, setSearch] = useState("");
@@ -4917,7 +4955,10 @@ function FirmDatabaseSettings() {
   const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
   const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
-  const firmTypeOptions = normalizeFirmTypes(settings.firmTypes);
+  const firmTypeOptions = normalizeFirmTypes([
+    ...normalizeFirmTypes(settings.firmTypes),
+    "Other",
+  ]);
   const firmUniqueNoLabelChanged = (labelDraft.trim() || "Firm Unique No.") !== firmUniqueNoLabel;
 
   useEffect(() => {
@@ -4970,6 +5011,19 @@ function FirmDatabaseSettings() {
   };
   const updateEditDraft = (key: keyof FirmDraft, value: string) => {
     setEditDraft((current) => ({ ...current, [key]: value }));
+  };
+  const addFirmType = (value: string, target: "new" | "edit") => {
+    const trimmed = value.trim();
+    if (!canManageFirmTypes || !trimmed) return;
+    const existing = firmTypeOptions.find(
+      (firmType) => firmType.toLowerCase() === trimmed.toLowerCase(),
+    );
+    const selected = existing ?? trimmed;
+    if (!existing) {
+      void store.updateSettings({ firmTypes: normalizeFirmTypes([...firmTypeOptions, trimmed]) });
+    }
+    if (target === "new") updateDraft("firmType", selected);
+    else updateEditDraft("firmType", selected);
   };
 
   const addFirm = async () => {
@@ -5116,6 +5170,7 @@ function FirmDatabaseSettings() {
             value={draft.firmType ?? ""}
             options={firmTypeOptions}
             onChange={(value) => updateDraft("firmType", value)}
+            onAddType={canManageFirmTypes ? (value) => addFirmType(value, "new") : undefined}
           />
           {draft.firmType?.toUpperCase() === "OTHER" ? (
             <FirmInput
@@ -5250,6 +5305,7 @@ function FirmDatabaseSettings() {
                             value={editDraft.firmType ?? ""}
                             options={firmTypeOptions}
                             onChange={(value) => updateEditDraft("firmType", value)}
+                            onAddType={canManageFirmTypes ? (value) => addFirmType(value, "edit") : undefined}
                           />
                           {editDraft.firmType?.toUpperCase() === "OTHER" ? (
                             <FirmInput
@@ -5406,25 +5462,91 @@ function FirmTypeSelect({
   value,
   options,
   onChange,
+  onAddType,
 }: {
   value: string;
   options: string[];
   onChange: (value: string) => void;
+  onAddType?: (value: string) => void;
 }) {
+  const [adding, setAdding] = useState(false);
+  const [newType, setNewType] = useState("");
   const values = Array.from(new Set([...options, ...(value ? [value] : [])]));
+
+  const addType = () => {
+    const trimmed = newType.trim();
+    if (!trimmed || !onAddType) return;
+    onAddType(trimmed);
+    setNewType("");
+    setAdding(false);
+  };
+
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-    >
-      <option value="">Select Firm Type</option>
-      {values.map((option) => (
-        <option key={option} value={option}>
-          {option}
-        </option>
-      ))}
-    </select>
+    <div className="space-y-1.5">
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+      >
+        <option value="">Select Firm Type</option>
+        {values.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      {onAddType ? (
+        adding ? (
+          <div className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={newType}
+              onChange={(event) => setNewType(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addType();
+                }
+                if (event.key === "Escape") setAdding(false);
+              }}
+              placeholder="New firm type"
+              aria-label="New firm type"
+              className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+            />
+            <button
+              type="button"
+              onClick={addType}
+              disabled={!newType.trim()}
+              aria-label="Add firm type"
+              title="Add firm type"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground hover:bg-accent disabled:opacity-50"
+            >
+              <Check className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAdding(false);
+                setNewType("");
+              }}
+              aria-label="Cancel adding firm type"
+              title="Cancel"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="inline-flex h-7 items-center gap-1 rounded px-1.5 text-xs text-primary hover:bg-accent"
+          >
+            <Plus className="size-3.5" /> Add firm type
+          </button>
+        )
+      ) : null}
+    </div>
   );
 }
 
@@ -5765,21 +5887,25 @@ function IndentorSettings() {
           </p>
 	        </div>
         <div className="flex w-full flex-col gap-2 sm:max-w-xl sm:flex-row">
-          <select
+          <SearchableDropdown
             value={divisionFilter}
-            onChange={(event) => {
-              setDivisionFilter(event.target.value);
+            onChange={(value) => {
+              setDivisionFilter(value || "all");
               setPage(1);
             }}
+            options={[]}
+            optionItems={[
+              { value: "all", label: "All divisions" },
+              ...availableDivisions.map((division) => ({
+                value: division.id,
+                label: division.name,
+              })),
+            ]}
+            placeholder="All divisions"
+            deferChangeUntilSelect
+            allowCustomValue={false}
             className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-          >
-            <option value="all">All divisions</option>
-            {availableDivisions.map((division) => (
-              <option key={division.id} value={division.id}>
-                {division.name}
-              </option>
-            ))}
-          </select>
+          />
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -7672,19 +7798,20 @@ function IndentorDivisionSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <select
+    <SearchableDropdown
       value={value}
+      onChange={onChange}
+      options={[]}
+      optionItems={divisions.map((division) => ({
+        value: division.id,
+        label: division.name,
+      }))}
+      placeholder="Select division"
+      deferChangeUntilSelect
+      allowCustomValue={false}
       disabled={disabled}
-      onChange={(event) => onChange(event.target.value)}
-      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-70"
-    >
-      <option value="">Select division</option>
-      {divisions.map((division) => (
-        <option key={division.id} value={division.id}>
-          {division.name}
-        </option>
-      ))}
-    </select>
+      className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-70"
+    />
   );
 }
 

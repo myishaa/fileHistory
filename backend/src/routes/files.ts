@@ -447,12 +447,18 @@ const supplyOrderFields = {
 } as const satisfies Record<string, readonly [string, ValueKind]>;
 
 const stagedSupplyOrderExportKeys = new Set<string>([
+  "currentMilestone",
+  "deliveryPeriodStartDate",
   "dpDate",
   "dpExtension",
   "dpExtensionCount",
   "ld",
   "revisedDp",
+  "stageDeliveryLabel",
+  "stageAmountCapital",
+  "stageAmountRevenue",
   "materialReceiptDate",
+  "jobCompletionDate",
   "irPreparationDate",
   "irReceiptDate",
   "billPreparationDate",
@@ -1257,27 +1263,19 @@ function buildRowwiseFileSearchExportTable(
   const headers = [
     "S.No.",
     ...fileColumns.map((column) => column.label),
-    "S.O. No.",
-    "Delivery stage",
-    "Supplementary bill",
-    "Bill return cycle",
     ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: string[][] = [];
   files.forEach((file, fileIndex) => {
-    const rowEntries = getRowwiseFileSearchExportEntries(file, supplyOrderColumns);
+    const rowEntries = supplyOrderColumns.length
+      ? getRowwiseFileSearchExportEntries(file, supplyOrderColumns)
+      : [{ orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 }];
     rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         String(fileIndex + 1),
         ...fileColumns.map((column) =>
           entryIndex === 0 ? getFileExportValue(file, column.key) || "Not set" : "",
         ),
-        entry.order && isFirstRowwiseFileSearchExportOrderRow(entry)
-          ? String(entry.orderIndex + 1)
-          : "",
-        entry.stage ? `Delivery-${entry.stageIndex + 1}` : "",
-        entry.supplementaryBill ? String(entry.supplementaryBillIndex + 1) : "",
-        entry.billReturnCycle ? String(entry.billReturnCycleIndex + 1) : "",
         ...supplyOrderColumns.flatMap((column) =>
           getRowwiseSupplyOrderExportValues(file, column.key, entry),
         ),
@@ -1347,6 +1345,7 @@ type RowwiseFileSearchExportEntry = {
   supplementaryBillIndex: number;
   billReturnCycle?: BillReturnCycle;
   billReturnCycleIndex: number;
+  isPrimaryOrderRow?: boolean;
 };
 
 function getRowwiseFileSearchExportEntries(
@@ -1359,8 +1358,10 @@ function getRowwiseFileSearchExportEntries(
       { orderIndex: -1, stageIndex: -1, supplementaryBillIndex: -1, billReturnCycleIndex: -1 },
     ];
   }
-  const needsSupplementaryRows = supplyOrderColumns.some((column) =>
-    isSupplementaryBillExportField(column.key),
+  const needsSupplementaryBillRows = supplyOrderColumns.some(
+    (column) =>
+      isSupplementaryBillExportField(column.key) &&
+      column.key !== "supplementaryBillReturnCycles",
   );
   const needsBillReturnRows = supplyOrderColumns.some(
     (column) => column.key === "billReturnCycles",
@@ -1371,7 +1372,10 @@ function getRowwiseFileSearchExportEntries(
 
   return orders.flatMap((order, orderIndex) => {
     const entries: RowwiseFileSearchExportEntry[] = [];
-    if (order.stageDelivery === "Yes" && order.stageDeliveries?.length) {
+    const needsStageRows = supplyOrderColumns.some((column) =>
+      shouldUseStageValueForFileSearchExport(order, column.key),
+    );
+    if (needsStageRows && order.stageDelivery === "Yes" && order.stageDeliveries?.length) {
       entries.push(
         ...order.stageDeliveries.map((stage, stageIndex) => ({
           order,
@@ -1382,14 +1386,6 @@ function getRowwiseFileSearchExportEntries(
           billReturnCycleIndex: -1,
         })),
       );
-    } else {
-      entries.push({
-        order,
-        orderIndex,
-        stageIndex: -1,
-        supplementaryBillIndex: -1,
-        billReturnCycleIndex: -1,
-      });
     }
 
     if (needsBillReturnRows) {
@@ -1407,7 +1403,7 @@ function getRowwiseFileSearchExportEntries(
       );
     }
 
-    if (needsSupplementaryRows) {
+    if (needsSupplementaryBillRows || needsSupplementaryReturnRows) {
       normalizeSupplementaryBillsForExport(order.supplementaryBills).forEach(
         (supplementaryBill, supplementaryBillIndex) => {
           const cycles = normalizeBillReturnCyclesForExport(supplementaryBill.billReturnCycles);
@@ -1425,19 +1421,30 @@ function getRowwiseFileSearchExportEntries(
             });
             return;
           }
-          entries.push({
-            order,
-            orderIndex,
-            stageIndex: -1,
-            supplementaryBill,
-            supplementaryBillIndex,
-            billReturnCycleIndex: -1,
-          });
+          if (needsSupplementaryBillRows) {
+            entries.push({
+              order,
+              orderIndex,
+              stageIndex: -1,
+              supplementaryBill,
+              supplementaryBillIndex,
+              billReturnCycleIndex: -1,
+            });
+          }
         },
       );
     }
 
-    return entries;
+    if (!entries.length) {
+      entries.push({
+        order,
+        orderIndex,
+        stageIndex: -1,
+        supplementaryBillIndex: -1,
+        billReturnCycleIndex: -1,
+      });
+    }
+    return entries.map((entry, index) => ({ ...entry, isPrimaryOrderRow: index === 0 }));
   });
 }
 
@@ -1499,17 +1506,23 @@ function getRowwiseSupplyOrderExportValues(
   if (entry.stage && shouldUseStageValueForFileSearchExport(entry.order, key)) {
     return [String((entry.stage as Record<string, unknown>)[key] ?? "")];
   }
-  if (!isFirstRowwiseFileSearchExportOrderRow(entry)) return [""];
+  if (!entry.isPrimaryOrderRow) return [""];
   return [getSupplyOrderExportValue(entry.order, key)];
-}
-
-function isFirstRowwiseFileSearchExportOrderRow(entry: RowwiseFileSearchExportEntry) {
-  return entry.stageIndex <= 0 && !entry.supplementaryBill && !entry.billReturnCycle;
 }
 
 function shouldUseStageValueForFileSearchExport(order: SupplyOrderDetail, key: string) {
   if (!stagedSupplyOrderExportKeys.has(key)) return false;
-  if (["billPreparationDate", "billNo", "billSentForPaymentDate", "paymentDate"].includes(key)) {
+  if (
+    [
+      "billPreparationDate",
+      "billNo",
+      "billSentForPaymentDate",
+      "paymentDate",
+      "paymentMode",
+      "actualPaymentCapital",
+      "actualPaymentRevenue",
+    ].includes(key)
+  ) {
     return order.stagePayment === "Yes";
   }
   return true;
@@ -1871,6 +1884,7 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     description: readQueryString(query.description),
     firm: readQueryString(query.firm),
     firmIdentityUniqueNo: readQueryString(query.firmIdentityUniqueNo),
+    firmIdentityName: readQueryString(query.firmIdentityName),
     firmUniqueNo: readQueryString(query.firmUniqueNo),
     firmContactNo: readQueryString(query.firmContactNo),
     firmCity: readQueryString(query.firmCity),
@@ -3479,7 +3493,7 @@ function liveSupplyOrderSql() {
   );
 }
 
-function paymentPendingSql() {
+function paymentPendingSql(options: { includeReturnedUnpaid: boolean } = { includeReturnedUnpaid: false }) {
   const contractFileType = contractFileTypeSql("f");
   const goodsServicesIrNo = `(not ${isYesSql("f.ir")} and not ${contractFileType})`;
   const nonDeliveryFileType = `(${goodsServicesIrNo} or ${contractFileType})`;
@@ -3505,7 +3519,7 @@ function paymentPendingSql() {
 	       or (not ${nonDeliveryFileType} and ${childDeliveryCompletion}))
      and not ${hasTextSql("so.payment_date")}
      and ${activeOrder}
-     and not ${billReturnHistorySql("so.bill_return_cycles")}`;
+     ${options.includeReturnedUnpaid ? "" : `and not ${billReturnHistorySql("so.bill_return_cycles")}`}`;
   const stagePaymentPending = `${hasTextSql("so.so_date")}
      and ${isYesSql("so.stage_delivery")}
      and ${isYesSql("so.stage_payment")}
@@ -3518,7 +3532,7 @@ function paymentPendingSql() {
          or (not ${nonDeliveryFileType} and ${stageDeliveryCompletion})
 	       )
 	       and coalesce(payment_stage.stage ->> 'paymentDate', '') = ''
-         and not ${billReturnHistorySql("payment_stage.stage -> 'billReturnCycles'")}
+	       ${options.includeReturnedUnpaid ? "" : `and not ${billReturnHistorySql("payment_stage.stage -> 'billReturnCycles'")}`}
 	     )`;
   return supplyOrderChildSql(
     `((${childPaymentPending}) or (${stagePaymentPending}))`,
@@ -4580,6 +4594,9 @@ function inferredOrderCurrentMilestoneMatchesSql(
 }
 
 function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: string) {
+  const paymentFollowUpMilestone = `${normalizedMilestoneSql} in (
+    'advancepayment', 'billpreparation', 'billsentforpayment', 'billreturnedforcorrection', 'payment'
+  )`;
   return `not ${isCancelledFileSql()} and (
     (${normalizedMilestoneSql} = 'financialsanction' and ${financialSanctionPendingSql()})
     or
@@ -4589,6 +4606,7 @@ function supplyOrderDrivenCurrentMilestoneConditionSql(normalizedMilestoneSql: s
       from supply_orders so_current
       where so_current.file_id = f.id
         and not ${isYesSql("so_current.so_cancelled")}
+        and (not ${paymentFollowUpMilestone} or not ${isYesSql("so_current.no_further_action")})
         and (
           (${normalizedMilestoneSql} = 'supplyorder' and ${supplyOrderPendingOrderSql("so_current")})
           or (
@@ -5516,6 +5534,13 @@ function statusSummaryFilterSql(filter: string) {
   const milestone = statusSummaryMilestones[milestoneIndex];
   if (!milestone) return "false";
 
+  if (
+    milestone.key === "refloatPostTcec" &&
+    (stage === "At previous stage" || stage === "At Previous Stage")
+  ) {
+    return `${base} and not ${isCancelledFileSql()} and ${milestonePreviousStageSql(milestone)}`;
+  }
+
   const supplyOrderDrivenStatusKeys = new Set([
     "irPreparation",
     "irReceipt",
@@ -5686,6 +5711,7 @@ function billReturnStatusFilterSql(state: "any" | "pending" | "resubmitted" | "r
   const pendingCycleSql = (source: string) => `exists (
     select 1 from (${latestCycleSql(source)}) as latest(cycle)
     where not ${hasTextSql("latest.cycle ->> 'resubmittedDate'")}
+      and not ${isYesSql("so.no_further_action")}
   )`;
   const resubmittedCycleSql = (source: string) => `exists (
     select 1 from (${latestCycleSql(source)}) as latest(cycle)
@@ -5791,8 +5817,10 @@ function supplementaryBillStatusSql(
              )`
         : state === "returnPaid"
           ? `${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${completedReturn}`
-          : state === "returned"
-            ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")} and ${openReturn}`
+      : state === "returned"
+            ? `not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
+               and ${openReturn}
+               and not ${isYesSql("so.no_further_action")}`
             : state === "resubmitted"
               ? completedReturn
               : hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'");
@@ -7178,6 +7206,7 @@ function isFirmOriginatedSearch(params: FileSearchParams) {
     dashboardFilters.some((filter) => filter.startsWith("firmAnalysis:")) ||
     Boolean(params.firm?.trim()) ||
     Boolean(params.firmIdentityUniqueNo?.trim()) ||
+    Boolean(params.firmIdentityName?.trim()) ||
     Boolean(params.firmUniqueNo?.trim()) ||
     Boolean(params.firmContactNo?.trim()) ||
     Boolean(params.firmCity?.trim()) ||
@@ -7745,7 +7774,7 @@ function dashboardFilterSql(
     const milestone = filter.slice("manualMilestoneCurrent:".length);
     const normalized = normalizeMilestoneName(milestone);
     if (normalized === "bankguarantee") return bgToBeReceivedSql("psb");
-    if (normalized === "payment") return paymentPendingSql();
+    if (normalized === "payment") return paymentPendingSql({ includeReturnedUnpaid: true });
     if (normalized === "jobcompletion") return jobCompletionFilterSql("live");
     if (normalized === "supplementarybillreturnedforcorrection") {
       return supplementaryBillStatusSql("returned");
@@ -8103,6 +8132,36 @@ function firmSearchSql(
       `${biddingApplicableSql()} and ${firmDetailsExists(
         scope,
         comparison(firmColumns[field]),
+      )}`,
+    ];
+  });
+  return parts.length ? `(${parts.join(" or ")})` : "false";
+}
+
+function firmIdentitySearchSql(
+  scopes: FirmSearchScope[],
+  firmNamePlaceholder: string,
+  firmUniqueNoPlaceholder: string,
+) {
+  const identityMatch = (nameColumn: string, uniqueNoColumn: string) => {
+    const normalizedName = `lower(trim(coalesce(${nameColumn}, '')))`;
+    const normalizedUniqueNo = `lower(trim(coalesce(${uniqueNoColumn}, '')))`;
+    return `(
+      (${firmUniqueNoPlaceholder} <> '' and ${normalizedUniqueNo} = lower(trim(${firmUniqueNoPlaceholder})))
+      or (${firmNamePlaceholder} <> '' and ${normalizedUniqueNo} = '' and ${normalizedName} = lower(trim(${firmNamePlaceholder})))
+    )`;
+  };
+  const parts = scopes.flatMap((scope) => {
+    if (scope === "so") {
+      return [
+        supplyOrderExists(identityMatch("so.firm", "so.firm_unique_no")),
+        `(${firmNamePlaceholder} <> '' and lower(trim(coalesce(f.firm, ''))) = lower(trim(${firmNamePlaceholder})))`,
+      ];
+    }
+    return [
+      `${biddingApplicableSql()} and ${firmDetailsExists(
+        scope,
+        identityMatch("ff.firm_name", "ff.firm_unique_no"),
       )}`,
     ];
   });
@@ -8478,9 +8537,10 @@ function buildSearchSql(
     const placeholder = addSqlValue(values, sqlLike(params.firm));
     conditions.push(firmSearchSql(firmSearchScopes, "firmName", placeholder));
   }
-  if (params.firmIdentityUniqueNo?.trim()) {
-    const placeholder = addSqlValue(values, params.firmIdentityUniqueNo.trim());
-    conditions.push(firmSearchSql(firmSearchScopes, "firmUniqueNo", placeholder, true));
+  if (params.firmIdentityUniqueNo?.trim() || params.firmIdentityName?.trim()) {
+    const uniqueNoPlaceholder = addSqlValue(values, params.firmIdentityUniqueNo?.trim() ?? "");
+    const namePlaceholder = addSqlValue(values, params.firmIdentityName?.trim() ?? "");
+    conditions.push(firmIdentitySearchSql(firmSearchScopes, namePlaceholder, uniqueNoPlaceholder));
   }
   if (params.firmUniqueNo?.trim()) {
     const placeholder = addSqlValue(values, sqlLike(params.firmUniqueNo));
@@ -9924,6 +9984,92 @@ async function loadFileStatusUpdates(fileId: string, user: ReturnType<typeof req
 }
 
 filesRouter.get(
+  "/identifier-suggestions",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const query = readQueryString(request.query.q)?.trim().toLowerCase() ?? "";
+    if (!query) {
+      response.json({ files: [] });
+      return;
+    }
+
+    const values: unknown[] = [query];
+    const conditions = [
+      "f.archived_at is null",
+      `(
+        left(lower(coalesce(f.unique_code, '')), char_length($1)) = $1
+        or left(lower(coalesce(f.imms, '')), char_length($1)) = $1
+        or left(lower(coalesce(f.file_no, '')), char_length($1)) = $1
+        or exists (
+          select 1 from supply_orders matched_so
+          where matched_so.file_id = f.id
+            and (
+              left(lower(coalesce(matched_so.so_no, '')), char_length($1)) = $1
+              or left(lower(coalesce(matched_so.gem_so_no, '')), char_length($1)) = $1
+            )
+        )
+      )`,
+    ];
+    const divisionScope = getDivisionScopeCondition(user);
+    if (divisionScope.sql) {
+      const offset = values.length;
+      conditions.push(divisionScope.sql.replaceAll("$1", `$${offset + 1}`));
+      values.push(...divisionScope.values);
+    }
+    const categoryScope = getFileCategoryScopeCondition(user);
+    if (categoryScope.sql) conditions.push(categoryScope.sql);
+
+    const result = await pool.query<{
+      id: string;
+      unique_code: string | null;
+      imms: string | null;
+      file_no: string | null;
+      so_numbers: string | null;
+      demand_description: string | null;
+      division: string | null;
+    }>(
+      `select f.id, f.unique_code, f.imms, f.file_no, f.demand_description,
+              d.name as division, so_list.so_numbers
+       from files f
+       left join divisions d on d.id = f.division_id
+       left join lateral (
+         select string_agg(distinct identifier, ', ' order by identifier) as so_numbers
+         from (
+           select nullif(trim(so.so_no), '') as identifier
+           from supply_orders so where so.file_id = f.id
+           union
+           select nullif(trim(so.gem_so_no), '') as identifier
+           from supply_orders so where so.file_id = f.id
+         ) identifiers
+         where identifier is not null
+       ) so_list on true
+       where ${conditions.join(" and ")}
+       order by
+         case
+           when left(lower(coalesce(f.unique_code, '')), char_length($1)) = $1 then 0
+           when left(lower(coalesce(f.imms, '')), char_length($1)) = $1 then 1
+           when left(lower(coalesce(f.file_no, '')), char_length($1)) = $1 then 2
+           else 3
+         end,
+         f.created_at desc
+       limit 20`,
+      values,
+    );
+    response.json({
+      files: result.rows.map((row) => ({
+        id: row.id,
+        uniqueCode: row.unique_code ?? undefined,
+        controlNo: row.imms ?? undefined,
+        fileNo: row.file_no ?? undefined,
+        soNumbers: row.so_numbers ?? undefined,
+        itemDescription: row.demand_description ?? undefined,
+        division: row.division ?? undefined,
+      })),
+    });
+  }),
+);
+
+filesRouter.get(
   "/quick-status/lookup",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
@@ -9940,6 +10086,15 @@ filesRouter.get(
       conditions.push(`(
         lower(coalesce(f.imms, '')) like $${values.length}
         or lower(coalesce(f.unique_code, '')) like $${values.length}
+        or lower(coalesce(f.file_no, '')) like $${values.length}
+        or exists (
+          select 1 from supply_orders so
+          where so.file_id = f.id
+            and (
+              lower(coalesce(so.so_no, '')) like $${values.length}
+              or lower(coalesce(so.gem_so_no, '')) like $${values.length}
+            )
+        )
       )`);
     }
     if (description) {
@@ -9951,14 +10106,28 @@ filesRouter.get(
       id: string;
       unique_code: string | null;
       imms: string | null;
+      file_no: string | null;
+      so_numbers: string | null;
       demand_description: string | null;
       division: string | null;
       indentor: string | null;
       received_date: Date | string | null;
     }>(
-      `select f.id, f.unique_code, f.imms, f.demand_description, d.name as division, f.indentor, f.received_date
+      `select f.id, f.unique_code, f.imms, f.file_no, f.demand_description,
+              d.name as division, f.indentor, f.received_date, so_list.so_numbers
        from files f
        left join divisions d on d.id = f.division_id
+       left join lateral (
+         select string_agg(distinct identifier, ', ' order by identifier) as so_numbers
+         from (
+           select nullif(trim(so.so_no), '') as identifier
+           from supply_orders so where so.file_id = f.id
+           union
+           select nullif(trim(so.gem_so_no), '') as identifier
+           from supply_orders so where so.file_id = f.id
+         ) identifiers
+         where identifier is not null
+       ) so_list on true
        where ${conditions.join(" and ")}${scope}
        order by
          case
@@ -9975,6 +10144,8 @@ filesRouter.get(
         id: row.id,
         uniqueCode: row.unique_code ?? undefined,
         controlNo: row.imms ?? undefined,
+        fileNo: row.file_no ?? undefined,
+        soNumbers: row.so_numbers ?? undefined,
         itemDescription: row.demand_description ?? undefined,
         division: row.division ?? undefined,
         indentor: row.indentor ?? undefined,
@@ -10130,7 +10301,17 @@ filesRouter.get(
     const categoryScope = getFileCategoryScopeCondition(user);
     const values: unknown[] = [code];
     const conditions = [
-      "(lower(f.unique_code) = lower($1) or lower(f.imms) = lower($1))",
+      `(
+        lower(f.unique_code) = lower($1)
+        or lower(f.imms) = lower($1)
+        or lower(coalesce(f.file_no, '')) = lower($1)
+        or exists (
+          select 1 from supply_orders so
+          where so.file_id = f.id
+            and (lower(coalesce(so.so_no, '')) = lower($1)
+              or lower(coalesce(so.gem_so_no, '')) = lower($1))
+        )
+      )`,
     ];
     if (scope.sql) {
       conditions.push(scope.sql.replace("$1", `$${values.length + 1}`));

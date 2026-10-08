@@ -9,6 +9,7 @@ import {
   useFileProcessingNotifications,
   useMessages,
 } from "@/lib/files-store";
+import { SearchableDropdown } from "@/components/searchable-dropdown";
 
 type MessageView = "pending" | "resolved" | "sent" | "received" | "processing";
 
@@ -149,24 +150,24 @@ function MessagesPage() {
       <div className="mb-4 grid grid-cols-1 gap-3 rounded-md border border-border bg-card p-3 md:grid-cols-[1fr_1fr_auto]">
         <label className="block">
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">Division</div>
-          <select
-            value={search.division ?? ""}
-            onChange={(event) =>
+          <SearchableDropdown
+            value={search.division ?? "__all__"}
+            options={[]}
+            optionItems={[
+              { value: "__all__", label: "All divisions" },
+              ...divisions.map((division) => ({ value: division, label: division })),
+            ]}
+            deferChangeUntilSelect
+            allowCustomValue={false}
+            onChange={(value) =>
               updateSearch({
-                division: event.target.value || undefined,
+                division: value === "__all__" ? undefined : value || undefined,
                 section: undefined,
                 page: 1,
               })
             }
             className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-          >
-            <option value="">All divisions</option>
-            {divisions.map((division) => (
-              <option key={division} value={division}>
-                {division}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         {view === "processing" ? null : (
         <label className="block">

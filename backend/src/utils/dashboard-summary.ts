@@ -926,6 +926,7 @@ function isSnapshotAttributeYes(file: FileRecord, key: string) {
 function isPsbApplicableFile(file: FileRecord) {
   return rawSupplyOrders(file).some(
     (order) =>
+      !isSupplyOrderCancelled(file, order) &&
       isYes(order.psbApplicable) &&
       (order.bgCoverageType === "PSB" || order.bgCoverageType === "PSB and PWB separately"),
   );
@@ -1053,7 +1054,7 @@ function countSupplementaryBillSubmittedOrders(files: FileRecord[]) {
 }
 
 function countSupplementaryBillReturnedOrders(files: FileRecord[]) {
-  return countSupplementaryBillOrders(files, isSupplementaryBillReturned);
+  return countSupplementaryBillOrders(files, isSupplementaryBillReturned, true);
 }
 
 function countSupplementaryBillReturnHistoryOrders(files: FileRecord[]) {
@@ -4232,7 +4233,11 @@ function countPaymentCompletedOrders(files: FileRecord[]) {
 
 function countPaymentPendingOrders(files: FileRecord[]) {
   return effectivePaymentEntries(files).filter(
-    ({ file, order }) => isNormalPaymentOpenOrder(file, order),
+    ({ file, order }) =>
+      hasPaymentWorkflowStarted(file, order) &&
+      !hasFilledString(order.paymentDate) &&
+      isPaymentOrderActive(file, order) &&
+      !isShortclosureNoFurtherAction(order),
   ).length;
 }
 
