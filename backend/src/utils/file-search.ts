@@ -2490,6 +2490,15 @@ function getLaterDate(first: string | undefined, second: string | undefined) {
 }
 
 function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail) {
+  if (
+    isDeliveryInspectionApplicable(file) &&
+    isYes(order.stageDelivery) &&
+    isNo(order.stagePayment) &&
+    order.stageDeliveries?.length
+  ) {
+    const dates = order.stageDeliveries.map((stage) => stage.materialReceiptDate || "");
+    return dates.every(hasFilledString) ? dates.sort().at(-1) : undefined;
+  }
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
   if (isYes(order.shortclosure)) return order.jobCompletionDate;
   return getNonInspectionPaymentDueDate(file, order);
