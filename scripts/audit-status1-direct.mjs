@@ -1,7 +1,8 @@
+// Run with backend/node_modules/.bin/tsx so Status-3 uses the current TypeScript search matcher.
 import { pool } from "../backend/dist/db/pool.js";
 import { loadFiles } from "../backend/dist/routes/files.js";
 import { buildDashboardSummary } from "../backend/dist/utils/dashboard-summary.js";
-import { searchFiles } from "../backend/dist/utils/file-search.js";
+import { searchFiles } from "../backend/src/utils/file-search.ts";
 import { isBiddingApplicableForFile } from "../backend/dist/utils/file-type-groups.js";
 
 const selectedYear = process.env.AUDIT_SELECTED_YEAR ?? "__all_active_files__";
@@ -117,6 +118,7 @@ function collectStatus1Counters(summary) {
     if (key === "payment") {
       add(counters, "Payment / Completed", row.cleared, "milestoneCleared:payment");
       add(counters, "Payment / Pending", row.pending, "milestonePending:payment");
+      add(counters, "Payment / All pending types", row.allPaymentPending, "analyticsPaymentPending");
       add(counters, "Payment / Advance Paid", row.advancePaid, "advancePaid");
       add(counters, "Payment / Advance Pending", row.advancePending, "advancePending");
       add(counters, "Payment / Due", row.paymentDue, "paymentDueOnly");
@@ -150,9 +152,11 @@ function collectStatus1Counters(summary) {
 
 function getLiveStatusDashboardFilter(milestoneName) {
   const normalized = normalizeMilestoneName(milestoneName);
-  return normalized === "supplementarybillreturnedforcorrection"
-    ? "supplementaryBill:returned"
-    : `manualMilestoneCurrent:${milestoneName}`;
+  if (normalized === "supplementarybillreturnedforcorrection") return "supplementaryBill:returned";
+  if (["delivery", "deliveryperiod", "dp", "d.p."].includes(normalized)) {
+    return "status2DpPending";
+  }
+  return `manualMilestoneCurrent:${milestoneName}`;
 }
 
 function collectStatus2Counters(summary) {

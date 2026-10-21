@@ -46,6 +46,7 @@ create table app_settings (
   file_types jsonb not null default '["Goods & Services", "AMC", "MPC", "CARS", "O&M"]'::jsonb,
   file_type_groups jsonb not null default '[{"fileType":"Goods & Services","group":"goodsServices"},{"fileType":"AMC","group":"contract"},{"fileType":"MPC","group":"contract"},{"fileType":"CARS","group":"contract"},{"fileType":"O&M","group":"contract"}]'::jsonb,
   modes jsonb not null default '["OBM", "PBM", "SBM", "LBM", "LPC"]'::jsonb,
+  gem_bidding_modes jsonb not null default '["Custom", "Catalogue", "Comparison"]'::jsonb,
   milestones jsonb not null default '[]'::jsonb,
   table_field_presets jsonb not null default '[]'::jsonb,
   demand_processing_presets jsonb not null default '[]'::jsonb,
@@ -208,6 +209,7 @@ create table file_firms (
 create table supply_orders (
   id uuid primary key default gen_random_uuid(),
   file_id uuid not null references files(id) on delete cascade,
+  include_in_payment_timing boolean not null default true,
   current_milestone text,
   completed_milestones jsonb not null default '[]'::jsonb,
   financial_sanction_date date,

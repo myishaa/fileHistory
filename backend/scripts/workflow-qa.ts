@@ -263,7 +263,7 @@ const steps: WorkflowStep[] = [
       check("PWB pending count remains 0 before material receipt", statusCount(context.reports, "PWB", "Pending") === 0),
       check("Delivery pending count is 0 before material receipt", statusCount(context.reports, "Delivery", "Pending") === 0),
       check("Month-wise S.O. July count is 1", monthlyHas(context.reports.monthWiseSupplyOrder, "2026-07", "count", 1)),
-      check("Month-wise D.P. schedule Aug gross/net is 1", monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "grossCount", 1) && monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "netCount", 1)),
+      check("Past incomplete D.P. is expired, not scheduled", monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "grossCount", 0) && monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "netCount", 1)),
       ...financeCheck(context, { bookedCapital: 0, spentCapital: 10000, paidCapital: 0 }),
     ],
   },
@@ -302,7 +302,7 @@ const steps: WorkflowStep[] = [
       check("IR Preparation pending clicker matches", matches(file, "irPreparationPending")),
       check("Payment pending starts after material receipt", statusCount(context.reports, "Payment", "Pending") === 1),
       check("Payment pending clicker matches", matches(file, "statusSummary:Payment:Pending")),
-      check("Month-wise D.P. net becomes 0 after delivery", monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "netCount", 0)),
+      check("Completed past D.P. is neither pending nor expired", monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "grossCount", 0) && monthlyHas(context.reports.monthWiseDeliverySchedule, "2026-08", "netCount", 0)),
     ],
   },
   {

@@ -1,4 +1,4 @@
-import type { FileRecord, SupplyOrderDetail } from "../types.js";
+import type { FileRecord, StageDeliveryDetail, SupplyOrderDetail } from "../types.js";
 import { latestBillReturnCycle } from "./refloat-returned-bill.js";
 import {
   isBiddingApplicableForFile,
@@ -98,6 +98,37 @@ export function filePaymentEntries(file: FileRecord): PaymentEntry[] {
       ? [...paymentOrders, { order: advanceOrder, orderIndex, advancePayment: true }]
       : paymentOrders;
   });
+}
+
+export function isParentStagePaymentOrder(order: SupplyOrderDetail) {
+  return (
+    isYes(order.stageDelivery) && isNo(order.stagePayment) && Boolean(order.stageDeliveries?.length)
+  );
+}
+
+export function getParentStagePaymentDate(
+  order: SupplyOrderDetail,
+  field: keyof Pick<
+    StageDeliveryDetail,
+    "materialReceiptDate" | "irReceiptDate" | "jobCompletionDate"
+  >,
+) {
+  if (!isParentStagePaymentOrder(order)) return undefined;
+  const dates = order.stageDeliveries!.map((stage) => stage[field] ?? "");
+  if (dates.some((date) => !hasFilledString(date))) return undefined;
+  return dates.sort((a, b) => a.localeCompare(b)).at(-1);
+}
+
+export function getPaymentTimingTriggerDate(file: FileRecord, order: SupplyOrderDetail) {
+  const field = isDeliveryInspectionApplicableByGroup(file) && isYes(file.ir)
+    ? "irReceiptDate"
+    : "jobCompletionDate";
+  if (isYes(order.stageDelivery) && !isYes(order.stagePayment) && order.stageDeliveries?.length) {
+    const dates = order.stageDeliveries.map((stage) => stage[field] ?? "");
+    if (dates.some((date) => !hasFilledString(date))) return undefined;
+    return dates.sort((a, b) => a.localeCompare(b)).at(-1);
+  }
+  return order[field];
 }
 
 export function effectivePaymentEntries(files: FileRecord[]) {
@@ -247,6 +278,19 @@ export function isExpiredDeliveryPeriodEntry(file: FileRecord, order: SupplyOrde
   );
 }
 
+export function isStatus2DpExpiredDeliveryEntry(file: FileRecord, order: SupplyOrderDetail) {
+  const physicalDelivery = isYes(file.ir) && isPhysicalDeliveryWorkflow(file);
+  const goodsServicesJob = isNo(file.ir) && !isContractFileType(file);
+  return (
+    (physicalDelivery || goodsServicesJob) &&
+    !normalizeCompletedMilestones(order.completedMilestones).some(
+      (milestone) =>
+        normalizeMilestoneName(milestone) === (physicalDelivery ? "delivery" : "jobcompletion"),
+    ) &&
+    isExpiredDeliveryPeriodEntry(file, order)
+  );
+}
+
 export function isExtendedDeliveryPeriodEntry(file: FileRecord, order: SupplyOrderDetail) {
   const deliveryPeriodDate = getDeliveryPeriodDate(order);
   return (
@@ -349,6 +393,7 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
   if (!advance || !hasFilledObjectValue(advance)) return undefined;
   return {
     ...order,
+    includeInPaymentTiming: advance.includeInPaymentTiming !== false,
     soDate: "",
     soValueCapital: advance.stageAmountCapital ?? "",
     soValueRevenue: advance.stageAmountRevenue ?? "",
@@ -443,6 +488,7 @@ function isActiveDeliveryPeriodEntry(
     !isYes(file.demandCancelled) &&
     !isYes(order.soCancelled) &&
     !isYes(order.shortclosure) &&
+    !isYes(order.noFurtherAction) &&
     !isDateAfterToday(getDeliveryPeriodStartDate(order)) &&
     !isDeliveryPeriodComplete(file, order)
   );
@@ -568,11 +614,13 @@ function isBgReceivedOrder(order: SupplyOrderDetail, category: string) {
 
 function isBgCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
   const normalized = normalizeMilestoneName(category);
+  const startRecorded =
+    normalized === "pwb"
+      ? isPwbDueForWorkflow(file, order)
+      : (normalized === "psb" || normalized === "psbpwb") && hasFilledString(order.soDate);
   if (
     !isBgCategoryApplicable(file, order, normalized) ||
-    (normalized === "pwb"
-      ? !isPwbDueForWorkflow(file, order)
-      : !isFinancialSanctionCompletedOrder(order)) ||
+    !startRecorded ||
     hasBillingTrackingStarted(order)
   ) {
     return false;
@@ -582,9 +630,13 @@ function isBgCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: 
 
 function isBgCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail, category: string) {
   const normalized = normalizeMilestoneName(category);
+  const startRecorded =
+    normalized === "psb" || normalized === "psbpwb"
+      ? hasFilledString(order.soDate)
+      : isFinancialSanctionCompletedOrder(order);
   if (
     !isBgCategoryApplicable(file, order, normalized) ||
-    !isFinancialSanctionCompletedOrder(order)
+    !startRecorded
   ) {
     return false;
   }
@@ -616,6 +668,13 @@ function isIrReceiptCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
 
 function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
   if (hasFilledString(order.billPreparationDate)) return false;
+  if (
+    isParentStagePaymentOrder(order) &&
+    !isContractFileType(file) &&
+    isNo(file.ir)
+  ) {
+    return hasFilledString(getParentStagePaymentDate(order, "jobCompletionDate"));
+  }
   if (isJobCompletionWorkflow(file)) {
     return hasFilledString(getNonInspectionPaymentDueDate(file, order));
   }
@@ -624,6 +683,9 @@ function isBillPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetai
 
 function isBillPreparationCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {
   if (hasFilledString(order.billPreparationDate)) return false;
+  if (isParentStagePaymentOrder(order) && isJobCompletionWorkflow(file)) {
+    return hasFilledString(getParentStagePaymentDate(order, "jobCompletionDate"));
+  }
   if (isJobCompletionWorkflow(file)) return hasFilledString(order.jobCompletionDate);
   return file.ir === "Yes" && hasFilledString(order.irReceiptDate);
 }

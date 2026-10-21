@@ -66,7 +66,9 @@ function getLiveStatusDashboardFilter(milestoneName) {
   const filterMilestoneName = normalizeLiveStatusMilestoneName(milestoneName);
   const normalized = normalizeMilestoneName(filterMilestoneName);
   if (normalized === "supplementarybillreturnedforcorrection") return "supplementaryBill:returned";
-  if (normalized === "deliveryperiod") return "status2DpPending";
+  if (["deliveryperiod", "dp", "d.p."].includes(normalized)) return "status2DpPending";
+  if (normalized === "materialreceipt") return "status2MaterialReceiptPending";
+  if (normalized === "dpexpired") return "status2DpExpired";
   return `manualMilestoneCurrent:${filterMilestoneName}`;
 }
 
@@ -318,7 +320,7 @@ function collectStatusCounters(summary) {
         "Status-1",
         `${title} / Return pending`,
         row.returnedBillsPending,
-        "billReturn:pending",
+        "billReturn:pendingRegular",
       );
       add(
         counters,

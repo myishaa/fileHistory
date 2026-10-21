@@ -132,7 +132,7 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
       { key: "psbBgReceivedDate", label: "PSB BG received date" },
       { key: "psbBgValidityDate", label: "PSB BG validity date" },
       { key: "psbBgReturnDate", label: "PSB BG return date" },
-      { key: "jobCompletionDate", label: "Job Completion Date" },
+      { key: "jobCompletionDate", label: "Job Completion Received Date" },
       { key: "pwbBgNo", label: "PWB BG No." },
       { key: "pwbBgAmount", label: "PWB BG amount" },
       { key: "pwbBgReceivedDate", label: "PWB BG received date" },

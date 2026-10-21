@@ -138,10 +138,11 @@ function collectMonthly(checks, passName, summary) {
     addCheck(checks, passName, "Pre-Bid Meetings", `${row.monthKey} refloat completed`, row.refloatPreBidCompleted, `refloatPreBidMeeting:completed:${row.monthKey}`);
   }
   for (const row of summary.bgReceiptDelayRows ?? []) {
-    addCheck(checks, passName, "BG receipt delay", `${row.label} total`, row.count, `bgReceiptDelay:all:${row.thresholdDays}`);
-    addCheck(checks, passName, "BG receipt delay", `${row.label} PSB`, row.psb, `bgReceiptDelay:psb:${row.thresholdDays}`);
-    addCheck(checks, passName, "BG receipt delay", `${row.label} PWB`, row.pwb, `bgReceiptDelay:pwb:${row.thresholdDays}`);
-    addCheck(checks, passName, "BG receipt delay", `${row.label} PSB+PWB`, row.psbPwb, `bgReceiptDelay:psbpwb:${row.thresholdDays}`);
+    const filter = (category) => `bgReceiptDelay:${category}:${row.thresholdDays}:${row.nextThresholdDays ?? ""}`;
+    addCheck(checks, passName, "BG receipt delay", `${row.label} total`, row.count, filter("all"));
+    addCheck(checks, passName, "BG receipt delay", `${row.label} PSB`, row.psb, filter("psb"));
+    addCheck(checks, passName, "BG receipt delay", `${row.label} PWB`, row.pwb, filter("pwb"));
+    addCheck(checks, passName, "BG receipt delay", `${row.label} PSB+PWB`, row.psbPwb, filter("psbpwb"));
   }
   for (const row of summary.warrantyBgMismatchRows ?? []) {
     addCheck(checks, passName, "Warranty BG mismatch", `${row.label} total`, row.count, `warrantyBgMismatch:all:${row.bufferDays}`);

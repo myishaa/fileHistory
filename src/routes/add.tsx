@@ -57,8 +57,17 @@ import {
   getMilestoneValidationTarget,
   validateMilestoneCompletionConsistency,
 } from "@/lib/milestone-validation";
-import { fileSupplyOrders as expandedFileSupplyOrders } from "@/lib/effective-deliveries";
+import {
+  fileSupplyOrders as expandedFileSupplyOrders,
+  getParentStagePaymentDate,
+  isParentStagePaymentOrder,
+} from "@/lib/effective-deliveries";
 import { latestBillReturnCycle } from "@/lib/refloat-returned-bill";
+import { isAutoTenderLive } from "@/lib/bidding-status";
+import {
+  clearInapplicableBgCoverageFields,
+  getClearedBgCoverageFieldLabels,
+} from "@/lib/bg-coverage-cleanup";
 import { displayFinancialYearLabel } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -622,9 +631,10 @@ function getCompletedMilestonesForSave(
     return progress && progress.total > 0 && progress.completed >= progress.total;
   });
   const completedSet = new Set([
-    ...completedMilestones.filter(
-      (milestone) => !orderDrivenMilestones.has(normalizeMilestoneName(milestone)),
-    ),
+    ...completedMilestones.filter((milestone) => {
+      const key = normalizeMilestoneName(milestone);
+      return key !== "delivery" && !orderDrivenMilestones.has(key);
+    }),
     ...autoCompleted,
     ...autoCompletedOrderMilestones,
   ]);
@@ -737,7 +747,21 @@ const tcecCommitteeKeys: FieldKey[] = [
 
 const yesNo = ["Yes", "No"];
 const yesNoCaps = ["YES", "NO"];
-const gemBiddingModeOptions = ["", "Custom", "Catalogue", "Comparison"];
+const defaultGemBiddingModes = ["Custom", "Catalogue", "Comparison"];
+
+function getConfiguredGemBiddingModes(values: string[] | undefined) {
+  const seen = new Set<string>();
+  return [...defaultGemBiddingModes, ...(values ?? [])]
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
 const defaultFileTypeOptions = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModeOptions = ["OBM", "PBM", "SBM", "LBM", "LPC"];
@@ -801,6 +825,7 @@ function isValidEmailFormat(value: string | undefined) {
   return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 }
 const emptySupplyOrder: Required<SupplyOrderDetail> = {
+  includeInPaymentTiming: true,
   currentMilestone: "",
   completedMilestones: [],
   financialSanctionDate: "",
@@ -841,6 +866,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
   ldPercentage: "",
   revisedDp: "",
   materialReceiptDate: "",
+  actualJobCompletionDate: "",
   jobCompletionDate: "",
   irPreparationDate: "",
   irReceiptDate: "",
@@ -874,6 +900,7 @@ const emptySupplyOrder: Required<SupplyOrderDetail> = {
 };
 
 const emptyAdvancePayment: Required<AdvancePaymentDetail> = {
+  includeInPaymentTiming: true,
   currentMilestone: "",
   completedMilestones: [],
   stageAmountCapital: "",
@@ -890,6 +917,7 @@ const emptyAdvancePayment: Required<AdvancePaymentDetail> = {
 };
 
 const emptyStageDelivery: Required<StageDeliveryDetail> = {
+  includeInPaymentTiming: true,
   stageAmountCapital: "",
   stageAmountRevenue: "",
   currentMilestone: "",
@@ -903,6 +931,7 @@ const emptyStageDelivery: Required<StageDeliveryDetail> = {
   ldPercentage: "",
   revisedDp: "",
   materialReceiptDate: "",
+  actualJobCompletionDate: "",
   jobCompletionDate: "",
   irPreparationDate: "",
   irReceiptDate: "",
@@ -949,7 +978,8 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
   { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-  { key: "jobCompletionDate", label: "Job Completion Date", type: "date" },
+  { key: "actualJobCompletionDate", label: "Actual Job Completion Date", type: "date" },
+  { key: "jobCompletionDate", label: "Job Completion Received Date", type: "date" },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -999,7 +1029,8 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
   { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-  { key: "jobCompletionDate", label: "Job Completion Date", type: "date" },
+  { key: "actualJobCompletionDate", label: "Actual Job Completion Date", type: "date" },
+  { key: "jobCompletionDate", label: "Job Completion Received Date", type: "date" },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -1027,6 +1058,150 @@ const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
   { key: "paymentDate", label: "Payment Date", type: "date" },
   { key: "actualPaymentCapital", label: "Actual payment amount" },
 ];
+
+function hasCleanupValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) =>
+      item && typeof item === "object"
+        ? hasFilledObjectValue(item as Record<string, unknown>)
+        : hasFilledValue(item),
+    );
+  }
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "no" || normalized === "select") return false;
+  return hasFilledValue(value);
+}
+
+function getClearedFieldLabels(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  fields: { key: string; label: string }[],
+  excludedKeys: string[] = [],
+) {
+  const excluded = new Set(excludedKeys);
+  return fields
+    .filter(
+      ({ key }) =>
+        !excluded.has(key) && hasCleanupValue(before[key]) && !hasCleanupValue(after[key]),
+    )
+    .map(({ label }) => label);
+}
+
+function getSupplyOrderCleanupLabels(
+  before: SupplyOrderDetail,
+  after: SupplyOrderDetail,
+  excludedKeys: string[] = [],
+) {
+  const labels = getClearedFieldLabels(
+    before as unknown as Record<string, unknown>,
+    after as unknown as Record<string, unknown>,
+    supplyOrderFields,
+    excludedKeys,
+  );
+  const extraValueFields = [
+    { key: "soValueRevenue", label: "S.O. value (Revenue)" },
+    { key: "billAmountRevenue", label: "Bill amount (Revenue)" },
+    { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+  ];
+  labels.push(
+    ...getClearedFieldLabels(
+      before as unknown as Record<string, unknown>,
+      after as unknown as Record<string, unknown>,
+      extraValueFields,
+      excludedKeys,
+    ),
+  );
+  labels.push(
+    ...getClearedFieldLabels(
+      before as unknown as Record<string, unknown>,
+      after as unknown as Record<string, unknown>,
+      [
+        { key: "currentMilestone", label: "Current milestone" },
+        { key: "completedMilestones", label: "Completed milestones" },
+        { key: "supplementaryBills", label: "Supplementary bills" },
+      ],
+      excludedKeys,
+    ),
+  );
+  const oldStages = before.stageDeliveries ?? [];
+  const newStages = after.stageDeliveries ?? [];
+  oldStages.forEach((stage, stageIndex) => {
+    const cleared = getClearedFieldLabels(
+      stage as unknown as Record<string, unknown>,
+      (newStages[stageIndex] ?? {}) as unknown as Record<string, unknown>,
+      stageDeliveryFields,
+    );
+    labels.push(...cleared.map((label) => `Delivery-${stageIndex + 1} ${label}`));
+    labels.push(
+      ...getClearedFieldLabels(
+        stage as unknown as Record<string, unknown>,
+        (newStages[stageIndex] ?? {}) as unknown as Record<string, unknown>,
+        [
+          { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
+          { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+          { key: "currentMilestone", label: "Current milestone" },
+          { key: "completedMilestones", label: "Completed milestones" },
+        ],
+      ).map((label) => `Delivery-${stageIndex + 1} ${label}`),
+    );
+  });
+  const oldAdvance = before.advancePaymentDetail ?? {};
+  const newAdvance = after.advancePaymentDetail ?? {};
+  labels.push(
+    ...getClearedFieldLabels(
+      oldAdvance as unknown as Record<string, unknown>,
+      newAdvance as unknown as Record<string, unknown>,
+      advancePaymentFields,
+    ).map((label) => `Advance ${label}`),
+  );
+  labels.push(
+    ...getClearedFieldLabels(
+      oldAdvance as unknown as Record<string, unknown>,
+      newAdvance as unknown as Record<string, unknown>,
+      [
+        { key: "stageAmountRevenue", label: "Advance amount (Revenue)" },
+        { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+      ],
+    ).map((label) => `Advance ${label}`),
+  );
+  const oldSupplementaryBills = before.supplementaryBills ?? [];
+  const newSupplementaryBills = after.supplementaryBills ?? [];
+  const supplementaryFields = [
+    { key: "billNo", label: "Bill No." },
+    { key: "billAmountCapital", label: "Bill amount (Capital)" },
+    { key: "billAmountRevenue", label: "Bill amount (Revenue)" },
+    { key: "billSentForPaymentDate", label: "Bill sent for payment" },
+    { key: "billReturnCycles", label: "Return cycles" },
+    { key: "paymentDate", label: "Payment Date" },
+    { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
+    { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+    { key: "remarks", label: "Remarks" },
+  ];
+  oldSupplementaryBills.forEach((bill, billIndex) => {
+    const cleared = getClearedFieldLabels(
+      bill as unknown as Record<string, unknown>,
+      (newSupplementaryBills[billIndex] ?? {}) as unknown as Record<string, unknown>,
+      supplementaryFields,
+    );
+    if (cleared.length) labels.push(`Supplementary bill ${billIndex + 1}: ${cleared.join(", ")}`);
+  });
+  return [...new Set(labels)];
+}
+
+function getCleanupWarningText(title: string, entries: string[]) {
+  return entries.length
+    ? `${title} will clear these populated fields:\n${entries.map((entry) => `- ${entry}`).join("\n")}\n\nContinue?`
+    : "";
+}
+
+function getFormFieldLabel(key: string) {
+  return (
+    extraSections.flatMap((section) => section.fields).find((field) => field.key === key)?.label ??
+    key
+  );
+}
 
 const supplyOrderSubviewFields = {
   supplyOrder: [
@@ -1063,7 +1238,7 @@ const supplyOrderSubviewFields = {
     "warrantyPeriodDate",
   ],
   dp: ["dpDate", "dpExtension", "dpExtensionCount", "ld", "revisedDp"],
-  delivery: ["materialReceiptDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
+  delivery: ["materialReceiptDate", "actualJobCompletionDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
   payment: [
     "paymentMode",
     "billPreparationDate",
@@ -1155,6 +1330,7 @@ type SupplyOrderSubviewKey = (typeof supplyOrderSubviewTabs)[number]["key"];
 
 type SupplementaryBillDraft = {
   id: string;
+  includeInPaymentTiming: boolean;
   billNo: string;
   billAmountCapital: string;
   billAmountRevenue: string;
@@ -1170,6 +1346,7 @@ type SupplementaryBillDraft = {
 function createSupplementaryBillDraft(): SupplementaryBillDraft {
   return {
     id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    includeInPaymentTiming: true,
     billNo: "",
     billAmountCapital: "",
     billAmountRevenue: "",
@@ -1188,6 +1365,7 @@ function normalizeSupplementaryBillDrafts(
 ): SupplementaryBillDraft[] {
   return (Array.isArray(bills) ? bills : []).map((bill, index) => ({
     id: bill.id || `supplementary-bill-${index}`,
+    includeInPaymentTiming: bill.includeInPaymentTiming !== false,
     billNo: bill.billNo ?? "",
     billAmountCapital: bill.billAmountCapital ?? "",
     billAmountRevenue: bill.billAmountRevenue ?? "",
@@ -1207,6 +1385,7 @@ function cleanSupplementaryBills(
   return normalizeSupplementaryBillDrafts(bills)
     .map((bill) => ({
       id: bill.id,
+      includeInPaymentTiming: bill.includeInPaymentTiming === false ? false : undefined,
       billNo: bill.billNo.trim() || undefined,
       billAmountCapital: bill.billAmountCapital || undefined,
       billAmountRevenue: bill.billAmountRevenue || undefined,
@@ -1325,7 +1504,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
   {
     title: "Bidding details",
     fields: [
-      { key: "gemBiddingMode", label: "GeM Bidding Mode", options: gemBiddingModeOptions },
+      { key: "gemBiddingMode", label: "GeM Bidding Mode", options: defaultGemBiddingModes },
       { key: "gemUndertakingDate", label: "GeM undertaking date", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
@@ -1491,6 +1670,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const quickFocusAppliedRef = useRef("");
   const fieldFocusAppliedRef = useRef("");
   const skipMilestonePruneRef = useRef(false);
+  const confirmedBgCleanupOrdersRef = useRef(new Set<string>());
   const divisionsRef = useRef(divisions);
   const filesRef = useRef(files);
   divisionsRef.current = divisions;
@@ -1624,7 +1804,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
     setUnlockedSections(new Set());
     setDemandCancelledUnlocked(false);
-    // The file object is re-read from localStorage on each render; reset only when the edited id changes.
+    // Reset after changing files.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingFile?.id, effectiveFinancialYear, settings.yearSelectionLocked]);
 
@@ -1773,7 +1953,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (visibleExtraSections.some((section) => section.title === activeBoardSection)) return;
     setActiveBoardSection("Supply order and payment");
   }, [activeBoardSection, visibleExtraSections]);
-  const adDisabledByDivision = isDivisionAdNo(formWithLockedYear.division, divisions);
   const milestoneOptions = useMemo(
     () => getConfiguredMilestones(settings.milestones),
     [settings.milestones],
@@ -1789,13 +1968,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     milestoneOptions,
     formWithLockedYear,
     supplyOrders,
-    divisions,
   );
   const fileLevelApplicableMilestones = getApplicableMilestones(
     fileLevelMilestoneOptions,
     formWithLockedYear,
     supplyOrders,
-    divisions,
   );
   const supplyOrderMilestoneProgress = useMemo(
     () =>
@@ -1907,11 +2084,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (quickFocusAppliedRef.current === focusKey) return;
 
     window.setTimeout(() => {
-      const firstUnfilledField = getUnfilledFieldKeys(
-        activeSection,
-        formWithLockedYear,
-        divisions,
-      ).find((fieldKey) => {
+      const firstUnfilledField = getUnfilledFieldKeys(activeSection, formWithLockedYear).find((fieldKey) => {
         const element = quickFieldRefs.current[fieldKey];
         return element && !("disabled" in element && element.disabled);
       });
@@ -1922,7 +2095,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         if ("select" in target && typeof target.select === "function") target.select();
       }
     }, 100);
-  }, [activeSection, divisions, editingFile, formWithLockedYear, quickFocus, unlockedSections]);
+  }, [activeSection, editingFile, formWithLockedYear, quickFocus, unlockedSections]);
 
   useEffect(() => {
     if (quickFocus || !focusTarget || !editingFile || !activeSection) return;
@@ -1961,16 +2134,19 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const currentCount = supplyOrders.length;
     if (count >= currentCount) return false;
     const removedOrders = supplyOrders.slice(count);
-    const removedLabels = removedOrders
-      .map((order, index) => getSupplyOrderDisplayTitle(order, count + index))
-      .join(", ");
+    const removedDetails = removedOrders.map((order, index) => {
+      const label = getSupplyOrderDisplayTitle(order, count + index);
+      const fields = getSupplyOrderCleanupLabels(order, emptySupplyOrder);
+      return fields.length ? `${label}: ${fields.join(", ")}` : label;
+    });
     const confirmed = window.confirm(
       [
         `Reducing S.O. count from ${currentCount} to ${count} will permanently delete ${
           currentCount - count
         } supply order(s).`,
-        removedLabels ? `Deleted supply order(s): ${removedLabels}` : "",
-        "All related BG, D.P., delivery, stage, payment, milestone, and cancellation data for the deleted supply order(s) will be erased when you save/update this file.",
+        removedDetails.length
+          ? `S.O.s and populated data to be deleted:\n${removedDetails.map((detail) => `- ${detail}`).join("\n")}`
+          : "",
         "",
         "Do you want to continue?",
       ]
@@ -2000,6 +2176,134 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (k === "year") return;
     if (uniqueCodeGateLocked && k !== "division") return;
     if (cfaApprovalGateLocked && cfaApprovalGatedFieldKeys.has(k)) return;
+    const cleanupSwitchKeys = new Set<keyof FormState>([
+      "ir",
+      "fileType",
+      "mode",
+      "currency",
+      "valueCapitalSelected",
+      "valueRevenueSelected",
+      "tcec",
+      "gem",
+      "highValue",
+      "rqa",
+      "ifa",
+      "rfpVetting",
+      "preBidMeeting",
+      "refloat",
+      "refloatPreBidMeeting",
+      "demandCancelled",
+      "dpExtension",
+      "division",
+    ]);
+    if (cleanupSwitchKeys.has(k) && k !== "bg" && k !== "ad") {
+      const nextForm = applyConditionalRules({ ...formWithLockedYear, [k]: v });
+      if (k === "division" && formWithLockedYear.division !== v) {
+        nextForm.indentor = "";
+      }
+      const entries = getClearedFieldLabels(
+        formWithLockedYear as unknown as Record<string, unknown>,
+        nextForm as unknown as Record<string, unknown>,
+        [...extraSections.flatMap((section) => section.fields), ...supplyOrderFields],
+        [String(k)],
+      );
+      const nextIr = isDeliveryInspectionInactive(nextForm) ? "No" : nextForm.ir;
+      supplyOrders.forEach((order, index) => {
+        let candidate = { ...order };
+        if (k === "ir" || (k === "fileType" && isDeliveryInspectionInactive(nextForm))) {
+          if (isNo(nextIr)) {
+            candidate = {
+              ...candidate,
+              materialReceiptDate: "",
+              irPreparationDate: "",
+              irReceiptDate: "",
+              stageDeliveries: (candidate.stageDeliveries ?? []).map((stage) => ({
+                ...stage,
+                materialReceiptDate: "",
+                irPreparationDate: "",
+                irReceiptDate: "",
+              })),
+            };
+          } else {
+            candidate = {
+              ...candidate,
+              jobCompletionDate: "",
+              stageDeliveries: (candidate.stageDeliveries ?? []).map((stage) => ({
+                ...stage,
+                jobCompletionDate: "",
+              })),
+            };
+          }
+        }
+        if (k === "gem" && isNo(v)) {
+          candidate = { ...candidate, gemSoNo: "", paymentMode: "" };
+        }
+        const normalized = applySupplyOrderRules(candidate, {
+          ...nextForm,
+          ir: nextIr,
+        });
+        entries.push(
+          ...getSupplyOrderCleanupLabels(order, normalized).map(
+            (label) => `${getSupplyOrderDisplayTitle(order, index)}: ${label}`,
+          ),
+        );
+      });
+      if (
+        k === "currency" &&
+        isInr(v) &&
+        hasFilledValue(formWithLockedYear.exchangeRate) &&
+        formWithLockedYear.exchangeRate !== "1"
+      ) {
+        entries.push(`Exchange rate (will be reset from ${formWithLockedYear.exchangeRate} to 1)`);
+      }
+      const warning = getCleanupWarningText(`Changing ${getFormFieldLabel(String(k))} to ${v}`, [
+        ...new Set(entries),
+      ]);
+      if (warning && !window.confirm(warning)) return;
+    }
+    if (k === "bg" && isNo(v)) {
+      const nextForm = applyConditionalRules({ ...formWithLockedYear, bg: v });
+      const formFields = getClearedFieldLabels(
+        formWithLockedYear as unknown as Record<string, unknown>,
+        nextForm as unknown as Record<string, unknown>,
+        [...extraSections.flatMap((section) => section.fields), ...supplyOrderFields],
+      );
+      const affectedOrders = supplyOrders.flatMap((order, index) => {
+        const next = applySupplyOrderRules(order, { ...formWithLockedYear, bg: v });
+        const labels = getClearedBgCoverageFieldLabels(order, next);
+        return labels.length
+          ? [
+              {
+                index,
+                labels,
+                description: `${getSupplyOrderDisplayTitle(order, index)}: ${labels.join(", ")}`,
+              },
+            ]
+          : [];
+      });
+      const warning = getCleanupWarningText("Setting Warranty BG to No", [
+        ...formFields,
+        ...affectedOrders.map(({ description }) => description),
+      ]);
+      if (warning && !window.confirm(warning)) {
+        return;
+      }
+      affectedOrders.forEach(({ index, labels }) =>
+        labels.forEach((label) =>
+          confirmedBgCleanupOrdersRef.current.add(
+            `${editingFile?.id ?? "new"}:${index}:${label}`,
+          ),
+        ),
+      );
+    }
+    if (
+      k === "ad" &&
+      isNo(v) &&
+      (hasFilledValue(form.adSentDate) || hasFilledValue(form.adVettingDate)) &&
+      !window.confirm("Setting AD to No will clear the AD Sent and AD Vetting dates. Continue?")
+    ) {
+      return;
+    }
     if (k === "demandCancelled" && isYes(v) && hasPlacedSupplyOrderRows(supplyOrders)) {
       alert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
@@ -2017,33 +2321,21 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return;
     }
     if (k === "gem") {
+      if (isYes(v)) {
+        setForm((current) => ({
+          ...current,
+          gemBiddingMode: current.gemBiddingMode || "Custom",
+        }));
+      }
       setSupplyOrders((current) =>
         current.map((order) => (isNo(v) ? { ...order, gemSoNo: "", paymentMode: "" } : order)),
       );
     }
     if (k === "bg" && isNo(v)) {
       setSupplyOrders((current) =>
-        current.map((order) => ({
-          ...order,
-          bgCoverageType:
-            order.bgCoverageType === "PWB" ||
-            order.bgCoverageType === "PSB+PWB" ||
-            order.bgCoverageType === "PSB and PWB separately"
-              ? isYes(order.psbApplicable ?? "")
-                ? "PSB"
-                : "None"
-              : order.bgCoverageType,
-          pwbBgNo: "",
-          pwbBgAmount: "",
-          pwbBgReceivedDate: "",
-          pwbBgValidityDate: "",
-          pwbBgReturnDate: "",
-          combinedBgNo: "",
-          combinedBgAmount: "",
-          combinedBgReceivedDate: "",
-          combinedBgValidityDate: "",
-          combinedBgReturnDate: "",
-        })),
+        current.map((order) =>
+          applySupplyOrderRules(order, { ...formWithLockedYear, bg: v }),
+        ),
       );
     }
     if (k === "bg" && isYes(v)) {
@@ -2101,6 +2393,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     setForm((f) => {
       const patch: Partial<FormState> = { [k]: v };
+      if (k === "ad" && isNo(v)) {
+        patch.adSentDate = "";
+        patch.adVettingDate = "";
+      }
       if (k === "currency" && isInr(v)) {
         patch.exchangeRate = "1";
       }
@@ -2119,18 +2415,78 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           patch.indentor = "";
         }
       }
-      const next = applyConditionalRules({ ...f, ...patch });
-      return isDivisionAdNo(next.division, divisions)
-        ? { ...next, ad: "No", adSentDate: "", adVettingDate: "" }
-        : next;
+      return applyConditionalRules({ ...f, ...patch });
     });
   };
   const updateSupplyOrder = async (index: number, key: SupplyOrderKey, value: string) => {
     if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    const orderBeforeUpdate = supplyOrders[index];
+    const cleanupOrderSwitchKeys = new Set<SupplyOrderKey>([
+      "dpExtension",
+      "ld",
+      "firmType",
+      "advancePayment",
+      "shortclosure",
+      "stageDelivery",
+      "stagePayment",
+    ]);
+    if (orderBeforeUpdate && cleanupOrderSwitchKeys.has(key)) {
+      const candidate = applySupplyOrderRules(
+        { ...orderBeforeUpdate, [key]: value },
+        formWithLockedYear,
+      );
+      const fields = getSupplyOrderCleanupLabels(orderBeforeUpdate, candidate, [String(key)]);
+      const warning = getCleanupWarningText(
+        `Changing ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} ${supplyOrderFields.find((field) => field.key === key)?.label ?? key} to ${value}`,
+        fields,
+      );
+      if (warning && !window.confirm(warning)) return;
+    }
+    if (orderBeforeUpdate && (key === "bgCoverageType" || key === "psbApplicable")) {
+      const nextOrder = applySupplyOrderRules(
+        { ...orderBeforeUpdate, [key]: value },
+        formWithLockedYear,
+      );
+      const removedBgFields = getClearedBgCoverageFieldLabels(orderBeforeUpdate, nextOrder);
+      if (
+        removedBgFields.length &&
+        !window.confirm(
+          `Changing ${key === "bgCoverageType" ? "BG coverage type" : "PSB applicable"} for ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} will clear these inapplicable BG details: ${removedBgFields.join(", ")}. Continue?`,
+        )
+      ) {
+        return;
+      }
+      removedBgFields.forEach((label) =>
+        confirmedBgCleanupOrdersRef.current.add(`${editingFile?.id ?? "new"}:${index}:${label}`),
+      );
+    }
     if (key === "stageDeliveryCount") {
       const nextCount = getStageDeliveryCount(formatIntegerInput(value));
-      const order = supplyOrders[index];
+      const order = orderBeforeUpdate;
       const lockedOrder = savedSupplyOrdersForLocks[index];
+      const removedStages = (order?.stageDeliveries ?? []).slice(nextCount);
+      if (
+        nextCount < getStageDeliveryCount(order?.stageDeliveryCount) &&
+        hasStageDeliveryData(removedStages) &&
+        !window.confirm(
+          getCleanupWarningText(
+            `Reducing the stage count for ${getSupplyOrderDisplayTitle(order ?? emptySupplyOrder, index)}`,
+            removedStages.flatMap((stage, offset) =>
+              getClearedFieldLabels(
+                stage as unknown as Record<string, unknown>,
+                {} as Record<string, unknown>,
+                [
+                  ...stageDeliveryFields,
+                  { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
+                  { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+                ],
+              ).map((label) => `Delivery-${nextCount + offset + 1} ${label}`),
+            ),
+          ),
+        )
+      ) {
+        return;
+      }
       const protectedStages = (order?.stageDeliveries ?? []).filter(
         (_stage, stageIndex) =>
           stageIndex >= nextCount &&
@@ -2169,10 +2525,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           rejectedMessage = "Enter the Financial Sanction date before entering the S.O. date.";
           return order;
         }
-        const patchedOrder = applySupplyOrderRules(
+        let patchedOrder = applySupplyOrderRules(
           getSupplyOrderPatch(order, key, value),
           formWithLockedYear,
         );
+        if (key === "stageDelivery" && isYes(value)) {
+          patchedOrder = clearParentDeliveryData(patchedOrder);
+        }
+        if (key === "stagePayment" && isYes(value)) {
+          patchedOrder = clearParentStagePaymentData(patchedOrder);
+        }
         return patchedOrder;
       }),
     );
@@ -2649,6 +3011,33 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ) || remarksChanged
     );
   };
+  useEffect(() => {
+    if (!fileId) return;
+    let cancelled = false;
+    const refreshSavedFile = async () => {
+      try {
+        const { file } = await fetchFile(fileId);
+        if (cancelled) return;
+        setLoadedFile(file);
+      } catch (error) {
+        console.error("Failed to refresh the open file after a saved update", error);
+      }
+    };
+    const refreshFromStorage = (event: StorageEvent) => {
+      if (event.key === "recordkeeper:anomaly-data-updated") void refreshSavedFile();
+    };
+    window.addEventListener("recordkeeper:files-updated", refreshSavedFile);
+    window.addEventListener("recordkeeper:anomaly-data-updated", refreshSavedFile);
+    window.addEventListener("focus", refreshSavedFile);
+    window.addEventListener("storage", refreshFromStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("recordkeeper:files-updated", refreshSavedFile);
+      window.removeEventListener("recordkeeper:anomaly-data-updated", refreshSavedFile);
+      window.removeEventListener("focus", refreshSavedFile);
+      window.removeEventListener("storage", refreshFromStorage);
+    };
+  }, [fileId]);
   const renderSectionUnlockButton = (sectionTitle: string) => {
     if (!isEditing || readOnlyMode) return null;
     if (cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle)) return null;
@@ -2697,6 +3086,41 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   };
   const renderLocalUpdateButton = (dirty?: boolean) =>
     renderSectionUpdateButton({ testId: null, dirty });
+  const confirmValueTypeChange = (
+    patch: Pick<
+      FormState,
+      "valueCapital" | "valueRevenue" | "valueCapitalSelected" | "valueRevenueSelected"
+    >,
+  ) => {
+    const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
+    const entries = getClearedFieldLabels(
+      formWithLockedYear as unknown as Record<string, unknown>,
+      nextForm as unknown as Record<string, unknown>,
+      [
+        { key: "valueCapital", label: "File value (Capital)" },
+        { key: "valueRevenue", label: "File value (Revenue)" },
+      ],
+    );
+    supplyOrders.forEach((order, index) => {
+      const candidate = applySupplyOrderRules(
+        {
+          ...order,
+          soValueCapital: patch.valueCapitalSelected === "Yes" ? order.soValueCapital : "",
+          soValueRevenue: patch.valueRevenueSelected === "Yes" ? order.soValueRevenue : "",
+        },
+        nextForm,
+      );
+      entries.push(
+        ...getSupplyOrderCleanupLabels(order, candidate).map(
+          (label) => `${getSupplyOrderDisplayTitle(order, index)}: ${label}`,
+        ),
+      );
+    });
+    return (
+      entries.length === 0 ||
+      window.confirm(getCleanupWarningText("Changing the value basis", [...new Set(entries)]))
+    );
+  };
   const renderSectionFields = (section: (typeof extraSections)[number]) => (
     <div className="grid grid-cols-1 gap-4">
       {section.fields.map((field) => {
@@ -2729,6 +3153,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                       ...field,
                       options: configuredModeOptions,
                     }
+                  : field.key === "gemBiddingMode"
+                    ? {
+                        ...field,
+                        options: getConfiguredGemBiddingModes(settings.gemBiddingModes),
+                      }
                   : field.key === "demandCancelled" && demandCancellationHasPlacedSupplyOrder
                     ? {
                         ...field,
@@ -2773,6 +3202,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               }}
               onChange={(patch) => {
                 if (readOnlyMode || uniqueCodeGateLocked || sectionCfaApprovalLocked) return;
+                if (!confirmValueTypeChange(patch)) return;
                 const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
                 setSupplyOrders((current) =>
@@ -2835,7 +3265,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           (uniqueCodeGateLocked && field.key !== "division") ||
           sectionCfaApprovalLocked ||
           (lockFilledFields && hasFileValueForLock(savedFormForLocks, field.key)) ||
-          (["ad", "adSentDate", "adVettingDate"].includes(field.key) && adDisabledByDivision) ||
+          (["adSentDate", "adVettingDate"].includes(field.key) && isNo(formWithLockedYear.ad)) ||
           (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
           (gemIsNo && gemDisabledKeys.includes(field.key)) ||
           (highValueIsNo && highValueDisabledKeys.includes(field.key)) ||
@@ -2946,6 +3376,30 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ordersWithMainMilestoneBridge,
       formForSave,
     );
+    const legacyBgCleanup = (editingFile?.supplyOrders ?? []).flatMap((savedOrder, index) => {
+      const currentOrder = requestedSupplyOrders[index] ?? emptySupplyOrder;
+      const normalizedSavedOrder = cleanSupplyOrderRows(
+        [{ ...emptySupplyOrder, ...savedOrder }],
+        formForSave,
+      )[0];
+      const labels = getClearedBgCoverageFieldLabels(savedOrder, normalizedSavedOrder).filter(
+        (label) =>
+          !confirmedBgCleanupOrdersRef.current.has(
+            `${editingFile?.id ?? "new"}:${index}:${label}`,
+          ),
+      );
+      return labels.length
+        ? [`${getSupplyOrderDisplayTitle(currentOrder, index)}: ${labels.join(", ")}`]
+        : [];
+    });
+    if (
+      legacyBgCleanup.length &&
+      !window.confirm(
+        `This file has previously saved BG details that do not apply to its current selections. Saving will clear them:\n${legacyBgCleanup.join("\n")}\n\nContinue?`,
+      )
+    ) {
+      return;
+    }
     const cleanedSupplyOrders = cleanedRequestedSupplyOrders.filter(hasMeaningfulSupplyOrderData);
     if (
       isYes(formForSave.demandCancelled) &&
@@ -2984,7 +3438,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         : currentMilestone;
     const payload = {
       ...toFilePayload(
-        clearDivisionDisabledFields(applyConditionalRules(formForSave), divisions),
+        applyConditionalRules(formForSave),
       ),
       ...firstSupplyOrderMirrorPatch(cleanedSupplyOrders),
       noOfSo: String(requestedSupplyOrderCount),
@@ -3004,7 +3458,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     };
     const stageWarnings = getStageDeliveryWarnings(
       supplyOrdersForSave,
-      savedSupplyOrdersForLocks,
       formForSave,
       completedMilestonesForSave,
     );
@@ -3079,6 +3532,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     if (editingFile) {
       const updatedFile = await store.updateFile(editingFile.id, payload as Partial<FileRecord>);
+      confirmedBgCleanupOrdersRef.current.clear();
       setLoadedFile(updatedFile);
       setForm(applyConditionalRules(createFormFromFile(updatedFile, effectiveFinancialYear)));
       setFirmDetails(createFirmDetailsFromFile(updatedFile));
@@ -3114,6 +3568,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return;
     } else {
       await store.addFile(payload as Omit<FileRecord, "id" | "createdAt">);
+      confirmedBgCleanupOrdersRef.current.clear();
     }
     setSaved(true);
     setTimeout(() => {
@@ -3255,7 +3710,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             <TimelineBlock
               form={formWithLockedYear}
               supplyOrders={supplyOrders}
-              divisions={divisions}
             />
           )}
           {activeBoardSection === "Remarks Summary" && (
@@ -3339,6 +3793,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   lockedForm={savedFormForLocks}
                   orders={supplyOrders}
                   lockedOrders={savedSupplyOrdersForLocks}
+                  savedParentDeliveryRows={editingFile?.supplyOrders ?? []}
                   currentMilestone={currentMilestone}
                   completedMilestones={completedMilestones}
                   disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
@@ -4386,7 +4841,7 @@ function FirmDetailsBlock({
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "pdf")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
             title="Export firm details as PDF"
             aria-label="Export firm details PDF"
           >
@@ -4395,7 +4850,7 @@ function FirmDetailsBlock({
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "excel")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
             title="Export firm details as Excel"
             aria-label="Export firm details Excel"
           >
@@ -4693,6 +5148,7 @@ function SupplyOrdersBlock({
   lockedForm,
   orders,
   lockedOrders,
+  savedParentDeliveryRows,
   currentMilestone,
   completedMilestones,
   disabled,
@@ -4727,6 +5183,7 @@ function SupplyOrdersBlock({
   lockedForm: FormState;
   orders: SupplyOrderDetail[];
   lockedOrders: SupplyOrderDetail[];
+  savedParentDeliveryRows: Array<Partial<SupplyOrderDetail>>;
   currentMilestone: string;
   completedMilestones: string[];
   disabled: boolean;
@@ -4841,8 +5298,9 @@ function SupplyOrdersBlock({
   ] as readonly SupplyOrderMilestoneName[];
   const activeSubviewFields = supplyOrderFields.filter((field) =>
     activeSubview === "delivery" && deliveryInspectionInactive
-      ? field.key === "jobCompletionDate"
-      : activeSubviewSupplyOrderFields.includes(field.key as SupplyOrderKey),
+      ? field.key === "jobCompletionDate" || field.key === "actualJobCompletionDate"
+      : activeSubviewSupplyOrderFields.includes(field.key as SupplyOrderKey) &&
+        !(activeSubview === "delivery" && field.key === "actualJobCompletionDate"),
   );
   const noOfSoDirty = form.noOfSo !== lockedForm.noOfSo || orders.length !== lockedOrders.length;
   const getOrderSubviewDirty = (
@@ -4881,7 +5339,10 @@ function SupplyOrdersBlock({
           normalizeDirtyValue("completedMilestones", order.completedMilestones),
           normalizeDirtyValue("completedMilestones", lockedOrder?.completedMilestones),
         ));
-    return !isDirtyValueEqual(currentValues, lockedValues) || milestonesChanged;
+    const paymentTimingChanged =
+      activeSubview === "payment" &&
+      (order.includeInPaymentTiming !== lockedOrder?.includeInPaymentTiming);
+    return !isDirtyValueEqual(currentValues, lockedValues) || milestonesChanged || paymentTimingChanged;
   };
   const getAdvancePaymentDirty = (
     order: SupplyOrderDetail,
@@ -5296,7 +5757,7 @@ function SupplyOrdersBlock({
             const lockedOrder = lockedOrders[index];
             const stageFields =
               activeSubview === "delivery" && deliveryInspectionInactive
-                ? (["jobCompletionDate"] as readonly StageDeliveryKey[])
+                ? (["jobCompletionDate", "actualJobCompletionDate"] as readonly StageDeliveryKey[])
                 : getStagedDeliverySubviewFields(activeSubview);
             const useStageFields = Boolean(stageFields && isYes(order.stageDelivery ?? ""));
             const useStageCards =
@@ -5495,6 +5956,19 @@ function SupplyOrdersBlock({
                         <span className="hidden text-xs font-medium text-muted-foreground group-open/payment:inline">Close</span>
                       </summary>
                       <div className="border-t border-border p-4">
+                      <PaymentTimingControl
+                        caseLabel={`S.O. ${index + 1} advance payment`}
+                        included={advancePaymentDetail.includeInPaymentTiming !== false}
+                        disabled={advanceControlDisabled}
+                        onChange={(included) =>
+                          onOrderPatch(index, {
+                            advancePaymentDetail: {
+                              ...advancePaymentDetail,
+                              includeInPaymentTiming: included,
+                            },
+                          })
+                        }
+                      />
                       {paidAdvanceFrozen ? (
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
                           <span className="font-medium">
@@ -5527,6 +6001,7 @@ function SupplyOrdersBlock({
                               <AmountByValueTypeField
                                 key={key}
                                 label={isActual ? "Actual payment amount" : "Advance amount"}
+                                placeholder={isActual ? "Payment amount" : "Advance amount"}
                                 capitalSelected={form.valueCapitalSelected === "Yes"}
                                 revenueSelected={form.valueRevenueSelected === "Yes"}
                                 capitalValue={capitalValue}
@@ -5615,12 +6090,53 @@ function SupplyOrdersBlock({
 
                   {useStageCards ? (
                     <div className="space-y-4">
+                      {isYes(order.stageDelivery ?? "") &&
+                      hasParentDeliveryData(savedParentDeliveryRows[index]) ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
+                          <span>
+                            Hidden parent delivery data is still saved for this staged S.O. Clear it here, then save the file.
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="inline-flex h-8 items-center gap-1.5 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
+                              disabled={disabled}
+                              onClick={() => {
+                                if (!window.confirm("Clear the hidden parent delivery fields for this S.O.? Stage records will be kept.")) return;
+                                onOrderPatch(index, clearParentDeliveryData(order));
+                              }}
+                            >
+                              Clear parent delivery data
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                      {isYes(order.stagePayment ?? "") && hasParentStagePaymentData(order) ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
+                          <span>
+                            Hidden parent bill/payment data is still saved for this staged S.O. Clear it here, then save the file.
+                          </span>
+                          <button
+                            type="button"
+                            className="h-8 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
+                            disabled={disabled}
+                            onClick={() => {
+                              if (!window.confirm("Clear the hidden parent bill/payment fields for this S.O.? Stage records will be kept.")) return;
+                              onOrderPatch(index, clearParentStagePaymentData(order));
+                            }}
+                          >
+                            Clear parent bill/payment data
+                          </button>
+                        </div>
+                      ) : null}
                       {stageDeliveries.map((stage, stageIndex) => {
                         const stageMilestones = getStageDeliveryMilestonesForSubview(
                           activeSubview,
                           order,
                           form.fileType,
                           form.ir,
+                          form.fileTypeGroup,
+                          stageIndex,
                         );
                         const stageCompletion = getSingleStageCompletion({
                           activeSubview,
@@ -5725,6 +6241,22 @@ function SupplyOrdersBlock({
                               </span>
                             </summary>
                             <div className="grid grid-cols-1 gap-4 border-t border-border p-4">
+                              {activeSubview === "payment" && isYes(order.stagePayment ?? "") ? (
+                                <PaymentTimingControl
+                                  caseLabel={`S.O. ${index + 1}, stage ${stageIndex + 1} payment`}
+                                  included={stage.includeInPaymentTiming !== false}
+                                  disabled={disabled || downstreamLocked}
+                                  onChange={(included) =>
+                                    onOrderPatch(index, {
+                                      stageDeliveries: stageDeliveries.map((item, itemIndex) =>
+                                        itemIndex === stageIndex
+                                          ? { ...item, includeInPaymentTiming: included }
+                                          : item,
+                                      ),
+                                    })
+                                  }
+                                />
+                              ) : null}
                               {paidStageFrozen ? (
                                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
                                   <span className="font-medium">
@@ -5765,6 +6297,9 @@ function SupplyOrdersBlock({
                                 />
                               ) : null}
                               {(stageFields ?? []).map((key) => {
+                                if (key === "actualJobCompletionDate" && !deliveryInspectionInactive) {
+                                  return null;
+                                }
                                 if (!shouldShowStageDeliveryField(activeSubview, key)) {
                                   return null;
                                 }
@@ -5777,6 +6312,7 @@ function SupplyOrdersBlock({
                                     <AmountByValueTypeField
                                       key={key}
                                       label="Stage amount"
+                                      placeholder="Stage amount"
                                       capitalSelected={form.valueCapitalSelected === "Yes"}
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.stageAmountCapital ?? ""}
@@ -5820,6 +6356,7 @@ function SupplyOrdersBlock({
                                     <AmountByValueTypeField
                                       key={key}
                                       label="Actual payment amount"
+                                      placeholder="Payment amount"
                                       capitalSelected={form.valueCapitalSelected === "Yes"}
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
                                       capitalValue={stage.actualPaymentCapital ?? ""}
@@ -5957,7 +6494,7 @@ function SupplyOrdersBlock({
                                         (supplyOrderIrDisabledKeys as readonly string[]).includes(
                                           key,
                                         )) ||
-                                      (!effectiveIrDisabled && key === "jobCompletionDate")
+            (!effectiveIrDisabled && (key === "jobCompletionDate" || key === "actualJobCompletionDate"))
                                     }
                                     onChange={(value) =>
                                       onStageDeliveryChange(index, stageIndex, key, value)
@@ -6007,6 +6544,16 @@ function SupplyOrdersBlock({
                         ? "grid grid-cols-1 gap-4 border-t border-border p-4"
                         : "grid grid-cols-1 gap-4"
                     }>
+                      {activeSubview === "payment" ? (
+                        <PaymentTimingControl
+                          caseLabel={`S.O. ${index + 1} payment`}
+                          included={order.includeInPaymentTiming !== false}
+                          disabled={disabled || downstreamLocked}
+                          onChange={(included) =>
+                            onOrderPatch(index, { includeInPaymentTiming: included })
+                          }
+                        />
+                      ) : null}
                       {fieldsToRender.map((field) => {
                         const key = field.key as SupplyOrderKey;
                         const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(
@@ -6035,7 +6582,7 @@ function SupplyOrdersBlock({
                           (gemDisabled && key === "gemSoNo") ||
                           (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
                           (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
-                          (!effectiveIrDisabled && key === "jobCompletionDate") ||
+                          (!effectiveIrDisabled && (key === "jobCompletionDate" || key === "actualJobCompletionDate")) ||
                           isDpExtensionFieldInactive(form, key, order);
                         const renderedField =
                           key === "firmType"
@@ -6122,6 +6669,7 @@ function SupplyOrdersBlock({
                             <AmountByValueTypeField
                               key={field.key}
                               label="Actual payment amount"
+                              placeholder="Payment amount"
                               capitalSelected={form.valueCapitalSelected === "Yes"}
                               revenueSelected={form.valueRevenueSelected === "Yes"}
                               capitalValue={order.actualPaymentCapital ?? ""}
@@ -6150,6 +6698,7 @@ function SupplyOrdersBlock({
                             <AmountByValueTypeField
                               key={field.key}
                               label="Bill amount"
+                              placeholder="Bill amount"
                               capitalSelected={form.valueCapitalSelected === "Yes"}
                               revenueSelected={form.valueRevenueSelected === "Yes"}
                               capitalValue={order.billAmountCapital ?? ""}
@@ -6407,6 +6956,12 @@ function SupplementaryBillsDraftBlock({
                     <Trash2 className="size-4" />
                   </button>
                 </div>
+                <PaymentTimingControl
+                  caseLabel={`S.O. ${orderIndex + 1}, supplementary bill ${index + 1}`}
+                  included={bill.includeInPaymentTiming}
+                  disabled={disabled}
+                  onChange={(included) => onChange(bill.id, { includeInPaymentTiming: included })}
+                />
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <DynamicField
                     field={
@@ -6430,6 +6985,7 @@ function SupplementaryBillsDraftBlock({
                   />
                   <AmountByValueTypeField
                     label="Supplementary bill amount"
+                    placeholder="Supplementary bill amount"
                     capitalSelected={capitalSelected}
                     revenueSelected={revenueSelected}
                     capitalValue={bill.billAmountCapital}
@@ -6480,6 +7036,7 @@ function SupplementaryBillsDraftBlock({
                   />
                   <AmountByValueTypeField
                     label="Supplementary payment amount"
+                    placeholder="Payment amount"
                     capitalSelected={capitalSelected}
                     revenueSelected={revenueSelected}
                     capitalValue={bill.actualPaymentCapital}
@@ -6514,6 +7071,57 @@ function SupplementaryBillsDraftBlock({
           })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PaymentTimingControl({
+  caseLabel,
+  included,
+  disabled,
+  onChange,
+}: {
+  caseLabel: string;
+  included: boolean;
+  disabled: boolean;
+  onChange: (included: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-secondary/20 px-3 py-2">
+      <div>
+        <div className="text-xs font-semibold">Payment delay and ranking</div>
+        <div className="text-xs text-muted-foreground">
+          Include/exclude decides whether this payment is included in Payment Delay calculations
+          and Milestone Clearing Ranking or not. It does not change the payment record, pending
+          status, liability, or cash-out totals.
+        </div>
+      </div>
+      <div
+        className="inline-flex shrink-0 rounded-md border border-input bg-background p-0.5"
+        role="group"
+        aria-label={`Payment timing inclusion for ${caseLabel}`}
+      >
+        {[
+          { label: "Include", value: true },
+          { label: "Exclude", value: false },
+        ].map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={included === option.value}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className={
+              "h-7 rounded px-2.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60 " +
+              (included === option.value
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground")
+            }
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -7137,6 +7745,7 @@ function isFocusMilestoneCompleted(row: SupplyOrderFocusRow, kind: string) {
     "psbpwb",
     "irpreparation",
     "irreceipt",
+    "delivery",
     "billpreparation",
     "billsentforpayment",
     "payment",
@@ -7534,9 +8143,11 @@ function getStageDeliveryMilestonesForSubview(
   order: SupplyOrderDetail,
   fileType?: string,
   ir?: string,
+  fileTypeGroup?: string,
+  stageIndex?: number,
 ) {
   if (activeSubview === "delivery") {
-    return getApplicableSupplyOrderMilestones(order, {
+    const milestones = getApplicableSupplyOrderMilestones(order, {
       bgDisabled: true,
       irDisabled: false,
       fileType,
@@ -7544,6 +8155,15 @@ function getStageDeliveryMilestonesForSubview(
     }).filter((milestone) =>
       (supplyOrderSubviewMilestones.delivery as readonly SupplyOrderMilestoneName[]).includes(milestone),
     );
+    const stageDeliveries = order.stageDeliveries ?? [];
+    const isFinalSharedPaymentStage =
+      isParentStagePaymentOrder(order) &&
+      isJobCompletionWorkflow(fileType, ir, fileTypeGroup) &&
+      stageIndex === stageDeliveries.length - 1 &&
+      hasFilledValue(getParentStagePaymentDate(order, "jobCompletionDate"));
+    return isFinalSharedPaymentStage
+      ? [...milestones, "Bill preparation" as SupplyOrderMilestoneName]
+      : milestones;
   }
   if (activeSubview === "payment" && isYes(order.stagePayment ?? "")) {
     return supplyOrderSubviewMilestones.payment;
@@ -7750,7 +8370,7 @@ function getStageDpRibbonLabel(order: SupplyOrderDetail, fileType: string, fileT
   const stages = resizeStageDeliveries(order.stageDeliveries, stageCount);
   const lastStage = stages.at(-1);
   const date = formatRibbonDate(lastStage?.revisedDp || lastStage?.dpDate);
-  return isDpExpiryWordHiddenFileType(fileType) ? `D.P. ${date}` : `D.P. expiry ${date}`;
+  return `D.P. ${date}`;
 }
 
 function getCompletionBorderClass(status: SupplyOrderCompletionStatus) {
@@ -7786,10 +8406,7 @@ function getDerivedDeliveryMilestoneState(
   const periodTrackingOnly = isJobCompletionWorkflow(fileType, ir, fileTypeGroup);
   const completed =
     !periodTrackingOnly &&
-    (isCompleteDateValue(String(row.materialReceiptDate ?? "")) ||
-      normalizeCompletedMilestones(row.completedMilestones).some(
-        (milestone) => normalizeMilestoneName(milestone) === "delivery",
-      ));
+    isCompleteDateValue(String(row.materialReceiptDate ?? ""));
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const current =
     !completed &&
@@ -7928,6 +8545,11 @@ function isAutoCurrentSupplyOrderMilestone(
   if (milestone === "Bill preparation") {
     if (isCompleteDateValue(String(row.billPreparationDate ?? ""))) return false;
     if (isJobCompletionWorkflow(fileType, ir, fileTypeGroup)) {
+      if (isParentStagePaymentOrder(row as SupplyOrderDetail)) {
+        return hasFilledValue(
+          getParentStagePaymentDate(row as SupplyOrderDetail, "jobCompletionDate"),
+        );
+      }
       return isCompleteDateValue(String(row.jobCompletionDate ?? ""));
     }
     return isYes(String(ir ?? "")) && isCompleteDateValue(String(row.irReceiptDate ?? ""));
@@ -7988,7 +8610,7 @@ function SupplyOrderMilestonesBlock({
   );
 
   const toggleCompleted = (milestone: string) => {
-    if (disabled) return;
+    if (disabled || normalizeMilestoneName(milestone) === "delivery") return;
     if (
       milestone === "Financial Sanction" ||
       milestone === "Supply Order" ||
@@ -8352,7 +8974,7 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
           <button
             type="button"
             onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "pdf")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Remarks Summary PDF"
             aria-label="Export Remarks Summary PDF"
           >
@@ -8361,7 +8983,7 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
           <button
             type="button"
             onClick={() => exportRemarksReport(form, visibleRemarks, stageFilter, "excel")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Remarks Summary Excel"
             aria-label="Export Remarks Summary Excel"
           >
@@ -8430,15 +9052,13 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
 function TimelineBlock({
   form,
   supplyOrders,
-  divisions,
 }: {
   form: FormState;
   supplyOrders: SupplyOrderDetail[];
-  divisions: ReturnType<typeof useDivisions>;
 }) {
   const [showAllDates, setShowAllDates] = useState(false);
   const [selectedSupplyOrderIndexes, setSelectedSupplyOrderIndexes] = useState<number[]>([]);
-  const enabledTimelineFields = getEnabledTimelineFields(form, divisions);
+  const enabledTimelineFields = getEnabledTimelineFields(form);
   const useSupplyOrderSelector = shouldShowSupplyOrderTimelineSelector(supplyOrders);
   const selectableSupplyOrderIndexes = useMemo(
     () => supplyOrders.map((_, index) => index),
@@ -8521,7 +9141,7 @@ function TimelineBlock({
           <button
             type="button"
             onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "pdf")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline PDF"
             aria-label="Export Timeline PDF"
           >
@@ -8530,7 +9150,7 @@ function TimelineBlock({
           <button
             type="button"
             onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "excel")}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline Excel"
             aria-label="Export Timeline Excel"
           >
@@ -8725,7 +9345,7 @@ function MilestonesBlock({
   };
 
   const toggleCompleted = (milestone: string) => {
-    if (disabled) return;
+    if (disabled || normalizeMilestoneName(milestone) === "delivery") return;
     if (inactiveMilestoneKeys.has(normalizeMilestoneName(milestone))) return;
     if (!applicableMilestones.has(milestone)) return;
     if (supplyOrderMilestoneProgress[normalizeMilestoneName(milestone)]) return;
@@ -8795,7 +9415,9 @@ function MilestonesBlock({
             const isOrderDriven = Boolean(orderProgress);
             const isCompleted = orderProgress
               ? Boolean(orderProgress.total && orderProgress.completed === orderProgress.total)
-              : completedSet.has(milestone);
+              : milestoneKey === "delivery"
+                ? false
+                : completedSet.has(milestone);
             const isAutoCompleted = autoCompletedSet.has(milestone);
             const isCurrent = orderProgress
               ? Boolean(orderProgress.current)
@@ -8811,6 +9433,7 @@ function MilestonesBlock({
             const completedDisabled =
               isInactive ||
               disabled ||
+              milestoneKey === "delivery" ||
               isOrderDriven ||
               isAutoCompleted ||
               (lockFilledFields && lockedCompletedSet.has(milestone));
@@ -9680,11 +10303,10 @@ function getApplicableMilestones(
   milestones: string[],
   form: FormState,
   supplyOrders: SupplyOrderDetail[],
-  divisions: Division[],
 ) {
   return new Set(
     milestones.filter((milestone) =>
-      isMilestoneApplicableToFile(milestone, form, supplyOrders, divisions),
+      isMilestoneApplicableToFile(milestone, form, supplyOrders),
     ),
   );
 }
@@ -9693,7 +10315,6 @@ function isMilestoneApplicableToFile(
   milestone: string,
   form: FormState,
   supplyOrders: SupplyOrderDetail[],
-  divisions: Division[],
 ) {
   const key = normalizeMilestoneName(milestone);
 
@@ -9702,7 +10323,7 @@ function isMilestoneApplicableToFile(
     return isBiddingApplicableForFile(form);
   }
   if (key === "pretcec" || key === "posttcec" || key === "cnc") return isYes(form.tcec);
-  if (key === "ad") return isYes(form.ad) && !isDivisionAdNo(form.division, divisions);
+  if (key === "ad") return isYes(form.ad);
   if (key === "rqa") return isYes(form.rqa);
   if (key === "ifa") return isYes(form.ifa);
   if (key === "psb")
@@ -9778,6 +10399,7 @@ function hasMeaningfulSupplyOrderData(order: SupplyOrderDetail) {
 }
 
 function hasMeaningfulSupplyOrderDataValue(key: string, value: unknown): boolean {
+  if (key === "includeInPaymentTiming") return false;
   if (key === "currentMilestone" || key === "completedMilestones") return false;
   if (Array.isArray(value)) {
     return value.some((item) =>
@@ -10287,8 +10909,11 @@ function cleanSupplyOrderRows(
   rows: SupplyOrderDetail[],
   form?: Pick<FormState, "fileType" | "fileTypeGroup" | "ir" | "valueCapitalSelected" | "valueRevenueSelected">,
 ) {
-  const normalized = rows.map((row) => applySupplyOrderRules(row, form));
+  const normalized = rows.map((row) =>
+    clearInapplicableBgCoverageFields(applySupplyOrderRules(row, form)),
+  );
   return normalized.map((row) => ({
+    includeInPaymentTiming: row.includeInPaymentTiming === false ? false : undefined,
     currentMilestone: row.currentMilestone || undefined,
     completedMilestones: normalizeCompletedMilestones(row.completedMilestones),
     financialSanctionDate: row.financialSanctionDate || undefined,
@@ -10326,6 +10951,7 @@ function cleanSupplyOrderRows(
     ldPercentage: row.ldPercentage || undefined,
     revisedDp: row.revisedDp || undefined,
     materialReceiptDate: row.materialReceiptDate || undefined,
+    actualJobCompletionDate: row.actualJobCompletionDate || undefined,
     jobCompletionDate: row.jobCompletionDate || undefined,
     irPreparationDate: row.irPreparationDate || undefined,
     irReceiptDate: row.irReceiptDate || undefined,
@@ -10366,7 +10992,6 @@ function cleanSupplyOrderRows(
 
 function getStageDeliveryWarnings(
   rows: SupplyOrderDetail[],
-  lockedRows: SupplyOrderDetail[],
   form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
   completedMilestones: string[],
 ) {
@@ -10385,7 +11010,7 @@ function getStageDeliveryWarnings(
     const advancePaymentEnabled = isYes(order.advancePayment ?? "");
     const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
     const stages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
-    const lockedStages = lockedRows[orderIndex]?.stageDeliveries ?? [];
+    const extraStages = (order.stageDeliveries ?? []).slice(stageCount);
     const orderPaymentCompleted = normalizeCompletedMilestones(order.completedMilestones).some(
       (milestone) => normalizeMilestoneName(milestone) === "payment",
     );
@@ -10400,28 +11025,33 @@ function getStageDeliveryWarnings(
       warnings.push(`${orderLabel}: Shortclosure is Yes, but Shortclosure date is blank.`);
     }
 
+    if (stageDeliveryEnabled && hasParentDeliveryData(order)) {
+      warnings.push(
+        `${orderLabel}: Stage Delivery is Yes, but parent S.O. delivery dates remain recorded and will be cleared on save.`,
+      );
+    }
+    if (stagePaymentEnabled && hasParentStagePaymentData(order)) {
+      warnings.push(
+        `${orderLabel}: Stage Payment is Yes, but parent S.O. bill/payment details remain recorded and will be cleared on save.`,
+      );
+    }
+
     if (orderPaymentCompleted && !hasAnyOrderPaymentDate(order)) {
       warnings.push(
         `${orderLabel}: Payment is marked completed, but no applicable payment date exists.`,
       );
     }
 
-    if (stageDeliveryEnabled && stageCount < lockedStages.length) {
-      const removedStagesWithData = lockedStages
-        .slice(stageCount)
-        .filter((stage) => hasFilledObjectValue(stage)).length;
-      if (removedStagesWithData) {
-        warnings.push(
-          `${orderLabel}: reducing stage count will remove data from ${removedStagesWithData} later stage(s).`,
-        );
-      }
-    }
-
     if (
       !stageDeliveryEnabled &&
-      hasFilledObjectValue({ stageDeliveries: order.stageDeliveries ?? [] })
+      hasStageDeliveryData(order.stageDeliveries ?? [])
     ) {
       warnings.push(`${orderLabel}: Stage Delivery is No, but hidden stage delivery data exists.`);
+    }
+    if (stageDeliveryEnabled && hasStageDeliveryData(extraStages)) {
+      warnings.push(
+        `${orderLabel}: stage data exists beyond the configured stage count and will be removed on save.`,
+      );
     }
 
     if (stageDeliveryEnabled && !stagePaymentEnabled && hasAnyStagePaymentData(stages)) {
@@ -10820,15 +11450,156 @@ function getLaterDate(first: string | undefined, second: string | undefined) {
 }
 
 function hasAnyStagePaymentData(stages: StageDeliveryDetail[]) {
-  return stages.some((stage) =>
+  return stages.some((stage) => {
+    return (
+      [
+        stage.billPreparationDate,
+        stage.billNo,
+        stage.billSentForPaymentDate,
+        stage.paymentDate,
+        stage.billReturnCycles,
+        stage.paymentMode,
+        stage.actualPaymentCapital,
+        stage.actualPaymentRevenue,
+      ].some((value) =>
+        Array.isArray(value)
+          ? value.some((item) => item && typeof item === "object" && hasFilledObjectValue(item))
+          : hasFilledValue(value),
+      ) ||
+      isStagePaymentMilestone(stage.currentMilestone ?? "") ||
+      (stage.completedMilestones ?? []).some(isStagePaymentMilestone)
+    );
+  });
+}
+
+const stagePaymentMilestoneNames = new Set([
+  "billpreparation",
+  "billsentforpayment",
+  "payment",
+  "billreturnedforcorrection",
+]);
+
+function isStagePaymentMilestone(milestone: string | undefined) {
+  return stagePaymentMilestoneNames.has(normalizeMilestoneName(milestone));
+}
+
+const parentDeliveryMilestoneNames = new Set([
+  "deliveryperiod",
+  "delivery",
+  "jobcompletion",
+  "irpreparation",
+  "irreceipt",
+]);
+
+function isParentDeliveryMilestone(milestone: string) {
+  return parentDeliveryMilestoneNames.has(normalizeMilestoneName(milestone));
+}
+
+function hasParentDeliveryData(order: Partial<SupplyOrderDetail> | undefined) {
+  if (!order) return false;
+  return (
     [
-      stage.billPreparationDate,
-      stage.billSentForPaymentDate,
-      stage.paymentDate,
-      stage.paymentMode,
-      stage.actualPaymentCapital,
-      stage.actualPaymentRevenue,
-    ].some(hasFilledValue),
+      order.dpDate,
+      order.ldType,
+      order.ldPercentage,
+      order.dpExtensionCount,
+      order.revisedDp,
+      order.deliveryPeriodStartDate,
+      order.materialReceiptDate,
+      order.actualJobCompletionDate,
+      order.jobCompletionDate,
+      order.irPreparationDate,
+      order.irReceiptDate,
+    ].some(hasFilledValue) ||
+    isYes(order.dpExtension ?? "") ||
+    isYes(order.ld ?? "") ||
+    (order.currentMilestone ? isParentDeliveryMilestone(order.currentMilestone) : false) ||
+    (order.completedMilestones ?? []).some(isParentDeliveryMilestone)
+  );
+}
+
+function clearParentDeliveryData(order: SupplyOrderDetail): SupplyOrderDetail {
+  return {
+    ...order,
+    dpDate: "",
+    dpExtension: "No",
+    dpExtensionCount: "",
+    revisedDp: "",
+    ld: "No",
+    ldType: "",
+    ldPercentage: "",
+    deliveryPeriodStartDate: "",
+    materialReceiptDate: "",
+    actualJobCompletionDate: "",
+    jobCompletionDate: "",
+    irPreparationDate: "",
+    irReceiptDate: "",
+    currentMilestone:
+      order.currentMilestone && isParentDeliveryMilestone(order.currentMilestone)
+        ? ""
+        : order.currentMilestone,
+    completedMilestones: (order.completedMilestones ?? []).filter(
+      (milestone) => !isParentDeliveryMilestone(milestone),
+    ),
+  };
+}
+
+function hasParentStagePaymentData(order: SupplyOrderDetail) {
+  return (
+    [
+      order.billPreparationDate,
+      order.billNo,
+      order.billSentForPaymentDate,
+      order.billReturnCycles,
+      order.billAmountCapital,
+      order.billAmountRevenue,
+      order.paymentDate,
+      order.paymentMode,
+      order.actualPaymentCapital,
+      order.actualPaymentRevenue,
+    ].some((value) => (Array.isArray(value) ? value.length > 0 : hasFilledValue(value))) ||
+    (order.currentMilestone ? isStagePaymentMilestone(order.currentMilestone) : false) ||
+    (order.completedMilestones ?? []).some(isStagePaymentMilestone)
+  );
+}
+
+function clearParentStagePaymentData(order: SupplyOrderDetail): SupplyOrderDetail {
+  return {
+    ...order,
+    includeInPaymentTiming: undefined,
+    billPreparationDate: "",
+    billNo: "",
+    billSentForPaymentDate: "",
+    billReturnCycles: [],
+    billAmountCapital: "",
+    billAmountRevenue: "",
+    paymentDate: "",
+    paymentMode: "",
+    actualPaymentCapital: "",
+    actualPaymentRevenue: "",
+    currentMilestone:
+      order.currentMilestone && isStagePaymentMilestone(order.currentMilestone)
+        ? ""
+        : order.currentMilestone,
+    completedMilestones: (order.completedMilestones ?? []).filter(
+      (milestone) => !isStagePaymentMilestone(milestone),
+    ),
+  };
+}
+
+function hasStageDeliveryData(stages: StageDeliveryDetail[]) {
+  return stages.some((stage) =>
+    Object.entries(stage).some(([key, value]) => {
+      if ((key === "dpExtension" || key === "ld") && isNo(value)) return false;
+      if (Array.isArray(value)) {
+        return value.some((item) =>
+          item && typeof item === "object"
+            ? hasFilledObjectValue(item as Record<string, unknown>)
+            : hasFilledValue(item),
+        );
+      }
+      return hasFilledValue(value);
+    }),
   );
 }
 
@@ -10869,6 +11640,8 @@ function cleanAdvancePaymentDetail(
   const normalized = applyAdvancePaymentRules(row, advancePaymentActive);
   const completedMilestones = normalizeCompletedMilestones(normalized.completedMilestones);
   const cleaned = {
+    includeInPaymentTiming:
+      advancePaymentActive && normalized.includeInPaymentTiming === false ? false : undefined,
     currentMilestone: normalized.currentMilestone || undefined,
     completedMilestones: completedMilestones.length ? completedMilestones : undefined,
     stageAmountCapital: normalized.stageAmountCapital || undefined,
@@ -10883,7 +11656,9 @@ function cleanAdvancePaymentDetail(
     actualPaymentCapital: normalized.actualPaymentCapital || undefined,
     actualPaymentRevenue: normalized.actualPaymentRevenue || undefined,
   };
-  return Object.values(cleaned).some(Boolean) ? cleaned : {};
+  return Object.values(cleaned).some((value) => value !== undefined && value !== null && value !== "")
+    ? cleaned
+    : {};
 }
 
 function cleanStageDeliveryRows(
@@ -10915,6 +11690,8 @@ function cleanStageDeliveryRows(
           ? ""
           : normalized.currentMilestone;
     return {
+      includeInPaymentTiming:
+        normalized.includeInPaymentTiming === false ? false : undefined,
       stageAmountCapital: normalized.stageAmountCapital || undefined,
       stageAmountRevenue: normalized.stageAmountRevenue || undefined,
       currentMilestone: currentMilestone || undefined,
@@ -10928,6 +11705,7 @@ function cleanStageDeliveryRows(
       ldPercentage: normalized.ldPercentage || undefined,
       revisedDp: normalized.revisedDp || undefined,
       materialReceiptDate: normalized.materialReceiptDate || undefined,
+      actualJobCompletionDate: normalized.actualJobCompletionDate || undefined,
       jobCompletionDate: normalized.jobCompletionDate || undefined,
       irPreparationDate: normalized.irPreparationDate || undefined,
       irReceiptDate: normalized.irReceiptDate || undefined,
@@ -11304,6 +12082,7 @@ function applyConditionalRules(form: FormState) {
     next = {
       ...next,
       bidOpened: "NO",
+      biddingStageOver: "No",
     };
   }
   return next;
@@ -11455,9 +12234,17 @@ function applySupplyOrderRules(
       stageDeliveries: (next.stageDeliveries ?? []).map((stage) =>
         applyStageDeliveryRules({
           ...stage,
+          currentMilestone: isStagePaymentMilestone(stage.currentMilestone)
+            ? ""
+            : stage.currentMilestone,
+          completedMilestones: (stage.completedMilestones ?? []).filter(
+            (milestone) => !isStagePaymentMilestone(milestone),
+          ),
           billPreparationDate: "",
           billNo: "",
           billSentForPaymentDate: "",
+          billReturnCycles: [],
+          includeInPaymentTiming: undefined,
           paymentDate: "",
           paymentMode: "",
           actualPaymentCapital: "",
@@ -11484,11 +12271,13 @@ function applySupplyOrderRules(
       psbBgValidityDate: "",
       psbBgReturnDate: "",
       bgCoverageType:
-        next.bgCoverageType === "PSB" || next.bgCoverageType === "PSB and PWB separately"
+        next.bgCoverageType === "PSB"
           ? "None"
-          : next.bgCoverageType === "PSB+PWB"
+          : next.bgCoverageType === "PSB and PWB separately"
             ? "PWB"
-            : next.bgCoverageType,
+            : next.bgCoverageType === "PSB+PWB"
+              ? "PWB"
+              : next.bgCoverageType,
     };
   }
   if (form && isNo(form.bg)) {
@@ -11560,11 +12349,13 @@ function applySupplyOrderRules(
   } else if (form) {
     next = {
       ...next,
+      actualJobCompletionDate: "",
       jobCompletionDate: "",
       stageDeliveries: (next.stageDeliveries ?? []).map((stage) =>
         applyStageDeliveryRules(
           {
             ...stage,
+            actualJobCompletionDate: "",
             jobCompletionDate: "",
           },
           form,
@@ -11572,6 +12363,7 @@ function applySupplyOrderRules(
       ),
     };
   }
+  next = clearInapplicableBgCoverageFields(next);
   next = normalizeSupplyOrderMilestoneState(next, form);
   return next;
 }
@@ -11642,6 +12434,7 @@ function normalizeSupplyOrderMilestoneState(
     ...completedMilestones.filter((milestone) => {
       const normalized = normalizeMilestoneName(milestone);
       return (
+        normalized !== "delivery" &&
         normalized !== "financialsanction" &&
         normalized !== "supplyorder" &&
         normalized !== "deliveryperiod" &&
@@ -12170,7 +12963,7 @@ function applyStageDeliveryRules(
       irReceiptDate: "",
     };
   } else if (form) {
-    next = { ...next, jobCompletionDate: "" };
+    next = { ...next, actualJobCompletionDate: "", jobCompletionDate: "" };
   }
   if (isDpExtensionInactiveFileType(form?.fileType)) {
     next = {
@@ -12379,11 +13172,6 @@ function isFinancialSanctionReachedForForm(
     : hasFilledValue(form.cfaDate);
 }
 
-function isDpExpiryWordHiddenFileType(fileType: string | undefined) {
-  const normalized = (fileType ?? "").trim().toLowerCase();
-  return normalized === "amc" || normalized === "mpc" || normalized === "o&m";
-}
-
 function isDpExtensionInactiveFileType(fileType: string | undefined) {
   return false;
 }
@@ -12525,29 +13313,16 @@ function getInitialExtensionCount(value: string) {
 }
 
 function getAutoTenderLive(form: FormState) {
-  if (isYes(form.bidOpened) || isYes(form.biddingStageOver)) {
-    return "No";
-  }
-
-  if (isYes(form.refloat)) {
-    return isTenderLiveOnCalendarDate(form.refloatBiddingDate, form.refloatBidOpeningDate)
-      ? "Yes"
-      : "No";
-  }
-
-  return isTenderLiveOnCalendarDate(form.bidDate, form.bidOpeningDate) ? "Yes" : "No";
-}
-
-function isTenderLiveOnCalendarDate(bidDate: string, bidOpeningDate: string) {
-  const bidTime = parseLocalDateTime(bidDate);
-  const openingTime = parseLocalDateTime(bidOpeningDate);
-  const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
-
-  if (bidTime === undefined || openingTime === undefined || todayTime === undefined) {
-    return false;
-  }
-
-  return bidTime <= todayTime && todayTime <= openingTime;
+  return isAutoTenderLive({
+    refloat: isYes(form.refloat),
+    normalStartDate: form.bidDate,
+    normalOpeningDate: form.bidOpeningDate,
+    refloatStartDate: form.refloatBiddingDate,
+    refloatOpeningDate: form.refloatBidOpeningDate,
+    today: formatLocalDate(new Date()),
+  })
+    ? "Yes"
+    : "No";
 }
 
 function hasDate(date: string) {
@@ -12574,31 +13349,16 @@ function formatLocalDate(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function isDivisionAdNo(divisionName: string, divisions: ReturnType<typeof useDivisions>) {
-  const division = divisions.find(
-    (item) => item.name.trim().toLowerCase() === divisionName.trim().toLowerCase(),
-  );
-  return isNo(division?.ad ?? "");
-}
-
-function clearDivisionDisabledFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
-  return isDivisionAdNo(form.division, divisions)
-    ? { ...form, ad: "No", adSentDate: "", adVettingDate: "" }
-    : form;
-}
-
-function getEnabledTimelineFields(form: FormState, divisions: ReturnType<typeof useDivisions>) {
-  return timelineFields.filter((field) => !isTimelineFieldDisabled(field.key, form, divisions));
+function getEnabledTimelineFields(form: FormState) {
+  return timelineFields.filter((field) => !isTimelineFieldDisabled(field.key, form));
 }
 
 function isTimelineFieldDisabled(
   key: FieldKey,
   form: FormState,
-  divisions: ReturnType<typeof useDivisions>,
 ) {
   return (
-    (["ad", "adSentDate", "adVettingDate"].includes(key) &&
-      isDivisionAdNo(form.division, divisions)) ||
+    (["adSentDate", "adVettingDate"].includes(key) && isNo(form.ad)) ||
     (isNo(form.tcec) && tcecDisabledKeys.includes(key)) ||
     (isNo(form.gem) && gemDisabledKeys.includes(key)) ||
     (isNo(form.highValue) && highValueDisabledKeys.includes(key)) ||
@@ -12969,7 +13729,11 @@ function DynamicField({
           data-testid={testId}
           className={inputCls + disabledCls(disabled)}
         >
-          <option value="">Select</option>
+          {field.key === "gemBiddingMode" ? (
+            !value ? <option value="" disabled>Not set</option> : null
+          ) : (
+            <option value="">Select</option>
+          )}
           {field.options
             .filter((option) => option.trim().toLowerCase() !== "select")
             .map((option) => (
@@ -13236,13 +14000,12 @@ function hasFileValueForLock(form: FormState, key: FieldKey) {
 function getUnfilledFieldKeys(
   section: (typeof extraSections)[number],
   form: FormState,
-  divisions: ReturnType<typeof useDivisions>,
 ) {
   return section.fields
     .filter(
       (field) =>
         !["uniqueCode", "tenderLive"].includes(field.key) &&
-        !isTimelineFieldDisabled(field.key, form, divisions) &&
+        !isTimelineFieldDisabled(field.key, form) &&
         !hasFilledValue(String(form[field.key] ?? "")),
     )
     .map((field) => field.key);

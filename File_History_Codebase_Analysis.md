@@ -90,7 +90,7 @@ backend/src/
 - **financial_years**: primary key label; Known financial year labels; Settings and reports.
 - **division_year_allocations**: primary key id; Per-year capital/revenue allocation and active flag; Division planning.
 - **tcec_committees**: primary key id; Financial-year TCEC committee names; Add-file options.
-- **value_threshold_levels**: primary key id; Yearly value threshold levels; Analytics.
+- **value_threshold_levels**: primary key id; shared value threshold levels; Analytics.
 - **indentors**: primary key id; Division indentor master data; File and split-transfer workflows.
 - **division_merges**: primary key id; Merge metadata; Division restructuring history.
 - **division_merge_sources**: primary key merge_id + source_division_id; Merge source divisions; Merge details.

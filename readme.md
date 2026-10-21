@@ -80,6 +80,11 @@ psql "$DATABASE_URL" -f database/035_remove_cars_from_modes.sql
 psql "$DATABASE_URL" -f database/036_add_cars_file_type.sql
 psql "$DATABASE_URL" -f database/037_add_om_file_type.sql
 psql "$DATABASE_URL" -f database/038_demand_cancelled_date.sql
+psql "$DATABASE_URL" -f database/039_global_value_threshold_levels.sql
+psql "$DATABASE_URL" -f database/040_canonical_global_value_threshold_levels.sql
+psql "$DATABASE_URL" -f database/076_gem_bidding_modes.sql
+psql "$DATABASE_URL" -f database/077_user_chart_bar_color.sql
+psql "$DATABASE_URL" -f database/078_user_chart_color_order.sql
 ```
 
 The seed creates this initial admin login only if it does not already exist:

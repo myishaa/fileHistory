@@ -306,7 +306,7 @@ const steps = [
     apply: (file) =>
       updateOrder(file, {
         soNo: `${code}-SO-1`,
-        gemSoNo: `${code}-GEM-1`,
+        gemSoNo: file.gem === "Yes" ? `${code}-GEM-1` : "",
         soDate: "2026-07-10",
         soValueCapital: "10000",
         firm: "Incremental Firm",

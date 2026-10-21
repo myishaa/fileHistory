@@ -10,11 +10,15 @@ import {
   Lock,
   Pencil,
   Plus,
+  Save,
   Trash2,
   Unlock,
   X,
 } from "lucide-react";
 import { CompactTableText } from "@/components/compact-table-text";
+import { QuickAccessSettings } from "@/components/quick-access";
+import { QuickEntryExcelSettings } from "@/components/quick-entry-excel";
+import { chartColorOptions } from "@/lib/chart-colors";
 import {
   createMasterFirm,
   deleteMasterFirm,
@@ -119,6 +123,7 @@ const defaultMilestoneSequence = [
   "Payment",
   "File Closed",
 ];
+
 const defaultFirmTypes = ["MSE", "MSE (Women)", "Non-MSE"];
 const defaultFileTypes = ["Goods & Services", "AMC", "MPC", "CARS", "O&M"];
 const defaultModes = ["OBM", "PBM", "SBM", "LBM", "LPC"];
@@ -238,6 +243,7 @@ type AdminSection = {
 };
 
 const adminSectionKeys = new Set([
+  "theme",
   "user",
   "workspace",
   "offsetDays",
@@ -260,6 +266,9 @@ const adminSectionKeys = new Set([
   "users",
   "ipAccess",
   "archive",
+  "favorites",
+  "noticeBoard",
+  "quickEntryExcel",
 ]);
 
 const milestoneHelperSectionOrder = [
@@ -276,6 +285,11 @@ const milestoneHelperSectionOrder = [
 ];
 
 const settingsSectionHelpers = {
+  favorites: ["Administrators can publish shared shortcuts. Each user can add personal shortcuts to sections across the software."],
+  noticeBoard: ["Administrators and users can select calendar displays. The Notice Board rotates through the selected displays."],
+  quickEntryExcel: [
+    "Create personal Excel export presets for Quick Entry by choosing the file and supply-order fields to include.",
+  ],
   theme: [
     "Sets the appearance for this account.",
     "Appearance only; file data and workflow rules stay unchanged.",
@@ -311,7 +325,7 @@ const settingsSectionHelpers = {
     "These choices change how results are grouped, not the dates saved on files.",
   ],
   divisions: [
-    "Manage division names, codes, AD settings, and budgets here.",
+    "Manage division names, codes, and budgets here.",
     "Renaming a division changes its name, not the division recorded on existing files.",
     "A division used by an active or archived file cannot be deleted.",
     "Example: correcting 'ACC Divison' to 'ACC Division' fixes the name; it does not move any files.",
@@ -346,6 +360,10 @@ const settingsSectionHelpers = {
     "A mode already used on a file cannot be renamed. Inactivate it to stop offering it for new files.",
     "Example: when a mode's meaning changes, add a new mode and inactivate the old one. Existing files keep their original mode.",
   ],
+  gemBiddingModes: [
+    "GeM bidding modes appear in Add/Edit, Search filters, and Dashboard counts.",
+    "Custom, Catalogue, and Comparison are always available. Add new choices here for future entries; existing file values are not changed.",
+  ],
   firmTypes: [
     "Firm types such as MSE and Non-MSE are used in S.O. details and firm-type reports.",
     "A type already used on an S.O. cannot be renamed. Inactivate it to stop offering it for new entries.",
@@ -362,8 +380,8 @@ const settingsSectionHelpers = {
     "Example: add 'Committee B' for future entries and inactivate 'Committee A'; older files still show Committee A.",
   ],
   thresholds: [
-    "Set the value bands used in Count and Value Analysis.",
-    "Choose whether each band applies to demand value, S.O. value, or both.",
+    "Set value bands used across all financial years in Count and Value Analysis.",
+    "Choose whether each band applies to Capital, Revenue, or Both.",
   ],
   anomalyGovernance: [
     "The anomaly list contains suspected data issues and accepted/rejected decisions.",
@@ -706,10 +724,10 @@ function SettingsPage() {
   const activeUser = useActiveUser();
   const settingsRole: AppUserRole | undefined = activeUser?.role;
   const locationSearch = useRouterState({ select: (state) => state.location.search });
-  const [activeAdminSection, setActiveAdminSection] = useState("divisions");
+  const [activeAdminSection, setActiveAdminSection] = useState("theme");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
   const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
-  const [expandedAdminGroup, setExpandedAdminGroup] = useState("organization");
+  const [expandedAdminGroup, setExpandedAdminGroup] = useState("personal");
 
   useEffect(() => {
     const requestedSection =
@@ -725,11 +743,23 @@ function SettingsPage() {
         <Tabs defaultValue="theme" className="space-y-4">
           <TabsList aria-label="Settings sections">
             <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
+            <SettingsTabTrigger value="favorites" label="My favourites" helperKey="favorites" />
+            <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
+            <SettingsTabTrigger
+              value="quickEntryExcel"
+              label="Quick Entry Excel"
+              helperKey="quickEntryExcel"
+            />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
           </TabsList>
           <TabsContent value="theme">
             <PreferenceSettings />
+          </TabsContent>
+          <TabsContent value="favorites"><QuickAccessSettings section="favorites" /></TabsContent>
+          <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
+          <TabsContent value="quickEntryExcel">
+            <QuickEntryExcelSettings />
           </TabsContent>
           <TabsContent value="indentors">
             <IndentorSettings />
@@ -748,6 +778,14 @@ function SettingsPage() {
       <div className="space-y-4 max-w-6xl">
         <Tabs defaultValue="user" className="space-y-4">
           <TabsList aria-label="Settings sections">
+            <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
+            <SettingsTabTrigger value="favorites" label="My favourites" helperKey="favorites" />
+            <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
+            <SettingsTabTrigger
+              value="quickEntryExcel"
+              label="Quick Entry Excel"
+              helperKey="quickEntryExcel"
+            />
             <SettingsTabTrigger value="user" label="User" helperKey="user" />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="firms" label="Firm Database" helperKey="firms" />
@@ -763,6 +801,14 @@ function SettingsPage() {
               <SettingsTabTrigger value="mmgSummary" label="MMG Summary" helperKey="mmgSummary" />
             ) : null}
           </TabsList>
+          <TabsContent value="theme">
+            <PreferenceSettings />
+          </TabsContent>
+          <TabsContent value="favorites"><QuickAccessSettings section="favorites" /></TabsContent>
+          <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
+          <TabsContent value="quickEntryExcel">
+            <QuickEntryExcelSettings />
+          </TabsContent>
           <TabsContent value="user">
             <AccountSettings />
           </TabsContent>
@@ -792,7 +838,7 @@ function SettingsPage() {
 
   if (!canViewAdminSettings(activeUser?.role)) {
     return (
-      <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="max-w-xl rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">Admin settings</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This page is available only to administrators.
@@ -802,6 +848,30 @@ function SettingsPage() {
   }
 
   const allAdminSections: AdminSection[] = [
+    {
+      key: "theme",
+      label: "UI theme",
+      helper: settingsSectionHelpers.theme,
+      content: <PreferenceSettings />,
+    },
+    {
+      key: "favorites",
+      label: "My favourites",
+      helper: settingsSectionHelpers.favorites,
+      content: <QuickAccessSettings section="favorites" />,
+    },
+    {
+      key: "noticeBoard",
+      label: "Notice board",
+      helper: settingsSectionHelpers.noticeBoard,
+      content: <QuickAccessSettings section="noticeBoard" />,
+    },
+    {
+      key: "quickEntryExcel",
+      label: "Quick Entry Excel",
+      helper: settingsSectionHelpers.quickEntryExcel,
+      content: <QuickEntryExcelSettings />,
+    },
     {
       key: "user",
       label: "User",
@@ -875,6 +945,12 @@ function SettingsPage() {
       content: <ModeSettings />,
     },
     {
+      key: "gemBiddingModes",
+      label: "GeM Bidding Modes",
+      helper: settingsSectionHelpers.gemBiddingModes,
+      content: <GemBiddingModeSettings />,
+    },
+    {
       key: "firmTypes",
       label: "Firm Types",
       helper: settingsSectionHelpers.firmTypes,
@@ -938,16 +1014,28 @@ function SettingsPage() {
   const universalViewer = isUniversalViewer(activeUser?.role);
   const adminSections = universalViewer
     ? allAdminSections.filter((section) =>
-        ["user", "presets", "offsetDays"].includes(section.key),
+        [
+          "theme",
+          "user",
+          "presets",
+          "offsetDays",
+          "favorites",
+          "noticeBoard",
+          "quickEntryExcel",
+        ].includes(section.key),
       )
     : settingsRole === "sub_admin"
-      ? allAdminSections.filter((section) => ["user", "workspace", "offsetDays"].includes(section.key))
+      ? allAdminSections.filter((section) => ["theme", "user", "workspace", "offsetDays"].includes(section.key))
       : allAdminSections;
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
   const selectedAdminSectionUnlocked =
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
-    (universalViewer && ["user", "presets"].includes(selectedAdminSection.key));
+    selectedAdminSection.key === "theme" ||
+    (universalViewer &&
+      ["user", "presets", "favorites", "noticeBoard", "quickEntryExcel"].includes(
+        selectedAdminSection.key,
+      ));
   const adminSectionGroups = [
     {
       key: "organization",
@@ -957,7 +1045,7 @@ function SettingsPage() {
     {
       key: "procurement",
       label: "Procurement Setup",
-      keys: ["modes", "fileTypes", "firmTypes", "firms", "tcec", "fileMarkers", "milestones"],
+      keys: ["modes", "gemBiddingModes", "fileTypes", "firmTypes", "firms", "tcec", "fileMarkers", "milestones"],
     },
     {
       key: "analytics",
@@ -976,6 +1064,11 @@ function SettingsPage() {
       key: "access",
       label: "Access and security",
       keys: ["user", "users", "ipAccess", "archive"],
+    },
+    {
+      key: "personal",
+      label: "Personal preferences",
+      keys: ["theme", "favorites", "noticeBoard", "quickEntryExcel"],
     },
   ]
     .map((group) => ({
@@ -1008,7 +1101,7 @@ function SettingsPage() {
         }
       >
         {settingsSidePanelHooked ? (
-          <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+          <aside className="rounded-xl border border-border bg-secondary/35 p-3 shadow-[var(--shadow-card)]">
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
               <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
                 Settings
@@ -1081,7 +1174,7 @@ function SettingsPage() {
             </div>
           </aside>
         ) : (
-          <aside className="rounded-xl border border-border bg-card p-2 shadow-[var(--shadow-card)]">
+          <aside className="rounded-xl border border-border bg-secondary/35 p-2 shadow-[var(--shadow-card)]">
             <button
               type="button"
               onClick={() => setSettingsSidePanelHooked(true)}
@@ -1447,11 +1540,17 @@ function CashOutGoOffsetSettings({
         ))}
       </div>
       {canEdit ? (
-        <div className="mt-3 flex items-center gap-3">
-          <button type="button" className="btn-primary h-9 px-3" onClick={() => void save()} disabled={!plan || loading || saving || saved}>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : <span />}
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!plan || loading || saving || saved}
+            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saved ? <Check className="size-4" /> : <Save className="size-4" />}
             {saving ? "Saving..." : saved ? "Saved" : "Save shared offsets"}
           </button>
-          {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : null}
         </div>
       ) : (
         <p className="mt-3 text-xs text-muted-foreground">These values are view-only for this role; shared Cash Out Go offsets cannot be changed here.</p>
@@ -1492,12 +1591,13 @@ function restoreHelperAbbreviations(text: string) {
 
 function PreferenceSettings() {
   const settings = useSettings();
+  const activeUser = useActiveUser();
   return (
     <div className="space-y-5">
-      <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <h2 className="text-sm font-semibold mb-1">UI theme</h2>
         <p className="text-xs text-muted-foreground mb-5">
-          Sets the display theme for this account.
+          Sets this account's display theme and colour order for bars, columns and pie charts.
         </p>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -1511,10 +1611,112 @@ function PreferenceSettings() {
             value={settings.themeTint}
             onChange={(value) => store.updateSettings({ themeTint: value })}
           />
+          <ChartColorOrderField
+            value={settings.chartColorOrder ?? chartColorOptions.map((option) => option.color)}
+            onChange={(value) => store.updateSettings({ chartColorOrder: value })}
+            disabled={settings.globalChartColorsEnforced === true}
+          />
         </div>
       </div>
+      {activeUser?.role === "admin" ? <GlobalChartColorSettings /> : null}
       <AddEditRibbonSettings />
     </div>
+  );
+}
+
+function GlobalChartColorSettings() {
+  const settings = useSettings();
+  const [order, setOrder] = useState(
+    settings.globalChartColorOrder ?? chartColorOptions.map((option) => option.color),
+  );
+  const [enforced, setEnforced] = useState(settings.globalChartColorsEnforced === true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setOrder(settings.globalChartColorOrder ?? chartColorOptions.map((option) => option.color));
+    setEnforced(settings.globalChartColorsEnforced === true);
+  }, [settings.globalChartColorOrder, settings.globalChartColorsEnforced]);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage("");
+    try {
+      await store.updateGlobalChartColors({
+        globalChartColorOrder: order,
+        globalChartColorsEnforced: enforced,
+      });
+      setMessage(
+        enforced
+          ? "Shared colour order saved. Users see it after their next refresh or sign-in."
+          : "Shared colour policy saved.",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save the shared chart colours.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    if (!window.confirm("Apply the default chart palette to everyone and prevent personal colour overrides?")) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await store.resetChartColorPreferencesForAllUsers();
+      setMessage("Default palette applied to everyone. Users see it after their next refresh or sign-in.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not reset chart colours for all users.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
+      <h2 className="mb-1 text-sm font-semibold">Chart colours for all users</h2>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Set a shared order for every account. Bars, columns and pie slices use this order. Users see policy changes after their next refresh or sign-in. Reset applies the default order to everyone.
+      </p>
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <ChartColorOrderField value={order} onChange={setOrder} />
+        <div className="space-y-4">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={enforced}
+              onChange={(event) => setEnforced(event.target.checked)}
+              className="mt-0.5 size-4 accent-primary"
+            />
+            <span>
+              <span className="block font-medium">Use this colour order for everyone</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                When enabled, personal colour settings are overridden until this is turned off.
+              </span>
+            </span>
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={saving}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {saving ? "Saving..." : enforced ? "Apply to all users" : "Save colour policy"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void reset()}
+              disabled={saving}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+            >
+              Reset all users
+            </button>
+          </div>
+          {message ? <p role="status" className="text-xs text-muted-foreground">{message}</p> : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1531,7 +1733,7 @@ function AccountSettings() {
           .join(", ") || "No divisions assigned";
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">User settings</h2>
       <p className="text-xs text-muted-foreground mb-5">Account and access details.</p>
 
@@ -1575,7 +1777,7 @@ function AddEditRibbonSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Add/Edit file top ribbon</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Demand description is always shown on the first line. Choose the second and third line for
@@ -1641,7 +1843,7 @@ function OffsetDaysSettings() {
       disabled: !canEditPreSoOffsets,
       onChange: (value: number) => store.updateSettings({ bgReturnOffsetDays: value }),
       helper: [
-        "Used in Add/Edit File and BG-return checks in Search, Dashboard, Analytics, and Reports.",
+        "A BG must remain valid through Warranty Period Date + this offset. BG return becomes due the following day. Used by BG-return checks and the Warranty/BG comparison in Search, Dashboard, Analytics, and Reports.",
         "Admin/Sub-admin changes apply throughout the software.",
       ],
     },
@@ -1777,7 +1979,7 @@ function WorkspaceSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Workspace</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Configure how this records system behaves.
@@ -1979,7 +2181,7 @@ function TcecCommitteeSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">TCEC Committee</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Add committee names for selection in TCEC fields.
@@ -2068,7 +2270,7 @@ function FirmTypeSettings() {
   const inactiveRows = rows.filter((row) => row.status === "inactive");
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-1 inline-flex items-center gap-1.5">
         <h2 className="text-sm font-semibold">Firm Types</h2>
         <SettingsHelper items={settingsControlHelpers.firmTypeName} label="Firm types help" />
@@ -2190,7 +2392,7 @@ function ModeSettings() {
   const inactiveRows = rows.filter((row) => row.status === "inactive");
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Modes</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Add and edit the mode values shown in File Details, Search, and Dashboard Snapshot.
@@ -2272,6 +2474,61 @@ function ModeSettings() {
   );
 }
 
+function GemBiddingModeSettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [name, setName] = useState("");
+  const modes = normalizeGemBiddingModes(settings.gemBiddingModes);
+
+  if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
+
+  const add = () => {
+    const trimmed = name.trim();
+    if (!trimmed || modes.some((mode) => mode.toLowerCase() === trimmed.toLowerCase())) return;
+    void store.updateSettings({ gemBiddingModes: [...modes, trimmed] });
+    setName("");
+  };
+
+  return (
+    <div className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
+      <h2 className="mb-1 text-sm font-semibold">GeM Bidding Modes</h2>
+      <p className="mb-5 text-xs text-muted-foreground">
+        Add a choice for future GeM entries. Existing file values are not changed.
+      </p>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+        <DivisionInput value={name} onChange={setName} placeholder="GeM bidding mode" />
+        <button
+          type="button"
+          onClick={add}
+          disabled={!name.trim()}
+          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          <Plus className="size-4" /> Add
+        </button>
+      </div>
+      <ul className="mt-4 divide-y divide-border rounded-md border border-border">
+        {modes.map((mode) => (
+          <li key={mode} className="px-4 py-2.5 text-sm">{mode}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function normalizeGemBiddingModes(values: string[] | undefined) {
+  const defaults = ["Custom", "Catalogue", "Comparison"];
+  const seen = new Set<string>();
+  return [...defaults, ...(values ?? [])]
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function FileTypeSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
@@ -2346,7 +2603,7 @@ function FileTypeSettings() {
   const inactiveRows = rows.filter((row) => row.status === "inactive");
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">File Types</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Name and workflow group are locked once any active or archived file uses the file type.
@@ -2550,7 +2807,7 @@ function SpecialFileMarkerSettings() {
   const inactiveRows = rows.filter((row) => row.status === "inactive");
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Special File Marker Codes</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Define marker codes for special scenarios that can be attached to files and searched later.
@@ -3026,7 +3283,6 @@ function createThresholdLevels(count: number, existing: ValueThresholdLevel[]) {
 function ValueThresholdSettings() {
   const settings = useSettings();
   const activeUser = useActiveUser();
-  const selectedYear = settings.setupYear || settings.financialYear;
   const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>
     formatThresholdLevels(settings.valueThresholdLevels ?? []),
   );
@@ -3035,7 +3291,7 @@ function ValueThresholdSettings() {
   useEffect(() => {
     setLevels(formatThresholdLevels(settings.valueThresholdLevels ?? []));
     setMessage("");
-  }, [settings.setupYear, settings.valueThresholdLevels]);
+  }, [settings.valueThresholdLevels]);
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -3075,7 +3331,7 @@ function ValueThresholdSettings() {
 	    }
 	    setLevels(normalized);
     setMessage("Thresholds saved.");
-    store.updateSettings({ setupYear: selectedYear, valueThresholdLevels: normalized });
+    store.updateSettings({ valueThresholdLevels: normalized });
   };
 
   const updateCount = (count: number) => {
@@ -3094,12 +3350,12 @@ function ValueThresholdSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold mb-1">Value thresholds</h2>
           <p className="text-xs text-muted-foreground">
-            Configure value levels for {selectedYear}. Files are matched by capital/revenue value.
+            Configure shared value levels for all financial years. Enter limits in rupees.
           </p>
         </div>
         <label className="block">
@@ -3734,7 +3990,7 @@ function MilestoneSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-1 inline-flex items-center gap-1.5">
         <h2 className="text-sm font-semibold">Milestones</h2>
         <SettingsHelper
@@ -3908,7 +4164,7 @@ function TableFieldPresetSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="mb-1 inline-flex items-center gap-1.5">
@@ -4120,7 +4376,7 @@ function DemandProcessingPresetSettings() {
 
   return (
     <div className="space-y-4">
-      <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+      <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold mb-1">Demand processing presets</h2>
@@ -4344,7 +4600,7 @@ function DemandProcessingDayRangeSettings({
   onRemove: (id: string) => void;
 }) {
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="mb-1 inline-flex items-center gap-1.5">
@@ -4458,7 +4714,7 @@ function MmgSummarySettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="mb-1 inline-flex items-center gap-1.5">
@@ -4562,27 +4818,23 @@ function DivisionSettings() {
   const divisionUsage = getDivisionUsage(files);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const [ad, setAd] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
-  const [editAd, setEditAd] = useState("");
   const [editMessagesEnabled, setEditMessagesEnabled] = useState(true);
   const [editViewerPassword, setEditViewerPassword] = useState("");
 
   const add = () => {
     if (!name.trim()) return;
-    store.addDivision(name.trim(), code.trim() || undefined, undefined, undefined, ad);
+    store.addDivision(name.trim(), code.trim() || undefined);
     setName("");
     setCode("");
-    setAd("");
   };
 
   const startEdit = (division: (typeof divisions)[number]) => {
     setEditingId(division.id);
     setEditName(division.name);
     setEditCode(division.code ?? "");
-    setEditAd(division.ad ?? "");
     setEditMessagesEnabled(division.messagesEnabled !== false);
     setEditViewerPassword("");
   };
@@ -4592,7 +4844,6 @@ function DivisionSettings() {
     store.updateDivision(id, {
       name: editName.trim(),
       code: editCode.trim() || undefined,
-      ad: editAd,
       messagesEnabled: editMessagesEnabled,
       ...(editViewerPassword.trim() ? { viewerPassword: editViewerPassword.trim() } : {}),
     });
@@ -4600,17 +4851,16 @@ function DivisionSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Divisions</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Rename only to correct the division name; linked records will show the updated name. Delete
         is available only when no files use the division.
       </p>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_0.8fr_0.7fr_auto]">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_0.8fr_auto]">
         <DivisionInput value={name} onChange={setName} placeholder="Division name" />
         <DivisionInput value={code} onChange={setCode} placeholder="Division code" />
-        <DivisionAdSelect value={ad} onChange={setAd} />
         <button
           type="button"
           onClick={add}
@@ -4621,20 +4871,18 @@ function DivisionSettings() {
       </div>
 
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[820px] table-fixed text-sm">
+        <table className="w-full min-w-[720px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[24%]" />
-            <col className="w-[16%]" />
-            <col className="w-[10%]" />
+            <col className="w-[28%]" />
+            <col className="w-[20%]" />
             <col className="w-[18%]" />
-            <col className="w-[22%]" />
+            <col className="w-[24%]" />
             <col className="w-[10%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
               <th className="text-left font-medium px-4 py-2.5">Division name</th>
               <th className="text-left font-medium px-4 py-2.5">Division code</th>
-              <th className="text-left font-medium px-4 py-2.5">AD</th>
               <th className="text-left font-medium px-4 py-2.5">Messages</th>
               <th className="text-left font-medium px-4 py-2.5">Viewer password</th>
               <th className="text-right font-medium px-4 py-2.5">Action</th>
@@ -4647,7 +4895,6 @@ function DivisionSettings() {
               const editChanged =
                 editName.trim() !== division.name ||
                 editCode.trim() !== (division.code ?? "") ||
-                editAd !== (division.ad ?? "") ||
                 editMessagesEnabled !== (division.messagesEnabled !== false) ||
                 Boolean(editViewerPassword.trim());
               return (
@@ -4672,13 +4919,6 @@ function DivisionSettings() {
                       />
                     ) : (
                       division.code || "Not set"
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {isEditing ? (
-                      <DivisionAdSelect value={editAd} onChange={setEditAd} />
-                    ) : (
-                      division.ad || "No"
                     )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
@@ -4864,7 +5104,7 @@ function FirmRatingSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold mb-1">Firm Rating</h2>
@@ -5001,7 +5241,7 @@ function FirmDatabaseSettings() {
   const isComplete = (value: FirmDraft) => {
     const cleaned = cleanFirmDraft(value);
     return Boolean(
-      (cleaned.firmName || cleaned.emailId || cleaned.firmUniqueNo) &&
+      cleaned.firmName &&
       (cleaned.firmType?.toUpperCase() !== "OTHER" || cleaned.firmTypeOther),
     );
   };
@@ -5096,7 +5336,7 @@ function FirmDatabaseSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-sm font-semibold mb-1">Firm Database</h2>
@@ -5135,7 +5375,7 @@ function FirmDatabaseSettings() {
         <DivisionInput
           value={draft.firmName ?? ""}
           onChange={(value) => updateDraft("firmName", value)}
-          placeholder="Firm name"
+          placeholder="Firm name *"
         />
         <DivisionInput
           value={draft.firmUniqueNo ?? ""}
@@ -5267,6 +5507,7 @@ function FirmDatabaseSettings() {
                       editing={isEditing}
                       value={isEditing ? editDraft.firmName : firm.firmName}
                       onChange={(value) => updateEditDraft("firmName", value)}
+                      invalid={isEditing && !editDraft.firmName?.trim()}
                       displayWidth={20}
                     />
                     <FirmCell
@@ -5870,7 +6111,7 @@ function IndentorSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
 	          <h2 className="text-sm font-semibold mb-1">Indentors</h2>
@@ -6221,7 +6462,7 @@ function IpAccessSettings() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold">Login IP Access Control</h2>
@@ -6326,7 +6567,7 @@ function IpAccessSettings() {
         onArchive={async (id) => setConfig(await store.archiveIpLoginAttempt(id))}
       />
 
-      <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
         <div className="flex w-full items-center justify-between gap-3">
           <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
             New IP bin / archive ({archivedAttempts.length})
@@ -6363,7 +6604,7 @@ function TrustedIpTable({
   onUpdate: (id: string, patch: { remarks?: string; active?: boolean }) => Promise<void>;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+    <div className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
       <h3 className="mb-3 text-sm font-semibold">Trusted IP addresses</h3>
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[760px] text-sm">
@@ -6446,7 +6687,7 @@ function IpAttemptTable({
   onDelete?: (attempt: IpLoginAttempt) => Promise<void>;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+    <div className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
       <h3 className="mb-3 text-sm font-semibold">{title}</h3>
       <div className="overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[980px] text-sm">
@@ -6616,7 +6857,7 @@ function UserSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Authorised users</h2>
       <p className="text-xs text-muted-foreground mb-5">
         Add users and assign the divisions they should be allowed to work with.
@@ -7064,7 +7305,7 @@ function ArchiveSettings() {
   };
 
   return (
-    <div className="bg-card border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
+    <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold mb-1">Archive</h2>
@@ -7092,19 +7333,17 @@ function ArchiveSettings() {
           Divisions bin ({archivedDivisions.length})
         </summary>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] table-fixed text-sm">
+          <table className="w-full min-w-[560px] table-fixed text-sm">
             <colgroup>
-              <col className="w-[30%]" />
-              <col className="w-[18%]" />
-              <col className="w-[18%]" />
-              <col className="w-[18%]" />
-              <col className="w-[16%]" />
+              <col className="w-[34%]" />
+              <col className="w-[20%]" />
+              <col className="w-[24%]" />
+              <col className="w-[22%]" />
             </colgroup>
             <thead className="bg-secondary text-xs text-muted-foreground">
               <tr>
                 <th className="px-4 py-2.5 text-left font-medium">Archived division</th>
                 <th className="px-4 py-2.5 text-left font-medium">Code</th>
-                <th className="px-4 py-2.5 text-left font-medium">AD</th>
                 <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
                 <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
               </tr>
@@ -7112,13 +7351,13 @@ function ArchiveSettings() {
             <tbody>
               {loading ? (
                 <tr className="border-t border-border">
-                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
                     Loading archived divisions...
                   </td>
                 </tr>
               ) : archivedDivisions.length === 0 ? (
                 <tr className="border-t border-border">
-                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
                     No archived divisions.
                   </td>
                 </tr>
@@ -7129,7 +7368,6 @@ function ArchiveSettings() {
                     <td className="px-4 py-3 text-muted-foreground">
                       {division.code || "Not set"}
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{division.ad || "No"}</td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {division.archivedAt ? formatArchiveDate(division.archivedAt) : "Not set"}
                     </td>
@@ -7893,27 +8131,6 @@ function IndentorDesignationCell({
   );
 }
 
-function DivisionAdSelect({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      aria-label="AD"
-      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-    >
-      <option value="">AD</option>
-      <option value="Yes">Yes</option>
-      <option value="No">No</option>
-    </select>
-  );
-}
-
 function ThemeField({
   label,
   value,
@@ -7967,6 +8184,74 @@ function ThemeTintField({
         <option value="lavender">Lavender tinted</option>
       </select>
     </label>
+  );
+}
+
+function ChartColorOrderField({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: string[];
+  onChange: (value: string[]) => void;
+  disabled?: boolean;
+}) {
+  const orderedColors = [
+    ...new Set(value.filter((color) => chartColorOptions.some((option) => option.color === color))),
+    ...chartColorOptions
+      .map((option) => option.color)
+      .filter((color) => !value.includes(color)),
+  ];
+
+  const moveColor = (index: number, offset: -1 | 1) => {
+    const nextIndex = index + offset;
+    if (nextIndex < 0 || nextIndex >= orderedColors.length) return;
+    const next = [...orderedColors];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    onChange(next);
+  };
+
+  return (
+    <fieldset className="block">
+      <legend className="mb-1.5 text-xs font-medium">Chart colour priority for bars, columns and pie charts</legend>
+      <p className="mb-2 text-xs text-muted-foreground">
+        {disabled
+          ? "An administrator is setting the colour order for all users."
+          : "Saved to your account. Bars, columns and pie slices use colours from top to bottom, as needed."}
+      </p>
+      <ol className="space-y-1">
+        {orderedColors.map((color, index) => {
+          const option = chartColorOptions.find((item) => item.color === color)!;
+          return (
+            <li key={color} className="flex items-center gap-2 rounded border border-border px-2 py-1">
+              <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+              <span className="size-4 shrink-0 rounded-sm border border-black/10" style={{ backgroundColor: color }} />
+              <span className="min-w-0 flex-1 text-xs">{option.label}</span>
+              <button
+                type="button"
+                onClick={() => moveColor(index, -1)}
+                disabled={disabled || index === 0}
+                aria-label={`Move ${option.label} earlier`}
+                title="Move earlier"
+                className="grid size-7 place-items-center rounded border border-border hover:bg-accent disabled:opacity-40"
+              >
+                <ArrowUp className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => moveColor(index, 1)}
+                disabled={disabled || index === orderedColors.length - 1}
+                aria-label={`Move ${option.label} later`}
+                title="Move later"
+                className="grid size-7 place-items-center rounded border border-border hover:bg-accent disabled:opacity-40"
+              >
+                <ArrowDown className="size-3.5" />
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </fieldset>
   );
 }
 

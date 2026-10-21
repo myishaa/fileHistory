@@ -70,7 +70,7 @@ function financeExportRows(summary) {
     ],
     [
       "7",
-      "Carry Forward from previous FYs as on 2026-27 end",
+      "Balance Carry Forward from previous FYs as on 2026-27 end",
       formatCurrency(totals.previousCarryForward?.capital),
       formatCurrency(totals.previousCarryForward?.revenue),
       `${n(totals.previousCarryForward?.count)} older liability/source-FY rows still unpaid at 2026-27 end`,
@@ -84,7 +84,7 @@ function financeExportRows(summary) {
     ],
     [
       "9",
-      "Carry Forward of 2026-27",
+      "Balance Carry Forward of 2026-27",
       formatCurrency(totals.carryForward?.capital),
       formatCurrency(totals.carryForward?.revenue),
       `${n(totals.carryForward?.count)} 2026-27 liability/source-FY rows unpaid by FY end`,

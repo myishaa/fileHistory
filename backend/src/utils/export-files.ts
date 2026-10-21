@@ -2,6 +2,7 @@ type ExportTable = {
   title?: string;
   headers: string[];
   rows: string[][];
+  numericColumns?: number[];
   columnWidths?: number[];
   emphasizedColumns?: number[];
 };
@@ -138,10 +139,7 @@ function renderPdfPages(document: ExportDocument) {
   if (descriptionSections.details.length) {
     page = drawDescriptionTable(page, descriptionSections.details, addPage);
   }
-  if (descriptionSections.notes.length) {
-    page = drawDescriptionNotes(page, descriptionSections.notes, addPage);
-  }
-  page.y -= descriptionSections.notes.length ? 22 : 10;
+  page.y -= 24;
 
   const plots = [...(document.plot ? [document.plot] : []), ...(document.plots ?? [])];
   const pdfTables = plots.length
@@ -201,6 +199,11 @@ function renderPdfPages(document: ExportDocument) {
 
     page.y -= 24;
   });
+
+  if (descriptionSections.notes.length) {
+    page.y -= 2;
+    page = drawDescriptionNotes(page, descriptionSections.notes, addPage);
+  }
 
   return pages;
 }

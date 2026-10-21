@@ -4,17 +4,20 @@ import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
 import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 import type { FileTypeGroup, FileTypeGroupSetting } from "@/lib/file-type-groups";
+import { defaultChartColorOrder } from "@/lib/chart-colors";
 import {
   defaultAddEditRibbonFields,
   type AddEditRibbonFieldKey,
 } from "@/lib/add-edit-ribbon-fields";
 import {
+  ALL_ACTIVE_FILES_YEAR,
   isActivePlusCurrentFyClosedYear,
   isAllActiveFilesYear,
   isAllFilesYear,
   isFileVisibleForYear,
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
+import { readFilterCombinationLock } from "@/lib/filter-combination-lock";
 
 const anomalyRefreshStorageKey = "recordkeeper:anomaly-data-updated";
 
@@ -127,6 +130,7 @@ export type FileRecord = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  actualJobCompletionDate?: string;
   jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
@@ -267,6 +271,7 @@ export type FileIdentifierSuggestion = {
 };
 
 export type SupplyOrderDetail = {
+  includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
   financialSanctionDate?: string;
@@ -309,6 +314,7 @@ export type SupplyOrderDetail = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  actualJobCompletionDate?: string;
   jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
@@ -341,6 +347,7 @@ export type SupplyOrderDetail = {
 
 export type SupplementaryBillDetail = {
   id?: string;
+  includeInPaymentTiming?: boolean;
   billNo?: string;
   billAmountCapital?: string;
   billAmountRevenue?: string;
@@ -354,6 +361,7 @@ export type SupplementaryBillDetail = {
 };
 
 export type AdvancePaymentDetail = {
+  includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
   stageAmountCapital?: string;
@@ -370,6 +378,7 @@ export type AdvancePaymentDetail = {
 };
 
 export type StageDeliveryDetail = {
+  includeInPaymentTiming?: boolean;
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
   currentMilestone?: string;
@@ -383,6 +392,7 @@ export type StageDeliveryDetail = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  actualJobCompletionDate?: string;
   jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
@@ -597,12 +607,17 @@ export type AppSettings = {
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
+  chartBarColor?: string;
+  chartColorOrder?: string[];
+  globalChartColorOrder?: string[];
+  globalChartColorsEnforced?: boolean;
   deletionPassword: string;
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
   fileTypeGroups: FileTypeGroupSetting[];
   modes: string[];
+  gemBiddingModes?: string[];
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: TableFieldPreset[];
@@ -636,6 +651,10 @@ const defaultSettings: AppSettings = {
   yearSelectionLocked: false,
   theme: "light",
   themeTint: "plain",
+  chartBarColor: "#0f766e",
+  chartColorOrder: defaultChartColorOrder,
+  globalChartColorOrder: defaultChartColorOrder,
+  globalChartColorsEnforced: false,
   deletionPassword: "",
   tcecCommittees: [],
   firmTypes: ["MSE", "MSE (Women)", "Non-MSE"],
@@ -648,6 +667,7 @@ const defaultSettings: AppSettings = {
     { fileType: "O&M", group: "contract" },
   ],
   modes: ["OBM", "PBM", "SBM", "LBM", "LPC"],
+  gemBiddingModes: ["Custom", "Catalogue", "Comparison"],
   valueThresholdLevels: [],
   milestones: [],
   tableFieldPresets: defaultTableFieldPresets,
@@ -1003,7 +1023,34 @@ export const store = {
       }),
     );
   },
+  async updateGlobalChartColors(patch: Pick<AppSettings, "globalChartColorOrder" | "globalChartColorsEnforced">) {
+    const payload = await request<{ settings: AppSettings }>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    setState({ settings: payload.settings });
+    return payload.settings;
+  },
+  async resetChartColorPreferencesForAllUsers() {
+    const payload = await request<{ settings: AppSettings }>("/api/settings/chart-colors/reset-all", {
+      method: "POST",
+    });
+    setState({ settings: payload.settings });
+    return payload.settings;
+  },
   updateSessionSelectedYear(year: string) {
+    const filterLock = readFilterCombinationLock(state.authUser?.id);
+    const pathname = typeof window === "undefined" ? "" : window.location.pathname;
+    const search = typeof window === "undefined" ? "" : window.location.search;
+    const params = new URLSearchParams(search);
+    const fixedYearContext =
+      (pathname === "/dashboard" &&
+        (params.get("tab") === "snapshot" || params.get("tab") === "finance1") &&
+        !normalizeFinancialYearLabel(filterLock?.globalYear ?? "")) ||
+      (pathname === "/reports" &&
+        params.get("mode") === "preSoExpectedCashOutgo" &&
+        filterLock?.globalYear !== ALL_ACTIVE_FILES_YEAR);
+    if (filterLock?.globalYear && !fixedYearContext) year = filterLock.globalYear;
     const settings = store.getSettings();
     writeSessionSelectedYear(year, state.authUser?.id);
     setState({ settings: normalizeSettingsYears({ ...settings, selectedYear: year }) });
@@ -1358,11 +1405,12 @@ export const store = {
       setState({ divisions: state.divisions.map((d) => (d.id === id ? { ...d, ...patch } : d)) });
     }
     return (async () => {
-      await request(`/api/divisions/${id}`, {
+      const response = await request<{ division: Division }>(`/api/divisions/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ ...patch, financialYear }),
       });
       await loadAll(true);
+      return response.division;
     })();
   },
   mergeDivisions(payload: DivisionMergePayload) {
@@ -1743,8 +1791,9 @@ export function fetchFilesByIdentifier(code: string) {
   return request<{ files: FileRecord[] }>(`/api/files/by-identifier/${encodeURIComponent(code)}`);
 }
 
-export function fetchFileIdentifierSuggestions(query: string) {
+export function fetchFileIdentifierSuggestions(query: string, includeDemandDescription = false) {
   const params = new URLSearchParams({ q: query });
+  if (includeDemandDescription) params.set("includeDemandDescription", "true");
   return request<{ files: FileIdentifierSuggestion[] }>(
     `/api/files/identifier-suggestions?${params.toString()}`,
   );

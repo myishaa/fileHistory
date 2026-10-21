@@ -292,8 +292,8 @@ function readFirmPayload(body: Record<string, unknown>) {
   if (contactNo && !/^\d+$/.test(contactNo)) {
     throw new HttpError(400, "Contact No. must contain numbers only.");
   }
-  if (!firmName && !emailId && !firmUniqueNo) {
-    throw new HttpError(400, "Enter firm name, email id, or Firm Unique No.");
+  if (!firmName) {
+    throw new HttpError(400, "Firm name is required.");
   }
   if (firmType?.toUpperCase() === "OTHER" && !firmTypeOther) {
     throw new HttpError(400, "Specify the firm type when Other is selected.");

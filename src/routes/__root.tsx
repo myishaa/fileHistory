@@ -9,9 +9,10 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { type FormEvent, useEffect, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useState } from "react";
 
 import appCss from "../styles.css?url";
+import { chartColorVariables } from "@/lib/chart-colors";
 import { TopBar } from "@/components/top-bar";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
@@ -145,9 +146,13 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <div
         className={
-          `${themeClass} ${tintClass} min-h-screen w-full text-foreground ` +
+          `${themeClass} ${tintClass} min-h-screen w-full overflow-y-auto text-foreground ` +
           (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
         }
+        style={{
+          "--chart-bar-color": settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
+          ...chartColorVariables(settings.chartColorOrder),
+        } as CSSProperties}
       >
         {isPublicLivePage ? (
           <Outlet />
@@ -180,6 +185,7 @@ function LoginScreen() {
   const [password, setPassword] = useState("");
   const [divisionId, setDivisionId] = useState("");
   const [ipAddress, setIpAddress] = useState("checking...");
+  const [ipBlocked, setIpBlocked] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
@@ -200,6 +206,18 @@ function LoginScreen() {
       })
       .catch(() => {
         if (!cancelled) setIpAddress("Unavailable");
+      });
+
+    fetch(`${apiBaseUrl}/api/auth/ip-access-status`, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Failed to check IP access.");
+        return (await response.json()) as { blocked?: boolean };
+      })
+      .then((body) => {
+        if (!cancelled) setIpBlocked(body.blocked === true);
+      })
+      .catch(() => {
+        if (!cancelled) setIpBlocked(false);
       });
 
     return () => {
@@ -260,6 +278,14 @@ function LoginScreen() {
             Division
           </button>
         </div>
+        {ipBlocked ? (
+          <p
+            role="alert"
+            className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive"
+          >
+            Login is blocked for this IP Address
+          </p>
+        ) : null}
         <div className="space-y-3">
           {mode === "staff" ? (
             <label className="block text-sm">
@@ -267,6 +293,7 @@ function LoginScreen() {
               <input
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
+                disabled={ipBlocked}
                 className="h-9 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
@@ -283,6 +310,7 @@ function LoginScreen() {
                 deferChangeUntilSelect
                 allowCustomValue={false}
                 onChange={setDivisionId}
+                disabled={ipBlocked}
                 placeholder="Select division"
                 className="h-9 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring/40"
               />
@@ -294,6 +322,7 @@ function LoginScreen() {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              disabled={ipBlocked}
               className="h-9 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
@@ -304,7 +333,7 @@ function LoginScreen() {
           ) : null}
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || ipBlocked}
             className="h-9 w-full rounded-md bg-primary text-sm font-medium text-primary-foreground disabled:opacity-60"
           >
             {loading ? "Signing in..." : "Login"}

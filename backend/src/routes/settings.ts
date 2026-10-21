@@ -41,7 +41,16 @@ export const settingsRouter = Router();
 
 const themes = new Set<AppTheme>(["light", "dark"]);
 const themeTints = new Set<AppThemeTint>(["plain", "yellow", "green", "blue", "pink", "lavender"]);
+const defaultChartColorOrder = [
+  "#0f766e", "#2563eb", "#d97706", "#be123c", "#7c3aed", "#65a30d", "#0891b2", "#475569",
+  "#e11d48", "#ea580c", "#4f46e5", "#16a34a", "#9333ea", "#0284c7", "#a16207", "#0d9488",
+  "#c026d3", "#dc2626", "#84cc16", "#0369a1", "#b45309", "#7e22ce", "#15803d", "#be185d",
+  "#64748b",
+];
+const chartBarColors = new Set(defaultChartColorOrder);
+const defaultChartBarColor = "#0f766e";
 const valueThresholdAppliesTo = new Set<ValueThresholdAppliesTo>(["capital", "revenue", "both"]);
+const globalValueThresholdYear = "__global__";
 const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
@@ -81,12 +90,15 @@ type SettingsRow = {
   year_selection_locked: boolean;
   theme: AppTheme;
   theme_tint: AppThemeTint;
+  global_chart_color_order: unknown;
+  global_chart_colors_enforced: boolean;
   deletion_password: string;
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
   file_type_groups: unknown;
   modes: unknown;
+  gem_bidding_modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
   mmg_live_enabled: boolean;
@@ -107,6 +119,8 @@ type SettingsRow = {
 type UserUiPreferencesRow = {
   theme: AppTheme | null;
   theme_tint: AppThemeTint | null;
+  chart_bar_color: string | null;
+  chart_color_order: unknown;
   add_edit_ribbon_fields: unknown;
 };
 
@@ -250,8 +264,8 @@ async function loadTcecCommittees(financialYear: string, fallback: unknown) {
   });
 }
 
-async function loadValueThresholdLevels(financialYear: string): Promise<ValueThresholdLevel[]> {
-  return getCached(`lookup:value-thresholds:${financialYear}`, cacheTtl.lookupMs, async () => {
+async function loadValueThresholdLevels(): Promise<ValueThresholdLevel[]> {
+  return getCached(`lookup:value-thresholds:${globalValueThresholdYear}`, cacheTtl.lookupMs, async () => {
     const result = await pool.query<{
       id: string;
       level_number: number;
@@ -264,7 +278,7 @@ async function loadValueThresholdLevels(financialYear: string): Promise<ValueThr
        from value_threshold_levels
        where financial_year = $1
        order by level_number asc`,
-      [financialYear],
+      [globalValueThresholdYear],
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -339,16 +353,6 @@ async function copyYearSettings(sourceYear: string, targetYear: string, client: 
     [sourceYear, targetYear],
   );
 
-  await client.query(
-    `insert into value_threshold_levels (
-       financial_year, level_number, label, min_value, max_value, applies_to
-     )
-     select $2, level_number, label, min_value, max_value, applies_to
-     from value_threshold_levels
-     where financial_year = $1
-     on conflict (financial_year, level_number) do nothing`,
-    [sourceYear, targetYear],
-  );
 }
 
 async function loadUserTableFieldPresets(ownerKey: string) {
@@ -391,6 +395,8 @@ async function ensureUserUiPreferencesTable() {
        theme_tint text check (
          theme_tint in ('plain', 'yellow', 'green', 'blue', 'pink', 'lavender')
        ),
+       chart_bar_color text,
+       chart_color_order jsonb,
        add_edit_ribbon_fields jsonb,
        updated_at timestamptz not null default now()
      )`,
@@ -398,13 +404,19 @@ async function ensureUserUiPreferencesTable() {
   await pool.query(
     "alter table user_ui_preferences add column if not exists add_edit_ribbon_fields jsonb",
   );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists chart_bar_color text",
+  );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists chart_color_order jsonb",
+  );
 }
 
 async function loadUserUiPreferences(userId: string) {
   await ensureUserUiPreferencesTable();
   return getCached(`settings:ui-preferences:${userId}`, cacheTtl.settingsMs, async () => {
     const result = await pool.query<UserUiPreferencesRow>(
-      "select theme, theme_tint, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
+      "select theme, theme_tint, chart_bar_color, chart_color_order, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
       [userId],
     );
     return result.rows[0];
@@ -463,6 +475,12 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
       : [];
   const liveStatusLockedFields = ownerKey ? await loadUserLiveStatusFields(ownerKey) : undefined;
   const uiPreferences = isStoredAppUser(user) ? await loadUserUiPreferences(user!.id) : undefined;
+  const globalChartColorOrder = normalizeChartColorOrder(row.global_chart_color_order);
+  const globalChartColorsEnforced = row.global_chart_colors_enforced === true;
+  const personalChartColorOrder = normalizeChartColorOrder(
+    uiPreferences?.chart_color_order,
+    uiPreferences?.chart_bar_color ?? defaultChartBarColor,
+  );
   return {
     financialYear: row.financial_year,
     selectedYear: row.selected_year,
@@ -471,6 +489,10 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     yearSelectionLocked: row.year_selection_locked,
     theme: uiPreferences?.theme ?? row.theme,
     themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
+    chartBarColor: (globalChartColorsEnforced ? globalChartColorOrder : personalChartColorOrder)[0] ?? defaultChartBarColor,
+    chartColorOrder: globalChartColorsEnforced ? globalChartColorOrder : personalChartColorOrder,
+    globalChartColorOrder,
+    globalChartColorsEnforced,
     deletionPassword: row.deletion_password,
     tcecCommittees: await loadTcecCommittees(setupYear, row.tcec_committees),
     firmTypes: fromDbJsonArray(row.firm_types).filter(
@@ -486,7 +508,8 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
       ),
     ),
     modes: fromDbJsonArray(row.modes).filter((mode): mode is string => typeof mode === "string"),
-    valueThresholdLevels: await loadValueThresholdLevels(setupYear),
+    gemBiddingModes: normalizeGemBiddingModes(row.gem_bidding_modes),
+    valueThresholdLevels: await loadValueThresholdLevels(),
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: [...globalPresets, ...personalPresets],
     mmgLiveEnabled: row.mmg_live_enabled,
@@ -566,9 +589,9 @@ function readValueThresholdLevels(value: unknown) {
   });
 }
 
-async function replaceValueThresholdLevels(financialYear: string, levels: unknown[]) {
+async function replaceValueThresholdLevels(levels: unknown[]) {
   const normalized = readValueThresholdLevels(levels);
-  await pool.query("delete from value_threshold_levels where financial_year = $1", [financialYear]);
+  await pool.query("delete from value_threshold_levels where financial_year = $1", [globalValueThresholdYear]);
   for (const level of normalized) {
     await pool.query(
       `insert into value_threshold_levels (
@@ -576,7 +599,7 @@ async function replaceValueThresholdLevels(financialYear: string, levels: unknow
        )
        values ($1, $2, $3, $4, $5, $6)`,
       [
-        financialYear,
+        globalValueThresholdYear,
         level.levelNumber,
         level.label,
         level.minValue,
@@ -592,8 +615,9 @@ async function getSettings(user?: AuthRequest["authUser"]) {
   return getCached(key, cacheTtl.settingsMs, async () => {
     await ensurePreSoSettingsSchema();
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
-              tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
+              global_chart_color_order, global_chart_colors_enforced, deletion_password,
+              tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
               pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days
@@ -615,7 +639,13 @@ function ensurePreSoSettingsSchema() {
        alter table app_settings
          add column if not exists pre_so_default_payment_offset_days integer not null default 30;
        alter table app_settings
-         add column if not exists bg_return_offset_days integer not null default 60`,
+         add column if not exists bg_return_offset_days integer not null default 60;
+       alter table app_settings
+         add column if not exists gem_bidding_modes jsonb not null default '["Custom", "Catalogue", "Comparison"]'::jsonb;
+       alter table app_settings
+         add column if not exists global_chart_color_order jsonb not null default '["#0f766e", "#2563eb", "#d97706", "#be123c", "#7c3aed", "#65a30d", "#0891b2", "#475569", "#e11d48", "#ea580c", "#4f46e5", "#16a34a", "#9333ea", "#0284c7", "#a16207", "#0d9488", "#c026d3", "#dc2626", "#84cc16", "#0369a1", "#b45309", "#7e22ce", "#15803d", "#be185d", "#64748b"]'::jsonb;
+       alter table app_settings
+         add column if not exists global_chart_colors_enforced boolean not null default false`,
     )
     .then(() => undefined);
   return preSoSettingsSchemaReady;
@@ -643,6 +673,34 @@ function readThemeTint(value: unknown) {
     throw new HttpError(400, "themeTint is invalid.");
   }
   return value as AppThemeTint;
+}
+
+function readChartBarColor(value: unknown) {
+  if (typeof value !== "string" || !chartBarColors.has(value)) {
+    throw new HttpError(400, "chartBarColor is not a supported palette color.");
+  }
+  return value;
+}
+
+function normalizeChartColorOrder(value: unknown, legacyColor?: string | null) {
+  const requested = Array.isArray(value)
+    ? value.filter((color): color is string => typeof color === "string" && chartBarColors.has(color))
+    : [];
+  const ordered = Array.from(new Set(requested));
+  if (!ordered.length && legacyColor && chartBarColors.has(legacyColor)) ordered.push(legacyColor);
+  return [...ordered, ...defaultChartColorOrder.filter((color) => !ordered.includes(color))];
+}
+
+function readChartColorOrder(value: unknown) {
+  if (
+    !Array.isArray(value) ||
+    value.length !== defaultChartColorOrder.length ||
+    value.some((color) => typeof color !== "string" || !chartBarColors.has(color)) ||
+    new Set(value).size !== defaultChartColorOrder.length
+  ) {
+    throw new HttpError(400, "chartColorOrder must rank each supported chart color exactly once.");
+  }
+  return value as string[];
 }
 
 function readArray(value: unknown, field: string) {
@@ -739,6 +797,21 @@ function readStringArray(value: unknown, field: string) {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeGemBiddingModes(value: unknown) {
+  const defaults = ["Custom", "Catalogue", "Comparison"];
+  const seen = new Set<string>();
+  return [...defaults, ...fromDbJsonArray(value)]
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item) return false;
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function readFileTypeGroups(value: unknown): FileTypeGroupSetting[] {
@@ -946,17 +1019,21 @@ async function replaceUserUiPreferences(
   preferences: {
     theme?: AppTheme;
     themeTint?: AppThemeTint;
+    chartBarColor?: string;
+    chartColorOrder?: string[];
     addEditRibbonFields?: string[];
   },
 ) {
   await ensureUserUiPreferencesTable();
   await pool.query(
-    `insert into user_ui_preferences (user_id, theme, theme_tint, add_edit_ribbon_fields)
-     values ($1, $2, $3, $4::jsonb)
+    `insert into user_ui_preferences (user_id, theme, theme_tint, chart_bar_color, chart_color_order, add_edit_ribbon_fields)
+     values ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
      on conflict (user_id)
      do update set
        theme = coalesce(excluded.theme, user_ui_preferences.theme),
        theme_tint = coalesce(excluded.theme_tint, user_ui_preferences.theme_tint),
+       chart_bar_color = coalesce(excluded.chart_bar_color, user_ui_preferences.chart_bar_color),
+       chart_color_order = coalesce(excluded.chart_color_order, user_ui_preferences.chart_color_order),
        add_edit_ribbon_fields = coalesce(
          excluded.add_edit_ribbon_fields,
          user_ui_preferences.add_edit_ribbon_fields
@@ -966,6 +1043,8 @@ async function replaceUserUiPreferences(
       userId,
       preferences.theme ?? null,
       preferences.themeTint ?? null,
+      preferences.chartColorOrder?.[0] ?? preferences.chartBarColor ?? null,
+      preferences.chartColorOrder ? JSON.stringify(preferences.chartColorOrder) : null,
       preferences.addEditRibbonFields ? JSON.stringify(preferences.addEditRibbonFields) : null,
     ],
   );
@@ -1125,15 +1204,50 @@ settingsRouter.put(
   }),
 );
 
+settingsRouter.post(
+  "/chart-colors/reset-all",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    await ensureUserUiPreferencesTable();
+    await ensurePreSoSettingsSchema();
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "update user_ui_preferences set chart_bar_color = null, chart_color_order = null, updated_at = now()",
+      );
+      await client.query(
+        `update app_settings
+         set global_chart_color_order = $1::jsonb,
+             global_chart_colors_enforced = true
+         where id = true`,
+        [JSON.stringify(defaultChartColorOrder)],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    clearSettingsCache();
+    response.json({ settings: await getSettings(user) });
+  }),
+);
+
 settingsRouter.patch(
   "/",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    await ensurePreSoSettingsSchema();
     const body = requireObjectBody(request.body);
     const bodyFields = Object.keys(body);
     const userEditableFields = new Set([
       "theme",
       "themeTint",
+      "chartBarColor",
+      "chartColorOrder",
       "tableFieldPresets",
       "liveStatusLockedFields",
       "mmgSummaryFields",
@@ -1158,12 +1272,25 @@ settingsRouter.patch(
       bodyFields.length > 0 &&
       bodyFields.every((field) => preSoDefaultFields.has(field)) &&
       (user.role === "admin" || user.role === "sub_admin");
+    const canUpdateGemBiddingModes =
+      bodyFields.length > 0 &&
+      bodyFields.every((field) => field === "gemBiddingModes") &&
+      (user.role === "admin" || user.role === "sub_admin");
+    const changesChartPreference = "chartColorOrder" in body || "chartBarColor" in body;
+    if (changesChartPreference && (await getSettings(user)).globalChartColorsEnforced) {
+      throw new HttpError(409, "Chart colours are currently set by an administrator for all users.");
+    }
     const canUpdateUserPreference =
       canUpdateTableFieldPresets &&
       canUpdateMmgSummaryFields &&
       bodyFields.length > 0 &&
       bodyFields.every((field) => userEditableFields.has(field));
-    if (user.role !== "admin" && !canUpdateUserPreference && !canUpdatePreSoDefaults)
+    if (
+      user.role !== "admin" &&
+      !canUpdateUserPreference &&
+      !canUpdatePreSoDefaults &&
+      !canUpdateGemBiddingModes
+    )
       throw new HttpError(403, "Admin access required.");
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -1203,13 +1330,39 @@ settingsRouter.patch(
     }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
+    if ("globalChartColorOrder" in body || "globalChartColorsEnforced" in body) {
+      if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+      if ("globalChartColorOrder" in body) {
+        addField(
+          "global_chart_color_order",
+          JSON.stringify(readChartColorOrder(body.globalChartColorOrder)),
+          "::jsonb",
+        );
+      }
+      if ("globalChartColorsEnforced" in body) {
+        if (typeof body.globalChartColorsEnforced !== "boolean") {
+          throw new HttpError(400, "globalChartColorsEnforced must be true or false.");
+        }
+        addField("global_chart_colors_enforced", body.globalChartColorsEnforced);
+      }
+    }
     if (
       isStoredAppUser(user) &&
-      ("theme" in body || "themeTint" in body || "addEditRibbonFields" in body)
+      ("theme" in body || "themeTint" in body || "chartBarColor" in body || "chartColorOrder" in body || "addEditRibbonFields" in body)
     ) {
       await replaceUserUiPreferences(user.id, {
         ...("theme" in body ? { theme: readTheme(body.theme) } : {}),
         ...("themeTint" in body ? { themeTint: readThemeTint(body.themeTint) } : {}),
+        ...("chartBarColor" in body ? { chartBarColor: readChartBarColor(body.chartBarColor) } : {}),
+        ...("chartBarColor" in body && !("chartColorOrder" in body)
+          ? {
+              chartColorOrder: [
+                readChartBarColor(body.chartBarColor),
+                ...defaultChartColorOrder.filter((color) => color !== body.chartBarColor),
+              ],
+            }
+          : {}),
+        ...("chartColorOrder" in body ? { chartColorOrder: readChartColorOrder(body.chartColorOrder) } : {}),
         ...("addEditRibbonFields" in body
           ? { addEditRibbonFields: readAddEditRibbonFields(body.addEditRibbonFields) }
           : {}),
@@ -1231,13 +1384,7 @@ settingsRouter.patch(
       );
     }
     if ("valueThresholdLevels" in body) {
-      const settings = await getSettings();
-      await replaceValueThresholdLevels(
-        typeof body.setupYear === "string" && body.setupYear.trim()
-          ? body.setupYear.trim()
-          : settings.setupYear,
-        readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"),
-      );
+      await replaceValueThresholdLevels(readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"));
     }
     if ("milestones" in body) {
       const milestones = readStringArray(body.milestones, "milestones");
@@ -1270,6 +1417,15 @@ settingsRouter.patch(
       const modes = readStringArray(body.modes, "modes");
       await assertModesCanChange(modes);
       addField("modes", JSON.stringify(modes), "::jsonb");
+    }
+    if ("gemBiddingModes" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin/Sub-admin access required.");
+      }
+      const gemBiddingModes = normalizeGemBiddingModes(
+        readStringArray(body.gemBiddingModes, "gemBiddingModes"),
+      );
+      addField("gem_bidding_modes", JSON.stringify(gemBiddingModes), "::jsonb");
     }
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
     if ("mmgLiveOptions" in body)
@@ -1387,11 +1543,14 @@ settingsRouter.patch(
       !("firmTypes" in body) &&
       !("fileTypes" in body) &&
       !("modes" in body) &&
+      !("gemBiddingModes" in body) &&
       !("tableFieldPresets" in body) &&
       !("liveStatusLockedFields" in body) &&
       !("mmgSummaryFields" in body) &&
       !("theme" in body) &&
       !("themeTint" in body) &&
+      !("chartBarColor" in body) &&
+      !("chartColorOrder" in body) &&
       !("addEditRibbonFields" in body) &&
       !("bgReceiptDelayDays" in body) &&
       !("specialFileMarkers" in body) &&

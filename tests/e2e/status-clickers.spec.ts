@@ -13,6 +13,7 @@ type CounterTarget = {
   name: string;
   testId: string;
   buildOrder: (code: string, index: number) => Partial<SupplyOrderDetail>;
+  buildSiblingOrder?: (code: string, index: number) => Partial<SupplyOrderDetail>;
   filePatch?: Record<string, unknown>;
 };
 
@@ -119,6 +120,17 @@ const counterTargets: CounterTarget[] = [
     }),
   },
   {
+    name: "Payment / All pending types",
+    testId: "status-counter-payment-total-pending",
+    filePatch: { ir: "Yes" },
+    buildOrder: () => ({
+      currentMilestone: "Payment",
+      dpDate: "2026-07-15",
+      materialReceiptDate: "2026-07-20",
+      completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period", "Delivery"],
+    }),
+  },
+  {
     name: "Payment / Completed",
     testId: "status-counter-payment-completed",
     buildOrder: () => ({
@@ -201,6 +213,12 @@ async function seedFile(
   caseIndex: number,
 ) {
   const code = `${QA_PREFIX}-${String(targetIndex + 1).padStart(2, "0")}-${String(caseIndex + 1).padStart(2, "0")}`;
+  const supplyOrders = [mergeOrder(code, caseIndex, target.buildOrder(code, caseIndex))];
+  if (target.buildSiblingOrder) {
+    supplyOrders.push(
+      mergeOrder(code, caseIndex + 1, target.buildSiblingOrder(code, caseIndex)),
+    );
+  }
   const result = await api<{ file: FileRecord }>("/api/files", token, {
     method: "POST",
     body: JSON.stringify({
@@ -234,8 +252,8 @@ async function seedFile(
       demandCancelled: "No",
       currentMilestone: "Financial Sanction",
       completedMilestones: ["Scrutiny", "Controlling", "CFA"],
-      noOfSo: "1",
-      supplyOrders: [mergeOrder(code, caseIndex, target.buildOrder(code, caseIndex))],
+      noOfSo: String(supplyOrders.length),
+      supplyOrders,
       ...(target.filePatch ?? {}),
     }),
   });
@@ -338,16 +356,18 @@ test.describe("dashboard status clickers", () => {
     const seededYear = counterGroups[0]?.files[0]?.year;
     if (!seededYear) throw new Error("Seeded financial year not found.");
     const globalYear = page.getByTestId("global-year-select");
-    await globalYear.selectOption(seededYear);
+    await globalYear.click();
+    await page.getByRole("option", { name: seededYear, exact: true }).click();
     await expect(globalYear).toHaveValue(seededYear);
     await page.goto("/dashboard");
     const fileYear = page.getByTestId("dashboard-file-year-select");
-    const hasSeededFileYear = await fileYear
-      .locator("option")
-      .evaluateAll((options, year) => options.some((option) => option.getAttribute("value") === year), seededYear);
-    if (hasSeededFileYear) {
-      await fileYear.selectOption(seededYear);
+    await fileYear.click();
+    const seededFileYearOption = page.getByRole("option", { name: seededYear, exact: true });
+    if (await seededFileYearOption.count()) {
+      await seededFileYearOption.click();
       await expect(fileYear).toHaveValue(seededYear);
+    } else {
+      await fileYear.press("Escape");
     }
 
     let checkedFiles = 0;
@@ -377,5 +397,106 @@ test.describe("dashboard status clickers", () => {
     }
 
     expect(checkedFiles).toBe(counterTargets.length * CASES_PER_COUNTER);
+  });
+
+  test("Status-1 BG pending drill-down keeps a file with a received sibling S.O.", async () => {
+    const seededYear = counterGroups[0]?.files[0]?.year;
+    if (!seededYear) throw new Error("Seeded financial year not found.");
+
+    const target: CounterTarget = {
+      name: "PSB+PWB pending with received sibling",
+      testId: "status-counter-psb-pwb-pending",
+      filePatch: { bg: "Yes" },
+      buildOrder: () => ({
+        bgCoverageType: "PSB+PWB",
+        completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period"],
+      }),
+      buildSiblingOrder: () => ({
+        bgCoverageType: "PSB+PWB",
+        combinedBgReceivedDate: "2026-07-11",
+        combinedBgValidityDate: "2027-12-31",
+        completedMilestones: [
+          "Financial Sanction",
+          "Supply Order",
+          "Delivery Period",
+          "PSB+PWB",
+        ],
+      }),
+    };
+    const file = await seedFile(
+      browserSessionToken,
+      seededYear,
+      target,
+      counterTargets.length + 1,
+      0,
+    );
+    const code = file.uniqueCode ?? "";
+    const query = new URLSearchParams({
+      selectedYear: "__all_files__",
+      dashboardFilter: "milestonePending:psbPwb",
+      description: code,
+      pageSize: "500",
+    });
+    const results = await api<{ files: FileRecord[]; total: number }>(
+      `/api/files/search?${query.toString()}`,
+      browserSessionToken,
+    );
+
+    expect(results.total).toBe(1);
+    expect(results.files.some((result) => result.uniqueCode === code)).toBe(true);
+  });
+
+  test("Snapshot PSB clickers exclude a cancelled-only PSB S.O.", async () => {
+    const seededYear = counterGroups[0]?.files[0]?.year;
+    if (!seededYear) throw new Error("Seeded financial year not found.");
+
+    const target: CounterTarget = {
+      name: "Cancelled PSB S.O.",
+      testId: "snapshot-psb-cancelled-so",
+      buildOrder: () => ({
+        psbApplicable: "Yes",
+        bgCoverageType: "PSB",
+        soCancelled: "Yes",
+        soCancelledDate: "2026-07-15",
+      }),
+    };
+    const file = await seedFile(
+      browserSessionToken,
+      seededYear,
+      target,
+      counterTargets.length + 2,
+      0,
+    );
+    const code = file.uniqueCode ?? "";
+    const searchAttribute = async (value: "yes" | "no") => {
+      const query = new URLSearchParams({
+        selectedYear: "__all_files__",
+        dashboardFilter: `attribute:psb:${value}`,
+        description: code,
+        pageSize: "500",
+      });
+      return api<{ files: FileRecord[]; total: number }>(
+        `/api/files/search?${query.toString()}`,
+        browserSessionToken,
+      );
+    };
+    const [yesResults, noResults] = await Promise.all([
+      searchAttribute("yes"),
+      searchAttribute("no"),
+    ]);
+    const psbSearch = await api<{ files: FileRecord[]; total: number }>(
+      `/api/files/search?${new URLSearchParams({
+        selectedYear: "__all_files__",
+        description: code,
+        psbFilter: "true",
+        pageSize: "500",
+      }).toString()}`,
+      browserSessionToken,
+    );
+
+    expect(yesResults.total).toBe(0);
+    expect(noResults.total).toBe(1);
+    expect(noResults.files.some((result) => result.uniqueCode === code)).toBe(true);
+    expect(psbSearch.total).toBe(0);
   });
 });

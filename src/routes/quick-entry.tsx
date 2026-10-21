@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { fileSupplyOrders, rawSupplyOrders } from "@/lib/effective-deliveries";
 import { CompactTableText } from "@/components/compact-table-text";
+import { QuickEntryAccess } from "@/components/quick-access";
 import {
   fetchFileIdentifierSuggestions,
   createFileStatusUpdate,
@@ -131,8 +132,6 @@ function QuickEntryEditor() {
   >([]);
   const [selectedStatusSuggestion, setSelectedStatusSuggestion] =
     useState<FileIdentifierSuggestion | null>(null);
-  const [description, setDescription] = useState("");
-  const [descriptionAutoFilled, setDescriptionAutoFilled] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupMessage, setLookupMessage] = useState<QuickEntryError | null>(null);
   const [matches, setMatches] = useState<QuickStatusFileSummary[]>([]);
@@ -166,14 +165,12 @@ function QuickEntryEditor() {
   useEffect(() => {
     const query = statusIdentifierQuery.trim();
     if (!query) {
-      setStatusIdentifierSuggestions(
-        selectedStatusSuggestion ? [selectedStatusSuggestion] : [],
-      );
+      setStatusIdentifierSuggestions(selectedStatusSuggestion ? [selectedStatusSuggestion] : []);
       return;
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      fetchFileIdentifierSuggestions(query)
+      fetchFileIdentifierSuggestions(query, true)
         .then(({ files }) => {
           if (!cancelled) setStatusIdentifierSuggestions(files);
         })
@@ -274,8 +271,6 @@ function QuickEntryEditor() {
   const loadStatusContext = async (fileId: string) => {
     const loaded = await fetchQuickStatusContext(fileId);
     setContext(loaded);
-    setDescription(loaded.file.demandDescription ?? "");
-    setDescriptionAutoFilled(true);
     setStatusDraft("");
     setEditingStatusId("");
     setEditingStatusText("");
@@ -283,10 +278,12 @@ function QuickEntryEditor() {
   };
 
   const lookupFile = async () => {
-    const cleanIdentifier = fileIdentifier.trim();
-    const cleanDescription = description.trim();
-    if (!cleanIdentifier && !cleanDescription) {
-      setLookupMessage({ tone: "error", text: "Enter Unique Code / Control No. or Demand Description." });
+    const query = fileIdentifier.trim();
+    if (!query) {
+      setLookupMessage({
+        tone: "error",
+        text: "Enter an identifier or demand description.",
+      });
       return;
     }
     setLookupLoading(true);
@@ -303,8 +300,8 @@ function QuickEntryEditor() {
       return;
     }
     const result = await lookupQuickStatusFiles({
-      controlNo: cleanIdentifier,
-      description: cleanDescription,
+      controlNo: query,
+      description: query,
     })
       .catch((error) => {
         console.error(error);
@@ -329,8 +326,6 @@ function QuickEntryEditor() {
     setFileIdentifier("");
     setSelectedStatusSuggestion(null);
     setStatusIdentifierQuery("");
-    setDescription("");
-    setDescriptionAutoFilled(false);
     setLookupMessage(null);
     setMatches([]);
     setContext(undefined);
@@ -394,95 +389,95 @@ function QuickEntryEditor() {
 
   return (
     <div className="space-y-4">
-      <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-          <div className="mb-5 flex items-start gap-3">
-            <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
-              <ScanLine className="size-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold">Quick Entry</h2>
-              <p className="text-xs text-muted-foreground">
-                Scan or enter a file identifier to open the file's current stage.
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Viewers open it read-only. Quick Entry opens exact files only; it does not change
-                Global Filter or Subfilter.
-              </p>
-            </div>
+      <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex items-start gap-3">
+          <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
+            <ScanLine className="size-5 text-primary" />
           </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
-            <label className="block">
-              <div className="mb-1.5 text-xs font-medium">
-                Unique Code / Control No. / File No. / S.O. No.
-              </div>
-              <SearchableDropdown
-                value={selectedEntrySuggestion?.id ?? entryIdentifier}
-                onChange={(value) => {
-                  const selected = entrySuggestions.find((file) => file.id === value);
-                  setSelectedEntrySuggestion(selected ?? null);
-                  setEntryIdentifier(selected ? "" : value);
-                  setMessage(null);
-                  setMilestoneFileId("");
-                }}
-                onSearchChange={setEntryIdentifierQuery}
-                options={[]}
-                optionItems={entrySuggestionOptions}
-                typeAheadOnly
-                onEnter={() => {
-                  if (canOpenCurrentStage) void continueToCurrentStage();
-                }}
-                disabled={!canOpenCurrentStage}
-                autoFocus
-                placeholder="Scan barcode or type an identifier"
-                className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => void continueToCurrentStage()}
-              disabled={loading || !canOpenCurrentStage}
-              title="Open current stage"
-              className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
-            </button>
+          <div>
+            <h2 className="text-base font-semibold">Quick Entry</h2>
+            <p className="text-xs text-muted-foreground">
+              Scan or enter a file identifier to open the file's current stage.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Viewers open it read-only. Quick Entry opens exact files only; it does not change
+              Global Filter or Subfilter.
+            </p>
           </div>
+        </div>
 
-          {message ? (
-            <div
-              className={
-                "mt-4 rounded-md border px-3 py-2 text-sm " +
-                "border-destructive/40 bg-destructive/10 text-destructive"
-              }
-            >
-              <div>{message.text}</div>
-              {milestoneFileId ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate({
-                      to: "/add",
-                      search: {
-                        fileId: milestoneFileId,
-                        section: "Milestones",
-                        milestone: undefined,
-                        quickFocus: true,
-                        returnToQuickEntry: true,
-                      },
-                    })
-                  }
-                  className="mt-2 h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
-                >
-                  Open Milestones
-                </button>
-              ) : null}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+          <label className="block">
+            <div className="mb-1.5 text-xs font-medium">
+              Unique Code / Control No. / File No. / S.O. No.
             </div>
-          ) : null}
+            <SearchableDropdown
+              value={selectedEntrySuggestion?.id ?? entryIdentifier}
+              onChange={(value) => {
+                const selected = entrySuggestions.find((file) => file.id === value);
+                setSelectedEntrySuggestion(selected ?? null);
+                setEntryIdentifier(selected ? "" : value);
+                setMessage(null);
+                setMilestoneFileId("");
+              }}
+              onSearchChange={setEntryIdentifierQuery}
+              options={[]}
+              optionItems={entrySuggestionOptions}
+              typeAheadOnly
+              onEnter={() => {
+                if (canOpenCurrentStage) void continueToCurrentStage();
+              }}
+              disabled={!canOpenCurrentStage}
+              autoFocus
+              placeholder="Scan barcode or type an identifier"
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void continueToCurrentStage()}
+            disabled={loading || !canOpenCurrentStage}
+            title="Open current stage"
+            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
+          </button>
+        </div>
+
+        {message ? (
+          <div
+            className={
+              "mt-4 rounded-md border px-3 py-2 text-sm " +
+              "border-destructive/40 bg-destructive/10 text-destructive"
+            }
+          >
+            <div>{message.text}</div>
+            {milestoneFileId ? (
+              <button
+                type="button"
+                onClick={() =>
+                  navigate({
+                    to: "/add",
+                    search: {
+                      fileId: milestoneFileId,
+                      section: "Milestones",
+                      milestone: undefined,
+                      quickFocus: true,
+                      returnToQuickEntry: true,
+                    },
+                  })
+                }
+                className="mt-2 h-8 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
+              >
+                Open Milestones
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
-      <section className="rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="mb-5 flex items-start gap-3">
+      <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex items-start gap-3">
           <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
             <FileText className="size-5 text-primary" />
           </div>
@@ -498,7 +493,7 @@ function QuickEntryEditor() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(180px,0.9fr)_minmax(260px,1.4fr)_auto_auto]">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
           <label>
             <div className="mb-1.5 text-xs font-medium">
               Unique Code / Control No. / File No. / S.O. No.
@@ -517,10 +512,6 @@ function QuickEntryEditor() {
                         ""
                     : value,
                 );
-                if (!selected && descriptionAutoFilled) {
-                  setDescription("");
-                  setDescriptionAutoFilled(false);
-                }
                 setContext(undefined);
                 setMatches([]);
                 setLookupMessage(null);
@@ -540,26 +531,8 @@ function QuickEntryEditor() {
               optionItems={statusSuggestionOptions}
               typeAheadOnly
               onEnter={() => void lookupFile()}
-              placeholder="Type any identifier"
+              placeholder="Type an identifier or demand description"
               className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-            />
-          </label>
-          <label>
-            <div className="mb-1.5 text-xs font-medium">Demand Description</div>
-            <input
-              value={description}
-              onChange={(event) => {
-                setDescription(event.target.value);
-                setDescriptionAutoFilled(false);
-                setContext(undefined);
-                setMatches([]);
-                setLookupMessage(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void lookupFile();
-              }}
-              placeholder="Enter demand description"
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
           <button
@@ -576,10 +549,13 @@ function QuickEntryEditor() {
             onClick={resetLookup}
             disabled={
               lookupLoading ||
-              (!fileIdentifier && !description && !lookupMessage && matches.length === 0 && !context)
+              (!fileIdentifier &&
+                !lookupMessage &&
+                matches.length === 0 &&
+                !context)
             }
-            title="Reset identifier and Demand Description"
-            aria-label="Reset identifier and Demand Description"
+            title="Reset file search"
+            aria-label="Reset file search"
             className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RotateCcw className="size-4" />
@@ -587,14 +563,9 @@ function QuickEntryEditor() {
           </button>
         </div>
 
-        {lookupMessage ? (
+        {lookupMessage && lookupMessage.tone !== "success" ? (
           <div
-            className={
-              "mt-4 rounded-md border px-3 py-2 text-sm " +
-              (lookupMessage.tone === "success"
-                ? "border-success/40 bg-success/10 text-success"
-                : "border-destructive/40 bg-destructive/10 text-destructive")
-            }
+            className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           >
             {lookupMessage.text}
           </div>
@@ -625,21 +596,23 @@ function QuickEntryEditor() {
 
         {context ? (
           <div className="mt-5 space-y-5">
-            <FileConfirmation
-              file={context.file}
-              matchedIdentifier={getQuickStatusMatchedIdentifier(context.file, fileIdentifier)}
-              onOpenFullFile={() => openFullFile(navigate, context.file.id)}
-            />
-            {canCreateFileStatus ? (
-              <StatusComposer
-                value={statusDraft}
-                onChange={setStatusDraft}
-                onSave={() => void saveStatus()}
-                disabled={!canCreateFileStatus}
-              />
-            ) : null}
-            <FileStatusSummaryPanel file={context.file} statuses={context.statuses} />
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className={canCreateFileStatus ? "" : "lg:col-span-2"}>
+                <FileConfirmation
+                  file={context.file}
+                  onOpenFullFile={() => openFullFile(navigate, context.file.id)}
+                />
+              </div>
+              {canCreateFileStatus ? (
+                <StatusComposer
+                  value={statusDraft}
+                  onChange={setStatusDraft}
+                  onSave={() => void saveStatus()}
+                  disabled={!canCreateFileStatus}
+                />
+              ) : null}
+            </div>
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <MilestoneHistoryPanel file={context.file} />
               <StatusHistoryPanel
                 statuses={context.statuses}
@@ -660,6 +633,8 @@ function QuickEntryEditor() {
           </div>
         ) : null}
       </section>
+
+      <QuickEntryAccess />
     </div>
   );
 }
@@ -680,7 +655,14 @@ function getQuickStatusMatchedIdentifier(
     { label: "Unique Code", value: file.uniqueCode?.trim() || "" },
     { label: "Control No.", value: (file.controlNo || file.imms)?.trim() || "" },
     { label: "File No.", value: file.fileNo?.trim() || "" },
-    { label: "S.O. No.", value: file.soNumbers?.split(",").map((item) => item.trim()).find(Boolean) || "" },
+    {
+      label: "S.O. No.",
+      value:
+        file.soNumbers
+          ?.split(",")
+          .map((item) => item.trim())
+          .find(Boolean) || "",
+    },
   ];
   return (
     values.find((item) => item.value.toLowerCase() === identifier) ||
@@ -705,6 +687,7 @@ function makeIdentifierSuggestionOptions(files: FileIdentifierSuggestion[]) {
         file.uniqueCode,
         file.controlNo,
         file.fileNo,
+        file.itemDescription,
         ...(file.soNumbers?.split(",") ?? []),
       ]
         .filter((term): term is string => Boolean(term?.trim()))
@@ -715,22 +698,20 @@ function makeIdentifierSuggestionOptions(files: FileIdentifierSuggestion[]) {
 
 function FileConfirmation({
   file,
-  matchedIdentifier,
   onOpenFullFile,
 }: {
   file: FileRecord;
-  matchedIdentifier: { label: string; value: string } | undefined;
   onOpenFullFile: () => void;
 }) {
   const details = [
-    ...(matchedIdentifier ? [[matchedIdentifier.label, matchedIdentifier.value]] : []),
-    ["Demand Description", file.demandDescription],
+    ["Control No.", file.imms],
     ["Division", file.division],
     ["Indentor", file.indentor],
     ["Demand Received date", formatDate(file.receivedDate)],
+    ["Demand Description", file.demandDescription],
   ];
   return (
-    <div className="rounded-md border border-border bg-secondary/20 p-3">
+    <div className="min-h-[220px] rounded-md border border-border bg-secondary/20 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Matched file</h3>
         <button
@@ -742,9 +723,12 @@ function FileConfirmation({
           Open full file
         </button>
       </div>
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
         {details.map(([label, value]) => (
-          <div key={label} className="rounded-md bg-background/70 p-2">
+          <div
+            key={label}
+            className={`rounded-md bg-background/70 p-2 ${label === "Demand Description" ? "md:col-span-4" : ""}`}
+          >
             <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
             <div className="mt-1 min-h-5 break-words text-sm font-medium">{value || "-"}</div>
           </div>
@@ -804,46 +788,13 @@ function StatusComposer({
   );
 }
 
-function FileStatusSummaryPanel({
-  file,
-  statuses,
-}: {
-  file: FileRecord;
-  statuses: FileStatusUpdate[];
-}) {
-  const latestStatus = [...statuses].sort((a, b) => getTime(b.createdAt) - getTime(a.createdAt))[0];
-  const details = [
-    ["Current milestone", file.currentMilestone || "-"],
-    ["Latest File Status", latestStatus?.text || "No File Status entered yet."],
-    [
-      "Status date",
-      latestStatus ? `${formatDateTime(latestStatus.createdAt)} by ${latestStatus.createdByName}` : "-",
-    ],
-  ];
-  return (
-    <div className="rounded-md border border-border bg-background/60 p-3">
-      <h3 className="text-sm font-semibold">File Status</h3>
-      <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-        {details.map(([label, value]) => (
-          <div key={label} className="rounded-md bg-card p-2">
-            <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
-            <div className="mt-1 min-h-5 whitespace-pre-wrap break-words text-sm font-medium">
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
   const items = getQuickStatusTimelineItems(file);
   const firstDate = parseDate(items[0]?.date);
   const completedMilestones = file.completedMilestones ?? [];
   const milestoneStatuses = getQuickViewerMilestoneStatuses(file);
   return (
-    <div className="rounded-md border border-border bg-background/60 p-3">
+    <div className="rounded-md border border-border bg-muted/20 p-3">
       <h3 className="text-sm font-semibold">Milestone History</h3>
       <p className="mt-1 text-xs text-muted-foreground">
         Only applicable milestones are shown. Pending means the milestone applies but is not
@@ -859,7 +810,7 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
                 ? "border-primary/35 bg-primary/10"
                 : milestone.status === "Completed"
                   ? "border-success/35 bg-success/10"
-                  : "border-border bg-card")
+                  : "border-border bg-muted/45")
             }
           >
             <div className="text-sm font-medium">{milestone.label}</div>
@@ -867,10 +818,12 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
           </div>
         ))}
       </div>
-      <div className="mt-3 rounded-md border border-border bg-card p-2">
+      <div className="mt-3 rounded-md border border-border bg-muted/45 p-2">
         <div className="text-[11px] font-medium text-muted-foreground">Completed milestones</div>
         <div className="mt-1 text-sm font-medium">
-          {completedMilestones.length ? completedMilestones.join(", ") : "No completed milestones recorded."}
+          {completedMilestones.length
+            ? completedMilestones.join(", ")
+            : "No completed milestones recorded."}
         </div>
       </div>
       <div className="mt-3 max-h-[520px] overflow-auto pr-1">
@@ -891,7 +844,7 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
                     <div className="relative flex h-5 justify-center">
                       <span className="mt-1.5 size-3 rounded-full border-2 border-card bg-success shadow-[0_0_0_3px_var(--color-success)]/10" />
                     </div>
-                    <div className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="rounded-md border border-border bg-muted/45 px-3 py-2.5">
                       <div className="flex min-w-0 items-start justify-between gap-3">
                         <div className="min-w-0 text-sm font-medium">{item.label}</div>
                         <div className="shrink-0 text-right text-[11px] font-medium text-muted-foreground">
@@ -928,12 +881,11 @@ function getQuickViewerMilestoneStatuses(file: FileRecord) {
       return {
         label,
         date: definition.date,
-        status:
-          matchKeys.includes(current)
-            ? "Current"
-            : matchKeys.some((key) => completed.has(key)) || hasDate(definition.date)
-              ? "Completed"
-              : "Pending",
+        status: matchKeys.includes(current)
+          ? "Current"
+          : matchKeys.some((key) => completed.has(key)) || hasDate(definition.date)
+            ? "Completed"
+            : "Pending",
       };
     });
 }
@@ -941,7 +893,9 @@ function getQuickViewerMilestoneStatuses(file: FileRecord) {
 function getQuickViewerMilestoneDefinitions(file: FileRecord) {
   const orders = rawSupplyOrders(file);
   const currentMilestone = normalizeQuickEntryMilestone(file.currentMilestone ?? "");
-  const completedMilestones = new Set((file.completedMilestones ?? []).map(normalizeQuickEntryMilestone));
+  const completedMilestones = new Set(
+    (file.completedMilestones ?? []).map(normalizeQuickEntryMilestone),
+  );
   const hasOrder = orders.length > 0 || hasDate(file.soDate);
   const hasFinancialSanction = orders.some((order) => hasDate(order.financialSanctionDate));
   const hasSo = orders.some((order) => hasDate(order.soDate)) || hasDate(file.soDate);
@@ -1039,25 +993,35 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
       applicable: hasOrder || isFinancialSanctionReached(file) || hasFinancialSanction,
       date: getFirstOrderDate(orders, "financialSanctionDate"),
     },
-    { label: "Supply Order", applicable: hasOrder || hasFinancialSanction, date: getFirstOrderDate(orders, "soDate") || file.soDate },
+    {
+      label: "Supply Order",
+      applicable: hasOrder || hasFinancialSanction,
+      date: getFirstOrderDate(orders, "soDate") || file.soDate,
+    },
     {
       label: "Delivery Period",
       applicable: hasSo || hasDeliveryEvidence,
-      date: getFirstOrderDate(orders, "revisedDp") || getFirstOrderDate(orders, "dpDate") || file.dpDate,
+      date:
+        getFirstOrderDate(orders, "revisedDp") ||
+        getFirstOrderDate(orders, "dpDate") ||
+        file.dpDate,
     },
     {
       label: "PSB",
-      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
+      applicable:
+        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
       date: getFirstOrderDate(orders, "psbBgReceivedDate"),
     },
     {
       label: "PWB",
-      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "pwb")),
+      applicable:
+        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "pwb")),
       date: getFirstOrderDate(orders, "pwbBgReceivedDate"),
     },
     {
       label: "PSB+PWB",
-      applicable: hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psbpwb")),
+      applicable:
+        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psbpwb")),
       date: getFirstOrderDate(orders, "combinedBgReceivedDate"),
     },
     {
@@ -1099,7 +1063,9 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
     },
     {
       label: "File Closed",
-      applicable: hasDate(file.fileClosureDate) || normalizeQuickEntryMilestone(file.currentMilestone) === "fileclosed",
+      applicable:
+        hasDate(file.fileClosureDate) ||
+        normalizeQuickEntryMilestone(file.currentMilestone) === "fileclosed",
       date: file.fileClosureDate,
     },
   ];
@@ -1132,7 +1098,11 @@ function getFirstAdvancePaymentDate(orders: Array<{ [key: string]: unknown }>) {
     .sort()[0];
 }
 
-function isBgMilestoneApplicable(file: FileRecord, order: { [key: string]: unknown }, kind: string) {
+function isBgMilestoneApplicable(
+  file: FileRecord,
+  order: { [key: string]: unknown },
+  kind: string,
+) {
   if (kind === "psb") {
     return (
       isYes(order.psbApplicable) ||
@@ -1172,7 +1142,7 @@ function StatusHistoryPanel({
 }) {
   const sortedStatuses = [...statuses].sort((a, b) => getTime(b.createdAt) - getTime(a.createdAt));
   return (
-    <div className="rounded-md border border-border bg-background/60 p-3">
+    <div className="rounded-md border border-border bg-muted/20 p-3">
       <h3 className="text-sm font-semibold">File Status history</h3>
       <div className="mt-3 max-h-64 space-y-2 overflow-auto pr-1">
         {sortedStatuses.length ? (
@@ -1180,7 +1150,7 @@ function StatusHistoryPanel({
             const editing = editingStatusId === status.id;
             const words = countWords(editing ? editingStatusText : status.text);
             return (
-              <div key={status.id} className="rounded-md bg-card p-2">
+              <div key={status.id} className="rounded-md bg-muted/45 p-2">
                 {editing ? (
                   <>
                     <textarea
@@ -1304,7 +1274,7 @@ function getQuickStatusTimelineItems(file: FileRecord) {
         ["D.P.", order.dpDate],
         ["Revised D.P.", order.revisedDp],
         ["Material receipt", order.materialReceiptDate],
-        ["Job Completion", order.jobCompletionDate],
+        ["Job Completion Received Date", order.jobCompletionDate],
         ["IR Preparation", order.irPreparationDate],
         ["IR Receipt", order.irReceiptDate],
         ["Bill preparation", order.billPreparationDate],

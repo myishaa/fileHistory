@@ -43,6 +43,16 @@ psql "$DATABASE_URL" -f database/035_remove_cars_from_modes.sql
 psql "$DATABASE_URL" -f database/036_add_cars_file_type.sql
 psql "$DATABASE_URL" -f database/037_add_om_file_type.sql
 psql "$DATABASE_URL" -f database/038_demand_cancelled_date.sql
+psql "$DATABASE_URL" -f database/039_global_value_threshold_levels.sql
+psql "$DATABASE_URL" -f database/040_canonical_global_value_threshold_levels.sql
+psql "$DATABASE_URL" -f database/076_gem_bidding_modes.sql
+psql "$DATABASE_URL" -f database/077_user_chart_bar_color.sql
+psql "$DATABASE_URL" -f database/078_user_chart_color_order.sql
+psql "$DATABASE_URL" -f database/079_global_chart_color_policy.sql
+psql "$DATABASE_URL" -f database/080_payment_timing_include.sql
+psql "$DATABASE_URL" -f database/081_actual_job_completion_date.sql
+psql "$DATABASE_URL" -f database/082_job_completion_received_date.sql
+psql "$DATABASE_URL" -f database/083_supply_order_runtime_schema.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -113,7 +123,7 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `tcec_committees`: year-wise TCEC committee names.
 - `file_year_activity`: financial years where a file is active or continued.
 - `user_table_field_presets`: private table field presets for each editor, sub-admin, or viewer.
-- `value_threshold_levels`: year-wise admin-defined file value thresholds.
+- `value_threshold_levels`: shared admin-defined file value thresholds (`financial_year = '__global__'`).
 - `app_users`: temporary app users and future login users.
 - `user_divisions`: division access for non-admin users.
 - `app_settings`: workspace settings used by the frontend and backend.

@@ -434,8 +434,16 @@ test.describe("Add File field-by-field workflows", () => {
     await expect(page.getByText(`${FILE_COUNT} records`)).toBeVisible();
     await expect(page.getByText(codes[codes.length - 1]).first()).toBeVisible();
 
+    const excelExportRequest = page.waitForRequest((request) =>
+      request.url().includes("/api/files/export/search"),
+    );
     const excelDownload = page.waitForEvent("download");
     await page.getByRole("button", { name: "Export all search results as Excel" }).click();
+    const excelRequest = await excelExportRequest;
+    const excelPayload = excelRequest.postDataJSON() as {
+      query?: Record<string, string>;
+    };
+    expect(excelPayload.query?.freeText).toBe(QA_PREFIX);
     await expect(await excelDownload).toBeTruthy();
 
     const pdfDownload = page.waitForEvent("download");

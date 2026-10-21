@@ -70,12 +70,17 @@ export type AppSettings = {
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
+  chartBarColor?: string;
+  chartColorOrder?: string[];
+  globalChartColorOrder?: string[];
+  globalChartColorsEnforced?: boolean;
   deletionPassword: string;
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
   fileTypeGroups: FileTypeGroupSetting[];
   modes: string[];
+  gemBiddingModes?: string[];
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: unknown[];
@@ -148,6 +153,7 @@ export type BillReturnCycle = {
 };
 
 export type SupplyOrderDetail = {
+  includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
   financialSanctionDate?: string;
@@ -191,6 +197,7 @@ export type SupplyOrderDetail = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  actualJobCompletionDate?: string;
   jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;
@@ -223,6 +230,7 @@ export type SupplyOrderDetail = {
 
 export type SupplementaryBillDetail = {
   id?: string;
+  includeInPaymentTiming?: boolean;
   billNo?: string;
   billAmountCapital?: string;
   billAmountRevenue?: string;
@@ -236,6 +244,7 @@ export type SupplementaryBillDetail = {
 };
 
 export type AdvancePaymentDetail = {
+  includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
   stageAmountCapital?: string;
@@ -252,6 +261,7 @@ export type AdvancePaymentDetail = {
 };
 
 export type StageDeliveryDetail = {
+  includeInPaymentTiming?: boolean;
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
   currentMilestone?: string;
@@ -265,6 +275,7 @@ export type StageDeliveryDetail = {
   ldPercentage?: string;
   revisedDp?: string;
   materialReceiptDate?: string;
+  actualJobCompletionDate?: string;
   jobCompletionDate?: string;
   irPreparationDate?: string;
   irReceiptDate?: string;

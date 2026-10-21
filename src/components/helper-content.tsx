@@ -8,8 +8,12 @@ const helperSectionRules = [
     match: /^\s*(caution|warning)\b/i,
   },
   {
-    title: "Example",
+    title: "Examples",
     match: /^\s*(?:for\s+)?(?:example|e\.g\.)(?:\s|:|,|$)/i,
+  },
+  {
+    title: "Examples",
+    match: /^\s*example-[123](?:\s|:|,|$)/i,
   },
   {
     title: "Filter",
@@ -33,8 +37,8 @@ const helperSectionRules = [
 ];
 
 const defaultSectionOrder = [
-  "Details",
   "What is counted",
+  "Details",
   "Included and Excluded",
   "Filter",
   "Add or activate",
@@ -42,7 +46,7 @@ const defaultSectionOrder = [
   "Remove",
   "Clicking a result",
   "Caution",
-  "Example",
+  "Examples",
 ];
 
 function groupHelperLines(lines: string[], sectionOrder = defaultSectionOrder) {
@@ -90,16 +94,42 @@ export function HelperContent({
             }
           >
             <h3 className="mb-1.5 text-base font-semibold text-foreground">{title}</h3>
-            <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
-              {items.map((item, index) => (
-                <li key={`${title}-${index}`}>
-                  {item.replace(
-                    /^(?:Purpose|Details|Included and Excluded|Add or activate|Reorder|Remove):\s*|^(?:For\s+)?Example(?::|,)\s*|^e\.g\.\s*/i,
-                    "",
-                  )}
-                </li>
-              ))}
-            </ul>
+            {title === "Examples" ? (
+              <div className="overflow-x-auto rounded-sm border border-primary/20 bg-background/70">
+                <table className="w-full min-w-[28rem] border-collapse text-left text-xs text-popover-foreground">
+                  <thead className="bg-primary/10">
+                    <tr>
+                      <th scope="col" className="w-12 border-b border-r border-primary/15 px-2 py-2 font-semibold">#</th>
+                      <th scope="col" className="border-b border-primary/15 px-3 py-2 font-semibold">Example and inference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item, index) => (
+                      <tr key={`example-${index}`} className={index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}>
+                        <th scope="row" className="border-b border-r border-primary/15 px-2 py-2 align-top font-medium text-muted-foreground">{index + 1}</th>
+                        <td className="border-b border-primary/15 px-3 py-2 align-top">
+                          {item.replace(/^(?:For\s+)?Example(?::|,)\s*|^Example-[123](?::|,)\s*|^e\.g\.\s*/i, "")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
+                {items.map((item, index) => (
+                  <li
+                    key={`${title}-${index}`}
+                    className={`rounded-sm border-l-2 border-primary/25 px-2 py-1 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}`}
+                  >
+                    {item.replace(
+                      /^(?:Purpose|Details|Included and Excluded|Add or activate|Reorder|Remove):\s*/i,
+                      "",
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         ))}
       </div>

@@ -46,6 +46,11 @@ export type DemandProcessingAnalysisRow = {
   valueRevenue: number;
   paymentMode?: string;
   paymentObjectKey?: string;
+  paymentObjectKind?: "regular" | "stage" | "advance" | "supplementary";
+  supplementaryBillIndex?: number;
+  unifiedSubmissionDate?: string;
+  unifiedReturnDate?: string;
+  unifiedPaymentDate?: string;
 };
 
 type DateFieldConfig = {
@@ -106,7 +111,8 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "order.combinedBgValidityDate", label: "PSB+PWB BG validity date", group: "Security/Warranty BG", scope: "order", key: "combinedBgValidityDate" },
   { id: "order.combinedBgReturnDate", label: "PSB+PWB BG return date", group: "Security/Warranty BG", scope: "order", key: "combinedBgReturnDate" },
   { id: "order.materialReceiptDate", label: "Material receipt date", group: "Delivery / IR", scope: "order", key: "materialReceiptDate" },
-  { id: "order.jobCompletionDate", label: "Job Completion Date", group: "Delivery / IR", scope: "order", key: "jobCompletionDate" },
+  { id: "order.jobCompletionDate", label: "Job Completion Received Date", group: "Delivery / IR", scope: "order", key: "jobCompletionDate" },
+  { id: "order.actualJobCompletionDate", label: "Actual Job Completion Date", group: "Delivery / IR", scope: "order", key: "actualJobCompletionDate" },
   { id: "order.irPreparationDate", label: "IR preparation date", group: "Delivery / IR", scope: "order", key: "irPreparationDate" },
   { id: "order.irReceiptDate", label: "IR receipt date", group: "Delivery / IR", scope: "order", key: "irReceiptDate" },
   { id: "order.billPreparationDate", label: "Bill preparation date", group: "Bill / Payment", scope: "order", key: "billPreparationDate" },
@@ -120,7 +126,8 @@ const dateFieldConfigs: DateFieldConfig[] = [
   { id: "stage.dpDate", label: "Stage D.P. date", group: "Stage delivery", scope: "stage", key: "dpDate" },
   { id: "stage.revisedDp", label: "Stage revised D.P.", group: "Stage delivery", scope: "stage", key: "revisedDp" },
   { id: "stage.materialReceiptDate", label: "Stage material receipt date", group: "Stage delivery", scope: "stage", key: "materialReceiptDate" },
-  { id: "stage.jobCompletionDate", label: "Stage Job Completion Date", group: "Stage delivery", scope: "stage", key: "jobCompletionDate" },
+  { id: "stage.jobCompletionDate", label: "Stage Job Completion Received Date", group: "Stage delivery", scope: "stage", key: "jobCompletionDate" },
+  { id: "stage.actualJobCompletionDate", label: "Stage Actual Job Completion Date", group: "Stage delivery", scope: "stage", key: "actualJobCompletionDate" },
   { id: "stage.irPreparationDate", label: "Stage IR preparation date", group: "Stage delivery", scope: "stage", key: "irPreparationDate" },
   { id: "stage.irReceiptDate", label: "Stage IR receipt date", group: "Stage delivery", scope: "stage", key: "irReceiptDate" },
   { id: "stage.billPreparationDate", label: "Stage bill preparation date", group: "Stage payment", scope: "stage", key: "billPreparationDate" },
@@ -149,7 +156,7 @@ export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
   { id: "builtin-so-material", name: "Material receipt based on S.O. date", fromFieldId: "order.soDate", toFieldId: "order.materialReceiptDate", active: true },
   { id: "builtin-payment-submission-payment", name: "Payment: Unified payment based on Unified bill submission / resubmission", fromFieldId: "payment.unifiedSubmissionDate", toFieldId: "payment.unifiedPaymentDate", active: true },
   { id: "builtin-payment-material-submission", name: "Payment: Unified bill submission / resubmission based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
-  { id: "builtin-payment-job-submission", name: "Payment: Unified bill submission / resubmission based on Job Completion", fromFieldId: "order.jobCompletionDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
+  { id: "builtin-payment-job-submission", name: "Payment: Unified bill submission / resubmission based on Job Completion Received Date", fromFieldId: "order.jobCompletionDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
   { id: "builtin-payment-material-payment", name: "Payment: Unified payment based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedPaymentDate", active: true },
   { id: "builtin-ifa", name: "IFA final based on IFA sent date", fromFieldId: "file.ifaSentDate", toFieldId: "file.ifaFinalDate", active: true },
   { id: "builtin-pre-tcec", name: "Pre-TCEC minutes based on Pre-TCEC date", fromFieldId: "file.preTcecDate", toFieldId: "file.preTcecMinutesDate", active: true },
@@ -160,6 +167,27 @@ export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
 
 export function getDemandProcessingField(id: string) {
   return demandProcessingDateFields.find((field) => field.id === id);
+}
+
+export function getDemandProcessingDateFieldValueForRow(
+  fieldId: string,
+  file: FileRecord,
+  row: DemandProcessingAnalysisRow,
+) {
+  const field = getDemandProcessingField(fieldId);
+  if (!field) return undefined;
+  if (fieldId === "payment.unifiedSubmissionDate") return row.unifiedSubmissionDate;
+  if (fieldId === "payment.unifiedReturnDate") return row.unifiedReturnDate;
+  if (fieldId === "payment.unifiedPaymentDate") return row.unifiedPaymentDate;
+
+  const order = row.orderIndex === undefined ? undefined : file.supplyOrders?.[row.orderIndex];
+  const stage =
+    row.stageIndex === undefined || !order ? undefined : order.stageDeliveries?.[row.stageIndex];
+  const advance =
+    row.basis === "Advance" || row.paymentObjectKind === "advance"
+      ? order?.advancePaymentDetail
+      : undefined;
+  return field.getValue(file, order, stage, advance);
 }
 
 export function getDemandProcessingFieldGroups() {
@@ -221,6 +249,11 @@ export function buildDemandProcessingRows(
       stageIndex?: number,
       paymentMode?: string,
       paymentObjectKey?: string,
+      paymentObjectKind?: DemandProcessingAnalysisRow["paymentObjectKind"],
+      supplementaryBillIndex?: number,
+      unifiedSubmissionDate?: string,
+      unifiedReturnDate?: string,
+      unifiedPaymentDate?: string,
     ) => {
       if (!isIsoDate(fromDate) || !isIsoDate(toDate)) return;
       rows.push({
@@ -238,6 +271,11 @@ export function buildDemandProcessingRows(
         valueRevenue,
         paymentMode,
         paymentObjectKey,
+        paymentObjectKind,
+        supplementaryBillIndex,
+        unifiedSubmissionDate,
+        unifiedReturnDate,
+        unifiedPaymentDate,
       });
     };
 
@@ -256,6 +294,11 @@ export function buildDemandProcessingRows(
             event.stageIndex,
             event.paymentMode,
             event.paymentObjectKey,
+            event.paymentObjectKind,
+            event.supplementaryBillIndex,
+            event.submissionDate,
+            event.returnDate,
+            event.paymentDate,
           );
         });
       });
@@ -305,13 +348,15 @@ export function buildDemandProcessingRows(
       }
       const stages = order.stageDeliveries ?? [];
       stages.forEach((stage, stageIndex) => {
+        const stageCapital = getInrAmount(stage.stageAmountCapital, file) ?? 0;
+        const stageRevenue = getInrAmount(stage.stageAmountRevenue, file) ?? 0;
         addRow(
           "Stage",
           `${orderRef} / Stage ${stageIndex + 1}`,
           fromField.getValue(file, order, stage),
           toField.getValue(file, order, stage),
-          value.capital,
-          value.revenue,
+          stageCapital,
+          stageRevenue,
           orderIndex,
           stageIndex,
         );
@@ -326,6 +371,8 @@ type UnifiedPaymentEvent = {
   orderRef: string;
   orderIndex: number;
   stageIndex?: number;
+  supplementaryBillIndex?: number;
+  paymentObjectKind: NonNullable<DemandProcessingAnalysisRow["paymentObjectKind"]>;
   submissionDate?: string;
   returnDate?: string;
   paymentDate?: string;
@@ -364,6 +411,7 @@ function getUnifiedPaymentEvents(
       orderRef,
       orderIndex,
       paymentObjectKey: `order:${orderIndex}:regular`,
+      paymentObjectKind: "regular",
       paymentObject: order,
       fallbackValue: orderValue,
     }),
@@ -377,6 +425,7 @@ function getUnifiedPaymentEvents(
         orderIndex,
         stageIndex,
         paymentObjectKey: `order:${orderIndex}:stage:${stageIndex}`,
+        paymentObjectKind: "stage",
         paymentObject: stage,
         fallbackValue: orderValue,
         amountCapital: stage.stageAmountCapital,
@@ -387,36 +436,43 @@ function getUnifiedPaymentEvents(
   });
 
   if (order.advancePaymentDetail) {
+    const advancePaid = Boolean(order.advancePaymentDetail.paymentDate?.trim());
     events.push(
       ...buildUnifiedPaymentEventsForPaymentObject({
         basis: "Advance",
         orderRef: `${orderRef} / Advance`,
         orderIndex,
         paymentObjectKey: `order:${orderIndex}:advance`,
+        paymentObjectKind: "advance",
         paymentObject: order.advancePaymentDetail,
         fallbackValue: orderValue,
         amountCapital:
-          order.advancePaymentDetail.actualPaymentCapital ||
-          order.advancePaymentDetail.stageAmountCapital,
+          advancePaid
+            ? order.advancePaymentDetail.actualPaymentCapital
+            : order.advancePaymentDetail.stageAmountCapital,
         amountRevenue:
-          order.advancePaymentDetail.actualPaymentRevenue ||
-          order.advancePaymentDetail.stageAmountRevenue,
+          advancePaid
+            ? order.advancePaymentDetail.actualPaymentRevenue
+            : order.advancePaymentDetail.stageAmountRevenue,
         file,
       }),
     );
   }
 
   (order.supplementaryBills ?? []).forEach((bill, billIndex) => {
+    const billPaid = Boolean(bill.paymentDate?.trim());
     events.push(
       ...buildUnifiedPaymentEventsForPaymentObject({
         basis: "S.O.",
         orderRef: `${orderRef} / Supplementary bill ${billIndex + 1}`,
         orderIndex,
         paymentObjectKey: `order:${orderIndex}:supplementary:${billIndex}`,
+        paymentObjectKind: "supplementary",
+        supplementaryBillIndex: billIndex,
         paymentObject: bill,
         fallbackValue: orderValue,
-        amountCapital: bill.actualPaymentCapital || bill.billAmountCapital,
-        amountRevenue: bill.actualPaymentRevenue || bill.billAmountRevenue,
+        amountCapital: billPaid ? bill.actualPaymentCapital : bill.billAmountCapital,
+        amountRevenue: billPaid ? bill.actualPaymentRevenue : bill.billAmountRevenue,
         file,
       }),
     );
@@ -449,6 +505,8 @@ function buildUnifiedPaymentEventsForPaymentObject({
   orderIndex,
   stageIndex,
   paymentObjectKey,
+  paymentObjectKind,
+  supplementaryBillIndex,
   paymentObject,
   fallbackValue,
   amountCapital,
@@ -460,15 +518,22 @@ function buildUnifiedPaymentEventsForPaymentObject({
   orderIndex: number;
   stageIndex?: number;
   paymentObjectKey: string;
+  paymentObjectKind: NonNullable<DemandProcessingAnalysisRow["paymentObjectKind"]>;
+  supplementaryBillIndex?: number;
   paymentObject: PaymentLike;
   fallbackValue: { capital: number; revenue: number };
   amountCapital?: string;
   amountRevenue?: string;
   file?: FileRecord;
 }): UnifiedPaymentEvent[] {
+  const usesEventValueOnly = paymentObjectKind !== "regular";
   const value = {
-    capital: file ? (getInrAmount(amountCapital, file) ?? fallbackValue.capital) : fallbackValue.capital,
-    revenue: file ? (getInrAmount(amountRevenue, file) ?? fallbackValue.revenue) : fallbackValue.revenue,
+    capital: file
+      ? (getInrAmount(amountCapital, file) ?? (usesEventValueOnly ? 0 : fallbackValue.capital))
+      : fallbackValue.capital,
+    revenue: file
+      ? (getInrAmount(amountRevenue, file) ?? (usesEventValueOnly ? 0 : fallbackValue.revenue))
+      : fallbackValue.revenue,
   };
   const cycles = normalizeBillReturnCycles(paymentObject.billReturnCycles);
   const finalPaymentDate = paymentObject.paymentDate;
@@ -494,6 +559,8 @@ function buildUnifiedPaymentEventsForPaymentObject({
     orderIndex,
     stageIndex,
     paymentObjectKey,
+    paymentObjectKind,
+    supplementaryBillIndex,
     paymentDate: finalPaymentDate,
     paymentMode: cleanPaymentModeValue(paymentObject.paymentMode),
     valueCapital: value.capital,

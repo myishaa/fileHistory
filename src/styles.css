@@ -58,7 +58,7 @@
   --radius: 0.75rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.16 0 0);
-  --card: oklch(1 0 0);
+  --card: color-mix(in oklab, var(--background) 80%, var(--secondary));
   --card-foreground: oklch(0.16 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.16 0 0);
@@ -273,7 +273,7 @@
   :root {
     --background: #ffffff;
     --foreground: #292929;
-    --card: #ffffff;
+    --card: #fdfdfd;
     --card-foreground: #292929;
     --popover: #ffffff;
     --popover-foreground: #292929;

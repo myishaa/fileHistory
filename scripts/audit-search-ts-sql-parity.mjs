@@ -9,7 +9,8 @@ const filters = [
   "paymentInProcess", "advancePending", "advancePaid", "supplementaryBill:pending",
   "supplementaryBill:returned", "supplementaryBill:resubmitted",
   "milestonePending:supplyOrder", "manualMilestoneCurrent:Financial Sanction",
-  "preBidMeeting:completed", "liveBids", "status2DpPending", "bgExpired:pwb",
+  "preBidMeeting:completed", "liveBids", "status2DpPending", "status2DpExpired", "bgExpired:pwb",
+  "delayStatus:5:supplyOrder", "delayStatus:5:paymentPreSubmission",
 ];
 
 async function login() {
@@ -53,10 +54,10 @@ function getCategories(fileTypes) {
 async function runSearch(pass, filter, token) {
   const params = new URLSearchParams({
     selectedYear: pass.year,
-    dashboardFilter: filter,
     page: "1",
     pageSize: "500",
   });
+  if (filter) params.set("dashboardFilter", filter);
   if (pass.categories) params.set("fileCategories", pass.categories.join(","));
   if (pass.fileYear && pass.fileYear !== "all") params.set("fileYear", pass.fileYear);
   if (pass.division && pass.division !== "all") params.set("divisionFilter", pass.division);
@@ -70,6 +71,23 @@ async function runSearch(pass, filter, token) {
     files.push(...(next.files ?? []));
   }
   return { total, files };
+}
+
+async function runReportDelayReference(pass, filter, token) {
+  const [, rawDays, milestoneKey] = filter.split(":");
+  const params = new URLSearchParams({
+    selectedYear: pass.year,
+    division: pass.division ?? "all",
+    delayDays: rawDays,
+    delayMilestone: milestoneKey,
+  });
+  if (pass.fileCategories) params.set("fileCategories", pass.fileCategories.join(","));
+  if (pass.fileYear && pass.fileYear !== "all") params.set("fileYear", pass.fileYear);
+  const result = await api("/api/reports/summary?" + params.toString(), token);
+  const rows = (result.summary?.delayRows ?? []).filter(
+    (row) => row.milestoneKey === milestoneKey,
+  );
+  return fileIds(rows.map((row) => ({ id: row.fileId })));
 }
 
 async function main() {
@@ -132,11 +150,18 @@ async function main() {
         (pass.fileYear === "all" || file.year === pass.fileYear) &&
         (pass.division === "all" || String(file.division ?? "").toLowerCase() === pass.division.toLowerCase()),
       );
-      const expected = fileIds(searchFiles(scopedSourceFiles, {
-        dashboardFilter: filter,
-        fileCategories: pass.categories,
-        sortColumnKey: "none",
-      }));
+      const expected = filter?.startsWith("delayStatus:")
+        ? await runReportDelayReference(
+            { ...pass, fileCategories: pass.categories },
+            filter,
+            token,
+          )
+        : fileIds(searchFiles(scopedSourceFiles, {
+            selectedYear: pass.year,
+            dashboardFilter: filter,
+            fileCategories: pass.categories,
+            sortColumnKey: "none",
+          }));
       const result = await runSearch({
         ...pass,
         categories: pass.categories,
@@ -165,12 +190,38 @@ async function main() {
     }
   }
 
+  const plainSearchPasses = globalYears.filter((global) =>
+    global.year === "__all_files__" || global.year === "__all_active_files__" ||
+    global.year === "__active_plus_current_fy_closed__" || /^\d{4}-\d{2}$/.test(global.year),
+  );
+  for (const pass of plainSearchPasses) {
+    const sourceFiles = sourceByGlobalYear.get(pass.year) ?? [];
+    const expected = fileIds(searchFiles(sourceFiles, {
+      selectedYear: pass.year,
+      sortColumnKey: "none",
+    }));
+    const result = await runSearch(pass, undefined, token);
+    const actual = fileIds(result.files);
+    const missing = expected.filter((id) => !actual.includes(id));
+    const extra = actual.filter((id) => !expected.includes(id));
+    checked += 1;
+    if (result.total !== expected.length || missing.length || extra.length) {
+      issues.push({
+        pass: `plain Search: ${pass.name}`,
+        tsFileCount: expected.length,
+        sqlFileCount: result.total,
+        missing: missing.slice(0, 10),
+        extra: extra.slice(0, 10),
+      });
+    }
+  }
+
   console.log(JSON.stringify({
     checked,
     globalFilterOptions: globalYears.length,
     subfilterPasses: passes.length,
     clickerFilters: filters.length,
-    coverage: "each global option crossed with every initiation-year, division, and individual file-type option; multi-filter cross-products are covered by audit-filter-scope-matrix.mjs",
+    coverage: "each global option crossed with every initiation-year, division, and individual file-type option; plain Search is compared separately for All Files, All Active Files, Active + current-FY closed, and each specific FY; multi-filter cross-products are covered by audit-filter-scope-matrix.mjs",
     issues,
   }, null, 2));
   if (issues.length) process.exitCode = 1;

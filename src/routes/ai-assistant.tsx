@@ -54,14 +54,14 @@ const paymentMix = [
 ];
 
 const chartColors = {
-  mer: "#2563eb",
-  recorded: "#0f766e",
-  previous: "#64748b",
-  current: "#c2410c",
-  next: "#7c3aed",
-  advance: "#c2410c",
-  supplementary: "#7c3aed",
-  regular: "#0f766e",
+  mer: "var(--chart-color-1)",
+  recorded: "var(--chart-color-2)",
+  previous: "var(--chart-color-3)",
+  current: "var(--chart-color-4)",
+  next: "var(--chart-color-5)",
+  advance: "var(--chart-color-2)",
+  supplementary: "var(--chart-color-3)",
+  regular: "var(--chart-color-1)",
 };
 
 function formatLakhs(value: number) {
@@ -149,13 +149,13 @@ function AiAssistantPage() {
               <div className="h-[285px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={yearlyFinance} margin={{ top: 8, right: 12, left: 2, bottom: 2 }}>
-                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="year" tickLine={false} axisLine={false} />
-                    <YAxis tickLine={false} axisLine={false} width={42} />
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" />
+                    <XAxis dataKey="year" axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} />
+                    <YAxis allowDecimals={false} axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} width={42} label={{ value: "Value (Lakhs)", angle: -90, position: "insideLeft" }} />
                     <Tooltip formatter={(value) => [formatLakhs(Number(value))]} />
                     <Legend />
-                    <Bar dataKey="mer" name="MER" fill={chartColors.mer} radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="recorded" name="Recorded Payments" fill={chartColors.recorded} radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="mer" name="MER" fill={chartColors.mer} radius={0} />
+                    <Bar dataKey="recorded" name="Recorded Payments" fill={chartColors.recorded} radius={0} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

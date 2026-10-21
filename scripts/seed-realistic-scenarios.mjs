@@ -1095,6 +1095,9 @@ async function main() {
     for (const definition of definitions) await ensureNoCollision(definition, token);
     for (const definition of definitions) {
       const payload = baseFile(definition);
+      if (payload.gem !== "Yes") {
+        for (const supplyOrder of payload.supplyOrders ?? []) supplyOrder.gemSoNo = "";
+      }
       const result = await api("/api/files", token, {
         method: "POST",
         body: JSON.stringify(payload),

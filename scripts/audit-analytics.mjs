@@ -70,6 +70,29 @@ function sampleRows(rows) {
   return list.slice(0, maxClickerRows);
 }
 
+const milestoneClearingFilters = {
+  Scrutiny: "milestoneCleared:scrutiny",
+  "High Value": "milestoneCleared:highValue",
+  "Pre-TCEC": "milestoneCleared:tcec",
+  AD: "milestoneCleared:ad",
+  "R&QA": "milestoneCleared:rqa",
+  Controlling: "milestoneCleared:control",
+  IFA: "milestoneCleared:ifa",
+  CFA: "milestoneCleared:cfa",
+  "GeM Undertaking": "gemUndertaking:completed",
+  Bidding: "analyticsMilestoneClearing:bidding",
+  "Non-TCEC Technical Evaluation": "analyticsMilestoneClearing:nonTcecTechnicalEvaluation",
+  "Post-TCEC": "milestoneCleared:postTcec",
+  CNC: "milestoneCleared:cnc",
+  "Supply Order": "analyticsMilestoneClearing:supplyOrder",
+  "IR Preparation": "milestoneCleared:irPreparation",
+  "IR Receipt": "milestoneCleared:irReceipt",
+  "Bill preparation": "analyticsMilestoneClearing:billPreparation",
+  "Bill sent for payment": "manualMilestoneCompleted:Bill sent for payment",
+  Delivery: "deliveryCompleted",
+  Payment: "analyticsMilestoneClearing:payment",
+};
+
 function compareMaps(issues, area, expected, actual) {
   const keys = new Set([...expected.keys(), ...actual.keys()]);
   for (const key of keys) {
@@ -115,8 +138,8 @@ function reportsPath(pass, delayDays, delayMilestone = "all") {
 function searchPath(pass, target) {
   const params = new URLSearchParams({
     selectedYear: pass.selectedYear ?? "__all_active_files__",
-    page: "1",
-    pageSize: "500",
+    page: String(target.page ?? 1),
+    pageSize: String(target.pageSize ?? 500),
   });
   if (target.dashboardFilter) params.set("dashboardFilter", target.dashboardFilter);
   if (target.extraDashboardFilters?.length) {
@@ -124,12 +147,6 @@ function searchPath(pass, target) {
   }
   if (target.analyticsType) params.set("analyticsType", target.analyticsType);
   if (target.analyticsNames?.length) params.set("analyticsNames", JSON.stringify(target.analyticsNames));
-  if (target.analyticsType && !target.demandCancelledPresenceFilter) {
-    params.set("demandCancelledPresenceFilter", "exclude");
-  }
-  if (target.demandCancelledPresenceFilter) {
-    params.set("demandCancelledPresenceFilter", target.demandCancelledPresenceFilter);
-  }
   if (target.includeModes?.length) params.set("includeModes", target.includeModes.join(","));
   const division = target.division ?? pass.division;
   if (division && division !== "all") params.set("divisionFilter", division);
@@ -254,17 +271,21 @@ function checkMilestoneClearingRows(issues, passName, rows) {
   }
 }
 
-async function checkExactFileIdsClicker(token, issues, pass, area, label, fileIds) {
+async function checkCriteriaFileSet(token, issues, pass, area, label, fileIds, target) {
   const ids = Array.from(new Set(fileIds.filter(Boolean)));
   if (!ids.length) return;
-  const result = await api(searchPath(pass, {
-    dashboardFilter: `fileIds:${ids.map(encodeURIComponent).join(",")}`,
-  }), token);
-  const resultIds = Array.from(new Set((result.files ?? []).map((file) => file.id)));
-  const missing = ids.filter((id) => !resultIds.includes(id));
-  const extra = resultIds.filter((id) => !ids.includes(id));
-  if (n(result.total) !== ids.length || missing.length || extra.length) {
-    issues.push({ pass: pass.name, area, label, issue: "fileIds clicker mismatch", expected: ids.length, actual: n(result.total), missing: missing.slice(0, 10), extra: extra.slice(0, 10) });
+  const first = await api(searchPath(pass, { ...target, page: 1, pageSize: 500 }), token);
+  const resultIds = new Set((first.files ?? []).map((file) => file.id));
+  const pageCount = Math.ceil(n(first.total) / 500);
+  for (let page = 2; page <= pageCount; page += 1) {
+    const result = await api(searchPath(pass, { ...target, page, pageSize: 500 }), token);
+    for (const file of result.files ?? []) resultIds.add(file.id);
+  }
+  const actualIds = [...resultIds];
+  const missing = ids.filter((id) => !resultIds.has(id));
+  const extra = actualIds.filter((id) => !ids.includes(id));
+  if (n(first.total) !== ids.length || missing.length || extra.length) {
+    issues.push({ pass: pass.name, area, label, issue: "criteria clicker contributor mismatch", expected: ids.length, actual: n(first.total), missing: missing.slice(0, 10), extra: extra.slice(0, 10), target });
   }
 }
 
@@ -278,40 +299,25 @@ async function checkSearchCount(token, issues, pass, area, label, expected, targ
 
 async function checkPaymentPendingClicker(token, issues, pass, row) {
   const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-  const expectedIds = new Set(ids);
-  const filters = [
-    { route: "panel clicker", dashboardFilter: `fileIds:${ids.map(encodeURIComponent).join(",")}` },
-    { route: "saved link", dashboardFilter: "analyticsPaymentPending" },
-  ];
-  for (const { route, dashboardFilter } of filters) {
-    const result = await api(searchPath(pass, {
-      dashboardFilter,
-      division: row.name,
-    }), token);
-    const actualIds = new Set((result.files ?? []).map((file) => file.id));
-    const missing = [...expectedIds].filter((id) => !actualIds.has(id));
-    const extra = [...actualIds].filter((id) => !expectedIds.has(id));
-    if (
-      expectedIds.size === 0 ||
-      n(row.count) < expectedIds.size ||
-      n(result.total) !== expectedIds.size ||
-      missing.length ||
-      extra.length
-    ) {
-      issues.push({
-        pass: pass.name,
-        area: "Payment pending ranking",
-        label: row.name,
-        route,
-        issue: "payment-case clicker file set mismatch",
-        cases: n(row.count),
-        expectedFiles: expectedIds.size,
-        actualFiles: n(result.total),
-        missing: missing.slice(0, 10),
-        extra: extra.slice(0, 10),
-      });
-    }
+  if (n(row.count) < ids.length) {
+    issues.push({
+      pass: pass.name,
+      area: "Payment pending ranking",
+      label: row.name,
+      issue: "payment-case count is smaller than unique file count",
+      cases: n(row.count),
+      files: ids.length,
+    });
   }
+  await checkCriteriaFileSet(
+    token,
+    issues,
+    pass,
+    "Payment pending ranking",
+    row.name,
+    ids,
+    { dashboardFilter: "analyticsPaymentPending", division: row.name },
+  );
 }
 
 async function checkAnalyticsClickers(token, issues, pass, summary) {
@@ -341,7 +347,20 @@ async function checkAnalyticsClickers(token, issues, pass, summary) {
   }
   for (const row of sampleRows(analytics.milestoneClearingRanking)) {
     const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-    addTask(() => checkExactFileIdsClicker(token, issues, pass, "Milestone clearing ranking", row.name, ids));
+    const dashboardFilter = milestoneClearingFilters[row.name];
+    if (!dashboardFilter) {
+      issues.push({ pass: pass.name, area: "Milestone clearing ranking", label: row.name, issue: "no criteria filter mapping" });
+      continue;
+    }
+    addTask(() => checkCriteriaFileSet(
+      token,
+      issues,
+      pass,
+      "Milestone clearing ranking",
+      row.name,
+      ids,
+      { dashboardFilter },
+    ));
   }
   for (const row of sampleRows(analytics.monthWiseSupplyOrder)) {
     addTask(() => checkSearchCount(token, issues, pass, "Month-wise S.O.", monthKey(row), row.count, { dashboardFilter: `supplyOrderMonth:${monthKey(row)}` }, false));

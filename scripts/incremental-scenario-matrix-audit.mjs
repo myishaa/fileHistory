@@ -245,7 +245,7 @@ function placeOrder(file, code) {
   return updateOrder(file, {
     financialSanctionDate: "2026-07-09",
     soNo: `${code}-SO-1`,
-    gemSoNo: `${code}-GEM-1`,
+    gemSoNo: file.gem === "Yes" ? `${code}-GEM-1` : "",
     soDate: "2026-07-10",
     soValueCapital: "10000",
     dpDate: "2026-12-15",
@@ -445,7 +445,7 @@ function scenarioReturnedBill(code) {
   const flow = scenarioNormalIr(code).slice(0, 7);
   return [
     ...flow,
-    { name: "bill returned", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", remarks: "" }] }), expectations: [expect.paymentDueMinus, expect.billReturnAny, expect.billReturnPending] },
+    { name: "bill returned", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", remarks: "" }] }), expectations: [expect.billReturnAny, expect.billReturnPending] },
     { name: "bill resubmitted", apply: (file) => updateOrder(file, { billReturnCycles: [{ returnedDate: "2026-07-25", reason: "Correction", resubmittedDate: "2026-07-26", remarks: "" }] }), expectations: [expect.billReturnPendingMinus, expect.billReturnResubmitted] },
     { name: "returned bill paid", apply: (file) => updateOrder(file, { paymentDate: "2026-07-30", paymentMode: "Online", actualPaymentCapital: "9800" }), expectations: [expect.payment, expect.billReturnPaid] },
   ];

@@ -1,4 +1,5 @@
-import { ChevronDown, X } from "lucide-react";
+import { ChevronDown, Info, X } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   type ChangeEvent,
   type FocusEvent,
@@ -15,7 +16,12 @@ type SearchableDropdownProps = {
   onChange: (value: string) => void;
   onSearchChange?: (query: string) => void;
   options: string[];
-  optionItems?: Array<{ value: string; label: string; searchTerms?: string[] }>;
+  optionItems?: Array<{
+    value: string;
+    label: string;
+    searchTerms?: string[];
+    helpText?: string[];
+  }>;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
@@ -25,9 +31,12 @@ type SearchableDropdownProps = {
   deferChangeUntilSelect?: boolean;
   typeAheadOnly?: boolean;
   allowCustomValue?: boolean;
+  clearValue?: string;
   clearLabel?: string;
   showClearOption?: boolean;
+  preserveOptionOrder?: boolean;
   onEnter?: () => void;
+  optionHelpClassName?: string;
 };
 
 export function SearchableDropdown({
@@ -45,9 +54,12 @@ export function SearchableDropdown({
   deferChangeUntilSelect = false,
   typeAheadOnly = false,
   allowCustomValue = true,
+  clearValue,
   clearLabel = "Clear selection",
-  showClearOption = true,
+  showClearOption = false,
+  preserveOptionOrder = false,
   onEnter,
+  optionHelpClassName = "max-w-72",
 }: SearchableDropdownProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const internalInputRef = useRef<HTMLInputElement | null>(null);
@@ -61,28 +73,31 @@ export function SearchableDropdown({
       left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
     const uniqueOptions = new Map<
       string,
-      { value: string; label: string; searchTerms?: string[] }
+      { value: string; label: string; searchTerms?: string[]; helpText?: string[] }
     >();
     for (const option of optionItems ?? options.map((item) => ({ value: item, label: item }))) {
       if (option.value && !uniqueOptions.has(option.value)) uniqueOptions.set(option.value, option);
     }
-    return Array.from(uniqueOptions.values()).sort((left, right) =>
-      compareOptions(left.label, right.label),
-    );
-  }, [options, optionItems]);
+    const result = Array.from(uniqueOptions.values());
+    return preserveOptionOrder
+      ? result
+      : result.sort((left, right) => compareOptions(left.label, right.label));
+  }, [options, optionItems, preserveOptionOrder]);
   const visibleOptions = useMemo(() => {
     const trimmedQuery = query.trim().toLowerCase();
     return trimmedQuery
       ? allOptions.filter(
           (option) =>
-            option.label.toLowerCase().startsWith(trimmedQuery) ||
-            option.searchTerms?.some((term) =>
-              term.trim().toLowerCase().startsWith(trimmedQuery),
-            ),
+            option.label.toLowerCase().includes(trimmedQuery) ||
+            option.searchTerms?.some((term) => term.trim().toLowerCase().includes(trimmedQuery)),
         )
       : allOptions;
   }, [allOptions, query]);
   const selectedLabel = allOptions.find((option) => option.value === value)?.label ?? value;
+  const resolvedClearValue =
+    clearValue ??
+    allOptions.find((option) => option.value === "all" || option.value === "__all__")?.value ??
+    "";
 
   useEffect(() => {
     if (!open) return;
@@ -205,19 +220,18 @@ export function SearchableDropdown({
   }
 
   function clearSelection() {
-    onChange("");
+    onChange(resolvedClearValue);
     setQuery("");
     onSearchChange?.("");
     setEditing(false);
     setOpen(false);
     setActiveOptionIndex(-1);
-    internalInputRef.current?.focus();
   }
 
-  const hasClearValue = Boolean(value.trim() || query.trim());
+  const canClear = Boolean(query.trim() || (value.trim() && value !== resolvedClearValue));
 
   return (
-    <div ref={rootRef} className="relative w-full max-w-md">
+    <div ref={rootRef} className="relative w-full min-w-48 max-w-md">
       <input
         ref={setInputRef}
         value={
@@ -241,41 +255,43 @@ export function SearchableDropdown({
         className={
           (className ?? "") +
           (typeAheadOnly
-            ? hasClearValue
+            ? canClear
               ? " block w-full pr-9"
               : " block w-full"
-            : " block w-full pr-16")
+            : canClear
+              ? " block w-full pr-16"
+              : " block w-full pr-9")
         }
       />
       {!typeAheadOnly && (
         <button
           type="button"
-          tabIndex={-1}
           disabled={disabled}
-          onMouseDown={(event) => {
-            event.preventDefault();
+          aria-expanded={open}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
             if (open) {
               setQuery("");
+              onSearchChange?.("");
               setOpen(false);
               return;
             }
             openFullList();
             internalInputRef.current?.focus();
           }}
-          className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
-          aria-label="Show options"
+          className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50"
+          aria-label={open ? "Hide options" : "Show options"}
         >
           <ChevronDown className="size-4" />
         </button>
       )}
-      {hasClearValue ? (
+      {canClear ? (
         <button
           type="button"
-          tabIndex={-1}
           disabled={disabled}
           onMouseDown={(event) => event.preventDefault()}
           onClick={clearSelection}
-          className={`absolute top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent disabled:pointer-events-none disabled:opacity-50 ${typeAheadOnly ? "right-1.5" : "right-9"}`}
+          className={`absolute top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 ${typeAheadOnly ? "right-1.5" : "right-9"}`}
           aria-label="Clear field"
           title="Clear field"
         >
@@ -283,7 +299,7 @@ export function SearchableDropdown({
         </button>
       ) : null}
       {open && !disabled ? (
-        <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+        <div className="absolute z-50 mt-1 max-h-56 w-full min-w-48 overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
           {!typeAheadOnly && showClearOption && (
             <button
               type="button"
@@ -291,7 +307,7 @@ export function SearchableDropdown({
               onClick={clearSelection}
               className={
                 "block min-h-8 w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
-                (value === "" ? "font-semibold text-primary" : "")
+                (value === resolvedClearValue ? "font-semibold text-primary" : "")
               }
               aria-label="Clear selection"
             >
@@ -299,24 +315,71 @@ export function SearchableDropdown({
             </button>
           )}
           {visibleOptions.length ? (
-            visibleOptions.map((option, index) => (
-              <button
-                key={option.value}
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setActiveOptionIndex(index)}
-                onClick={() => selectOption(option)}
-                className={
-                  "block w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
-                  (index === activeOptionIndex ? "bg-accent " : "") +
-                  (option.value === value ? "font-semibold text-primary" : "")
-                }
-                role="option"
-                aria-selected={index === activeOptionIndex}
-              >
-                {option.label}
-              </button>
-            ))
+            visibleOptions.map((option, index) =>
+              option.helpText ? (
+                <div
+                  key={option.value}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setActiveOptionIndex(index)}
+                  onClick={() => selectOption(option)}
+                  className={
+                    "flex min-h-8 w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left hover:bg-accent " +
+                    (index === activeOptionIndex ? "bg-accent " : "") +
+                    (option.value === value ? "font-semibold text-primary " : "")
+                  }
+                  role="option"
+                  aria-selected={index === activeOptionIndex}
+                >
+                  <span>{option.label}</span>
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          aria-label={`About ${option.label}`}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+                        >
+                          <Info className="size-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="right"
+                        className={`${optionHelpClassName} leading-relaxed`}
+                      >
+                        <ul className="list-disc space-y-1 pl-4">
+                          {option.helpText.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+              ) : (
+                <button
+                  key={option.value}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setActiveOptionIndex(index)}
+                  onClick={() => selectOption(option)}
+                  className={
+                    "block w-full rounded px-2 py-1.5 text-left hover:bg-accent " +
+                    (index === activeOptionIndex ? "bg-accent " : "") +
+                    (option.value === value ? "font-semibold text-primary" : "")
+                  }
+                  role="option"
+                  aria-selected={index === activeOptionIndex}
+                >
+                  {option.label}
+                </button>
+              ),
+            )
           ) : (
             <div className="px-2 py-2 text-muted-foreground">
               {deferChangeUntilSelect && allowCustomValue

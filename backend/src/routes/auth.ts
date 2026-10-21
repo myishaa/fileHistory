@@ -12,7 +12,13 @@ import {
   type AuthRequest,
 } from "../utils/auth.js";
 import { asyncHandler, HttpError, requireObjectBody, requireString } from "../utils/http.js";
-import { ensureIpAccessControlSchema, evaluateLoginIpAccess } from "../utils/ip-access-control.js";
+import {
+  ensureIpAccessControlSchema,
+  evaluateLoginIpAccess,
+  getIpAccessMode,
+  getRequestIp,
+  isTrustedIp,
+} from "../utils/ip-access-control.js";
 import type { AppUserRole } from "../types.js";
 
 export const authRouter = Router();
@@ -107,6 +113,15 @@ authRouter.post(
     const token = await saveViewerSession(foundDivisionId);
     setSessionCookie(response, token);
     response.json({ user: await loadAuthUser(requestWithCookie(request, token)) });
+  }),
+);
+
+authRouter.get(
+  "/ip-access-status",
+  asyncHandler(async (request, response) => {
+    const mode = await getIpAccessMode();
+    const blocked = mode === "restrict" && !(await isTrustedIp(getRequestIp(request)));
+    response.json({ blocked });
   }),
 );
 

@@ -141,6 +141,29 @@ export async function downloadBackendFileSearchExport(payload: FileSearchExportP
   }
 }
 
+export async function downloadQuickEntryExcelExport(payload: {
+  title: string;
+  fileName: string;
+  fields: string[];
+  fileTypes?: string[];
+  scopeMode: "fy" | "so";
+  financialYear: string;
+}) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/files/quick-entry/export`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await downloadExportResponse(response, payload.fileName, "Quick Entry export failed");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Quick Entry export failed.";
+    window.alert(message);
+    console.error(error);
+  }
+}
+
 export function getExportFileName(title: string) {
   return (
     title

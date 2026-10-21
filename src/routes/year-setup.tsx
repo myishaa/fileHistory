@@ -49,6 +49,9 @@ export function YearSetupPanel() {
   const [currentDivisionsYear, setCurrentDivisionsYear] = useState("");
   const [drafts, setDrafts] = useState<Record<string, DraftAllocation>>({});
   const [savingId, setSavingId] = useState<string | undefined>();
+  const [allocationFeedback, setAllocationFeedback] = useState<
+    Record<string, { kind: "success" | "error"; message: string }>
+  >({});
   const [newName, setNewName] = useState("");
   const [newCode, setNewCode] = useState("");
   const [newCapital, setNewCapital] = useState("");
@@ -244,6 +247,12 @@ export function YearSetupPanel() {
 
   const updateDraft = (id: string, patch: Partial<DraftAllocation>) => {
     const key = getAllocationDraftKey(setupYear, id);
+    setAllocationFeedback((current) => {
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
     setDrafts((current) => ({
       ...current,
       [key]: {
@@ -256,10 +265,39 @@ export function YearSetupPanel() {
   };
 
   const saveAllocation = async (division: Division, allocation: DraftAllocation) => {
+    const key = getAllocationDraftKey(setupYear, division.id);
     setSavingId(division.id);
+    setAllocationFeedback((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
     try {
-      await store.saveDivisionAllocation(division.id, setupYear, allocation);
+      const savedDivision = await store.saveDivisionAllocation(division.id, setupYear, allocation);
+      setCurrentDivisions((current) =>
+        current.map((item) => (item.id === division.id ? savedDivision : item)),
+      );
+      setDrafts((current) => ({
+        ...current,
+        [key]: {
+          allocatedCapital: savedDivision.allocatedCapital ?? "",
+          allocatedRevenue: savedDivision.allocatedRevenue ?? "",
+          active: savedDivision.active ?? false,
+        },
+      }));
+      setAllocationFeedback((current) => ({
+        ...current,
+        [key]: { kind: "success", message: "Saved" },
+      }));
       setReloadKey((value) => value + 1);
+    } catch (error) {
+      setAllocationFeedback((current) => ({
+        ...current,
+        [key]: {
+          kind: "error",
+          message: error instanceof Error ? error.message : "Could not save allocation.",
+        },
+      }));
     } finally {
       setSavingId(undefined);
     }
@@ -520,7 +558,7 @@ export function YearSetupPanel() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex justify-end gap-1">
+                        <div className="flex flex-col items-end gap-1">
                           <button
                             type="button"
                             onClick={() => void saveAllocation(row.division, row.draft)}
@@ -535,6 +573,21 @@ export function YearSetupPanel() {
                               <Save className="size-4" />
                             )}
                           </button>
+                          {allocationFeedback[getAllocationDraftKey(setupYear, row.division.id)] ? (
+                            <span
+                              role="status"
+                              aria-live="polite"
+                              className={`max-w-48 text-right text-xs ${
+                                allocationFeedback[getAllocationDraftKey(setupYear, row.division.id)]
+                                  ?.kind === "error"
+                                  ? "text-destructive"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {allocationFeedback[getAllocationDraftKey(setupYear, row.division.id)]
+                                ?.message}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

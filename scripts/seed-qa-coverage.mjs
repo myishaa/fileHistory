@@ -1136,6 +1136,7 @@ async function seed() {
       }
       let orderIndex = 0;
       for (const supplyOrder of file.supplyOrders) {
+        if (file.row.gem !== "Yes") supplyOrder.gem_so_no = null;
         await insertReturningId(client, "supply_orders", {
           file_id: fileId,
           sort_order: orderIndex++,
