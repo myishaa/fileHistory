@@ -37,6 +37,7 @@ import {
 } from "@/lib/year-filter";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { HelperContent } from "@/components/helper-content";
 import {
   Dialog,
   DialogContent,
@@ -488,6 +489,8 @@ export function TopBar() {
       search: {
         tab: "analytics",
         analyticsPanel: "suspectedAnomaly",
+        noticeBoardView: undefined,
+        boardMetric: undefined,
       },
     });
   };
@@ -821,11 +824,15 @@ export function TopBar() {
                   </TooltipTrigger>
                   <TooltipContent
                     side="bottom"
-                    className="max-w-72 border border-border bg-background text-foreground"
+                    className="w-[min(36rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background text-foreground"
                   >
-                    {filterCombinationLocked
-                      ? "This combination is saved for your user account and stays locked across pages and future sessions. Unlock before changing it."
-                      : "Save the current Global Filter and Subfilter for your user account. The lock persists across pages and future sessions until you unlock it."}
+                    <HelperContent
+                      lines={[
+                        filterCombinationLocked
+                          ? "This combination is saved for your user account and stays locked across pages and future sessions. Unlock before changing it."
+                          : "Save the current Global Filter and Subfilter for your user account. The lock persists across pages and future sessions until you unlock it.",
+                      ]}
+                    />
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -1666,41 +1673,17 @@ function FilterCombinationGuideDialog({
               from earlier years. Active + current FY closed shows today's active files plus files
               closed this FY; it excludes cancelled demands and files with only cancelled S.O.s.
             </p>
-	            <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
-	              <div className="rounded-md border border-border bg-card px-3 py-2">
-	                <div className="font-semibold text-foreground">
-	                  Example: Global Filter {displayFinancialYearLabel(currentFinancialYear)}
-	                </div>
-	                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
-	                  <li>File started in FY {displayFinancialYearLabel(currentFinancialYear)}.</li>
-	                  <li>{specificFyOlderFileRule}</li>
-	                  <li>File was closed during FY {displayFinancialYearLabel(currentFinancialYear)}.</li>
-	                  <li>Event-date reports still use their own date rules.</li>
-	                </ul>
-	              </div>
-	              <div className="rounded-md border border-border bg-card px-3 py-2">
-	                <div className="font-semibold text-foreground">
-	                  Example: Global Filter {previousFyLabel}
-	                </div>
-	                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
-	                  <li>File started in FY {previousFyLabel}.</li>
-	                  <li>{specificFyOlderFileRule}</li>
-	                  <li>File closed during FY {previousFyLabel}.</li>
-	                  <li>Files closed before FY {previousFyLabel} are excluded.</li>
-	                </ul>
-	              </div>
-	              <div className="rounded-md border border-border bg-card px-3 py-2">
-                <div className="font-semibold text-foreground">Example: File Initiation Year</div>
-                <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
-                  <li>File received/started in FY 2025-26.</li>
-                  <li>
-                    With Global Filter 2026-27, Subfilter 2025-26 shows only those 2025-26 files
-                    that are included in the 2026-27 view.
-                  </li>
-                  <li>Choosing All file years keeps every initiation year eligible.</li>
-                </ul>
-              </div>
-            </div>
+	            <div className="mt-3">
+	              <HelperContent
+	                lines={[
+	                  "Example table: Global Filter / subfilter | Example file | Result",
+	                  `Example row: Global ${displayFinancialYearLabel(currentFinancialYear)} | File started in ${displayFinancialYearLabel(currentFinancialYear)} or was active on 1 Apr ${displayFinancialYearLabel(currentFinancialYear)}; it may close during that FY | Included if it meets the selected FY rules; event-date reports still apply their own event dates.`,
+	                  `Example row: Global ${previousFyLabel} | File started in ${previousFyLabel} or was active on 1 Apr ${previousFyLabel}; it closes during ${previousFyLabel} | Included for that FY; files closed before ${previousFyLabel} are excluded.`,
+	                  `Example row: Global ${displayFinancialYearLabel(currentFinancialYear)}; initiation subfilter ${previousFyLabel} | File was received in ${previousFyLabel} and qualifies under the Global FY | Included only if it meets the Global FY scope and the initiation-year subfilter.`,
+	                  "Example row: Global Active + current FY closed; all initiation years | Older file is active today but has no event dated in the selected FY | Included in file scope; an event-date measure may still have no event to count.",
+	                ]}
+	              />
+	            </div>
           </div>
           <div className="mb-4 rounded-md border border-amber-600/40 bg-amber-500/10 px-4 py-3">
             <div className="text-sm font-bold text-foreground">
@@ -1724,19 +1707,15 @@ function FilterCombinationGuideDialog({
               by themselves, limit every S.O. or payment to the Global Filter FY; each page,
               measure, or report applies its own date rule.
             </p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
-              <li>
-                Example: with Global Filter = Active + current FY closed and Subfilter = All file
-                years, Snapshot&apos;s Firm Type distribution considers S.O. firm types recorded
-                anywhere in those selected files, including S.O.s placed in earlier FYs. It is
-                not limited to S.O.s placed in the current FY.
-              </li>
-              <li>
-                A report or measure that is explicitly based on an event date may count only
-                events dated within its selected FY. Check that option&apos;s helper text for its
-                date rule.
-              </li>
-            </ul>
+	            <div className="mt-2">
+	              <HelperContent
+	                lines={[
+	                  "Example table: Measure | Selected file scope | Event-date treatment",
+	                  "Example row: Snapshot Firm Type distribution | Active + current FY closed; all file years | Firm types from S.O.s in any FY can be considered; the Global FY selects files, not S.O. placement dates.",
+	                  "Example row: Report explicitly based on an event date | Same file scope; event occurred outside selected FY | The file may be in scope, but the event is excluded from that FY's event total.",
+	                ]}
+	              />
+	            </div>
           </div>
           <div className="mb-4 overflow-x-auto rounded-md border border-border">
             <table className="w-full min-w-[1120px] border-collapse text-sm">

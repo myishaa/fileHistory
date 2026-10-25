@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
+import { formatIndiaDate } from "../utils/india-date.js";
 import { loadFiles } from "./files.js";
 import type {
   AppSettings,
@@ -146,6 +147,11 @@ const requiredFileYesNoFields: Array<{
   { key: "tenderLive", label: "Tender Live", onlyWhen: isBiddingApplicableForFile },
   { key: "bidOpened", label: "Bid Opened", onlyWhen: isBiddingApplicableForFile },
   { key: "biddingStageOver", label: "Bidding Stage Over", onlyWhen: isBiddingApplicableForFile },
+  {
+    key: "refloatBiddingStageOver",
+    label: "Refloat Bidding Stage Over",
+    onlyWhen: (file) => isBiddingApplicableForFile(file) && isYes(file.refloat) && !isYes(file.tcec),
+  },
   {
     key: "refloatPreBidMeeting",
     label: "Refloat Pre-Bid Meeting",
@@ -3528,6 +3534,10 @@ const sequenceMilestoneRules: SequenceMilestoneRule[] = [
     requiredFields: [
       { label: "Refloat bidding date", value: (file) => file.refloatBiddingDate },
       { label: "Refloat bid opening date", value: (file) => file.refloatBidOpeningDate },
+      {
+        label: "Refloat Bidding Stage Over",
+        value: (file) => (isYes(file.tcec) ? "Not applicable" : file.refloatBiddingStageOver),
+      },
     ],
     evidence: (file) =>
       hasFilledString(file.refloatBiddingDate) || hasFilledString(file.refloatBidOpeningDate),
@@ -4254,7 +4264,14 @@ function addShortclosedPendingActivityAnomalies(
   if (hasFilledString(order.psbBgReceivedDate) && !hasFilledString(order.psbBgReturnDate)) {
     addPending("PSB return", "PSB return date is blank");
   }
-  if (hasFilledString(order.pwbBgReceivedDate) && !hasFilledString(order.pwbBgReturnDate)) {
+  const warrantyReturnDueDate = addDaysIso(order.warrantyPeriodDate, 10);
+  const pwbReturnDue =
+    !warrantyReturnDueDate || todayIsoDate() > warrantyReturnDueDate;
+  if (
+    hasFilledString(order.pwbBgReceivedDate) &&
+    !hasFilledString(order.pwbBgReturnDate) &&
+    pwbReturnDue
+  ) {
     addPending("PWB return", "PWB return date is blank");
   }
   if (hasFilledString(order.combinedBgReceivedDate) && !hasFilledString(order.combinedBgReturnDate)) {
@@ -4805,7 +4822,7 @@ function addDaysIso(value: string | undefined, days: number) {
 }
 
 function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return formatIndiaDate();
 }
 
 function isIsoDate(value: string | undefined) {
@@ -6860,10 +6877,11 @@ function refloatTenderLiveWindowExpression() {
 }
 
 function refloatBiddingLiveExpression() {
+  const stageOver = `(case when ${isYesExpression("f.tcec")} then ${isYesExpression("f.bidding_stage_over")} else ${isYesExpression("f.refloat_bidding_stage_over")} end)`;
   return `${biddingApplicableExpression()}
     and ${isYesExpression("f.refloat")}
     and ${hasFilledExpression("f.refloat_bidding_date")}
-    and not ${isYesExpression("f.bidding_stage_over")}`;
+    and not ${stageOver}`;
 }
 
 function statusAppliesExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
@@ -6877,6 +6895,9 @@ function statusAppliesExpression(milestone: (typeof statusMilestoneDefinitions)[
 }
 
 function statusCompleteExpression(milestone: (typeof statusMilestoneDefinitions)[number]) {
+  if (milestone.key === "refloatBidding") {
+    return `(case when ${isYesExpression("f.tcec")} then ${isYesExpression("f.bidding_stage_over")} else ${isYesExpression("f.refloat_bidding_stage_over")} end)`;
+  }
   if ("yesComplete" in milestone && milestone.yesComplete) {
     return isYesExpression(milestone.currentColumn);
   }
@@ -7667,6 +7688,37 @@ async function loadAnalyticsSqlSlice({
     fileRankingValues,
   );
 
+  const gemUndertakingApplies = `(${isYesExpression("f.gem")}
+    and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison')`;
+  const gemUndertakingEnd = `case
+    when not ${isYesExpression("f.tcec")}
+      and ${isYesExpression("f.refloat")}
+      and ${hasFilledExpression("f.refloat_recommendation_date")}
+      and ${hasFilledExpression("f.refloat_gem_undertaking_date")}
+      then f.refloat_gem_undertaking_date
+    else f.gem_undertaking_date
+  end`;
+  const biddingStart = `case
+    when ${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")}
+      then f.post_tcec_minutes_date
+    else greatest(
+      f.cfa_date,
+      case when ${gemUndertakingApplies} then f.gem_undertaking_date else f.cfa_date end,
+      case when ${isYesExpression("f.rfp_vetting")} then f.rfp_vetting_approval_date else f.cfa_date end
+    )
+  end`;
+  const nonTcecRefloatCycle = `(${isYesExpression("f.refloat")} and ${hasFilledExpression("f.refloat_bid_opening_date")})`;
+  const nonTcecTechnicalEvaluationEnd = `case
+    when ${nonTcecRefloatCycle}
+      then (select min(so_end.financial_sanction_date)
+        from supply_orders so_end
+        where so_end.file_id = f.id)
+    when ${isYesExpression("f.refloat")} then f.refloat_recommendation_date
+    else (select min(so_end.financial_sanction_date)
+      from supply_orders so_end
+      where so_end.file_id = f.id)
+  end`;
+
   const milestoneClearingDefinitions: Array<{
     name: string;
     end: string;
@@ -7692,66 +7744,198 @@ async function loadAnalyticsSqlSlice({
     {
       name: "GeM Undertaking",
       start: "f.cfa_date",
-      end: "f.gem_undertaking_date",
-      applies: `
-        ${isYesExpression("f.gem")}
-        and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison'
-        and ${hasFilledExpression("f.cfa_date")}
-      `,
+      end: gemUndertakingEnd,
+      applies: gemUndertakingApplies,
+    },
+    {
+      name: "RFP Vetting",
+      start: `case
+        when ${isYesExpression("f.gem")}
+          and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison'
+          and ${hasFilledExpression("f.cfa_date")}
+          then f.gem_undertaking_date
+        else f.cfa_date
+      end`,
+      end: "f.rfp_vetting_approval_date",
+      applies: isYesExpression("f.rfp_vetting"),
     },
     {
       name: "Bidding",
-      start: `case
-        when ${isYesExpression("f.gem")} then f.gem_undertaking_date
-        else f.cfa_date
-      end`,
+      start: biddingStart,
       end: `case
         when ${isYesExpression("f.tcec")} and ${isYesExpression("f.refloat")} then f.refloat_post_tcec_date
         when ${isYesExpression("f.tcec")} then f.post_tcec_date
-        when ${isYesExpression("f.refloat")} then f.refloat_bid_opening_date
-        else f.bid_opening_date
+        else f.bid_date
       end`,
       applies: `
         ${biddingApplicableExpression()}
-        and ${isYesExpression("f.bidding_stage_over")}
-        and ${hasFilledExpression("f.cfa_date")}
-        and (not ${isYesExpression("f.gem")} or ${hasFilledExpression("f.gem_undertaking_date")})
+        and (
+          not ${isYesExpression("f.tcec")}
+          or (
+            ${isYesExpression("f.bidding_stage_over")}
+            and (
+              (
+                ${isYesExpression("f.refloat")}
+                and ${hasFilledExpression("f.post_tcec_minutes_date")}
+              )
+              or (
+                not ${isYesExpression("f.refloat")}
+                and ${hasFilledExpression("f.cfa_date")}
+                and (not ${gemUndertakingApplies} or ${hasFilledExpression("f.gem_undertaking_date")})
+                and (not ${isYesExpression("f.rfp_vetting")} or ${hasFilledExpression("f.rfp_vetting_approval_date")})
+              )
+            )
+          )
+        )
       `,
     },
     {
       name: "Non-TCEC Technical Evaluation",
-      end: "null::date",
-      applies: "false",
+      end: nonTcecTechnicalEvaluationEnd,
+      applies: `
+        not ${isYesExpression("f.tcec")}
+        and ${biddingApplicableExpression()}
+      `,
     },
     {
       name: "Post-TCEC",
-      end: `coalesce(nullif(f.refloat_post_tcec_minutes_date::text, ''), f.post_tcec_minutes_date::text)::date`,
+      start: "f.post_tcec_date",
+      end: "f.post_tcec_minutes_date",
       applies: isYesExpression("f.tcec"),
     },
-    { name: "CNC", end: "f.cnc_approval_date", applies: isYesExpression("f.tcec") },
+    {
+      name: "Refloat Post-TCEC",
+      start: "f.refloat_post_tcec_date",
+      end: "f.refloat_post_tcec_minutes_date",
+      applies: `
+        ${isYesExpression("f.tcec")}
+        and ${isYesExpression("f.refloat")}
+      `,
+    },
+    {
+      name: "CNC",
+      start: "f.post_tcec_minutes_date",
+      end: "f.cnc_approval_date",
+      applies: isYesExpression("f.tcec"),
+    },
   ];
+  const milestoneCycleSelect = (
+    start: string,
+    end: string,
+    additionalConditions: string[],
+  ) => `select ${start} as start_date,
+                ${end} as end_date,
+                f.received_date as received_date,
+                f.id::text as file_id
+         from files f
+         left join divisions d on d.id = f.division_id
+         ${appendDashboardWhereClause(milestoneWhereSql, [
+           ...milestoneFileRankingConditions,
+           ...additionalConditions,
+           dateDiffCondition(start, end),
+           dateDiffCondition("f.received_date", end),
+         ])}`;
+  const milestoneCycleAggregate = (
+    index: number,
+    name: string,
+    cycleQueries: string[],
+  ) => `select ${index} as sort_order,
+              '${name}' as name,
+              round(avg((milestone_samples.end_date - milestone_samples.start_date)))::integer as "averageDays",
+              coalesce(round(avg(milestone_samples.end_date - milestone_samples.received_date)), 0)::integer as "cumulativeDays",
+              coalesce(min(milestone_samples.end_date - milestone_samples.start_date), 0)::integer as "minDays",
+              coalesce(max(milestone_samples.end_date - milestone_samples.start_date), 0)::integer as "maxDays",
+              coalesce(floor(percentile_cont(0.5) within group (order by (milestone_samples.end_date - milestone_samples.start_date)) + 0.5), 0)::integer as "medianDays",
+              count(*)::integer as "sampleSize",
+              count(distinct milestone_samples.file_id)::integer as "fileCount",
+              string_agg(distinct milestone_samples.file_id, ',') as "fileIds"
+       from (${cycleQueries.join("\nunion all\n")}) as milestone_samples`;
   const milestoneSelects = milestoneClearingDefinitions.map((definition, index) => {
+    if (definition.name === "Bidding") {
+      const tcecStart = definition.start ?? biddingStart;
+      const tcecEnd = definition.end;
+      return milestoneCycleAggregate(index, "Bidding", [
+        milestoneCycleSelect(tcecStart, tcecEnd, [
+          biddingApplicableExpression(),
+          isYesExpression("f.tcec"),
+          isYesExpression("f.bidding_stage_over"),
+          `(
+            (
+              ${isYesExpression("f.refloat")}
+              and ${hasFilledExpression("f.post_tcec_minutes_date")}
+            )
+            or (
+              not ${isYesExpression("f.refloat")}
+              and ${hasFilledExpression("f.cfa_date")}
+              and (not ${gemUndertakingApplies} or ${hasFilledExpression("f.gem_undertaking_date")})
+              and (not ${isYesExpression("f.rfp_vetting")} or ${hasFilledExpression("f.rfp_vetting_approval_date")})
+            )
+          )`,
+        ]),
+        milestoneCycleSelect("f.cfa_date", "f.bid_date", [
+          biddingApplicableExpression(),
+          `not ${isYesExpression("f.tcec")}`,
+        ]),
+        milestoneCycleSelect(
+          "f.refloat_recommendation_date",
+          "f.refloat_bidding_date",
+          [
+            biddingApplicableExpression(),
+            `not ${isYesExpression("f.tcec")}`,
+            isYesExpression("f.refloat"),
+            isYesExpression("f.bidding_stage_over"),
+          ],
+        ),
+      ]);
+    }
+    if (definition.name === "GeM Undertaking") {
+      const normalStart = "f.cfa_date";
+      const normalEnd = "f.gem_undertaking_date";
+      const refloatStart = "f.refloat_recommendation_date";
+      const refloatEnd = "f.refloat_gem_undertaking_date";
+      return milestoneCycleAggregate(index, definition.name, [
+        milestoneCycleSelect(normalStart, normalEnd, [gemUndertakingApplies]),
+        milestoneCycleSelect(refloatStart, refloatEnd, [
+          gemUndertakingApplies,
+          `not ${isYesExpression("f.tcec")}`,
+          isYesExpression("f.refloat"),
+        ]),
+      ]);
+    }
     if (definition.name === "Non-TCEC Technical Evaluation") {
-      const start = `case
-        when ${isYesExpression("f.refloat")} and ${hasFilledExpression("f.refloat_bid_opening_date")}
-          then f.refloat_bid_opening_date
-        else f.bid_opening_date
+      const firstCycleStart = "f.bid_opening_date";
+      const firstCycleEnd = `case
+        when ${isYesExpression("f.refloat")} then f.refloat_recommendation_date
+        else (select min(so_end.financial_sanction_date)
+          from supply_orders so_end
+          where so_end.file_id = f.id)
       end`;
-      const end = "so.financial_sanction_date";
-      return `select ${index} as sort_order,
-              '${definition.name}' as name,
-              ${clearingStatsSelect(start, end)},
-              ${clearingSampleSelect("count(*)")}
-       from files f
-       left join divisions d on d.id = f.division_id
-       join supply_orders so on so.file_id = f.id
-       ${appendDashboardWhereClause(milestoneWhereSql, [
-         ...milestoneFileRankingConditions,
-         `not ${isYesExpression("f.tcec")}`,
-         biddingApplicableExpression(),
-         isYesExpression("f.bidding_stage_over"),
-         dateDiffCondition(start, end),
-       ])}`;
+      const secondCycleStart = "f.refloat_bid_opening_date";
+      const secondCycleEnd = `(select min(so_end.financial_sanction_date)
+        from supply_orders so_end
+        where so_end.file_id = f.id)`;
+      return milestoneCycleAggregate(index, definition.name, [
+        milestoneCycleSelect(
+          firstCycleStart,
+          firstCycleEnd,
+          [
+            `not ${isYesExpression("f.tcec")}`,
+            biddingApplicableExpression(),
+            isYesExpression("f.bidding_stage_over"),
+          ],
+        ),
+        milestoneCycleSelect(
+          secondCycleStart,
+          secondCycleEnd,
+          [
+            `not ${isYesExpression("f.tcec")}`,
+            biddingApplicableExpression(),
+            `${isYesExpression("f.refloat_bidding_stage_over")}
+            and ${isYesExpression("f.refloat")}
+            and ${hasFilledExpression("f.refloat_bid_opening_date")}`,
+          ],
+        ),
+      ]);
     }
     const start =
       definition.start ??
@@ -7770,6 +7954,9 @@ async function loadAnalyticsSqlSlice({
            ...milestoneFileRankingConditions,
            definition.applies ?? "true",
            dateDiffCondition(start, definition.end),
+           ...(["RFP Vetting", "Bidding"].includes(definition.name)
+             ? [dateDiffCondition("f.received_date", definition.end)]
+             : []),
          ])}`;
   });
   const commonStagePayment = `(${isYesExpression("so.stage_delivery")}
@@ -7880,14 +8067,9 @@ async function loadAnalyticsSqlSlice({
       then nullif(payment_stage.stage ->> 'paymentDate', '')::date
     else so.payment_date
   end`;
-  const supplyOrderClearingStart = getPreviousApplicableMilestoneCompletionSql(
-    milestoneClearingDefinitions,
-    milestoneClearingDefinitions.length,
-    "so.so_date",
-  );
   const effectiveSupplyOrderClearingStart = `case
     when not ${isYesExpression("f.tcec")} then so.financial_sanction_date
-    else ${supplyOrderClearingStart}
+    else f.cnc_approval_date
   end`;
   milestoneSelects.push(
     `select ${milestoneClearingDefinitions.length} as sort_order,
@@ -8880,7 +9062,12 @@ async function loadAnalyticsSqlSlice({
         fileIds: row.fileIds,
         sortOrder: Number(row.sort_order ?? 0),
       }))
-      .sort((a, b) => b.averageDays - a.averageDays),
+      .sort(
+        (a, b) =>
+          b.averageDays - a.averageDays ||
+          a.sortOrder - b.sortOrder ||
+          a.name.localeCompare(b.name),
+      ),
     monthlyFileInflow: monthlyResult.rows
       .map((row) => ({ name: row.name, count: Number(row.count ?? 0) }))
       .sort((a, b) => a.name.localeCompare(b.name)),

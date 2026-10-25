@@ -2,6 +2,7 @@
 import * as React from "react";
 import type { MmgSummaryFieldConfig } from "@/lib/mmg-summary";
 import type { DemandProcessingPreset } from "@/lib/demand-processing-analysis";
+import type { QuickEntryExcelPreset } from "@/lib/quick-entry-excel";
 import { defaultTableFieldPresets, type TableFieldPreset } from "@/lib/table-field-presets";
 import type { FileTypeGroup, FileTypeGroupSetting } from "@/lib/file-type-groups";
 import { defaultChartColorOrder } from "@/lib/chart-colors";
@@ -83,6 +84,8 @@ export type FileRecord = {
   cfaSentDate?: string;
   cfaDate?: string;
   gemUndertakingDate?: string;
+  refloatGemUndertakingDate?: string;
+  refloatRecommendationDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
   preBidMeeting?: string;
@@ -105,6 +108,7 @@ export type FileRecord = {
   refloatPostTcecCommitteeNo?: string;
   rst?: string;
   biddingStageOver?: string;
+  refloatBiddingStageOver?: string;
   cncDate?: string;
   cncApprovalDate?: string;
   noOfSo?: string;
@@ -271,6 +275,7 @@ export type FileIdentifierSuggestion = {
 };
 
 export type SupplyOrderDetail = {
+  id?: string;
   includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
@@ -589,6 +594,16 @@ export type FirmRatingField = {
 export type FirmRatingConfig = {
   fields: FirmRatingField[];
 };
+export type SharedQuickAccessSettings = {
+  initialized: boolean;
+  favorites: string[];
+  noticeBoardItems: string[];
+  noticeBoardIntervalSeconds: number;
+  noticeBoardSlideDurationMs: number;
+  noticeBoardFadeOutDurationMs: number;
+  noticeBoardFadeInDurationMs: number;
+  noticeBoardVerticalScrollDurationMs: number;
+};
 export type DemandProcessingDayRange = {
   id?: string;
   label: string;
@@ -631,11 +646,15 @@ export type AppSettings = {
   specialFileMarkers?: SpecialFileMarker[];
   firmUniqueNoLabel?: string;
   firmRatingConfig?: FirmRatingConfig;
+  quickEntryExcelPresets?: QuickEntryExcelPreset[];
+  quickEntryExcelPresetsLegacyImported?: boolean;
   activeUserId?: string;
   addEditRibbonFields?: AddEditRibbonFieldKey[];
   preSoDefaultSoOffsetDays?: number;
   preSoDefaultPaymentOffsetDays?: number;
   bgReturnOffsetDays?: number;
+  delayStatusDefaultDays?: number;
+  sharedQuickAccess: SharedQuickAccessSettings;
 };
 
 function currentYear() {
@@ -684,6 +703,8 @@ const defaultSettings: AppSettings = {
   bgReceiptDelayDays: [10, 30, 60],
   specialFileMarkers: [],
   firmUniqueNoLabel: "Firm Unique No.",
+  quickEntryExcelPresets: [],
+  quickEntryExcelPresetsLegacyImported: false,
   firmRatingConfig: {
     fields: [
       { id: "delivery", label: "Delivery", weight: "1" },
@@ -695,6 +716,17 @@ const defaultSettings: AppSettings = {
   preSoDefaultSoOffsetDays: 30,
   preSoDefaultPaymentOffsetDays: 30,
   bgReturnOffsetDays: 60,
+  delayStatusDefaultDays: 5,
+  sharedQuickAccess: {
+    initialized: false,
+    favorites: [],
+    noticeBoardItems: [],
+    noticeBoardIntervalSeconds: 15,
+    noticeBoardSlideDurationMs: 1200,
+    noticeBoardFadeOutDurationMs: 1400,
+    noticeBoardFadeInDurationMs: 900,
+    noticeBoardVerticalScrollDurationMs: 2800,
+  },
 };
 
 const defaultUsers: AppUser[] = [];
@@ -720,6 +752,7 @@ type StoreState = {
   settings: AppSettings;
   users: AppUser[];
   authUser?: AppUser;
+  authChecked: boolean;
   loading: boolean;
   loaded: boolean;
   error?: string;
@@ -734,11 +767,13 @@ let state: StoreState = {
   settings: defaultSettings,
   users: defaultUsers,
   authUser: undefined,
+  authChecked: false,
   loading: false,
   loaded: false,
 };
 
 let loadPromise: Promise<void> | undefined;
+let loadAgain = false;
 
 function setState(patch: Partial<StoreState>) {
   state = { ...state, ...patch };
@@ -874,88 +909,101 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
   };
 }
 
-async function loadAll(force = false) {
-  if (typeof window === "undefined") return;
-  if (loadPromise && !force) return loadPromise;
+function loadAll(force = false): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (loadPromise) {
+    if (force) loadAgain = true;
+    return loadPromise;
+  }
 
   loadPromise = (async () => {
-    setState({ loading: true, error: undefined });
-    try {
-      const auth = await request<{ user: AppUser | null }>("/api/auth/me");
-      if (!auth.user) {
-        const settings = await request<{ settings: AppSettings }>("/api/settings");
-        const effectiveSettings = applySessionSelectedYear(
-          normalizeSettingsYears({
-            ...defaultSettings,
-            ...settings.settings,
-            tableFieldPresets: settings.settings.tableFieldPresets?.length
-              ? settings.settings.tableFieldPresets
-              : defaultTableFieldPresets,
-          }),
-        );
-        const divisions = await request<{ divisions: Division[] }>("/api/divisions/viewer-login-options");
-        setState({
-          files: [],
-          messages: [],
-          fileProcessingNotifications: [],
-          divisions: divisions.divisions,
-          indentors: [],
-          users: [],
-          authUser: undefined,
-          settings: effectiveSettings,
-          loading: false,
-          loaded: true,
-        });
-        return;
-      }
+    do {
+      loadAgain = false;
+      await loadAllOnce();
+    } while (loadAgain);
+  })();
+  const currentLoad = loadPromise;
+  return currentLoad.finally(() => {
+    if (loadPromise === currentLoad) loadPromise = undefined;
+  });
+}
 
+async function loadAllOnce() {
+  setState({ loading: true, error: undefined });
+  try {
+    const auth = await request<{ user: AppUser | null }>("/api/auth/me");
+    setState({ authChecked: true });
+    if (!auth.user) {
       const settings = await request<{ settings: AppSettings }>("/api/settings");
       const effectiveSettings = applySessionSelectedYear(
         normalizeSettingsYears({
           ...defaultSettings,
           ...settings.settings,
-          activeUserId: auth.user.id,
           tableFieldPresets: settings.settings.tableFieldPresets?.length
             ? settings.settings.tableFieldPresets
             : defaultTableFieldPresets,
         }),
-        auth.user.id,
       );
-      const baseRequests = [
-        request<{ divisions: Division[] }>(
-          divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
-        ),
-        request<{ messages: FileMessage[] }>("/api/messages"),
-        request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
-      ] as const;
-      const [divisions, messages, fileProcessingNotifications] = await Promise.all(baseRequests);
-      const users =
-        auth.user.role === "admin" || auth.user.role === "universal_viewer"
-          ? await request<{ users: AppUser[] }>("/api/users")
-          : { users: [auth.user] };
-
+      const divisions = await request<{ divisions: Division[] }>(
+        "/api/divisions/viewer-login-options",
+      );
       setState({
         files: [],
-        messages: messages.messages,
-        fileProcessingNotifications: fileProcessingNotifications.notifications,
+        messages: [],
+        fileProcessingNotifications: [],
         divisions: divisions.divisions,
         indentors: [],
-        users: users.users,
-        authUser: auth.user,
+        users: [],
+        authUser: undefined,
         settings: effectiveSettings,
         loading: false,
         loaded: true,
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load backend data.";
-      console.error(error);
-      setState({ loading: false, loaded: true, error: message });
-    } finally {
-      loadPromise = undefined;
+      return;
     }
-  })();
 
-  return loadPromise;
+    const settings = await request<{ settings: AppSettings }>("/api/settings");
+    const effectiveSettings = applySessionSelectedYear(
+      normalizeSettingsYears({
+        ...defaultSettings,
+        ...settings.settings,
+        activeUserId: auth.user.id,
+        tableFieldPresets: settings.settings.tableFieldPresets?.length
+          ? settings.settings.tableFieldPresets
+          : defaultTableFieldPresets,
+      }),
+      auth.user.id,
+    );
+    const baseRequests = [
+      request<{ divisions: Division[] }>(
+        divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
+      ),
+      request<{ messages: FileMessage[] }>("/api/messages"),
+      request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
+    ] as const;
+    const [divisions, messages, fileProcessingNotifications] = await Promise.all(baseRequests);
+    const users =
+      auth.user.role === "admin" || auth.user.role === "universal_viewer"
+        ? await request<{ users: AppUser[] }>("/api/users")
+        : { users: [auth.user] };
+
+    setState({
+      files: [],
+      messages: messages.messages,
+      fileProcessingNotifications: fileProcessingNotifications.notifications,
+      divisions: divisions.divisions,
+      indentors: [],
+      users: users.users,
+      authUser: auth.user,
+      settings: effectiveSettings,
+      loading: false,
+      loaded: true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to load backend data.";
+    console.error(error);
+    setState({ loading: false, loaded: true, error: message });
+  }
 }
 
 function ensureLoaded() {
@@ -972,8 +1020,13 @@ function runMutation(mutation: () => Promise<unknown>) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Backend save failed.";
       console.error(error);
-      setState({ error: message });
       await loadAll(true);
+      const refreshError = state.error;
+      setState({
+        error: refreshError
+          ? `${message} The latest data could not be reloaded: ${refreshError}`
+          : message,
+      });
     }
   })();
 }
@@ -1023,7 +1076,17 @@ export const store = {
       }),
     );
   },
-  async updateGlobalChartColors(patch: Pick<AppSettings, "globalChartColorOrder" | "globalChartColorsEnforced">) {
+  async saveSettings(patch: Partial<AppSettings>) {
+    const payload = await request<{ settings: AppSettings }>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    setState({ settings: payload.settings });
+    return payload.settings;
+  },
+  async updateGlobalChartColors(
+    patch: Pick<AppSettings, "globalChartColorOrder" | "globalChartColorsEnforced">,
+  ) {
     const payload = await request<{ settings: AppSettings }>("/api/settings", {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -1032,9 +1095,12 @@ export const store = {
     return payload.settings;
   },
   async resetChartColorPreferencesForAllUsers() {
-    const payload = await request<{ settings: AppSettings }>("/api/settings/chart-colors/reset-all", {
-      method: "POST",
-    });
+    const payload = await request<{ settings: AppSettings }>(
+      "/api/settings/chart-colors/reset-all",
+      {
+        method: "POST",
+      },
+    );
     setState({ settings: payload.settings });
     return payload.settings;
   },
@@ -1589,6 +1655,9 @@ export const store = {
   reload() {
     return loadAll(true);
   },
+  clearError() {
+    setState({ error: undefined });
+  },
 };
 
 export function fetchIndentors({
@@ -1956,7 +2025,12 @@ export function useStoreStatus() {
     };
   }, []);
   ensureLoaded();
-  return { loading: state.loading, loaded: state.loaded, error: state.error };
+  return {
+    loading: state.loading,
+    loaded: state.loaded,
+    authChecked: state.authChecked,
+    error: state.error,
+  };
 }
 
 export function useAccessibleDivisions() {

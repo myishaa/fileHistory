@@ -12,6 +12,7 @@ type ExportDocument = {
   subtitle?: string;
   description?: string;
   tables: ExportTable[];
+  sheets?: Array<{ name: string; tables: ExportTable[] }>;
   plot?: ExportPlot;
   plots?: ExportPlot[];
 };
@@ -584,7 +585,19 @@ function getColumnWidths(headers: string[], rows: string[][], requestedWidths?: 
     requestedWidths.every((width) => Number.isFinite(width) && width > 0)
   ) {
     const total = requestedWidths.reduce((sum, width) => sum + width, 0);
-    return requestedWidths.map((width) => (width / total) * pdfContentWidth);
+    const widths = requestedWidths.map((width) => (width / total) * pdfContentWidth);
+    if (isSerialNumberHeader(headers[0] ?? "")) {
+      const compactWidth = Math.min(widths[0], 42);
+      const reclaimedWidth = widths[0] - compactWidth;
+      widths[0] = compactWidth;
+      if (reclaimedWidth > 0 && widths.length > 1) {
+        const recipientTotal = widths.slice(1).reduce((sum, width) => sum + width, 0);
+        widths.slice(1).forEach((width, index) => {
+          widths[index + 1] = width + reclaimedWidth * (width / recipientTotal);
+        });
+      }
+    }
+    return widths;
   }
   if (columns.length === 1) return [pdfContentWidth];
   const profiles = columns.map((index) => getPdfColumnProfile(headers[index] ?? "", index));
@@ -613,7 +626,7 @@ type PdfColumnProfile = {
 
 function getPdfColumnProfile(header: string, index: number): PdfColumnProfile {
   const normalized = normalizeHeaderForWidth(header);
-  if (index === 0 && /^(sno|serial|srno|slno)$/.test(normalized)) {
+  if (index === 0 && isSerialNumberHeader(header)) {
     return { min: 30, base: 36, max: 42, contentCap: 8 };
   }
   if (
@@ -642,6 +655,10 @@ function getPdfColumnProfile(header: string, index: number): PdfColumnProfile {
     return { min: 92, base: 132, max: 240, contentCap: 48 };
   }
   return { min: 58, base: 82, max: 150, contentCap: 28 };
+}
+
+function isSerialNumberHeader(header: string) {
+  return /^(no|sno|serial|srno|slno)$/.test(normalizeHeaderForWidth(header));
 }
 
 function normalizeHeaderForWidth(header: string) {
@@ -707,8 +724,16 @@ function growColumnWidths(widths: number[], maxes: number[], extra: number) {
     remaining = pdfContentWidth - next.reduce((sum, width) => sum + width, 0);
   }
   if (remaining > 0.5) {
-    const addition = remaining / next.length;
-    return normalizeWidthRounding(next.map((width) => width + addition));
+    const flexibleIndexes = maxes
+      .map((max, index) => ({ index, max }))
+      .filter(({ max }) => max > 60)
+      .map(({ index }) => index);
+    const targetIndexes = flexibleIndexes.length ? flexibleIndexes : next.map((_, index) => index);
+    const addition = remaining / targetIndexes.length;
+    targetIndexes.forEach((index) => {
+      next[index] += addition;
+    });
+    return normalizeWidthRounding(next);
   }
   return normalizeWidthRounding(next);
 }

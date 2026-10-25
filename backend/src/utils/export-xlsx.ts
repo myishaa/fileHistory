@@ -5,6 +5,8 @@ type ExportTable = {
   headers: string[];
   rows: string[][];
   numericColumns?: number[];
+  dateColumns?: number[];
+  dateTimeColumns?: number[];
   columnWidths?: number[];
   emphasizedColumns?: number[];
 };
@@ -28,6 +30,7 @@ type ExportDocument = {
   subtitle?: string;
   description?: string;
   tables: ExportTable[];
+  sheets?: Array<{ name: string; tables: ExportTable[] }>;
   plot?: ExportPlot;
   plots?: ExportPlot[];
 };
@@ -59,12 +62,49 @@ function makeNumberCell(reference: string, value: number, style = 0) {
   return `<c r="${reference}" s="${style}"><v>${Number.isFinite(value) ? value : 0}</v></c>`;
 }
 
+function toExcelDateSerial(value: unknown) {
+  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return undefined;
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const timestamp = Date.UTC(year, month - 1, day);
+  const date = new Date(timestamp);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return undefined;
+  }
+  return timestamp / 86_400_000 + 25569;
+}
+
+function toExcelDateTimeSerial(value: unknown) {
+  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return undefined;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const timestamp = Date.UTC(year, month - 1, day, hour, minute, second);
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day || date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second
+  ) return undefined;
+  return timestamp / 86_400_000 + 25569;
+}
+
 function worksheetXml(
   rows: string[][],
   columnWidths?: number[],
   emphasizedCells = new Map<number, Set<number>>(),
   rowStyles = new Map<number, number>(),
   numericCells = new Map<number, Set<number>>(),
+  dateCells = new Map<number, Set<number>>(),
+  dateTimeCells = new Map<number, Set<number>>(),
 ) {
   const cols = columnWidths?.length
     ? `<cols>${columnWidths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${Math.max(8, Math.min(60, width))}" customWidth="1"/>`).join("")}</cols>`
@@ -81,6 +121,14 @@ function worksheetXml(
           if (String(value ?? "").trim() && Number.isFinite(numericValue)) {
             return makeNumberCell(reference, numericValue, style);
           }
+        }
+        if (dateCells.get(rowIndex)?.has(columnIndex)) {
+          const dateSerial = toExcelDateSerial(value);
+          if (dateSerial !== undefined) return makeNumberCell(reference, dateSerial, 9);
+        }
+        if (dateTimeCells.get(rowIndex)?.has(columnIndex)) {
+          const dateTimeSerial = toExcelDateTimeSerial(value);
+          if (dateTimeSerial !== undefined) return makeNumberCell(reference, dateTimeSerial, 10);
         }
         return makeCell(reference, value, style);
       });
@@ -244,6 +292,7 @@ function makeZip(files: Array<{ name: string; content: string | Buffer }>) {
 }
 
 export function renderXlsxDocument(document: ExportDocument) {
+  const additionalSheets = document.sheets ?? [];
   const plots = [...(document.plot ? [document.plot] : []), ...(document.plots ?? [])]
     .filter((plot) => plot.categories.length > 0 && plot.series.length > 0);
   const chartSpecs: Array<{ plot: ExportPlot; kind: "pie" | "bar" | "line" }> = [];
@@ -255,6 +304,8 @@ export function renderXlsxDocument(document: ExportDocument) {
   const emphasizedCells = new Map<number, Set<number>>();
   const rowStyles = new Map<number, number>([[0, 2]]);
   const numericCells = new Map<number, Set<number>>();
+  const dateCells = new Map<number, Set<number>>();
+  const dateTimeCells = new Map<number, Set<number>>();
   const appendRow = (row: string[], emphasizedColumns: number[] = [], style = 0) => {
     const rowIndex = reportRows.length;
     reportRows.push(row);
@@ -292,6 +343,12 @@ export function renderXlsxDocument(document: ExportDocument) {
       appendRow(row, table.emphasizedColumns, 7);
       if (table.numericColumns?.length && table.rows.length) {
         numericCells.set(rowIndex, new Set(table.numericColumns));
+      }
+      if (table.dateColumns?.length && table.rows.length) {
+        dateCells.set(rowIndex, new Set(table.dateColumns));
+      }
+      if (table.dateTimeColumns?.length && table.rows.length) {
+        dateTimeCells.set(rowIndex, new Set(table.dateTimeColumns));
       }
     });
     const columnCount = table.headers.length;
@@ -339,13 +396,68 @@ export function renderXlsxDocument(document: ExportDocument) {
         })()
       : chartXml(plot, chartData.ranges[plots.indexOf(plot)], kind, index),
   }));
+  const renderTables = (tables: ExportTable[]) => {
+    const rows: string[][] = [];
+    const emphasizedCells = new Map<number, Set<number>>();
+    const rowStyles = new Map<number, number>();
+    const numericCells = new Map<number, Set<number>>();
+    const dateCells = new Map<number, Set<number>>();
+    const dateTimeCells = new Map<number, Set<number>>();
+    const columnWidths: number[] = [];
+    const appendRow = (row: string[], style = 0, emphasizedColumns: number[] = []) => {
+      const rowIndex = rows.length;
+      rows.push(row);
+      if (style) rowStyles.set(rowIndex, style);
+      if (emphasizedColumns.length) emphasizedCells.set(rowIndex, new Set(emphasizedColumns));
+      return rowIndex;
+    };
+    for (const table of tables) {
+      if (table.title) appendRow([table.title], 5);
+      appendRow(table.headers, 6);
+      (table.rows.length ? table.rows : [["No rows found."]]).forEach((row) => {
+        const rowIndex = appendRow(row, 7, table.emphasizedColumns);
+        if (table.numericColumns?.length && table.rows.length) numericCells.set(rowIndex, new Set(table.numericColumns));
+        if (table.dateColumns?.length && table.rows.length) dateCells.set(rowIndex, new Set(table.dateColumns));
+        if (table.dateTimeColumns?.length && table.rows.length) dateTimeCells.set(rowIndex, new Set(table.dateTimeColumns));
+      });
+      for (let index = 0; index < table.headers.length; index += 1) {
+        const requestedWidth = table.columnWidths?.[index];
+        const contentWidth = Math.max(
+          table.headers[index]?.length ?? 0,
+          ...table.rows.map((row) => String(row[index] ?? "").length),
+        );
+        columnWidths[index] = Math.max(
+          columnWidths[index] ?? 0,
+          requestedWidth ?? Math.min(52, Math.max(10, contentWidth + 2)),
+        );
+      }
+      appendRow([]);
+    }
+    return worksheetXml(rows, columnWidths, emphasizedCells, rowStyles, numericCells, dateCells, dateTimeCells);
+  };
+  const firstAdditionalSheetIndex = chartSpecs.length ? 4 : 3;
+  const additionalSheetDefinitions = additionalSheets.map((sheet, index) => ({
+    ...sheet,
+    sheetIndex: firstAdditionalSheetIndex + index,
+    sheetId: chartSpecs.length ? 4 + index : 3 + index,
+    relationshipId: chartSpecs.length ? 4 + index : 3 + index,
+  }));
+  const additionalSheetContentTypes = additionalSheetDefinitions
+    .map(({ sheetIndex }) => `<Override PartName="/xl/worksheets/sheet${sheetIndex}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("");
+  const additionalSheetWorkbookEntries = additionalSheetDefinitions
+    .map(({ name, sheetId, relationshipId }) => `<sheet name="${xmlEscape(name.slice(0, 31))}" sheetId="${sheetId}" r:id="rId${relationshipId}"/>`)
+    .join("");
+  const additionalSheetRelationships = additionalSheetDefinitions
+    .map(({ sheetIndex, relationshipId }) => `<Relationship Id="rId${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetIndex}.xml"/>`)
+    .join("");
   const files: Array<{ name: string; content: string | Buffer }> = [
-    { name: "[Content_Types].xml", content: `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${chartSpecs.length ? '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : ""}${chartSpecs.map((_, index) => `<Override PartName="/xl/charts/chart${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`).join("")}</Types>` },
+    { name: "[Content_Types].xml", content: `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${chartSpecs.length ? '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : ""}${additionalSheetContentTypes}${chartSpecs.map((_, index) => `<Override PartName="/xl/charts/chart${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`).join("")}</Types>` },
     { name: "_rels/.rels", content: `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
-    { name: "xl/workbook.xml", content: `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="${chartSpecs.length ? 1 : 0}"/></bookViews><sheets><sheet name="Report" sheetId="1" r:id="rId1"/>${chartSpecs.length ? '<sheet name="Charts" sheetId="2" r:id="rId2"/>' : ""}<sheet name="Chart Data" sheetId="${chartSpecs.length ? 3 : 2}" state="hidden" r:id="${chartSpecs.length ? "rId3" : "rId2"}"/></sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
-    { name: "xl/_rels/workbook.xml.rels", content: `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>${chartSpecs.length ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>' : ""}<Relationship Id="${chartSpecs.length ? "rId3" : "rId2"}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId${chartSpecs.length ? 4 : 3}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
-    { name: "xl/styles.xml", content: `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="4"><font><sz val="11"/><name val="Calibri"/><color rgb="FF1F2937"/></font><font><b/><sz val="11"/><name val="Calibri"/><color rgb="FF1F2937"/></font><font><b/><sz val="18"/><name val="Calibri"/><color rgb="FF111827"/></font><font><sz val="10"/><name val="Calibri"/><color rgb="FF64748B"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE5E7EB"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F5F9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFCBD5E1"/></left><right style="thin"><color rgb="FFCBD5E1"/></right><top style="thin"><color rgb="FFCBD5E1"/></top><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="9"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/><xf xfId="0" fontId="2" applyFont="1"/><xf xfId="0" fontId="3" applyFont="1"/><xf xfId="0" fontId="3" applyFont="1"/><xf xfId="0" fontId="1" fillId="3" applyFont="1" applyFill="1"/><xf xfId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/><xf xfId="0" borderId="1" applyBorder="1"><alignment vertical="top" wrapText="1"/></xf><xf xfId="0" fontId="1" borderId="1" applyFont="1" applyBorder="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>` },
-    { name: "xl/worksheets/sheet1.xml", content: worksheetXml(reportRows, columnWidths, emphasizedCells, rowStyles, numericCells) },
+    { name: "xl/workbook.xml", content: `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="${chartSpecs.length ? 1 : 0}"/></bookViews><sheets><sheet name="Report" sheetId="1" r:id="rId1"/>${chartSpecs.length ? '<sheet name="Charts" sheetId="2" r:id="rId2"/>' : ""}<sheet name="Chart Data" sheetId="${chartSpecs.length ? 3 : 2}" state="hidden" r:id="${chartSpecs.length ? "rId3" : "rId2"}"/>${additionalSheetWorkbookEntries}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
+    { name: "xl/_rels/workbook.xml.rels", content: `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>${chartSpecs.length ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>' : ""}<Relationship Id="${chartSpecs.length ? "rId3" : "rId2"}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>${additionalSheetRelationships}<Relationship Id="rId${chartSpecs.length ? 4 + additionalSheetDefinitions.length : 3 + additionalSheetDefinitions.length}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: "xl/styles.xml", content: `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="dd-mmm-yyyy"/><numFmt numFmtId="165" formatCode="dd-mmm-yyyy hh:mm:ss"/></numFmts><fonts count="4"><font><sz val="11"/><name val="Calibri"/><color rgb="FF1F2937"/></font><font><b/><sz val="11"/><name val="Calibri"/><color rgb="FF1F2937"/></font><font><b/><sz val="18"/><name val="Calibri"/><color rgb="FF111827"/></font><font><sz val="10"/><name val="Calibri"/><color rgb="FF64748B"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE5E7EB"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F5F9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFCBD5E1"/></left><right style="thin"><color rgb="FFCBD5E1"/></right><top style="thin"><color rgb="FFCBD5E1"/></top><bottom style="thin"><color rgb="FFCBD5E1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="11"><xf xfId="0"/><xf xfId="0" fontId="1" applyFont="1"/><xf xfId="0" fontId="2" applyFont="1"/><xf xfId="0" fontId="3" applyFont="1"/><xf xfId="0" fontId="3" applyFont="1"/><xf xfId="0" fontId="1" fillId="3" applyFont="1" applyFill="1"/><xf xfId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1"/><xf xfId="0" borderId="1" applyBorder="1"><alignment vertical="top" wrapText="1"/></xf><xf xfId="0" fontId="1" borderId="1" applyFont="1" applyBorder="1"><alignment vertical="top" wrapText="1"/></xf><xf xfId="0" numFmtId="164" borderId="1" applyNumberFormat="1" applyBorder="1"/><xf xfId="0" numFmtId="165" borderId="1" applyNumberFormat="1" applyBorder="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>` },
+    { name: "xl/worksheets/sheet1.xml", content: worksheetXml(reportRows, columnWidths, emphasizedCells, rowStyles, numericCells, dateCells, dateTimeCells) },
     { name: "xl/worksheets/sheet2.xml", content: chartData.xml },
   ];
   if (chartSpecs.length) {
@@ -357,5 +469,11 @@ export function renderXlsxDocument(document: ExportDocument) {
       ...chartFiles,
     );
   }
+  additionalSheetDefinitions.forEach((sheet) => {
+    files.push({
+      name: `xl/worksheets/sheet${sheet.sheetIndex}.xml`,
+      content: renderTables(sheet.tables),
+    });
+  });
   return makeZip(files);
 }

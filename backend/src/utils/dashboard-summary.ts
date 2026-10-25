@@ -142,9 +142,13 @@ type Finance1FileTypeDistributionRow = {
   fileType: string;
   files: number;
   filesWithSo: number;
+  filesWithSoLive: number;
   activeAtFyEnd: number;
   closedByFyEnd: number;
   cancelledByFyEnd: number;
+  active: number;
+  closed: number;
+  cancelled: number;
   capital: number;
   revenue: number;
   total: number;
@@ -1472,7 +1476,7 @@ function getManualMilestoneCompletedCount(files: FileRecord[], name: string) {
   if (isBgMilestoneKey(normalized)) return countBgReceivedOrders(files, normalized);
   if (normalized === "refloatbidding") {
     return files.filter(
-      (file) => !isCancelledFile(file) && isYes(file.refloat) && isYes(file.biddingStageOver),
+      (file) => !isCancelledFile(file) && isYes(file.refloat) && isRefloatBiddingStageComplete(file),
     ).length;
   }
   if (normalized === "refloatposttcec") {
@@ -3064,9 +3068,13 @@ function getFinance1Summary(
       fileType: label,
       files: 0,
       filesWithSo: 0,
+      filesWithSoLive: 0,
       activeAtFyEnd: 0,
       closedByFyEnd: 0,
       cancelledByFyEnd: 0,
+      active: 0,
+      closed: 0,
+      cancelled: 0,
       capital: 0,
       revenue: 0,
       total: 0,
@@ -3140,11 +3148,26 @@ function getFinance1Summary(
     if (cancelledByFyEnd) fileTypeRow.cancelledByFyEnd += 1;
     else if (closedByFyEnd) fileTypeRow.closedByFyEnd += 1;
     else fileTypeRow.activeAtFyEnd += 1;
+    const cancelledLive = isCancelledFile(file);
+    const closedLive = isFileClosed(file);
+    if (cancelledLive) fileTypeRow.cancelled += 1;
+    else if (closedLive) fileTypeRow.closed += 1;
+    else fileTypeRow.active += 1;
     const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
     addDrillFile(`${fileTypeKey}:files`, file);
+    const hasSoLive = normalizedFileSupplyOrders(file).some(
+      (order) => hasSupplyOrderDate(order) && !isSupplyOrderCancelled(file, order),
+    );
+    if (hasSoLive) {
+      fileTypeRow.filesWithSoLive += 1;
+      addDrillFile(`${fileTypeKey}:liveWithSo`, file);
+    }
     if (cancelledByFyEnd) addDrillFile(`${fileTypeKey}:cancelled`, file);
     if (closedByFyEnd) addDrillFile(`${fileTypeKey}:closed`, file);
     if (!cancelledByFyEnd && !closedByFyEnd) addDrillFile(`${fileTypeKey}:active`, file);
+    if (cancelledLive) addDrillFile(`${fileTypeKey}:liveCancelled`, file);
+    if (closedLive) addDrillFile(`${fileTypeKey}:liveClosed`, file);
+    if (!cancelledLive && !closedLive) addDrillFile(`${fileTypeKey}:liveActive`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
     const soRowsByFyEnd = normalizedFileSupplyOrders(file).filter(
@@ -3927,7 +3950,12 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
       };
     })
     .filter((item) => item.sampleSize > 0)
-    .sort((a, b) => b.averageDays - a.averageDays);
+    .sort(
+      (a, b) =>
+        b.averageDays - a.averageDays ||
+        a.sortOrder - b.sortOrder ||
+        a.name.localeCompare(b.name),
+    );
 }
 
 type MilestoneClearingDurationRow = { fileId: string; stageDays: number; cumulativeDays: number };
@@ -3938,32 +3966,81 @@ function getMilestoneClearingDurationRows(
 ) {
   if (definition.name === "GeM Undertaking") {
     return files
-      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
-      .map((file) => getMilestoneClearingDurationRow(file, file.cfaDate, file.gemUndertakingDate))
-      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+      .filter(
+        (file) =>
+          isYes(file.gem) &&
+          (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
+      )
+      .flatMap((file) => {
+        const rows: MilestoneClearingDurationRow[] = [];
+        const normalRow = getMilestoneClearingDurationRow(
+          file,
+          file.cfaDate,
+          file.gemUndertakingDate,
+        );
+        if (normalRow) rows.push(normalRow);
+        if (!isYes(file.tcec) && isYes(file.refloat)) {
+          const refloatRow = getMilestoneClearingDurationRow(
+            file,
+            file.refloatRecommendationDate,
+            file.refloatGemUndertakingDate,
+          );
+          if (refloatRow) rows.push(refloatRow);
+        }
+        return rows;
+      });
   }
-  if (definition.name === "Bidding") {
+  if (definition.name === "RFP Vetting") {
     return files
       .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
       .map((file) =>
         getMilestoneClearingDurationRow(
           file,
-          isYes(file.gem) ? file.gemUndertakingDate : file.cfaDate,
-          definition.getEndDate?.(file),
+          getRfpVettingStartDate(file),
+          file.rfpVettingApprovalDate,
         ),
       )
       .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
   }
+  if (definition.name === "Bidding") {
+    return files.flatMap((file) => getMilestoneClearingBiddingDurationRows(file));
+  }
+  if (definition.name === "Post-TCEC") {
+    return files
+      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
+      .map((file) =>
+        getMilestoneClearingDurationRow(file, file.postTcecDate, file.postTcecMinutesDate),
+      )
+      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  }
+  if (definition.name === "Refloat Post-TCEC") {
+    return files
+      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
+      .map((file) =>
+        getMilestoneClearingDurationRow(
+          file,
+          file.refloatPostTcecDate,
+          file.refloatPostTcecMinutesDate,
+        ),
+      )
+      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  }
+  if (definition.name === "CNC") {
+    return files
+      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
+      .map((file) =>
+        getMilestoneClearingDurationRow(file, file.postTcecMinutesDate, file.cncApprovalDate),
+      )
+      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  }
   if (definition.name === "Non-TCEC Technical Evaluation") {
-    return files.flatMap((file) => {
-      if (!isMilestoneClearingDefinitionApplicable(file, definition)) return [];
-      const bidOpeningDate = getEffectiveBidOpeningDate(file);
-      return rawSupplyOrders(file)
-        .map((order) =>
-          getMilestoneClearingDurationRow(file, bidOpeningDate, order.financialSanctionDate),
-        )
-        .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
-    });
+    return files
+      .filter(
+        (file) =>
+          !isYes(file.tcec) &&
+          isBiddingApplicableForFile(file),
+      )
+      .flatMap((file) => getNonTcecTechnicalEvaluationDurationRows(file));
   }
   if (definition.name === "Financial Sanction") {
     return files
@@ -4027,27 +4104,22 @@ function getMilestoneClearingDurationRows(
           const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
           const submissionDate = order.billSentForPaymentDate;
           const paid = hasFilledString(order.paymentDate);
-          const returned = hasBillReturnHistory(order);
           return (
             order.includeInPaymentTiming !== false &&
             isPaymentOrderActive(entryFile, order) &&
             paid &&
+            !hasBillReturnHistory(order) &&
             (isAdvancePayment || hasFilledString(order.soDate)) &&
-            hasFilledString(submissionDate) &&
-            (!returned || hasFilledString(submissionDate))
+            hasFilledString(submissionDate)
           );
         })
         .map(({ file: entryFile, order }) => {
           const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
           const submissionDate = order.billSentForPaymentDate;
-          const returned = hasBillReturnHistory(order);
           const startDate = isAdvancePayment
             ? submissionDate
             : getPaymentTimingTriggerDate(entryFile, order);
-          const endDate = returned
-            ? submissionDate
-            : order.paymentDate;
-          return getMilestoneClearingDurationRow(entryFile, startDate, endDate);
+          return getMilestoneClearingDurationRow(entryFile, startDate, order.paymentDate);
         })
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
     );
@@ -4058,18 +4130,15 @@ function getMilestoneClearingDurationRows(
           getSupplementaryBills(order)
             .filter((bill) =>
               bill.includeInPaymentTiming !== false &&
+              !hasBillReturnHistory(bill) &&
               hasFilledString(bill.billSentForPaymentDate) &&
               hasFilledString(bill.paymentDate),
             )
             .map((bill) => {
-              const returned = hasBillReturnHistory(bill);
-              const endDate = returned
-                ? bill.billSentForPaymentDate
-                : bill.paymentDate;
               return getMilestoneClearingDurationRow(
                 file,
                 bill.billSentForPaymentDate,
-                endDate,
+                bill.paymentDate,
               );
             })
             .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -4132,6 +4201,28 @@ function getMilestoneClearingDurationRows(
         : [],
     );
   }
+  if (definition.name === "Job Completion") {
+    return files.flatMap((file) =>
+      isJobCompletionWorkflow(file)
+        ? effectivePaymentEntries([file])
+            .filter(
+              ({ file: entryFile, order }) =>
+                !isAdvancePaymentClearingRow(order) && isPaymentOrderActive(entryFile, order),
+            )
+            .map(({ file: entryFile, order }) => {
+              const commonStagePayment = isParentStagePaymentOrder(order);
+              return getMilestoneClearingDurationRow(
+                entryFile,
+                commonStagePayment ? getParentStageDeliveryPeriodDate(order) : getDeliveryPeriodDate(order),
+                commonStagePayment
+                  ? getParentStagePaymentDate(order, "jobCompletionDate")
+                  : order.jobCompletionDate,
+              );
+            })
+            .filter((row): row is MilestoneClearingDurationRow => Boolean(row))
+        : [],
+    );
+  }
   if (definition.name === "Bill preparation") {
     return files.flatMap((file) =>
       effectivePaymentEntries([file])
@@ -4187,15 +4278,12 @@ function getMilestoneClearingDurationRows(
     );
   }
   if (definition.name === "Supply Order") {
-    const definitionIndex = milestoneClearingDefinitions.indexOf(definition);
     return files.flatMap((file) =>
       rawSupplyOrders(file)
         .map((order) =>
           getMilestoneClearingDurationRow(
             file,
-            isYes(file.tcec)
-              ? getPreviousApplicableMilestoneCompletionDate(file, definitionIndex, order.soDate)
-              : order.financialSanctionDate,
+            isYes(file.tcec) ? file.cncApprovalDate : order.financialSanctionDate,
             order.soDate,
           ),
         )
@@ -4264,10 +4352,18 @@ function getPreviousApplicableMilestoneCompletionDate(
   const currentEndTime = parseLocalDateTime(currentEndDate ?? "");
   if (currentEndTime === undefined) return file.receivedDate;
   const candidates = [file.receivedDate];
-  for (let previousIndex = 0; previousIndex < index; previousIndex++) {
-    const previous = milestoneClearingDefinitions[previousIndex];
-    if (!isMilestoneClearingDefinitionApplicable(file, previous)) continue;
-    const previousEndDate = previous.getEndDate?.(file);
+  const supplyOrderIndex = milestoneClearingDefinitions.findIndex(
+    (definition) => definition.name === "Supply Order",
+  );
+  const fileMilestones = milestoneClearingDefinitions.slice(
+    0,
+    supplyOrderIndex < 0 ? milestoneClearingDefinitions.length : supplyOrderIndex,
+  );
+  for (let candidateIndex = 0; candidateIndex < fileMilestones.length; candidateIndex++) {
+    if (candidateIndex === index) continue;
+    const candidate = fileMilestones[candidateIndex];
+    if (!isMilestoneClearingDefinitionApplicable(file, candidate)) continue;
+    const previousEndDate = candidate.getEndDate?.(file);
     const previousEndTime = parseLocalDateTime(previousEndDate ?? "");
     if (previousEndTime === undefined || previousEndTime > currentEndTime) continue;
     candidates.push(previousEndDate);
@@ -4286,6 +4382,11 @@ function getBillPreparationStartDate(file: FileRecord, order: SupplyOrderDetail)
     return isParentStagePaymentOrder(order)
       ? getParentStagePaymentDate(order, "irReceiptDate")
       : order.irReceiptDate;
+  }
+  if (isJobCompletionWorkflow(file)) {
+    return isParentStagePaymentOrder(order)
+      ? getParentStagePaymentDate(order, "jobCompletionDate")
+      : order.jobCompletionDate;
   }
   if (
     isParentStagePaymentOrder(order) &&
@@ -4689,41 +4790,45 @@ const milestoneClearingDefinitions = [
   },
   {
     name: "GeM Undertaking",
-    getEndDate: (file: FileRecord) => file.gemUndertakingDate,
+    getEndDate: (file: FileRecord) => getGeMUndertakingEndDate(file),
     applies: (file: FileRecord) =>
       isYes(file.gem) &&
-      (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
-      hasFilledString(file.cfaDate),
+      (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
+  },
+  {
+    name: "RFP Vetting",
+    getEndDate: (file: FileRecord) => file.rfpVettingApprovalDate,
+    applies: (file: FileRecord) => isYes(file.rfpVetting),
   },
   {
     name: "Bidding",
-    getEndDate: (file: FileRecord) =>
-      isYes(file.tcec)
-        ? isYes(file.refloat)
-          ? file.refloatPostTcecDate
-          : file.postTcecDate
-        : getEffectiveBidOpeningDate(file),
+    getEndDate: (file: FileRecord) => getMilestoneClearingBiddingEndDate(file),
     applies: (file: FileRecord) =>
       isBiddingApplicableForFile(file) &&
-      isYes(file.biddingStageOver) &&
-      hasFilledString(file.cfaDate) &&
-      (!isYes(file.gem) || hasFilledString(file.gemUndertakingDate)),
+      (!isYes(file.tcec) || isYes(file.biddingStageOver)),
   },
   {
     name: "Non-TCEC Technical Evaluation",
-    getEndDate: () => undefined,
+    getEndDate: (file: FileRecord) => getNonTcecTechnicalEvaluationEndDate(file),
     applies: (file: FileRecord) =>
-      !isYes(file.tcec) && isBiddingApplicableForFile(file) && isYes(file.biddingStageOver),
+      !isYes(file.tcec) &&
+      isBiddingApplicableForFile(file),
   },
   {
     name: "Post-TCEC",
-    getStartDate: (file: FileRecord) => getTcecMeetingDate(file, "post"),
-    getEndDate: (file: FileRecord) => getTcecMinutesDate(file, "post"),
+    getStartDate: (file: FileRecord) => file.postTcecDate,
+    getEndDate: (file: FileRecord) => file.postTcecMinutesDate,
     applies: (file: FileRecord) => isYes(file.tcec),
   },
   {
+    name: "Refloat Post-TCEC",
+    getStartDate: (file: FileRecord) => file.refloatPostTcecDate,
+    getEndDate: (file: FileRecord) => file.refloatPostTcecMinutesDate,
+    applies: (file: FileRecord) => isYes(file.tcec) && isYes(file.refloat),
+  },
+  {
     name: "CNC",
-    getStartDate: (file: FileRecord) => file.cncDate,
+    getStartDate: (file: FileRecord) => file.postTcecMinutesDate,
     getEndDate: (file: FileRecord) => file.cncApprovalDate,
     applies: (file: FileRecord) => isYes(file.tcec),
   },
@@ -4736,6 +4841,10 @@ const milestoneClearingDefinitions = [
     name: "Supply Order",
     getStartDate: (file: FileRecord) => file.cfaDate,
     getEndDate: getFirstSoDate,
+  },
+  {
+    name: "Job Completion",
+    applies: (file: FileRecord) => isJobCompletionWorkflow(file),
   },
   {
     name: "IR Preparation",
@@ -5846,6 +5955,39 @@ function getEarliestSupplyOrderDate(file: FileRecord, key: keyof SupplyOrderDeta
     .sort((a, b) => a.localeCompare(b))[0];
 }
 
+function getNonTcecTechnicalEvaluationDurationRows(file: FileRecord) {
+  const rows: MilestoneClearingDurationRow[] = [];
+  const firstCycleEndDate = isYes(file.refloat)
+    ? file.refloatRecommendationDate
+    : getEarliestSupplyOrderDate(file, "financialSanctionDate");
+  const firstCycleRow = isYes(file.biddingStageOver)
+    ? getMilestoneClearingDurationRow(file, file.bidOpeningDate, firstCycleEndDate)
+    : undefined;
+  if (firstCycleRow) rows.push(firstCycleRow);
+
+  if (
+    isYes(file.refloat) &&
+    hasFilledString(file.refloatBidOpeningDate) &&
+    isYes(file.refloatBiddingStageOver)
+  ) {
+    const secondCycleRow = getMilestoneClearingDurationRow(
+      file,
+      file.refloatBidOpeningDate,
+      getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+    );
+    if (secondCycleRow) rows.push(secondCycleRow);
+  }
+  return rows;
+}
+
+function getNonTcecTechnicalEvaluationEndDate(file: FileRecord) {
+  if (isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)) {
+    return getEarliestSupplyOrderDate(file, "financialSanctionDate");
+  }
+  if (isYes(file.refloat)) return file.refloatRecommendationDate;
+  return getEarliestSupplyOrderDate(file, "financialSanctionDate");
+}
+
 function isPaymentPending(file: FileRecord) {
   return getFinancePaymentLiabilityEntries([file]).some((entry) => entry.pending);
 }
@@ -5923,7 +6065,7 @@ function isFlexiblePreControlMilestone(
 function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
   if (milestone.key === "bidding") return isYes(file.biddingStageOver);
   if (milestone.key === "refloatBidding") {
-    return isYes(file.refloat) && isYes(file.biddingStageOver);
+    return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
   }
   return hasMilestoneDate(file, milestone.current);
 }
@@ -6019,8 +6161,12 @@ function isRefloatBiddingInProgressFile(file: FileRecord) {
     isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
     hasFilledString(file.refloatBiddingDate) &&
-    !isYes(file.biddingStageOver)
+    !isRefloatBiddingStageComplete(file)
   );
+}
+
+function isRefloatBiddingStageComplete(file: FileRecord) {
+  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidDate(file: FileRecord) {
@@ -6029,6 +6175,85 @@ function getEffectiveBidDate(file: FileRecord) {
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
   return isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+}
+
+function getRfpVettingStartDate(file: FileRecord) {
+  const gemUndertakingApplies =
+    isYes(file.gem) &&
+    (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
+    hasFilledString(file.cfaDate);
+  return gemUndertakingApplies ? file.gemUndertakingDate : file.cfaDate;
+}
+
+function getGeMUndertakingEndDate(file: FileRecord) {
+  if (
+    !isYes(file.tcec) &&
+    isYes(file.refloat) &&
+    hasFilledString(file.refloatRecommendationDate) &&
+    hasFilledString(file.refloatGemUndertakingDate)
+  ) {
+    return file.refloatGemUndertakingDate;
+  }
+  return file.gemUndertakingDate;
+}
+
+function getMilestoneClearingBiddingStartDate(file: FileRecord) {
+  if (isYes(file.refloat) && isYes(file.tcec)) {
+    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
+  }
+  if (!isYes(file.tcec)) return file.cfaDate;
+  if (!hasFilledString(file.cfaDate)) return undefined;
+  const gemUndertakingApplies =
+    isYes(file.gem) &&
+    (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison";
+  if (gemUndertakingApplies && !hasFilledString(file.gemUndertakingDate)) return undefined;
+  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingApprovalDate)) return undefined;
+  const candidates = [
+    file.cfaDate,
+    gemUndertakingApplies ? file.gemUndertakingDate : undefined,
+    isYes(file.rfpVetting) ? file.rfpVettingApprovalDate : undefined,
+  ].filter((value): value is string => hasFilledString(value));
+  return candidates.sort(
+    (a, b) => (parseLocalDateTime(b) ?? 0) - (parseLocalDateTime(a) ?? 0),
+  )[0];
+}
+
+function getMilestoneClearingBiddingEndDate(file: FileRecord) {
+  if (!isYes(file.tcec)) {
+    return isYes(file.refloat) && hasFilledString(file.refloatBiddingDate)
+      ? file.refloatBiddingDate
+      : file.bidDate;
+  }
+  return isYes(file.refloat) ? file.refloatPostTcecDate : file.postTcecDate;
+}
+
+function getMilestoneClearingBiddingDurationRows(file: FileRecord) {
+  if (!isBiddingApplicableForFile(file)) return [];
+  if (!isYes(file.tcec)) {
+    const rows: MilestoneClearingDurationRow[] = [];
+    const normalRow = getMilestoneClearingDurationRow(file, file.cfaDate, file.bidDate);
+    if (normalRow) rows.push(normalRow);
+    if (
+      isYes(file.refloat) &&
+      isYes(file.biddingStageOver) &&
+      hasFilledString(file.refloatRecommendationDate)
+    ) {
+      const refloatRow = getMilestoneClearingDurationRow(
+        file,
+        file.refloatRecommendationDate,
+        file.refloatBiddingDate,
+      );
+      if (refloatRow) rows.push(refloatRow);
+    }
+    return rows;
+  }
+  if (!isYes(file.biddingStageOver)) return [];
+  const row = getMilestoneClearingDurationRow(
+    file,
+    getMilestoneClearingBiddingStartDate(file),
+    getMilestoneClearingBiddingEndDate(file),
+  );
+  return row ? [row] : [];
 }
 
 function isBidOverdue(file: FileRecord) {

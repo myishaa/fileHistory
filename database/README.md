@@ -53,6 +53,12 @@ psql "$DATABASE_URL" -f database/080_payment_timing_include.sql
 psql "$DATABASE_URL" -f database/081_actual_job_completion_date.sql
 psql "$DATABASE_URL" -f database/082_job_completion_received_date.sql
 psql "$DATABASE_URL" -f database/083_supply_order_runtime_schema.sql
+psql "$DATABASE_URL" -f database/084_shared_quick_access.sql
+psql "$DATABASE_URL" -f database/085_shared_quick_entry_excel_presets.sql
+psql "$DATABASE_URL" -f database/086_delay_status_default_days.sql
+psql "$DATABASE_URL" -f database/087_refloat_gem_undertaking_date.sql
+psql "$DATABASE_URL" -f database/088_refloat_recommendation_date.sql
+psql "$DATABASE_URL" -f database/089_refloat_bidding_stage_over.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.

@@ -390,7 +390,7 @@ function QuickEntryEditor() {
   return (
     <div className="space-y-4">
       <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="mb-4 flex items-start gap-3">
+        <div className="-mx-5 -mt-5 mb-4 flex items-start gap-3 rounded-t-md border-b border-border bg-primary/10 px-5 py-3">
           <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
             <ScanLine className="size-5 text-primary" />
           </div>
@@ -477,7 +477,7 @@ function QuickEntryEditor() {
       </section>
 
       <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="mb-4 flex items-start gap-3">
+        <div className="-mx-5 -mt-5 mb-4 flex items-start gap-3 rounded-t-md border-b border-border bg-primary/10 px-5 py-3">
           <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
             <FileText className="size-5 text-primary" />
           </div>
@@ -1254,6 +1254,8 @@ function getQuickStatusTimelineItems(file: FileRecord) {
     ["CFA sent", file.cfaSentDate],
     ["CFA approval", file.cfaDate],
     ["GeM undertaking", file.gemUndertakingDate],
+    ["Refloat GeM undertaking", file.refloatGemUndertakingDate],
+    ["Refloat recommendation", file.refloatRecommendationDate],
     ["RFP vetting initiation", file.rfpVettingInitiationDate],
     ["RFP vetting approval", file.rfpVettingApprovalDate],
     ["Pre-Bid Meeting", file.preBidMeetingDate],
@@ -1262,6 +1264,7 @@ function getQuickStatusTimelineItems(file: FileRecord) {
     ["Refloat Pre-Bid Meeting", file.refloatPreBidMeetingDate],
     ["Refloat bid date", file.refloatBiddingDate],
     ["Refloat bid opening", file.refloatBidOpeningDate],
+    ["Refloat Bidding Stage Over", file.refloatBiddingStageOver],
     ["Post-TCEC", file.postTcecDate],
     ["Post-TCEC minutes", file.postTcecMinutesDate],
     ["CNC", file.cncDate],
@@ -1329,6 +1332,8 @@ function getQuickEntryStageForLastFilledDate(file: FileRecord): QuickEntryDestin
     { title: "Approval block", date: file.cfaSentDate },
     { title: "Approval block", date: file.cfaDate },
     { title: "Bidding details", date: file.gemUndertakingDate },
+    { title: "Bidding details", date: file.refloatGemUndertakingDate },
+    { title: "Bidding details", date: file.refloatRecommendationDate },
     { title: "Bidding details", date: file.rfpVettingInitiationDate },
     { title: "Bidding details", date: file.rfpVettingApprovalDate },
     { title: "Bidding details", date: file.preBidMeetingDate },

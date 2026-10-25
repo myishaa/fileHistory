@@ -1,5 +1,7 @@
 import pg from "pg";
 
+process.env.TZ = "Asia/Kolkata";
+
 const { Pool } = pg;
 
 const connectionString = process.env.DATABASE_URL;
@@ -10,6 +12,7 @@ if (!connectionString) {
 
 export const pool = new Pool({
   connectionString,
+  options: "-c timezone=Asia/Kolkata",
   max: 30,
   connectionTimeoutMillis: 5000,
   idleTimeoutMillis: 30000,

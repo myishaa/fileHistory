@@ -58,6 +58,7 @@ import {
   X,
 } from "lucide-react";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { formatIndiaDate } from "@/lib/india-date";
 import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
 import { HelperContent } from "@/components/helper-content";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
@@ -273,8 +274,9 @@ const tcecDisabledKeys: FileKey[] = [
   "cncDate",
   "cncApprovalDate",
 ];
+const nonTcecDisabledKeys: FileKey[] = ["refloatRecommendationDate", "refloatBiddingStageOver"];
 
-const gemDisabledKeys: FileKey[] = ["gemUndertakingDate", "gemSoNo"];
+const gemDisabledKeys: FileKey[] = ["gemUndertakingDate", "refloatGemUndertakingDate", "gemSoNo"];
 const rfpVettingDisabledKeys: FileKey[] = ["rfpVettingInitiationDate", "rfpVettingApprovalDate"];
 const highValueDisabledKeys: FileKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
 const rqaDisabledKeys: FileKey[] = ["rqaApprovalDate"];
@@ -287,6 +289,9 @@ const refloatDisabledKeys: FileKey[] = [
   "refloatPreBidMeetingDate",
   "refloatBiddingDate",
   "refloatBidOpeningDate",
+  "refloatBiddingStageOver",
+  "refloatGemUndertakingDate",
+  "refloatRecommendationDate",
   "refloatPostTcecDate",
   "refloatPostTcecMinutesDate",
   "refloatPostTcecCommitteeNo",
@@ -341,6 +346,7 @@ const searchFilterHelpers = {
     "For a specific year, date, value, firm, or status, use the matching filter.",
   ],
   filters: [
+    "Purpose: Narrows Search to files that meet every selected filter condition.",
     "Search results count unique files. A file appears once even if several of its S.O.s, payments, stages, or dates match the selected filters.",
     "A Dashboard or Report click-through can bring its filters here with it.",
     "Reset filters clears selected conditions and filters brought in from another page.",
@@ -349,7 +355,6 @@ const searchFilterHelpers = {
     "Exclude means no date is recorded when the range is blank, or that dated activity falls outside the range when a range is entered.",
     "Date range boundaries are inclusive. For repeated activity, Exclude matches only when no dated instance falls inside the range and at least one falls outside it.",
     "With no range, Include/Exclude still checks whether a date is filled. Click the selected choice again to clear it.",
-    "When several filters are set, a file must match every selected condition.",
   ],
   year: [
     "Narrows the Global Filter results to files started in the selected FY.",
@@ -377,12 +382,14 @@ const searchFilterHelpers = {
     "All S.O. value bands are included unless a band is selected; the limits match Dashboard Analytics.",
     "A file can have more than one S.O.",
     "Choose Capital or Revenue to limit which part of each S.O. value is checked.",
+    "A zero S.O. value does not match a value band.",
   ],
   paymentCriteria: [
     "These filters check individual payment records, not just one value per file.",
     "A file can match through an S.O., a stage, an advance, or an LD record.",
     "Paid amounts include regular, stage, advance, and supplementary payments.",
     "One file may match more than one payment filter.",
+    "For physical delivery with inspection, Material Receipt can trigger payment follow-up. Goods & Services without inspection use Job Completion Received Date; Contract files can use D.P./Revised D.P. or an earlier Job Completion Received Date.",
   ],
   description: [
     "Demand Description matches the text entered here.",
@@ -472,93 +479,67 @@ const searchFilterHelpers = {
   ],
 } satisfies Record<string, string[]>;
 type SearchHelperExamples = {
-  title: string;
   items: string[];
 };
 const searchFilterExamples: Record<string, SearchHelperExamples> = {
   "Value help": {
-    title: "Value examples",
     items: [
-      "Demand value 8 lakh: the file appears in the matching demand value band.",
-      "Capital checked only: only demand capital value is considered.",
-      "Revenue checked only: only demand revenue value is considered.",
-      "Capital and Revenue checked together: either side can make the file match.",
-      "Checks demand value, not S.O. value.",
+      "Example table: Demand values | Selected component/range | Result",
+      "Example row: Capital ₹8 lakh; Revenue ₹2 lakh | Capital only; ₹5–10 lakh | Included because Capital is in range.",
+      "Example row: Capital ₹8 lakh; Revenue ₹2 lakh | Revenue only; ₹5–10 lakh | Excluded because Revenue is ₹2 lakh; Capital is not considered.",
     ],
   },
   "S.O. Value help": {
-    title: "S.O. value examples",
     items: [
-      "One file has S.O.s of 6 lakh and 35 lakh: the file can match either selected S.O. value band.",
-      "S.O. value is checked order by order, not by adding all S.O.s in the file.",
-      "Capital checked only: only S.O. capital value is considered.",
-      "Revenue checked only: only S.O. revenue value is considered.",
-      "A zero S.O. value is not treated as a useful value-band match.",
+      "Example table: S.O. values | Selected component/range | Result",
+      "Example row: S.O. 1: ₹6 lakh; S.O. 2: ₹35 lakh | Capital; ₹5–10 lakh | File matches through S.O. 1; orders are tested separately, not summed.",
+      "Example row: S.O. 1: Capital ₹6 lakh; Revenue blank | Revenue; ₹5–10 lakh | This S.O. does not match because its selected Revenue side is blank.",
     ],
   },
   "Payment criteria help": {
-    title: "Payment examples",
     items: [
-      "Main bill payment pending: a file can match because final Payment Date is blank.",
-      "Physical delivery/inspection cases become payable after material receipt.",
-      "Goods & Services where IR is No become payable after the Job Completion Received Date.",
-      "File Types configured as Group B (Contract) can become payable from D.P./Revised D.P.; the Job Completion Received Date can also trigger payment pending if service is completed earlier.",
-      "Stage payment pending: a file can match because a stage payment row is incomplete.",
-      "Advance payment pending: a file can match because an advance payment row is incomplete.",
-      "Returned bill pending: a file can match because returned bill resubmission/payment is still open.",
-      "One file may match more than one payment condition.",
+      "Example table: Workflow | Recorded dates/status | Filter interpretation",
+      "Example row: Inspection applies, IR = Yes | D.P.: 30 Oct; Material Receipt blank; today: 23 Oct | Delivery/payment follow-up can remain pending; the D.P. has not expired.",
+      "Example row: Goods & Services, IR = No | Job Completion Received: 22 Oct; Actual Job Completion blank | Received date can trigger payment timing; actual completion remains a distinct date.",
+      "Example row: Returned bill | Sent: 1 May; returned: 5 May; resubmitted: 15 May; paid: 20 May | Returned/resubmitted filters inspect the bill cycle; payment filters inspect payment status/date.",
     ],
   },
   "Approval Dates help": {
-    title: "Approval date examples",
     items: [
-      "Pre-TCEC date filter checks Pre-TCEC date only; Post-TCEC is not mixed into it.",
-      "Post-TCEC date filter checks normal Post-TCEC and Refloat Post-TCEC date.",
-      "Pre-Bid date filter checks normal Pre-Bid and Refloat Pre-Bid date where applicable.",
-      "CNC date filter checks CNC Date; CNC Approval Date must be filtered separately.",
-      "Active files selected: File Closed, Cancelled demand, and all-S.O.-cancelled files are normally hidden.",
-      "All files selected: those inactive files can appear if their selected approval/date field matches.",
-      "A file can match a date range because of one relevant date even if other approval dates are blank.",
+      "Example table: Selected filter | Dates on file | Result",
+      "Example row: CNC Date, range 1–10 Jun | CNC Date: 8 Jun; CNC Approval Date: 15 Jun | Included by CNC Date; approval date is a separate filter.",
+      "Example row: Post-TCEC date, range 1–10 Jun | Normal Post-TCEC blank; Refloat Post-TCEC: 7 Jun | Included because this date filter checks the refloat round too.",
     ],
   },
   "BG, Payment & Closure Dates help": {
-    title: "BG/payment date examples",
     items: [
-      "Payment date filter can match main, stage, advance, or supplementary payment dates.",
-      "Bill sent/submitted date can match original bill submission or returned-bill resubmission.",
-      "BG receipt date does not automatically mean BG return date is filled.",
-      "File Closure Date is separate from payment date and BG return date.",
-      "A specific date filter matches only the named activity date.",
+      "Example table: Selected date filter | Recorded dates | Result",
+      "Example row: Payment date | Stage paid 20 May; main payment blank | Matches through the stage payment.",
+      "Example row: Bill sent/submitted date | Original sent 1 May; resubmitted 15 May | Can match the resubmission date.",
+      "Example row: BG return date | BG received 10 May; return blank | Does not match; receipt and return are separate.",
     ],
   },
   "D.P. period help": {
-    title: "D.P. examples",
     items: [
-      "Original D.P. within range: the file can match even if revised D.P. is blank.",
-      "Revised D.P. within range: the file can match through the revised date where applicable.",
-      "D.P. expired means the D.P. date has passed; it does not by itself prove delivery/job completion.",
-      "Material Receipt Date and Job Completion Received Date are separate filters.",
-      "Actual Job Completion Date is separately searchable and can match an S.O. or delivery-stage date.",
+      "Example table: Dates | Selected filter | Result",
+      "Example row: Original D.P.: 10 Aug; Revised D.P.: 20 Aug; Material Receipt: 18 Aug | Revised D.P. | Matches the revised-date range; the receipt date is a separate event.",
+      "Example row: D.P.: 10 Aug; Actual Job Completion: 5 Aug | D.P. expiry | D.P. is expired, but this alone does not establish completion or non-completion.",
     ],
   },
   "Firm help": {
-    title: "Firm examples",
     items: [
-      "BQ selected: firm is searched in BQ firm rows.",
-      "Invited selected: firm is searched in invited firm rows.",
-      "Bidders selected: firm is searched in bidder rows.",
-      "S.O. selected: firm is searched in S.O. firm rows, including cancelled or shortclosed S.O. history where applicable.",
-      "The selected firm's exact Unique No. is matched. Older records with no Unique No. can match the exact firm name.",
-      "City and Contact No. are independent filters.",
+      "Example table: Scope selected | Firm appears in | Result",
+      "Example row: BQ | BQ firm row only | File matches through its BQ firm.",
+      "Example row: S.O. | S.O. firm row on a cancelled order | Historical firm match can appear when the selected file scope permits it.",
     ],
   },
   "Closure & cancellation help": {
-    title: "Closure examples",
     items: [
-    "File Closed set to Include: closed files can appear even if Global filter is Active files.",
-    "Cancelled S.O. set to Include: files with cancelled S.O. history can appear even if active-file filtering would normally hide them.",
-    "Shortclosed S.O. set to Include: files having shortclosed S.O.s are shown.",
-      "All options set to None: normal Global filter behavior remains unchanged.",
+      "Example table: File S.O.s | Cancelled S.O. filter | Result",
+      "Example row: S.O. 1 cancelled; S.O. 2 active | Include | File appears because it has cancelled S.O. history; its active order is retained.",
+      "Example row: All S.O.s cancelled | Exclude | File is removed only when every S.O. is cancelled.",
+      "Example row: Closed file | File Closed = Include | Can appear even when Global Filter is Active files.",
+      "Example row: Any file | All choices = None | Global Filter governs scope as usual.",
     ],
   },
 };
@@ -912,7 +893,9 @@ const delayStatusMilestoneLabels: Record<string, string> = {
   billReturnedForCorrection: "Returned Bills",
   supplementaryBillReturnedForCorrection: "Supplementary bill returned for correction",
   payment: "Payment",
-  paymentPreSubmission: "Payment cycle (ASL)",
+  paymentPreSubmission: "Payment cycle (ASL, bill trigger to bill submission)",
+  paymentPostSubmission: "Payment cycle (PCDA, bill submission to payment)",
+  paymentCumulative: "Payment cycle (ASL+PCDA, bill trigger to payment)",
 };
 const biddingDelayMilestoneKey = "bidding";
 const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
@@ -926,6 +909,7 @@ const defaultNoKeys: FileKey[] = [
   "refloatPreBidMeeting",
   "rst",
   "biddingStageOver",
+  "refloatBiddingStageOver",
   "demandCancelled",
   "soCancelled",
 ];
@@ -1197,6 +1181,7 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
     fields: [
       { key: "gemBiddingMode", label: "GeM Bidding Mode", options: defaultGemBiddingModeOptions },
       { key: "gemUndertakingDate", label: "GeM undertaking date", type: "date" },
+      { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
       { key: "preBidMeeting", label: "Pre-Bid Meeting (Yes/No)", options: yesNo },
@@ -1211,6 +1196,8 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "refloatPreBidMeetingDate", label: "Refloat Pre-Bid Meeting date", type: "date" },
       { key: "refloatBiddingDate", label: "Refloat bidding date", type: "date" },
       { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
+      { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over", options: yesNo },
+      { key: "refloatRecommendationDate", label: "Refloat recommendation", type: "date" },
       { key: "rst", label: "RST (Yes/No)", options: yesNo },
       { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
       { key: "cncDate", label: "CNC date", type: "date" },
@@ -5425,6 +5412,8 @@ const snapshotBiddingKeys = [
   "gem",
   "gemBiddingMode",
   "gemUndertakingDate",
+  "refloatGemUndertakingDate",
+  "refloatRecommendationDate",
   "rfpVetting",
   "rfpVettingInitiationDate",
   "rfpVettingApprovalDate",
@@ -6146,7 +6135,6 @@ function HelperLabel({
 function SearchHelper({ items, label }: { items: string[]; label: string }) {
   const bullets = splitHelperText(items);
   const examples = searchFilterExamples[label];
-  const [showExamples, setShowExamples] = useState(false);
   return (
     <TooltipProvider delayDuration={150}>
       <Tooltip>
@@ -6163,37 +6151,9 @@ function SearchHelper({ items, label }: { items: string[]; label: string }) {
         <TooltipContent
           side="right"
           align="start"
-          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+          className="w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
-          <div
-            className={
-              showExamples
-                ? "grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,1fr)]"
-                : "space-y-3"
-            }
-          >
-            <div className="space-y-3">
-              <HelperContent lines={bullets} />
-              {examples ? (
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setShowExamples((current) => !current)}
-                    className="rounded border border-primary/40 bg-background px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10"
-                    aria-expanded={showExamples}
-                  >
-                    {showExamples ? "Hide examples" : "Examples"}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            {examples && showExamples ? (
-              <div className="rounded-md border border-border bg-background p-3 text-popover-foreground shadow-sm">
-                <div className="mb-2 font-semibold">{examples.title}</div>
-                <HelperContent lines={splitHelperText(examples.items)} />
-              </div>
-            ) : null}
-          </div>
+          <HelperContent lines={[...bullets, ...(examples ? splitHelperText(examples.items) : [])]} />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -6690,7 +6650,9 @@ function EditModal({
         patch.exchangeRate = "1";
       }
       if (key === "refloat" && isYes(value)) {
-        patch.biddingStageOver = "No";
+        // Keep the first-cycle flag for Non-TCEC refloats; the second cycle
+        // has its own Refloat Bidding Stage Over field.
+        if (!isNo(current.tcec)) patch.biddingStageOver = "No";
         patch.bidOpened = "NO";
       }
       if (key === "biddingStageOver" && isYes(value)) {
@@ -6795,6 +6757,7 @@ function EditModal({
                         field.key === "year" ||
                         field.key === "tenderLive" ||
                         (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
+                        (!isNo(formWithLockedYear.tcec) && nonTcecDisabledKeys.includes(field.key)) ||
                         (gemIsNo && gemDisabledKeys.includes(field.key)) ||
                         (highValueIsNo && highValueDisabledKeys.includes(field.key)) ||
                         (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
@@ -7026,6 +6989,8 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
       rst: "No",
       biddingStageOver: "No",
     };
@@ -7078,10 +7043,18 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       cncApprovalDate: "",
     };
   }
+  if (!isNo(next.tcec)) {
+    next = {
+      ...next,
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
+    };
+  }
   if (isNo(next.gem)) {
     next = {
       ...next,
       gemUndertakingDate: "",
+      refloatGemUndertakingDate: "",
       gemSoNo: "",
     };
   }
@@ -7161,6 +7134,9 @@ function applyConditionalRules(form: Record<FileKey, string>) {
       refloatPreBidMeetingDate: "",
       refloatBiddingDate: "",
       refloatBidOpeningDate: "",
+      refloatGemUndertakingDate: "",
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
@@ -7192,6 +7168,7 @@ function applyConditionalRules(form: Record<FileKey, string>) {
     next = {
       ...next,
       bidOpened: "NO",
+      biddingStageOver: isYes(next.refloat) && isNo(next.tcec) ? next.biddingStageOver : "No",
     };
   }
   return next;
@@ -7870,7 +7847,7 @@ function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefin
     return isYes(file.biddingStageOver);
   }
   if (milestone.key === "refloatBidding") {
-    return isYes(file.refloat) && isYes(file.biddingStageOver);
+    return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
   }
   if (milestone.key === "financialSanction") {
     return matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
@@ -8013,8 +7990,12 @@ function isRefloatBiddingInProgressFile(file: FileRecord) {
     isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
     hasFilledString(file.refloatBiddingDate) &&
-    !isYes(file.biddingStageOver)
+    !isRefloatBiddingStageComplete(file)
   );
+}
+
+function isRefloatBiddingStageComplete(file: FileRecord) {
+  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -8610,25 +8591,6 @@ function getPaymentWorkflowStartDate(file: FileRecord, order: SupplyOrderDetail)
   return getNonInspectionPaymentDueDate(file, order);
 }
 
-function isPaymentPriorityDelayForContract(
-  file: FileRecord,
-  order: SupplyOrderDetail,
-  thresholdDays: number,
-) {
-  if (!isContractFileType(file) || hasDate(order.paymentDate)) return false;
-  if (isContractBillPreparationStarted(order)) return false;
-  const daysInPaymentStage = getDaysSinceDate(getPaymentWorkflowStartDate(file, order));
-  return daysInPaymentStage !== undefined && daysInPaymentStage > thresholdDays;
-}
-
-function isContractBillPreparationStarted(order: SupplyOrderDetail) {
-  return (
-    isJobCompletionDone(order) ||
-    hasDate(order.billPreparationDate) ||
-    hasDate(order.billSentForPaymentDate)
-  );
-}
-
 function isPaymentDue(file: FileRecord) {
   return isPaymentPending(file);
 }
@@ -9068,6 +9030,9 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
   const mainMatch = (() => {
     if (!milestone) return false;
     if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return false;
+    if (milestone.key === "postTcec" && (!isYes(file.tcec) || !isYes(file.biddingStageOver))) {
+      return false;
+    }
     if (isMilestoneComplete(file, milestone)) return false;
 
     const stageStartDate = getMilestoneStageStartDate(file, milestone);
@@ -9093,25 +9058,27 @@ function isBiddingDelayMatch(file: FileRecord, thresholdDays: number, breakupKey
 function getBiddingDelayStatus(file: FileRecord) {
   if (isCancelledFile(file) || isFileClosed(file)) return undefined;
   if (!isBiddingApplicableForFile(file)) return undefined;
-  if (!hasFilledString(file.cfaDate) || isYes(file.biddingStageOver)) return undefined;
-  const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
-  const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
-  const prerequisiteDoneDate =
-    latestDateValue([file.cfaDate, file.gemUndertakingDate, file.rfpVettingApprovalDate]) ??
-    file.cfaDate;
-  if (isYes(file.gem) && !hasFilledString(file.gemUndertakingDate)) {
+  const refloat = isYes(file.refloat);
+  const nonTcecRefloatRestart =
+    refloat &&
+    !isYes(file.tcec) &&
+    isYes(file.biddingStageOver) &&
+    hasFilledString(file.refloatRecommendationDate);
+  if (nonTcecRefloatRestart) {
+    if (hasFilledString(file.refloatBiddingDate)) return undefined;
+    return { key: "tenderLivePending", stageStartDate: file.refloatRecommendationDate };
+  }
+  if (refloat && !isYes(file.tcec)) return undefined;
+  if ((!refloat && !hasFilledString(file.cfaDate)) || (refloat && isYes(file.biddingStageOver))) return undefined;
+  const bidDate = refloat ? file.refloatBiddingDate : file.bidDate;
+  const bidOpeningDate = refloat ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  if (!refloat && hasFilledString(bidDate)) return undefined;
+  const prerequisiteDoneDate = refloat
+    ? getRefloatBiddingStartDate(file) ?? file.refloatBiddingDate
+    : file.cfaDate;
+  if (refloat && !hasFilledString(bidDate) && !prerequisiteDoneDate) return undefined;
+  if (!refloat && isYes(file.gem) && !hasFilledString(file.gemUndertakingDate)) {
     return { key: "gemUndertakingPending", stageStartDate: file.cfaDate };
-  }
-  const rfpStartDate = isYes(file.gem) ? file.gemUndertakingDate || file.cfaDate : file.cfaDate;
-  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingInitiationDate)) {
-    return { key: "rfpVettingInitiationPending", stageStartDate: rfpStartDate };
-  }
-  if (
-    isYes(file.rfpVetting) &&
-    hasFilledString(file.rfpVettingInitiationDate) &&
-    !hasFilledString(file.rfpVettingApprovalDate)
-  ) {
-    return { key: "rfpVettingApprovalPending", stageStartDate: file.rfpVettingInitiationDate };
   }
   if (!hasFilledString(bidDate)) {
     return { key: "tenderLivePending", stageStartDate: prerequisiteDoneDate };
@@ -9130,6 +9097,17 @@ function getBiddingDelayStatus(file: FileRecord) {
     };
   }
   return undefined;
+}
+
+function getRefloatBiddingStartDate(file: FileRecord) {
+  if (isYes(file.tcec)) {
+    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
+  }
+  if (!hasFilledString(file.bidOpeningDate)) return undefined;
+  return latestDateValue([
+    file.bidOpeningDate,
+    isYes(file.refloatPreBidMeeting) ? file.refloatPreBidMeetingDate : undefined,
+  ]);
 }
 
 function isSupplyOrderDrivenDelayMilestoneKey(key: string) {
@@ -9152,16 +9130,9 @@ function isOrderDelayStatusMatch(
     .filter((milestone) => selectedMilestoneKey === "all" || milestone.key === selectedMilestoneKey)
     .some((milestone) =>
       supplyOrderMilestoneRows(file, milestone.current).some((order) => {
-        const paymentPriorityDelay = isPaymentPriorityDelayForContract(file, order, thresholdDays);
         if (isSupplyOrderCancelled(file, order)) return false;
         if ("applies" in milestone && milestone.applies && !milestone.applies(file)) return false;
-        if (milestone.key === "jobCompletion" && paymentPriorityDelay) {
-          return false;
-        }
-        if (
-          !(milestone.key === "payment" && paymentPriorityDelay) &&
-          getOrderDelayCurrentMilestone(file, order, milestone.current) !== milestone.current
-        )
+        if (getOrderDelayCurrentMilestone(file, order, milestone.current) !== milestone.current)
           return false;
         if (hasDate(milestone.complete(order))) return false;
         const daysInStage = getDaysSinceDate(milestone.start(file, order));
@@ -9402,6 +9373,35 @@ function getMilestoneStageStartDate(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
+  if (milestone.key === "postTcec" || milestone.key === "refloatPostTcec") {
+    const refloatPostTcec = milestone.key === "refloatPostTcec";
+    const bidClosingDate = refloatPostTcec ? file.refloatBidOpeningDate : file.bidOpeningDate;
+    if (
+      !isYes(file.tcec) ||
+      !isYes(file.biddingStageOver) ||
+      (refloatPostTcec && !isYes(file.refloat)) ||
+      !hasDate(bidClosingDate)
+    ) {
+      return undefined;
+    }
+    const milestoneIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+    const cutoff = parseLocalDateTime(formatLocalDate(new Date()));
+    const candidates = [file.receivedDate].filter((date): date is string => {
+      const time = parseLocalDateTime(date ?? "");
+      return time !== undefined && (cutoff === undefined || time <= cutoff);
+    });
+    milestoneDefinitions.slice(0, milestoneIndex).forEach((candidate) => {
+      if (!isMilestoneApplicable(file, candidate) || !isMilestoneComplete(file, candidate)) return;
+      const date = candidate.key === "bidding"
+        ? file.bidOpeningDate
+        : candidate.key === "refloatBidding"
+          ? file.refloatBidOpeningDate
+          : getFieldDateValue(file, candidate.current);
+      const time = parseLocalDateTime(date ?? "");
+      if (date && time !== undefined && (cutoff === undefined || time <= cutoff)) candidates.push(date);
+    });
+    return latestDateValue(candidates);
+  }
   void milestone;
   return getLastFilledDateValue(file);
 }
@@ -9444,6 +9444,13 @@ function getDaysSinceDate(date: string | undefined) {
   const todayTime = parseLocalDateTime(formatLocalDate(new Date()));
   if (dateTime === undefined || todayTime === undefined) return undefined;
   return Math.floor((todayTime - dateTime) / 86_400_000);
+}
+
+function getDateDifference(from: string | undefined, to: string | undefined) {
+  const fromTime = parseLocalDateTime(from ?? "");
+  const toTime = parseLocalDateTime(to ?? "");
+  if (fromTime === undefined || toTime === undefined) return undefined;
+  return Math.round((toTime - fromTime) / 86_400_000);
 }
 
 function latestDateValue(values: Array<string | undefined>) {
@@ -10005,6 +10012,33 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const [, daysValue = "0", milestoneKey = "all"] = filter.split(":");
     return isDelayStatusMatch(file, getDelayThresholdDays(daysValue), milestoneKey);
   }
+  if (filter === "analyticsMilestoneClearing:nonTcecTechnicalEvaluation") {
+    if (!isBiddingApplicableForFile(file) || isYes(file.tcec)) return false;
+    const matchesPair = (startDate: string | undefined, endDate: string | undefined) => {
+      const duration = getDateDifference(startDate, endDate);
+      const cumulativeDuration = getDateDifference(file.receivedDate, endDate);
+      return (
+        duration !== undefined &&
+        duration >= 0 &&
+        cumulativeDuration !== undefined &&
+        cumulativeDuration >= 0
+      );
+    };
+    const firstCycleEnd = isYes(file.refloat)
+      ? file.refloatRecommendationDate
+      : getEarliestSupplyOrderDate(file, "financialSanctionDate");
+    if (isYes(file.biddingStageOver) && matchesPair(file.bidOpeningDate, firstCycleEnd)) {
+      return true;
+    }
+    return (
+      isYes(file.refloat) &&
+      isYes(file.refloatBiddingStageOver) &&
+      matchesPair(
+        file.refloatBidOpeningDate,
+        getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+      )
+    );
+  }
   if (filter.startsWith("biddingDelay:")) {
     const [, daysValue = "0", breakupKey = ""] = filter.split(":");
     return isBiddingDelayMatch(file, getDelayThresholdDays(daysValue), breakupKey);
@@ -10170,7 +10204,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const normalized = normalizeMilestoneName(milestone);
     if (normalized === "bankguarantee") return isBgReceived(file);
     if (normalized === "refloatbidding") {
-      return !isCancelledFile(file) && isYes(file.refloat) && isYes(file.biddingStageOver);
+      return !isCancelledFile(file) && isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (normalized === "refloatposttcec") {
       return (
@@ -10451,7 +10485,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(17));
     if (!milestone) return true;
     if (milestone.key === "refloatBidding") {
-      return isYes(file.refloat) && isYes(file.biddingStageOver);
+      return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (milestone.key === "refloatPostTcec") {
       return (
@@ -11143,6 +11177,31 @@ function getDestinationFocus(
   }
   if (dashboardFilter.startsWith("delayStatus:")) {
     const [, , milestoneKey = "all"] = dashboardFilter.split(":");
+    const supplyOrderFocusByMilestone: Record<string, string> = {
+      financialSanction: "financialsanction:pending",
+      supplyOrder: "supplyorder:pending",
+      psb: "psb:pending",
+      pwb: "pwb:pending",
+      psbPwb: "psbpwb:pending",
+      delivery: "delivery:pending",
+      jobCompletion: "jobcompletion:pending",
+      irPreparation: "irpreparation:pending",
+      irReceipt: "irreceipt:pending",
+      billPreparation: "billpreparation:pending",
+      billSentForPayment: "billsentforpayment:pending",
+      payment: "payment:pending",
+      paymentPostSubmission: "payment:pending",
+      paymentCumulative: "payment:pending",
+      advancePayment: "advancepayment:pending",
+    };
+    const supplyOrderFocusTarget = supplyOrderFocusByMilestone[milestoneKey];
+    if (supplyOrderFocusTarget) {
+      return {
+        section: "Supply order and payment",
+        milestone: undefined,
+        focusTarget: supplyOrderFocusTarget,
+      };
+    }
     if (milestoneKey === "paymentPreSubmission") {
       return {
         section: "Supply order and payment",
@@ -11159,6 +11218,26 @@ function getDestinationFocus(
         milestone: undefined,
         focusTarget: "supplementarybill:returned",
       };
+    }
+    const dateFieldFocusByMilestone: Record<string, { section: string; focusTarget: string }> = {
+      scrutiny: { section: "Scrutiny and control", focusTarget: "scrutinyCompletionDate" },
+      control: { section: "Scrutiny and control", focusTarget: "immsDate" },
+      controlling: { section: "Scrutiny and control", focusTarget: "immsDate" },
+      highValue: { section: "Approval block", focusTarget: "highValueMinutesDate" },
+      ad: { section: "Approval block", focusTarget: "adVettingDate" },
+      rqa: { section: "Approval block", focusTarget: "rqaApprovalDate" },
+      ifa: { section: "Approval block", focusTarget: "ifaFinalDate" },
+      cfa: { section: "Approval block", focusTarget: "cfaDate" },
+      gemUndertaking: { section: "Bidding details", focusTarget: "gemUndertakingDate" },
+      tcec: { section: "TCEC block", focusTarget: "preTcecMinutesDate" },
+      preTcec: { section: "TCEC block", focusTarget: "preTcecMinutesDate" },
+      postTcec: { section: "TCEC block", focusTarget: "postTcecMinutesDate" },
+      refloatPostTcec: { section: "TCEC block", focusTarget: "refloatPostTcecMinutesDate" },
+      cnc: { section: "Approval block", focusTarget: "cncApprovalDate" },
+    };
+    const dateFieldFocus = dateFieldFocusByMilestone[milestoneKey];
+    if (dateFieldFocus) {
+      return { section: dateFieldFocus.section, milestone: undefined, focusTarget: dateFieldFocus.focusTarget };
     }
     const milestone = delayStatusMilestoneLabels[milestoneKey] ??
       milestoneDefinitions.find((item) => item.key === milestoneKey)?.key;
@@ -11207,8 +11286,6 @@ function parseDestinationFocusTargets(value: string | undefined) {
 function getBiddingDelayFocusTarget(breakupKey: string) {
   const targets: Record<string, string> = {
     gemUndertakingPending: "gemUndertakingDate",
-    rfpVettingInitiationPending: "rfpVettingInitiationDate",
-    rfpVettingApprovalPending: "rfpVettingApprovalDate",
     tenderLivePending: "tenderLive",
     bidOpeningOverdue: "bidOpeningDate",
     biddingStageCompletionPending: "biddingStageOver",
@@ -12516,7 +12593,7 @@ async function downloadSearchList(
     format,
     title: reportContext.title,
     description: buildSearchExportDescription(reportContext, String(files.length), layout),
-    fileName: `${getExportFileName(reportContext.title)}-${new Date().toISOString().slice(0, 10)}.${format === "excel" ? "xlsx" : "pdf"}`,
+    fileName: `${getExportFileName(reportContext.title)}-${formatIndiaDate()}.${format === "excel" ? "xlsx" : "pdf"}`,
     tables: [
       {
         headers: table.headers,

@@ -100,9 +100,11 @@ const previousDefaultMmgLabels: Record<string, Record<string, string>> = {
   billSentForPaymentCompleted: {
     "Bill sent for payment completed": "Bills submitted for payment",
   },
-  paymentPending: { "Payment pending": "Files with payment pending" },
   supplementaryBillsSubmittedPaymentPending: {
     "Supplementary bills submitted total": "Supplementary bills submitted",
+  },
+  liveFilesPreviousYears: {
+    "Number of live files in filter": "Active files from previous years",
   },
 };
 
@@ -196,18 +198,9 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     label: "Financial Sanction cases pending",
     group: "Bidding and S.O.",
   },
-  { key: "soTotal", label: "S.O. total", group: "Bidding and S.O." },
   { key: "soPending", label: "S.O. pending", group: "Bidding and S.O." },
   { key: "soLive", label: "S.O. live", group: "Bidding and S.O." },
-  { key: "deliveriesDueThisMonth", label: "No. of deliveries due this month", group: "Delivery" },
-  {
-    key: "deliveriesCompletedThisMonth",
-    label: "No. of deliveries completed this month",
-    group: "Delivery",
-  },
   { key: "deliveryCompleted", label: "Delivery completed", group: "Delivery" },
-  { key: "deliveryPending", label: "Delivery pending", group: "Delivery" },
-  { key: "deliveryOverdue", label: "Delivery overdue", group: "Delivery" },
   { key: "deliveryPeriodValid", label: "Delivery Period valid", group: "Delivery" },
   { key: "deliveryPeriodExpired", label: "Delivery Period expired", group: "Delivery" },
   { key: "deliveryPeriodExtended", label: "Delivery Period extended", group: "Delivery" },
@@ -228,7 +221,6 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
     label: "Bills submitted for payment",
     group: "Payment",
   },
-  { key: "paymentPending", label: "Files with payment pending", group: "Payment" },
   {
     key: "totalPendingPaymentStagesCases",
     label: "Total pending payment stages/cases",
@@ -304,13 +296,12 @@ export const mmgSummaryFieldOptions: MmgSummaryFieldOption[] = [
   { key: "closedFilesThisYear", label: "Number of closed files", group: "Files" },
   {
     key: "liveFilesPreviousYears",
-    label: "Number of live files in filter",
+    label: "Active files from previous years",
     group: "Files",
   },
   { key: "cancelledDemands", label: "Cancelled demands", group: "Additional" },
   { key: "soCancelled", label: "S.O. cancelled", group: "Additional" },
   { key: "shortclosedSo", label: "Shortclosed S.O.", group: "Additional" },
-  { key: "deliveriesOverdue", label: "Deliveries overdue", group: "Additional" },
   { key: "paymentsOverdue", label: "Payments overdue", group: "Additional" },
   { key: "psbPending", label: "PSB pending", group: "Security/Warranty BG" },
   { key: "psbReceived", label: "PSB received", group: "Security/Warranty BG" },
@@ -590,10 +581,9 @@ function normalizeMmgSummaryFieldKey(key: string) {
 function getMmgSummaryValues(
   files: FileRecord[],
   divisions: Division[],
-  _previousYearFiles: FileRecord[],
+  previousYearFiles: FileRecord[],
   financialYear: string,
 ) {
-  void _previousYearFiles;
   const financialYearRange = getFinancialYearDateRange(financialYear);
   const allocatedCapital = divisions.reduce(
     (sum, division) => sum + (parseAmount(division.allocatedCapital) ?? 0),
@@ -661,6 +651,7 @@ function getMmgSummaryValues(
   const supplementaryBillPendingEntries = getSupplementaryBillEntries(
     rawOrders,
     isSupplementaryBillPaymentPending,
+    true,
   );
   const supplementaryBillReturnedEntries = getSupplementaryBillEntries(
     rawOrders,
@@ -669,6 +660,7 @@ function getMmgSummaryValues(
   const pendingReturnedSupplementaryBillEntries = getSupplementaryBillEntries(
     rawOrders,
     isSupplementaryBillReturned,
+    true,
   );
   const returnedSupplementaryBillResubmittedEntries = getSupplementaryBillEntries(
     rawOrders,
@@ -683,6 +675,9 @@ function getMmgSummaryValues(
     isReturnedSupplementaryBillPaid,
   );
   const liveFiles = files.filter((file) => !isCancelledDemand(file) && !isFileClosed(file));
+  const previousYearLiveFiles = previousYearFiles.filter(
+    (file) => !isCancelledDemand(file) && !isFileClosed(file),
+  );
   const closedFiles = nonCancelledFiles.filter(isFileClosed);
 
   const values: Record<string, string> = {
@@ -795,9 +790,6 @@ function getMmgSummaryValues(
     financialSanctionPending: formatCount(
       rawActiveOrders.filter(({ file, order }) => isFinancialSanctionPending(file, order)).length,
     ),
-    soTotal: formatCount(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)).length,
-    ),
     soPending: formatCount(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
         isSupplyOrderPendingOrder(file, order),
@@ -811,25 +803,6 @@ function getMmgSummaryValues(
           !isYes(order.noFurtherAction),
       ).length,
     ),
-    deliveriesDueThisMonth: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          monthMatches(getDeliveryPeriodDate(order), currentMonthKey) &&
-          !hasFilledString(order.materialReceiptDate),
-      ).length,
-    ),
-    deliveriesCompletedThisMonth: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? monthMatches(order.materialReceiptDate, currentMonthKey)
-            : isJobCompletionDone(order) &&
-              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
-      ).length,
-    ),
     deliveryCompleted: formatCount(
       orders.filter(
         ({ file, order }) =>
@@ -837,28 +810,6 @@ function getMmgSummaryValues(
           (isDeliveryInspectionApplicable(file)
             ? hasFilledString(order.materialReceiptDate)
             : isJobCompletionDone(order)),
-      ).length,
-    ),
-    deliveryPending: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          hasSupplyOrderDate(order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? !hasFilledString(order.materialReceiptDate)
-            : !isJobCompletionDone(order)) &&
-          hasFilledString(getDeliveryPeriodDate(order)),
-      ).length,
-    ),
-    deliveryOverdue: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          hasSupplyOrderDate(order) &&
-          !hasFilledString(order.materialReceiptDate) &&
-          hasFilledString(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)),
       ).length,
     ),
     deliveryPeriodValid: formatCount(
@@ -869,7 +820,7 @@ function getMmgSummaryValues(
     irPreparationPending: formatCount(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasSupplyOrderDate(order) &&
@@ -880,7 +831,7 @@ function getMmgSummaryValues(
     irReceiptPending: formatCount(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasFilledString(order.irPreparationDate) &&
@@ -915,7 +866,7 @@ function getMmgSummaryValues(
     billPreparationPending: formatCount(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasBillingWorkflowStarted(file, order) &&
           !hasFilledString(order.billPreparationDate),
       ).length,
@@ -929,7 +880,7 @@ function getMmgSummaryValues(
     billSentForPaymentPending: formatCount(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasFilledString(order.billPreparationDate) &&
           !hasFilledString(order.billSentForPaymentDate),
       ).length,
@@ -946,8 +897,9 @@ function getMmgSummaryValues(
       ).length,
     ),
     billsPendingCorrection: formatCount(
-      orders.filter(({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order))
-        .length,
+      orders.filter(
+        ({ file, order }) => isMmgFollowUpOrder(file, order) && hasOpenBillReturn(order),
+      ).length,
     ),
     billsResubmittedAfterCorrection: formatCount(
       orders.filter(
@@ -970,7 +922,6 @@ function getMmgSummaryValues(
     ),
     returnedSupplementaryBillsPaid: formatCount(returnedSupplementaryBillPaidEntries.length),
     supplementaryBillsPending: formatCount(supplementaryBillPendingEntries.length),
-    paymentPending: formatCount(entryFileIds(pendingPaymentEntries).length),
     totalPendingPaymentStagesCases: formatCount(pendingPaymentEntries.length),
     paymentCompleted: formatCount(
       paymentOrders.filter(
@@ -980,7 +931,7 @@ function getMmgSummaryValues(
     totalPaymentDueThisMonth: formatCount(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ).length,
@@ -996,7 +947,7 @@ function getMmgSummaryValues(
     paymentDueFromPreviousMonths: formatCount(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ).length,
@@ -1039,7 +990,9 @@ function getMmgSummaryValues(
       advancePaymentEntries.filter(({ order }) => isAdvancePaymentPaid(order)).length,
     ),
     advancePending: formatCount(
-      advancePaymentEntries.filter(({ order }) => isAdvancePaymentPending(order)).length,
+      advancePaymentEntries.filter(
+        ({ order }) => !isYes(order.noFurtherAction) && isAdvancePaymentPending(order),
+      ).length,
     ),
     advancePaymentCapital: formatMoney(
       advancePaymentEntries.reduce(
@@ -1055,7 +1008,7 @@ function getMmgSummaryValues(
     ),
     totalExpectedPaymentRemainingThisYear: formatMoney(
       sumOrders(files, ({ file, order }) =>
-        !isCancelledOrder(file, order) &&
+        isMmgFollowUpOrder(file, order) &&
         !hasPaymentDueCompletion(file, order) &&
         !hasFilledString(order.paymentDate)
           ? getOrderTotal(file, order)
@@ -1064,20 +1017,10 @@ function getMmgSummaryValues(
     ),
     liveFilesThisYear: formatCount(liveFiles.length),
     closedFilesThisYear: formatCount(closedFiles.length),
-    liveFilesPreviousYears: formatCount(liveFiles.length),
+    liveFilesPreviousYears: formatCount(previousYearLiveFiles.length),
     cancelledDemands: countFiles(files, isDemandCancelled),
     soCancelled: formatCount(countCancelledSupplyOrders(files)),
     shortclosedSo: formatCount(countShortclosedSupplyOrders(files)),
-    deliveriesOverdue: formatCount(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          Boolean(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)) &&
-          !hasFilledString(order.materialReceiptDate),
-      ).length,
-    ),
     paymentsOverdue: formatCount(entryFileIds(overduePaymentEntries).length),
     psbPending: formatCount(countBgPendingOrders(nonCancelledFiles, "psb")),
     psbReceived: formatCount(countBgReceivedOrders(nonCancelledFiles, "psb")),
@@ -1116,7 +1059,7 @@ function getMmgSummaryValues(
     totalUnpaidSoValue: formatMoney(
       paymentOrders.reduce(
         (sum, { file, order }) =>
-          !isCancelledOrder(file, order) && !hasFilledString(order.paymentDate)
+          isMmgFollowUpOrder(file, order) && !hasFilledString(order.paymentDate)
             ? sum + getPaymentCaseTotal(file, order)
             : sum,
         0,
@@ -1245,9 +1188,6 @@ function getMmgSummaryValues(
     financialSanctionPending: entryFileIds(
       rawActiveOrders.filter(({ file, order }) => isFinancialSanctionPending(file, order)),
     ),
-    soTotal: entryFileIds(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
-    ),
     soPending: entryFileIds(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
         isSupplyOrderPendingOrder(file, order),
@@ -1261,25 +1201,6 @@ function getMmgSummaryValues(
           !isYes(order.noFurtherAction),
       ),
     ),
-    deliveriesDueThisMonth: entryFileIds(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          monthMatches(getDeliveryPeriodDate(order), currentMonthKey) &&
-          !hasFilledString(order.materialReceiptDate),
-      ),
-    ),
-    deliveriesCompletedThisMonth: entryFileIds(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? monthMatches(order.materialReceiptDate, currentMonthKey)
-            : isJobCompletionDone(order) &&
-              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
-      ),
-    ),
     deliveryCompleted: entryFileIds(
       orders.filter(
         ({ file, order }) =>
@@ -1287,28 +1208,6 @@ function getMmgSummaryValues(
           (isDeliveryInspectionApplicable(file)
             ? hasFilledString(order.materialReceiptDate)
             : isJobCompletionDone(order)),
-      ),
-    ),
-    deliveryPending: entryFileIds(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          hasSupplyOrderDate(order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? !hasFilledString(order.materialReceiptDate)
-            : !isJobCompletionDone(order)) &&
-          hasFilledString(getDeliveryPeriodDate(order)),
-      ),
-    ),
-    deliveryOverdue: entryFileIds(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          hasSupplyOrderDate(order) &&
-          !hasFilledString(order.materialReceiptDate) &&
-          hasFilledString(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)),
       ),
     ),
     deliveryPeriodValid: entryFileIds(
@@ -1319,7 +1218,7 @@ function getMmgSummaryValues(
     irPreparationPending: entryFileIds(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasSupplyOrderDate(order) &&
@@ -1330,7 +1229,7 @@ function getMmgSummaryValues(
     irReceiptPending: entryFileIds(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasFilledString(order.irPreparationDate) &&
@@ -1365,7 +1264,7 @@ function getMmgSummaryValues(
     billPreparationPending: entryFileIds(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasBillingWorkflowStarted(file, order) &&
           !hasFilledString(order.billPreparationDate),
       ),
@@ -1379,7 +1278,7 @@ function getMmgSummaryValues(
     billSentForPaymentPending: entryFileIds(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasFilledString(order.billPreparationDate) &&
           !hasFilledString(order.billSentForPaymentDate),
       ),
@@ -1397,7 +1296,7 @@ function getMmgSummaryValues(
     ),
     billsPendingCorrection: entryFileIds(
       orders.filter(
-        ({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order),
+        ({ file, order }) => isMmgFollowUpOrder(file, order) && hasOpenBillReturn(order),
       ),
     ),
     billsResubmittedAfterCorrection: entryFileIds(
@@ -1419,7 +1318,6 @@ function getMmgSummaryValues(
     ),
     returnedSupplementaryBillsPaid: entryFileIds(returnedSupplementaryBillPaidEntries),
     supplementaryBillsPending: entryFileIds(supplementaryBillPendingEntries),
-    paymentPending: entryFileIds(pendingPaymentEntries),
     totalPendingPaymentStagesCases: entryFileIds(pendingPaymentEntries),
     paymentCompleted: entryFileIds(
       paymentOrders.filter(
@@ -1429,7 +1327,7 @@ function getMmgSummaryValues(
     totalPaymentDueThisMonth: entryFileIds(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ),
@@ -1445,7 +1343,7 @@ function getMmgSummaryValues(
     paymentDueFromPreviousMonths: entryFileIds(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ),
@@ -1470,27 +1368,19 @@ function getMmgSummaryValues(
       advancePaymentEntries.filter(({ order }) => isAdvancePaymentPaid(order)),
     ),
     advancePending: entryFileIds(
-      advancePaymentEntries.filter(({ order }) => isAdvancePaymentPending(order)),
+      advancePaymentEntries.filter(
+        ({ order }) => !isYes(order.noFurtherAction) && isAdvancePaymentPending(order),
+      ),
     ),
     liveFilesThisYear: fileIds(liveFiles),
     closedFilesThisYear: fileIds(closedFiles),
-    liveFilesPreviousYears: fileIds(liveFiles),
+    liveFilesPreviousYears: fileIds(previousYearLiveFiles),
     cancelledDemands: fileIds(files.filter(isDemandCancelled)),
     soCancelled: entryFileIds(
       rawOrderEntries(files).filter(({ order }) => isYes(order.soCancelled)),
     ),
     shortclosedSo: entryFileIds(
       rawOrderEntries(files).filter(({ order }) => isYes(order.shortclosure)),
-    ),
-    deliveriesOverdue: entryFileIds(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          Boolean(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)) &&
-          !hasFilledString(order.materialReceiptDate),
-      ),
     ),
     paymentsOverdue: entryFileIds(overduePaymentEntries),
     psbPending: entryFileIds(
@@ -1599,11 +1489,6 @@ function getMmgSummaryValues(
       "financialsanction",
       "pending",
     ),
-    soTotal: entryFocusTargets(
-      rawActiveOrders.filter(({ file, order }) => isSupplyOrderTabComplete(file, order)),
-      "supplyorder",
-      "any",
-    ),
     soPending: entryFocusTargets(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
         isSupplyOrderPendingOrder(file, order),
@@ -1614,33 +1499,12 @@ function getMmgSummaryValues(
     soLive: entryFocusTargets(
       rawActiveOrders.filter(
         ({ file, order }) =>
-          isSupplyOrderTabComplete(file, order) && !hasFilledString(order.paymentDate),
+          isSupplyOrderTabComplete(file, order) &&
+          !hasFilledString(order.paymentDate) &&
+          !isYes(order.noFurtherAction),
       ),
       "supplyorder",
       "live",
-    ),
-    deliveriesDueThisMonth: entryFocusTargets(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          monthMatches(getDeliveryPeriodDate(order), currentMonthKey) &&
-          !hasFilledString(order.materialReceiptDate),
-      ),
-      "deliveryperiod",
-      "pending",
-    ),
-    deliveriesCompletedThisMonth: entryFocusTargets(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? monthMatches(order.materialReceiptDate, currentMonthKey)
-            : isJobCompletionDone(order) &&
-              monthMatches(getDeliveryPeriodDate(order), currentMonthKey)),
-      ),
-      "delivery",
-      "completed",
     ),
     deliveryCompleted: entryFocusTargets(
       orders.filter(
@@ -1652,32 +1516,6 @@ function getMmgSummaryValues(
       ),
       "delivery",
       "completed",
-    ),
-    deliveryPending: entryFocusTargets(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          hasSupplyOrderDate(order) &&
-          (isDeliveryInspectionApplicable(file)
-            ? !hasFilledString(order.materialReceiptDate)
-            : !isJobCompletionDone(order)) &&
-          hasFilledString(getDeliveryPeriodDate(order)),
-      ),
-      "delivery",
-      "pending",
-    ),
-    deliveryOverdue: entryFocusTargets(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          hasSupplyOrderDate(order) &&
-          !hasFilledString(order.materialReceiptDate) &&
-          hasFilledString(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)),
-      ),
-      "delivery",
-      "overdue",
     ),
     deliveryPeriodValid: entryFocusTargets(
       orders.filter(({ file, order }) => isValidDeliveryPeriodEntry(file, order)),
@@ -1693,7 +1531,7 @@ function getMmgSummaryValues(
     irPreparationPending: entryFocusTargets(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasSupplyOrderDate(order) &&
@@ -1706,7 +1544,7 @@ function getMmgSummaryValues(
     irReceiptPending: entryFocusTargets(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           isDeliveryInspectionApplicable(file) &&
           isYes(file.ir) &&
           hasFilledString(order.irPreparationDate) &&
@@ -1749,7 +1587,7 @@ function getMmgSummaryValues(
     billPreparationPending: entryFocusTargets(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasBillingWorkflowStarted(file, order) &&
           !hasFilledString(order.billPreparationDate),
       ),
@@ -1767,7 +1605,7 @@ function getMmgSummaryValues(
     billSentForPaymentPending: entryFocusTargets(
       orders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           hasFilledString(order.billPreparationDate) &&
           !hasFilledString(order.billSentForPaymentDate),
       ),
@@ -1791,7 +1629,7 @@ function getMmgSummaryValues(
     ),
     billsPendingCorrection: entryFocusTargets(
       orders.filter(
-        ({ file, order }) => !isCancelledOrder(file, order) && hasOpenBillReturn(order),
+        ({ file, order }) => isMmgFollowUpOrder(file, order) && hasOpenBillReturn(order),
       ),
       "billreturnedforcorrection",
       "pending",
@@ -1845,7 +1683,6 @@ function getMmgSummaryValues(
       "supplementarybill",
       "submitted",
     ),
-    paymentPending: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
     totalPendingPaymentStagesCases: entryFocusTargets(pendingPaymentEntries, "payment", "pending"),
     paymentCompleted: entryFocusTargets(
       paymentOrders.filter(
@@ -1857,7 +1694,7 @@ function getMmgSummaryValues(
     totalPaymentDueThisMonth: entryFocusTargets(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthMatches(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ),
@@ -1877,7 +1714,7 @@ function getMmgSummaryValues(
     paymentDueFromPreviousMonths: entryFocusTargets(
       paymentOrders.filter(
         ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
+          isMmgFollowUpOrder(file, order) &&
           monthBefore(getPaymentAgingCompletionDate(file, order), currentMonthKey) &&
           !hasFilledString(order.paymentDate),
       ),
@@ -1914,7 +1751,9 @@ function getMmgSummaryValues(
       "paid",
     ),
     advancePending: entryFocusTargets(
-      rawActiveOrders.filter(({ order }) => isAdvancePaymentPending(order)),
+      rawActiveOrders.filter(
+        ({ order }) => !isYes(order.noFurtherAction) && isAdvancePaymentPending(order),
+      ),
       "advancepayment",
       "pending",
     ),
@@ -1927,18 +1766,6 @@ function getMmgSummaryValues(
       rawOrderEntries(files).filter(({ order }) => isYes(order.shortclosure)),
       "shortclosure",
       "yes",
-    ),
-    deliveriesOverdue: entryFocusTargets(
-      orders.filter(
-        ({ file, order }) =>
-          !isCancelledOrder(file, order) &&
-          isDeliveryInspectionApplicable(file) &&
-          Boolean(getDeliveryPeriodDate(order)) &&
-          isBeforeToday(getDeliveryPeriodDate(order)) &&
-          !hasFilledString(order.materialReceiptDate),
-      ),
-      "delivery",
-      "overdue",
     ),
     paymentsOverdue: entryFocusTargets(overduePaymentEntries, "payment", "overdue"),
     psbPending: entryFocusTargets(
@@ -2077,7 +1904,7 @@ function getMmgSummaryValues(
     ),
     totalUnpaidSoValue: entryFocusTargets(
       orders.filter(
-        ({ file, order }) => !isCancelledOrder(file, order) && !hasFilledString(order.paymentDate),
+        ({ file, order }) => isMmgFollowUpOrder(file, order) && !hasFilledString(order.paymentDate),
       ),
       "payment",
       "pending",
@@ -2286,14 +2113,15 @@ function paymentOrderEntries(files: FileRecord[]) {
 function getSupplementaryBillEntries(
   entries: Array<{ file: FileRecord; order: SupplyOrderDetail; orderIndex?: number }>,
   predicate: (bill: SupplementaryBillDetail) => boolean,
+  pendingOnly = false,
 ) {
-  return entries.flatMap((entry) =>
-    !isCancelledOrder(entry.file, entry.order)
-      ? getSupplementaryBills(entry.order)
-          .map((bill, billIndex) => ({ ...entry, bill, stageIndex: billIndex }))
-          .filter(({ bill }) => predicate(bill))
-      : [],
-  );
+  return entries.flatMap((entry) => {
+    if (pendingOnly && !isMmgFollowUpOrder(entry.file, entry.order)) return [];
+    if (isCancelledOrder(entry.file, entry.order)) return [];
+    return getSupplementaryBills(entry.order)
+      .map((bill, billIndex) => ({ ...entry, bill, stageIndex: billIndex }))
+      .filter(({ bill }) => predicate(bill));
+  });
 }
 
 function getSupplementaryBills(order: SupplyOrderDetail) {
@@ -2433,6 +2261,10 @@ function isCancelledOrder(file: FileRecord, order: SupplyOrderDetail) {
   return isYes(file.demandCancelled) || isYes(order.soCancelled);
 }
 
+function isMmgFollowUpOrder(file: FileRecord, order: SupplyOrderDetail) {
+  return !isCancelledOrder(file, order) && !isYes(order.noFurtherAction);
+}
+
 function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
   return Boolean(
     file.completedMilestones?.some(
@@ -2536,7 +2368,7 @@ function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
 
 function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    !isCancelledOrder(file, order) &&
+    isMmgFollowUpOrder(file, order) &&
     isFinancialSanctionCompleted(order) &&
     !isSupplyOrderTabComplete(file, order)
   );
@@ -2544,13 +2376,14 @@ function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
 
 function isDeliveryPeriodExtendedEntry(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    !isCancelledOrder(file, order) && (isYes(order.dpExtension) || hasFilledString(order.revisedDp))
+    isMmgFollowUpOrder(file, order) &&
+    (isYes(order.dpExtension) || hasFilledString(order.revisedDp))
   );
 }
 
 function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    !isCancelledOrder(file, order) &&
+    isMmgFollowUpOrder(file, order) &&
     isFinancialSanctionReached(file) &&
     !isFinancialSanctionCompleted(order)
   );
@@ -2617,6 +2450,7 @@ function isBgPendingOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     !isBgReceivedOrder(order, category) &&
     !isCancelledOrder(file, order) &&
+    !isYes(order.noFurtherAction) &&
     (normalized === "psb" || normalized === "psbpwb"
       ? hasFilledString(order.soDate)
       : hasFilledString(order.materialReceiptDate))
@@ -2751,7 +2585,7 @@ function hasPaymentWorkflowStarted(file: FileRecord, order: SupplyOrderDetail) {
 
 function isPaymentPendingEntry(file: FileRecord, order: SupplyOrderDetail) {
   return (
-    !isCancelledOrder(file, order) &&
+    isMmgFollowUpOrder(file, order) &&
     hasPaymentWorkflowStarted(file, order) &&
     !hasFilledString(order.paymentDate)
   );

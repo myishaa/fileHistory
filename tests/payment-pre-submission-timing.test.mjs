@@ -427,7 +427,7 @@ test("cumulative Delay Status uses trigger-to-today and caps returned bills at f
   assert.equal(summary.delaySummary.byMilestone[0].fileCount, 3);
 });
 
-test("cumulative ranking includes paid cases only and stops returned bills at first submission", () => {
+test("cumulative ranking includes paid cases only and excludes returned regular, advance and supplementary bills", () => {
   const regularPaid = file("cumulative-rank-paid", {
     irReceiptDate: daysAgo(100),
     billSentForPaymentDate: daysAgo(70),
@@ -441,6 +441,8 @@ test("cumulative ranking includes paid cases only and stops returned bills at fi
   });
   const excluded = file("cumulative-rank-excluded", {
     irReceiptDate: daysAgo(100),
+    billSentForPaymentDate: daysAgo(70),
+    paymentDate: daysAgo(20),
     includeInPaymentTiming: false,
   });
   const advance = file("cumulative-rank-advance", {
@@ -451,6 +453,28 @@ test("cumulative ranking includes paid cases only and stops returned bills at fi
     },
   });
   const supplementary = file("cumulative-rank-supplementary", {
+    supplementaryBills: [{ billSentForPaymentDate: daysAgo(35), paymentDate: daysAgo(20) }],
+  });
+  const advanceReturned = file("cumulative-rank-advance-returned", {
+    advancePayment: "Yes",
+    advancePaymentDetail: {
+      billSentForPaymentDate: daysAgo(40),
+      paymentDate: daysAgo(15),
+      billReturnCycles: [{ returnedDate: daysAgo(30), resubmittedDate: daysAgo(20) }],
+    },
+  });
+  const supplementaryReturned = file("cumulative-rank-supplementary-returned", {
+    supplementaryBills: [{
+      billSentForPaymentDate: daysAgo(35),
+      paymentDate: daysAgo(10),
+      billReturnCycles: [{ returnedDate: daysAgo(25), resubmittedDate: daysAgo(15) }],
+    }],
+  });
+  const unpaid = file("cumulative-rank-unpaid", {
+    irReceiptDate: daysAgo(100),
+    billSentForPaymentDate: daysAgo(70),
+    advancePayment: "Yes",
+    advancePaymentDetail: { billSentForPaymentDate: daysAgo(40) },
     supplementaryBills: [{ billSentForPaymentDate: daysAgo(35) }],
   });
 
@@ -460,6 +484,9 @@ test("cumulative ranking includes paid cases only and stops returned bills at fi
     excluded,
     advance,
     supplementary,
+    advanceReturned,
+    supplementaryReturned,
+    unpaid,
   ]);
   assert.ok(row);
   assert.equal(row.sampleSize, 3);
@@ -467,9 +494,38 @@ test("cumulative ranking includes paid cases only and stops returned bills at fi
   assert.deepEqual(row.fileIds.split(",").sort(), [
     "cumulative-rank-advance",
     "cumulative-rank-paid",
-    "cumulative-rank-returned",
+    "cumulative-rank-supplementary",
   ]);
-  assert.equal(row.averageDays, 50);
+  assert.equal(row.averageDays, 40); // (80 + 25 + 15) / 3; no zero-day returned samples.
+  assert.equal(row.minDays, 15);
+  assert.equal(row.maxDays, 80);
+  assert.equal(cumulativePaymentRanking([regularReturned, advanceReturned, supplementaryReturned]), undefined);
+  assert.equal(paymentPreSubmissionRanking([regularReturned]).averageDays, 45);
+});
+
+test("cumulative ranking excludes a returned stage without excluding its clean sibling and excludes returned common payment", () => {
+  const returnHistory = [{ returnedDate: daysAgo(20), resubmittedDate: daysAgo(15) }];
+  const stagewise = file("mixed-stage-returns", {
+    stageDelivery: "Yes",
+    stagePayment: "Yes",
+    stageDeliveries: [
+      { irReceiptDate: daysAgo(100), billSentForPaymentDate: daysAgo(60), paymentDate: daysAgo(30) },
+      { irReceiptDate: daysAgo(50), billSentForPaymentDate: daysAgo(35), paymentDate: daysAgo(10), billReturnCycles: returnHistory },
+    ],
+  });
+  const common = file("returned-common", {
+    stageDelivery: "Yes",
+    stagePayment: "No",
+    billSentForPaymentDate: daysAgo(25),
+    paymentDate: daysAgo(5),
+    billReturnCycles: returnHistory,
+    stageDeliveries: [{ irReceiptDate: daysAgo(90) }, { irReceiptDate: daysAgo(40) }],
+  });
+  const row = cumulativePaymentRanking([stagewise, common]);
+  assert.ok(row);
+  assert.equal(row.sampleSize, 1);
+  assert.equal(row.fileIds, "mixed-stage-returns");
+  assert.equal(row.averageDays, 70);
 });
 
 test("cumulative ranking counts stagewise payments separately and common staged payment once", () => {

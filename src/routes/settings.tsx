@@ -1,6 +1,6 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -33,8 +33,9 @@ import {
   useActiveUser,
   useDivisions,
   useFiles,
-  useSettings,
+  useSettings as useStoreSettings,
   useUsers,
+  type AppSettings,
   type AppUser,
   type AppUserRole,
   type Division,
@@ -72,6 +73,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { YearSetupPanel } from "@/routes/year-setup";
 import { HelperContent } from "@/components/helper-content";
+import { HelperPdfButton } from "@/components/helper-content";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
@@ -99,6 +101,93 @@ import {
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
+
+type SettingsDraftContextValue = {
+  settings: AppSettings;
+  updateSettings: (patch: Partial<AppSettings>) => void;
+};
+
+const SettingsDraftContext = createContext<SettingsDraftContextValue | null>(null);
+
+function useSettings() {
+  const draft = useContext(SettingsDraftContext);
+  const savedSettings = useStoreSettings();
+  return draft?.settings ?? savedSettings;
+}
+
+function useSettingsUpdater() {
+  const draft = useContext(SettingsDraftContext);
+  return draft?.updateSettings ?? store.updateSettings;
+}
+
+function UserSettingsDraft({
+  children,
+  scope = "personal",
+  editors = "You",
+  showScope = true,
+}: {
+  children: ReactNode;
+  scope?: SettingsScopeKind;
+  editors?: string;
+  showScope?: boolean;
+}) {
+  const savedSettings = useStoreSettings();
+  const [draftPatch, setDraftPatch] = useState<Partial<AppSettings>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const hasChanges = Object.keys(draftPatch).length > 0;
+  const updateSettings = (patch: Partial<AppSettings>) => {
+    setDraftPatch((current) => ({ ...current, ...patch }));
+    setSaveError("");
+  };
+  const cancelChanges = () => {
+    if (hasChanges && !window.confirm("Discard your unsaved settings changes?")) return;
+    setDraftPatch({});
+    setSaveError("");
+  };
+  const saveChanges = async () => {
+    if (!hasChanges || saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await store.saveSettings(draftPatch);
+      setDraftPatch({});
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Settings could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="space-y-3">
+      {showScope ? <SettingsScope scope={scope} editors={editors} /> : null}
+      <div className="flex items-center justify-end gap-2">
+        {saveError ? <p role="alert" className="mr-auto text-sm text-destructive">{saveError}</p> : null}
+        <button
+          type="button"
+          onClick={cancelChanges}
+          disabled={saving || !hasChanges}
+          className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void saveChanges()}
+          disabled={!hasChanges || saving}
+          className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
+        </button>
+      </div>
+      <SettingsDraftContext.Provider
+        value={{ settings: { ...savedSettings, ...draftPatch }, updateSettings }}
+      >
+        <fieldset disabled={saving}>{children}</fieldset>
+      </SettingsDraftContext.Provider>
+    </div>
+  );
+}
 
 const defaultMilestoneSequence = [
   "Scrutiny",
@@ -242,6 +331,42 @@ type AdminSection = {
   content: ReactNode;
 };
 
+type SettingsScopeKind = "personal" | "shared";
+
+function SettingsScope({
+  scope,
+  editors,
+}: {
+  scope: SettingsScopeKind;
+  editors: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      <span className="font-semibold text-foreground">
+        {scope === "personal" ? "Only for your account" : "Shared with all users"}
+      </span>
+      <span className="text-muted-foreground">Can be edited by: {editors}</span>
+    </div>
+  );
+}
+
+function adminSettingsScope(key: string, role: AppUserRole | undefined) {
+  if (key === "theme" || key === "user") return { scope: "personal" as const, editors: "You" };
+  if (key === "presets" && role !== "admin") {
+    return { scope: "personal" as const, editors: "You" };
+  }
+  if (key === "mmgSummary") {
+    return { scope: "shared" as const, editors: "Administrators and Sub-admins" };
+  }
+  if (key === "indentors") {
+    return { scope: "shared" as const, editors: "Administrators and Sub-admins" };
+  }
+  if (key === "firms") {
+    return { scope: "shared" as const, editors: "Administrators, Sub-admins, and Editors" };
+  }
+  return { scope: "shared" as const, editors: "Administrators" };
+}
+
 const adminSectionKeys = new Set([
   "theme",
   "user",
@@ -256,39 +381,40 @@ const adminSectionKeys = new Set([
   "firmRating",
   "fileTypes",
   "modes",
+  "gemBiddingModes",
   "firmTypes",
   "fileMarkers",
   "tcec",
   "thresholds",
+  "bgReceiptDelay",
   "anomalyGovernance",
   "milestones",
   "presets",
   "users",
   "ipAccess",
   "archive",
-  "favorites",
   "noticeBoard",
   "quickEntryExcel",
 ]);
 
 const milestoneHelperSectionOrder = [
-  "What is counted",
-  "Details",
-  "Included and Excluded",
+  "What it does",
+  "Examples",
   "Filter",
+  "What is counted",
+  "Included and Excluded",
+  "Additional details",
   "Add or activate",
   "Reorder",
   "Remove",
   "Clicking a result",
   "Caution",
-  "Example",
 ];
 
 const settingsSectionHelpers = {
-  favorites: ["Administrators can publish shared shortcuts. Each user can add personal shortcuts to sections across the software."],
-  noticeBoard: ["Administrators and users can select calendar displays. The Notice Board rotates through the selected displays."],
+  noticeBoard: ["Administrator displays and rotation duration are saved centrally and appear for other accounts after refresh or sign-in. Personal displays stay on this browser."],
   quickEntryExcel: [
-    "Create personal Excel export presets for Quick Entry by choosing the file and supply-order fields to include.",
+    "Administrators configure Excel exports here. Saved exports are shared with all users on the Quick Entry page.",
   ],
   theme: [
     "Sets the appearance for this account.",
@@ -299,66 +425,73 @@ const settingsSectionHelpers = {
     "Display preferences are saved per account.",
   ],
   workspace: [
-    "These are shared settings for everyone.",
-    "Changing the Current FY changes the year used as 'current'; it does not move existing files.",
-    "Example: set 2026-27 as current and new files use that FY. Older files stay in their original FY.",
+    "Purpose: Sets the current financial year used for new files and current-year views for everyone.",
+    "Example table: Setting before | Setting after | Effect on records",
+    "Example row: Current FY 2025-26 | Current FY 2026-27 | New files use 2026-27; existing files keep their recorded FY.",
   ],
   offsetDays: [
-    "Set the shared day offsets used to estimate S.O., payment, and BG-return dates.",
-    "Each setting names its starting event and the date it estimates. Local overrides remain available where a report permits them.",
+    "Set shared day offsets for expected S.O., payment, and BG-return dates, plus the default Delay Status threshold.",
+    "Each offset identifies its starting event and estimated date. Delay Status uses its setting as the default; individual report views may temporarily use another threshold.",
     "Resetting a local override restores the latest value set here.",
+    "Example table: Trigger date | Offset | Estimated date | Interpretation",
+    "Example row: Bill sent: 10 Oct | 20 days | 30 Oct | Expected payment date is estimated from the submission date plus the configured offset; it is not an actual payment date.",
   ],
   yearSetup: [
-    "Select the FY for division budget setup.",
+    "Purpose: Selects the FY whose division budgets you are editing.",
     "Global Filter separately controls which files are shown.",
-    "Example: save a budget under 2026-27. It stays with that FY even if the Global Filter shows 2025-26 files.",
+    "Example table: Budget FY | Global Filter FY | Result",
+    "Example row: 2026-27 | 2025-26 files | Budget remains attached to 2026-27; the Global Filter does not move it.",
   ],
   mmgSummary: [
-    "These choices appear in Reports > MMG Summary.",
-    "Each checked field appears as a row in MMG Summary and in PDF/Excel exports. Its label is used both on screen and in exports.",
-    "Unchecking a field hides the row; its calculation and file data stay unchanged.",
-    "Example: rename 'Total demands' to 'Demand count'. The new label appears in the report and its exports; the value stays the same.",
+    "Purpose: Chooses which MMG Summary rows and labels appear on screen and in PDF/Excel exports.",
+    "Example table: Change | Report and export result | Data result",
+    "Example row: Rename Total demands to Demand count | Both show Demand count | The calculated value stays the same.",
+    "Example row: Uncheck a field | Its row is hidden | File data and calculation stay unchanged.",
   ],
   demandProcessing: [
     "Presets choose which demand-processing dates are compared.",
     "Day ranges group the gaps shown in Reports > Demand processing analysis.",
     "These choices change how results are grouped, not the dates saved on files.",
+    "Example table: From date | To date | Gap | Interpretation",
+    "Example row: Bill resubmitted: 15 May | Paid: 20 May | 5 days | The selected date pair measures the final resubmission-to-payment interval for this returned bill.",
   ],
   divisions: [
-    "Manage division names, codes, and budgets here.",
-    "Renaming a division changes its name, not the division recorded on existing files.",
+    "Purpose: Manages division names, codes, and budgets.",
+    "Example table: Change | New entries | Existing files",
+    "Example row: Correct ACC Divison to ACC Division | Corrected name is offered | Recorded division does not move to another division.",
     "A division used by an active or archived file cannot be deleted.",
-    "Example: correcting 'ACC Divison' to 'ACC Division' fixes the name; it does not move any files.",
   ],
   indentors: [
-    "Manage indentor contact details and division assignment here.",
-    "Changing a name updates the directory only. Existing files keep the name saved when they were entered.",
+    "Purpose: Manages indentor contact details and division assignments.",
+    "Example table: Directory change | New files | Existing files",
+    "Example row: Rina Sharma to Reena Sharma | Use Reena Sharma | Keep the saved Rina Sharma name.",
     "An indentor used by an active or archived file cannot be deleted.",
-    "Example: change 'Rina Sharma' to 'Reena Sharma'.",
-    "Example: New files use 'Reena Sharma'; older files keep 'Rina Sharma'.",
   ],
   firms: [
-    "Maintain the firm directory and Firm Unique No. here.",
+    "Purpose: Maintains firm names, Firm Unique No., and firm types for new S.O. entries.",
+    "Example table: Directory change | New S.O. | Existing S.O.s",
+    "Example row: Type Other; detail Cooperative | Copies Other / Cooperative | Keeps the type saved earlier.",
+    "Example row: North Star Ltd to North Star Limited | Uses the corrected name | Keeps North Star Ltd where already saved.",
     "Admin or sub-admin can add a firm type beside the selector; it becomes available here and in S.O. details.",
-    "For Firm Type 'Other', enter the specific type here. Choosing this firm for a new S.O. copies both values.",
-    "Change a firm name only to correct that same firm's directory entry. Existing files and S.O.s keep their saved name.",
+    "Change a name only to correct the same firm's directory entry.",
     "A firm used by an active or archived file/S.O. cannot be deleted.",
-    "Example: set the type to Other and enter Cooperative. New S.O.s show Other / Cooperative; older ones keep their saved type.",
-    "Example: correct 'North Star Ltd' to 'North Star Limited'. New S.O.s use the corrected name; older ones keep 'North Star Ltd'.",
   ],
   firmRating: [
     "Choose the rating items and maximum marks used for firms.",
     "These choices affect scores in Firm Performance.",
   ],
   fileTypes: [
-    "Choose whether each new file type follows Goods & Services or Contract rules.",
+    "Purpose: Chooses whether a file type follows Goods & Services or Contract workflow rules.",
+    "Example table: Type | Chosen group | Result",
+    "Example row: New AMC type | Contract | New files of that type follow the Contract workflow.",
+    "Example row: Type already used by a file | Change Goods & Services to Contract | Blocked; inactivate the old type and add a replacement.",
     "Once a file uses a type, its name and group are locked. Inactivate it to keep it off new files.",
-    "Example: Add a new AMC type under Contract; a Goods & Services type already used by a file cannot later be changed to Contract.",
   ],
   modes: [
-    "Modes such as OBM, PBM, SBM, LBM, and LPC appear in file entry, filters, and reports.",
+    "Purpose: Manages procurement modes used in file entry, filters, and reports.",
+    "Example table: Change | New files | Existing files",
+    "Example row: Replace an old mode | Select the new mode; inactivate the old one | Keep the originally recorded mode.",
     "A mode already used on a file cannot be renamed. Inactivate it to stop offering it for new files.",
-    "Example: when a mode's meaning changes, add a new mode and inactivate the old one. Existing files keep their original mode.",
   ],
   gemBiddingModes: [
     "GeM bidding modes appear in Add/Edit, Search filters, and Dashboard counts.",
@@ -366,62 +499,62 @@ const settingsSectionHelpers = {
   ],
   firmTypes: [
     "Firm types such as MSE and Non-MSE are used in S.O. details and firm-type reports.",
+    "Example table: Change | New S.O.s | Existing S.O.s",
+    "Example row: Add a replacement category; inactivate old one | Replacement is offered | Keep the saved old type.",
     "A type already used on an S.O. cannot be renamed. Inactivate it to stop offering it for new entries.",
-    "Example: add the new category and inactivate the old one; existing S.O.s keep the type recorded when they were entered.",
   ],
   fileMarkers: [
     "Marker codes tag special situations so files can be found later.",
+    "Example table: Change | New files | Existing files",
+    "Example row: URG gets a new meaning | Create a new marker code | Keep the original URG tag.",
     "A code already used on a file cannot be renamed. Inactivate it to stop using it on new files.",
-    "Example: if 'URG' gets a new meaning, create a new code. Existing files keep the original URG tag.",
   ],
   tcec: [
-    "Committee names can be selected in TCEC fields and are shown in related reports.",
-    "To replace a committee name, add the new choice and inactivate the old one. Existing files keep the name already recorded.",
-    "Example: add 'Committee B' for future entries and inactivate 'Committee A'; older files still show Committee A.",
+    "Purpose: Manages committee names offered in TCEC fields and reports.",
+    "Example table: Change | New entries | Existing files",
+    "Example row: Add Committee B; inactivate Committee A | Committee B is offered | Previously saved Committee A remains.",
   ],
   thresholds: [
     "Set value bands used across all financial years in Count and Value Analysis.",
     "Choose whether each band applies to Capital, Revenue, or Both.",
   ],
+  bgReceiptDelay: [
+    "Set the shared delay thresholds used by Reports > BG receipt delay.",
+    "A guarantee is counted in a band when it has not been received after the corresponding number of days from the S.O. date.",
+  ],
   anomalyGovernance: [
     "The anomaly list contains suspected data issues and accepted/rejected decisions.",
-    "Anomaly decisions can be reviewed here; accepted or rejected items can be reopened when needed.",
-    "Example: revoking an accepted decision makes that anomaly available for review again; it does not change the underlying file data.",
+    "Example table: Action | Review status | File data",
+    "Example row: Reopen an accepted decision | Available for review again | Unchanged.",
   ],
   milestones: [
+    "Purpose: Sets the displayed milestone sequence in Add/Edit and Dashboard Status-2/Status-4; it does not rewrite saved workflow history.",
+    "Example table: Change | Display result | Saved data",
+    "Example row: Add Technical Review | Appears for every file; do not add it for Contract files only | No completion date is added automatically.",
+    "Example row: Move Financial Sanction above Bidding | Sequence changes; Timeline still orders dated events by date | Dates and file progress stay unchanged.",
     "The 'Used in N files' figure counts unique files, including archived files, where this milestone is current or completed on the file, an S.O., or its advance-payment record.",
-    "Each file is counted once, even if the milestone appears in several places.",
-    "Details: This list controls the active milestone sequence in Add/Edit File > Milestones and the configured stage order in Dashboard Status-2 and Status-4.",
-    "Details: Changing the sequence changes where milestones are displayed.",
-    "Details: It does not change saved dates, completion marks, current progress, or the rules that move a file through its workflow.",
     "Details: Status-1 and Status-3 use their own standard workflow logic, so this sequence does not change their counters.",
     "Included and Excluded: Inactive milestones are excluded from the active sequence, but their saved dates and completion data are not erased immediately.",
     "Included and Excluded: An inactive milestone may no longer appear on a file's checklist.",
     "Add or activate: Add places a new milestone at the selected position.",
-    "Add or activate: A custom milestone applies to every file, so add it only when every file must follow that step.",
     "Add or activate: Activate restores an inactive milestone at the end of the active sequence, just before File Closed.",
-    "Add or activate: The milestone becomes available again; no dates or completion marks are added to existing files.",
     "Reorder: Use the arrows to change the displayed sequence.",
     "Reorder: File Closed remains last, and some standard milestones stay in positions controlled by the software.",
-    "Reorder: Timeline places dated events by their recorded dates, even when that differs from this sequence.",
     "Reorder: This sequence breaks ties for events on the same day and orders undated milestones in Show all dates.",
     "Remove: A milestone used by a file can only be inactivated. An unused milestone can be deleted permanently.",
     "Remove: If a file using an inactive milestone is edited and saved, its completion mark for that milestone may be removed.",
     "Caution: Review the 'Used in files' figure before inactivating a milestone, because it may disappear from checklists on files that use it.",
-    "Example: Add 'Technical Review' only if every file must pass it. If it applies only to contract files, do not add it as a general milestone.",
-    "Example: Move Financial Sanction above Bidding to change their display order. If a file's Bidding date is earlier, Timeline still shows Bidding first; neither date nor file progress changes.",
   ],
   presets: [
-    "Search File presets are available from the 'Preset fields' menu above the results table.",
-    "A preset chooses which columns appear in the results and in PDF/Excel exports. It does not change the search, matching files, or counts.",
+    "Purpose: Saves reusable Search result and export column selections.",
+    "Example table: Selection | Table/export columns | Matching files",
+    "Example row: Payment review preset | Shows Control No., Indentor, S.O., and payment details | Unchanged.",
     "Create a preset for a column set used regularly. Use Manual for a one-time column change.",
     "Admin-created presets are shared. Personal presets are visible only to the account that created them.",
-    "Example: a 'Payment review' preset can group Control No., Indentor, S.O., and payment details for recurring exports.",
-    "Example: choosing a preset changes the table/export columns, but the same files remain in the results.",
   ],
   users: [
-    "Controls authorised users, roles, division access, and file-category access.",
-    "Access changes affect what each user can view or edit.",
+    "Manage authorised accounts, roles, and access permissions.",
+    "Use the role guide beside the Authorised users heading for role capabilities and limits.",
   ],
   ipAccess: [
     "Controls login access by trusted IP address.",
@@ -467,8 +600,9 @@ const settingsControlHelpers = {
   ],
   firmTypeName: [
     "Firm Type is chosen in Supply Order details.",
+    "Example table: Change | New S.O.s | Existing S.O.s",
+    "Example row: Replace MSE with a new type | New type is offered; old one can be inactivated | Keep the original MSE value.",
     "Once an S.O. uses a type, its name is protected. Add the replacement and inactivate the old choice.",
-    "Example: to replace 'MSE', add the new name and inactivate MSE. Older S.O.s keep the value they were given.",
   ],
   firmTypeAdd: [
     "Adds a new firm type option for Supply Order firm details.",
@@ -481,13 +615,15 @@ const settingsControlHelpers = {
   ],
   fileTypeGroup: [
     "Goods & Services and Contract file types follow different steps.",
+    "Example table: New type | Group | Effect",
+    "Example row: AMC | Contract | New AMC files use the Contract workflow.",
     "Select the correct group when adding a type. Once a file uses it, the type's name and group cannot be changed.",
-    "Example: add a new AMC type under Contract so its files use the contract workflow.",
   ],
   fileTypeDelete: [
     "An unused, non-default type can be deleted.",
+    "Example table: Type status | Action | Result",
+    "Example row: Used on an existing file | Inactivate | No longer offered for new files; old files retain it.",
     "A type used by an active or archived file cannot be deleted or renamed. Inactivate it to stop offering it for new files.",
-    "Example: keep a used type for old files, but inactivate it so it is no longer offered on new files.",
   ],
   demandProcessingDayRanges: [
     "Used in Reports > Demand processing analysis.",
@@ -496,8 +632,9 @@ const settingsControlHelpers = {
   ],
   genericDelete: [
     "Unused choices can be deleted.",
+    "Example table: Choice status | Action | Existing records",
+    "Example row: Old mode used by a file | Inactivate | File retains its saved mode.",
     "Choices already used by files should be retained for history and inactivated when available.",
-    "Example: inactivate an old mode to hide it from new entries. Existing files keep their saved mode.",
   ],
   userDelete: [
     "Moves this user account out of active use.",
@@ -726,6 +863,7 @@ function SettingsPage() {
   const locationSearch = useRouterState({ select: (state) => state.location.search });
   const [activeAdminSection, setActiveAdminSection] = useState("theme");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
+  const [hasUnsavedAdminChanges, setHasUnsavedAdminChanges] = useState(false);
   const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
   const [expandedAdminGroup, setExpandedAdminGroup] = useState("personal");
 
@@ -743,29 +881,20 @@ function SettingsPage() {
         <Tabs defaultValue="theme" className="space-y-4">
           <TabsList aria-label="Settings sections">
             <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
-            <SettingsTabTrigger value="favorites" label="My favourites" helperKey="favorites" />
             <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
-            <SettingsTabTrigger
-              value="quickEntryExcel"
-              label="Quick Entry Excel"
-              helperKey="quickEntryExcel"
-            />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
           </TabsList>
           <TabsContent value="theme">
-            <PreferenceSettings />
+            <UserSettingsDraft showScope={false}><PreferenceSettings /></UserSettingsDraft>
           </TabsContent>
-          <TabsContent value="favorites"><QuickAccessSettings section="favorites" /></TabsContent>
           <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
-          <TabsContent value="quickEntryExcel">
-            <QuickEntryExcelSettings />
-          </TabsContent>
           <TabsContent value="indentors">
+            <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
             <IndentorSettings />
           </TabsContent>
           <TabsContent value="presets">
-            <TableFieldPresetSettings />
+            <UserSettingsDraft><TableFieldPresetSettings /></UserSettingsDraft>
           </TabsContent>
         </Tabs>
       </div>
@@ -779,13 +908,7 @@ function SettingsPage() {
         <Tabs defaultValue="user" className="space-y-4">
           <TabsList aria-label="Settings sections">
             <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
-            <SettingsTabTrigger value="favorites" label="My favourites" helperKey="favorites" />
             <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
-            <SettingsTabTrigger
-              value="quickEntryExcel"
-              label="Quick Entry Excel"
-              helperKey="quickEntryExcel"
-            />
             <SettingsTabTrigger value="user" label="User" helperKey="user" />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="firms" label="Firm Database" helperKey="firms" />
@@ -802,33 +925,37 @@ function SettingsPage() {
             ) : null}
           </TabsList>
           <TabsContent value="theme">
-            <PreferenceSettings />
+            <UserSettingsDraft showScope={false}><PreferenceSettings /></UserSettingsDraft>
           </TabsContent>
-          <TabsContent value="favorites"><QuickAccessSettings section="favorites" /></TabsContent>
           <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
-          <TabsContent value="quickEntryExcel">
-            <QuickEntryExcelSettings />
-          </TabsContent>
           <TabsContent value="user">
-            <AccountSettings />
+            <UserSettingsDraft><AccountSettings /></UserSettingsDraft>
           </TabsContent>
           <TabsContent value="indentors">
+            <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
             <IndentorSettings />
           </TabsContent>
           <TabsContent value="firms">
+            <SettingsScope
+              scope="shared"
+              editors="Administrators, Sub-admins, and Editors (firm records); Administrators and Sub-admins (types and deletion)"
+            />
             <FirmDatabaseSettings />
           </TabsContent>
           <TabsContent value="presets">
-            <TableFieldPresetSettings />
+            <UserSettingsDraft><TableFieldPresetSettings /></UserSettingsDraft>
           </TabsContent>
           {canEditMmgSummary ? (
             <TabsContent value="anomalyGovernance">
+              <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
               <AnomalyGovernanceSettings />
             </TabsContent>
           ) : null}
           {canEditMmgSummary ? (
             <TabsContent value="mmgSummary">
-              <MmgSummarySettings />
+              <UserSettingsDraft scope="shared" editors="Administrators and Sub-admins">
+                <MmgSummarySettings />
+              </UserSettingsDraft>
             </TabsContent>
           ) : null}
         </Tabs>
@@ -853,12 +980,6 @@ function SettingsPage() {
       label: "UI theme",
       helper: settingsSectionHelpers.theme,
       content: <PreferenceSettings />,
-    },
-    {
-      key: "favorites",
-      label: "My favourites",
-      helper: settingsSectionHelpers.favorites,
-      content: <QuickAccessSettings section="favorites" />,
     },
     {
       key: "noticeBoard",
@@ -975,6 +1096,12 @@ function SettingsPage() {
       content: <ValueThresholdSettings />,
     },
     {
+      key: "bgReceiptDelay",
+      label: "BG receipt delay",
+      helper: settingsSectionHelpers.bgReceiptDelay,
+      content: <BgReceiptDelaySettings />,
+    },
+    {
       key: "anomalyGovernance",
       label: "Anomaly Control",
       helper: settingsSectionHelpers.anomalyGovernance,
@@ -1019,9 +1146,7 @@ function SettingsPage() {
           "user",
           "presets",
           "offsetDays",
-          "favorites",
           "noticeBoard",
-          "quickEntryExcel",
         ].includes(section.key),
       )
     : settingsRole === "sub_admin"
@@ -1033,7 +1158,7 @@ function SettingsPage() {
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
     selectedAdminSection.key === "theme" ||
     (universalViewer &&
-      ["user", "presets", "favorites", "noticeBoard", "quickEntryExcel"].includes(
+      ["user", "presets", "noticeBoard"].includes(
         selectedAdminSection.key,
       ));
   const adminSectionGroups = [
@@ -1052,12 +1177,14 @@ function SettingsPage() {
       label: "Analytics and reports",
       keys: [
         "thresholds",
+        "bgReceiptDelay",
         "offsetDays",
         "demandProcessing",
         "presets",
         "firmRating",
         "mmgSummary",
         "anomalyGovernance",
+        "quickEntryExcel",
       ],
     },
     {
@@ -1068,7 +1195,7 @@ function SettingsPage() {
     {
       key: "personal",
       label: "Personal preferences",
-      keys: ["theme", "favorites", "noticeBoard", "quickEntryExcel"],
+      keys: ["theme", "noticeBoard"],
     },
   ]
     .map((group) => ({
@@ -1153,7 +1280,16 @@ function SettingsPage() {
                           <div key={section.key} className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => setActiveAdminSection(section.key)}
+                              onClick={() => {
+                                if (
+                                  section.key !== activeAdminSection &&
+                                  hasUnsavedAdminChanges &&
+                                  !window.confirm("Discard unsaved settings changes and switch sections?")
+                                ) return;
+                                if (section.key === activeAdminSection) return;
+                                setHasUnsavedAdminChanges(false);
+                                setActiveAdminSection(section.key);
+                              }}
                               className={
                                 "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
                                 (selected
@@ -1188,10 +1324,13 @@ function SettingsPage() {
         )}
         <div className="min-w-0">
           <LockedAdminSection
+            key={selectedAdminSection.key}
             section={selectedAdminSection}
+            scopeInfo={adminSettingsScope(selectedAdminSection.key, settingsRole)}
             unlocked={selectedAdminSectionUnlocked}
             onLock={() => setAdminSectionUnlocked(selectedAdminSection.key, false)}
             onUnlock={() => setAdminSectionUnlocked(selectedAdminSection.key, true)}
+            onDirtyChange={setHasUnsavedAdminChanges}
             hideUnlock={universalViewer}
           />
         </div>
@@ -1202,18 +1341,58 @@ function SettingsPage() {
 
 function LockedAdminSection({
   section,
+  scopeInfo,
   unlocked,
   onLock,
   onUnlock,
+  onDirtyChange,
   hideUnlock = false,
 }: {
   section: AdminSection;
+  scopeInfo: { scope: SettingsScopeKind; editors: string };
   unlocked: boolean;
   onLock: () => void;
   onUnlock: () => void;
+  onDirtyChange: (dirty: boolean) => void;
   hideUnlock?: boolean;
 }) {
   const [verifying, setVerifying] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [draftPatch, setDraftPatch] = useState<Partial<AppSettings>>({});
+  const savedSettings = useStoreSettings();
+  const draftSettings = { ...savedSettings, ...draftPatch };
+  const hasChanges = Object.keys(draftPatch).length > 0;
+
+  const updateDraftSettings = (patch: Partial<AppSettings>) => {
+    setDraftPatch((current) => ({ ...current, ...patch }));
+    onDirtyChange(true);
+    setSaveError("");
+  };
+
+  const saveChanges = async () => {
+    if (!hasChanges || saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      await store.saveSettings(draftPatch);
+      setDraftPatch({});
+      onDirtyChange(false);
+      if (!hideUnlock) onLock();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Settings could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancelChanges = () => {
+    if (hasChanges && !window.confirm("Discard your unsaved settings changes?")) return;
+    setDraftPatch({});
+    onDirtyChange(false);
+    setSaveError("");
+    if (!hideUnlock) onLock();
+  };
 
   const unlock = async () => {
     const password = await promptPassword(`Enter admin password to edit ${section.label}:`);
@@ -1225,6 +1404,9 @@ function LockedAdminSection({
     setVerifying(true);
     try {
       await store.verifyAdminPassword(password);
+      setDraftPatch({});
+      onDirtyChange(false);
+      setSaveError("");
       onUnlock();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Incorrect password.");
@@ -1235,12 +1417,32 @@ function LockedAdminSection({
 
   return (
     <div className="space-y-3">
-      {!hideUnlock ? (
+      {unlocked ? (
+        <div className="flex items-center justify-end gap-2">
+          {saveError ? <p role="alert" className="mr-auto text-sm text-destructive">{saveError}</p> : null}
+          <button
+            type="button"
+            onClick={cancelChanges}
+            disabled={saving || (!hasChanges && hideUnlock)}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void saveChanges()}
+            disabled={!hasChanges || saving}
+            className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
+          </button>
+        </div>
+      ) : !hideUnlock ? (
         <div className="flex justify-end">
           <button
             type="button"
-            onClick={unlocked ? onLock : () => void unlock()}
-            disabled={verifying}
+            onClick={() => void unlock()}
+            disabled={verifying || saving}
             className={
               "h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
               (unlocked
@@ -1248,25 +1450,26 @@ function LockedAdminSection({
                 : "border-border bg-background hover:bg-accent")
             }
           >
-            {unlocked ? (
-              <>
-                <Unlock className="size-4" /> Unlocked
-              </>
-            ) : (
-              <>
-                <Lock className="size-4" /> Edit
-              </>
-            )}
+            <>
+              <Lock className="size-4" /> Edit
+            </>
           </button>
         </div>
       ) : null}
       <fieldset
-        disabled={!unlocked}
+        disabled={!unlocked || saving}
         className={
           !unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined
         }
       >
-        {section.content}
+        <SettingsDraftContext.Provider
+          value={{ settings: draftSettings, updateSettings: updateDraftSettings }}
+        >
+          {!(["theme", "noticeBoard", "offsetDays"].includes(section.key)) ? (
+            <div className="mb-3"><SettingsScope {...scopeInfo} /></div>
+          ) : null}
+          {section.content}
+        </SettingsDraftContext.Provider>
       </fieldset>
     </div>
   );
@@ -1319,9 +1522,102 @@ function SettingsHelper({
         <TooltipContent
           side="right"
           align="start"
-          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+          className="w-fit max-w-[min(56rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
           <HelperContent lines={bullets} sectionOrder={sectionOrder} />
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function AuthorisedUserRolesTooltip() {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const rows = [
+    {
+      role: "Admin",
+      can: "Manage all divisions, records, users, shared settings, and security.",
+      limits: "Protected actions may still require the configured deletion password.",
+    },
+    {
+      role: "Sub-admin",
+      can: "Work across divisions; edit records and settings enabled for this role.",
+      limits: "Cannot manage user accounts or IP security settings.",
+    },
+    {
+      role: "Editor",
+      can: "Create and edit records in assigned divisions and permitted file categories.",
+      limits: "Cannot manage user accounts or admin settings.",
+    },
+    {
+      role: "Viewer",
+      can: "View records in assigned divisions.",
+      limits: "Cannot create or edit records.",
+    },
+    {
+      role: "Division user",
+      can: "View records in assigned divisions.",
+      limits: "Cannot create or edit records.",
+    },
+    {
+      role: "Universal Viewer",
+      can: "View all divisions and add file-status notes. Cash Out Go scope can be view-only, personal, or global with MER.",
+      limits: "Cannot edit core file records. Global Cash Out Go/MER edits affect everyone.",
+    },
+  ];
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Authorised user role permissions"
+            onClick={(event) => event.preventDefault()}
+            className="inline-flex size-6 shrink-0 items-center justify-center text-muted-foreground transition hover:text-foreground"
+          >
+            <Info className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          align="start"
+          className="w-fit max-w-[min(56rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg"
+        >
+          <div className="mb-1 flex justify-end">
+            <HelperPdfButton
+              contentRef={contentRef}
+              breadcrumb={["Settings", "Authorised users", "Role permissions"]}
+            />
+          </div>
+          <div ref={contentRef} className="max-h-[min(70vh,36rem)] overflow-auto">
+            <table className="min-w-[38rem] border-collapse text-left text-xs leading-relaxed">
+              <caption className="mb-2 text-left text-sm font-semibold text-foreground">
+                Role permissions
+              </caption>
+              <thead>
+                <tr className="border-b border-border bg-secondary/60 text-muted-foreground">
+                  <th scope="col" className="w-28 px-2 py-1.5 font-semibold">Role</th>
+                  <th scope="col" className="px-2 py-1.5 font-semibold">Can do</th>
+                  <th scope="col" className="px-2 py-1.5 font-semibold">Cannot do / limits</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.role} className="border-b border-border last:border-0">
+                    <th scope="row" className="px-2 py-1.5 align-top font-semibold text-foreground">
+                      {row.role}
+                    </th>
+                    <td className="px-2 py-1.5 align-top text-popover-foreground">{row.can}</td>
+                    <td className="px-2 py-1.5 align-top text-popover-foreground">{row.limits}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-2 max-w-[38rem] text-[11px] text-muted-foreground">
+              Admin, Sub-admin, and Universal Viewer can access all divisions. Editor, Viewer, and Division user access is limited to assigned divisions; file-category limits apply to Editors.
+            </p>
+          </div>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -1380,6 +1676,13 @@ function CashOutGoOffsetSettings({
 }) {
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const personalScope =
+    activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal";
+  const cashOutGoEditors = personalScope
+    ? "You"
+    : activeUser?.role === "universal_viewer"
+      ? "Administrators, Sub-admins, and authorized Universal Viewers"
+      : "Administrators and Sub-admins";
   const [plan, setPlan] = useState<SettingsCashOutGoPlan | undefined>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1510,6 +1813,9 @@ function CashOutGoOffsetSettings({
   return (
     <div className="mt-4 rounded-md border border-border bg-background p-4">
       <h4 className="text-sm font-semibold">Cash Out Go forecast offsets</h4>
+      <div className="mb-2 mt-1">
+        <SettingsScope scope={personalScope ? "personal" : "shared"} editors={cashOutGoEditors} />
+      </div>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
         {scopeNote} Save shared offsets to keep changes for future visits. They remain in effect until changed and saved again. Row-specific overrides remain separate where the report allows them.
       </p>
@@ -1591,11 +1897,15 @@ function restoreHelperAbbreviations(text: string) {
 
 function PreferenceSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   return (
     <div className="space-y-5">
       <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <h2 className="text-sm font-semibold mb-1">UI theme</h2>
+        <div className="mb-3">
+          <SettingsScope scope="personal" editors="You" />
+        </div>
         <p className="text-xs text-muted-foreground mb-5">
           Sets this account's display theme and colour order for bars, columns and pie charts.
         </p>
@@ -1604,16 +1914,16 @@ function PreferenceSettings() {
           <ThemeField
             label="Theme"
             value={settings.theme}
-            onChange={(value) => store.updateSettings({ theme: value })}
+            onChange={(value) => updateSettings({ theme: value })}
           />
           <ThemeTintField
             label="Theme color"
             value={settings.themeTint}
-            onChange={(value) => store.updateSettings({ themeTint: value })}
+            onChange={(value) => updateSettings({ themeTint: value })}
           />
           <ChartColorOrderField
             value={settings.chartColorOrder ?? chartColorOptions.map((option) => option.color)}
-            onChange={(value) => store.updateSettings({ chartColorOrder: value })}
+            onChange={(value) => updateSettings({ chartColorOrder: value })}
             disabled={settings.globalChartColorsEnforced === true}
           />
         </div>
@@ -1675,6 +1985,9 @@ function GlobalChartColorSettings() {
   return (
     <section className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
       <h2 className="mb-1 text-sm font-semibold">Chart colours for all users</h2>
+      <div className="mb-2">
+        <SettingsScope scope="shared" editors="Administrators" />
+      </div>
       <p className="mb-4 text-xs text-muted-foreground">
         Set a shared order for every account. Bars, columns and pie slices use this order. Users see policy changes after their next refresh or sign-in. Reset applies the default order to everyone.
       </p>
@@ -1724,6 +2037,7 @@ function AccountSettings() {
   const activeUser = useActiveUser();
   const divisions = useDivisions();
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const assignedDivisionNames =
     activeUser?.role === "sub_admin"
       ? "All divisions"
@@ -1751,7 +2065,7 @@ function AccountSettings() {
           <ThemeTintField
             label="UI tint"
             value={settings.themeTint}
-            onChange={(value) => store.updateSettings({ themeTint: value })}
+            onChange={(value) => updateSettings({ themeTint: value })}
           />
         </div>
       )}
@@ -1767,13 +2081,14 @@ function AccountSettings() {
 
 function AddEditRibbonSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const selected = normalizeAddEditRibbonFields(
     settings.addEditRibbonFields ?? defaultAddEditRibbonFields,
   );
   const updateField = (index: number, value: AddEditRibbonFieldKey) => {
     const next: AddEditRibbonFieldKey[] = [...selected];
     next[index] = value;
-    store.updateSettings({ addEditRibbonFields: next });
+    updateSettings({ addEditRibbonFields: next });
   };
 
   return (
@@ -1802,6 +2117,7 @@ function AddEditRibbonSettings() {
 
 function OffsetDaysSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const canEditPreSoOffsets =
     activeUser?.role === "admin" || activeUser?.role === "sub_admin";
@@ -1821,7 +2137,7 @@ function OffsetDaysSettings() {
       label: "Pre-S.O. stage date to expected S.O. date",
       value: settings.preSoDefaultSoOffsetDays ?? 30,
       disabled: !canEditPreSoOffsets,
-      onChange: (value: number) => store.updateSettings({ preSoDefaultSoOffsetDays: value }),
+      onChange: (value: number) => updateSettings({ preSoDefaultSoOffsetDays: value }),
       helper: [
         "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
         "The selected pre-S.O. milestone date starts the interval used to estimate the S.O. date.",
@@ -1831,7 +2147,7 @@ function OffsetDaysSettings() {
       label: "Expected S.O. date to expected payment date",
       value: settings.preSoDefaultPaymentOffsetDays ?? 30,
       disabled: !canEditPreSoOffsets,
-      onChange: (value: number) => store.updateSettings({ preSoDefaultPaymentOffsetDays: value }),
+      onChange: (value: number) => updateSettings({ preSoDefaultPaymentOffsetDays: value }),
       helper: [
         "Reports → Cash Out Go Plan → Pre-S.O. based expected cash outgo → Stages.",
         "The estimated S.O. date starts the interval used to estimate the payment date.",
@@ -1841,10 +2157,20 @@ function OffsetDaysSettings() {
       label: "Warranty-period end to BG return due date",
       value: settings.bgReturnOffsetDays ?? 60,
       disabled: !canEditPreSoOffsets,
-      onChange: (value: number) => store.updateSettings({ bgReturnOffsetDays: value }),
+      onChange: (value: number) => updateSettings({ bgReturnOffsetDays: value }),
       helper: [
         "A BG must remain valid through Warranty Period Date + this offset. BG return becomes due the following day. Used by BG-return checks and the Warranty/BG comparison in Search, Dashboard, Analytics, and Reports.",
         "Admin/Sub-admin changes apply throughout the software.",
+      ],
+    },
+    {
+      label: "Delay Status default threshold",
+      value: settings.delayStatusDefaultDays ?? 5,
+      disabled: !canEditPreSoOffsets,
+      onChange: (value: number) => updateSettings({ delayStatusDefaultDays: value }),
+      helper: [
+        "Sets the default and reset value for Analytics and Reports → Delay Status.",
+        "Delay Status shows a case only when its current age is greater than this number of days. Each view can still use a temporary threshold.",
       ],
     },
   ];
@@ -1853,12 +2179,15 @@ function OffsetDaysSettings() {
     <div className="space-y-4">
       <section className="rounded-md border border-border bg-secondary/20 p-4">
         <div className="mb-3">
-          <h2 className="text-sm font-semibold">Pre-S.O. and BG offsets</h2>
+          <h2 className="text-sm font-semibold">Shared day settings</h2>
+          <div className="mt-1">
+            <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            These values describe the interval from a starting event to the expected date. Changes save to Settings automatically and remain in effect for future calculations until changed again. Report-level overrides, where available, remain separate.
+            Shared offsets and the Delay Status default apply across Analytics and Reports; report-level overrides remain separate where available.
           </p>
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {offsets.map((offset) => (
             <label key={offset.label} className="block rounded-md border border-border bg-background p-3">
               <span className="mb-1 block text-xs font-medium">{offset.label}</span>
@@ -1891,6 +2220,7 @@ function OffsetDaysSettings() {
 
 function WorkspaceSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(-1);
   const [yearUsageError, setYearUsageError] = useState("");
@@ -2122,18 +2452,18 @@ function WorkspaceSettings() {
         <ThemeField
           label="Theme"
           value={settings.theme}
-          onChange={(value) => store.updateSettings({ theme: value })}
+          onChange={(value) => updateSettings({ theme: value })}
         />
         <ThemeTintField
           label="Theme color"
           value={settings.themeTint}
-          onChange={(value) => store.updateSettings({ themeTint: value })}
+          onChange={(value) => updateSettings({ themeTint: value })}
         />
         <PasswordField
           label="Deletion password"
           value={settings.deletionPassword}
           onChange={(value) => {
-            if (canEditWorkspaceGlobals) store.updateSettings({ deletionPassword: value });
+            if (canEditWorkspaceGlobals) updateSettings({ deletionPassword: value });
           }}
           disabled={!canEditWorkspaceGlobals}
           helper={deletionPasswordHelper}
@@ -2145,6 +2475,7 @@ function WorkspaceSettings() {
 
 function TcecCommitteeSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
@@ -2154,7 +2485,7 @@ function TcecCommitteeSettings() {
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateCommittees = (next: string[]) => {
-    store.updateSettings({ tcecCommittees: next });
+    updateSettings({ tcecCommittees: next });
   };
 
   const add = () => {
@@ -2231,6 +2562,7 @@ function TcecCommitteeSettings() {
 
 function FirmTypeSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
@@ -2240,7 +2572,7 @@ function FirmTypeSettings() {
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateFirmTypes = (next: string[]) => {
-    store.updateSettings({ firmTypes: normalizeFirmTypes(next) });
+    updateSettings({ firmTypes: normalizeFirmTypes(next) });
   };
 
   const add = () => {
@@ -2351,6 +2683,7 @@ function FirmTypeSettings() {
 
 function ModeSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
@@ -2360,7 +2693,7 @@ function ModeSettings() {
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateModes = (next: string[]) => {
-    store.updateSettings({ modes: normalizeModes(next) });
+    updateSettings({ modes: normalizeModes(next) });
   };
 
   const add = () => {
@@ -2476,16 +2809,19 @@ function ModeSettings() {
 
 function GemBiddingModeSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
+  const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const modes = normalizeGemBiddingModes(settings.gemBiddingModes);
+  const modeUsage = getGemBiddingModeUsage(files);
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const add = () => {
     const trimmed = name.trim();
     if (!trimmed || modes.some((mode) => mode.toLowerCase() === trimmed.toLowerCase())) return;
-    void store.updateSettings({ gemBiddingModes: [...modes, trimmed] });
+    updateSettings({ gemBiddingModes: [...modes, trimmed] });
     setName("");
   };
 
@@ -2507,9 +2843,31 @@ function GemBiddingModeSettings() {
         </button>
       </div>
       <ul className="mt-4 divide-y divide-border rounded-md border border-border">
-        {modes.map((mode) => (
-          <li key={mode} className="px-4 py-2.5 text-sm">{mode}</li>
-        ))}
+        {modes.map((mode) => {
+          const usageCount = modeUsage.get(normalizeMasterKey(mode))?.fileIds.size ?? 0;
+          const isBuiltIn = ["Custom", "Catalogue", "Comparison"].includes(mode);
+          const cannotDelete = usageCount > 0 || isBuiltIn;
+          return (
+          <li key={mode} className="flex items-center gap-3 px-4 py-2.5">
+            <span className="min-w-0 flex-1 text-sm">
+              {mode}
+              {usageCount > 0 ? (
+                <span className="ml-2 text-xs text-muted-foreground">Used by {usageCount} file{usageCount === 1 ? "" : "s"}</span>
+              ) : null}
+            </span>
+            <button
+              type="button"
+              onClick={() => updateSettings({ gemBiddingModes: modes.filter((item) => item !== mode) })}
+              disabled={cannotDelete}
+              className="grid size-8 shrink-0 place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={`Delete ${mode} GeM bidding mode`}
+              title={usageCount > 0 ? `In use by ${usageCount} file${usageCount === 1 ? "" : "s"}` : isBuiltIn ? "Built-in modes cannot be removed" : `Delete ${mode}`}
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -2531,6 +2889,7 @@ function normalizeGemBiddingModes(values: string[] | undefined) {
 
 function FileTypeSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
@@ -2543,7 +2902,7 @@ function FileTypeSettings() {
 
   const updateFileTypes = (next: string[], nextGroups: FileTypeGroupSetting[] = fileTypeGroups) => {
     const normalizedTypes = normalizeFileTypes(next);
-    store.updateSettings({
+    updateSettings({
       fileTypes: normalizedTypes,
       fileTypeGroups: normalizeFileTypeGroups(nextGroups, normalizedTypes),
     });
@@ -2758,6 +3117,7 @@ function normalizeSpecialFileMarkers(markers: SpecialFileMarker[] | undefined) {
 
 function SpecialFileMarkerSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [code, setCode] = useState("");
@@ -2768,7 +3128,7 @@ function SpecialFileMarkerSettings() {
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateMarkers = (next: SpecialFileMarker[]) => {
-    store.updateSettings({ specialFileMarkers: normalizeSpecialFileMarkers(next) });
+    updateSettings({ specialFileMarkers: normalizeSpecialFileMarkers(next) });
   };
 
   const add = () => {
@@ -3047,6 +3407,12 @@ function getModeUsage(files: FileRecord[]) {
   return usage;
 }
 
+function getGemBiddingModeUsage(files: FileRecord[]) {
+  const usage = new Map<string, { value: string; fileIds: Set<string> }>();
+  files.forEach((file) => addUsage(usage, file.id, file.gemBiddingMode));
+  return usage;
+}
+
 function getTcecCommitteeUsage(files: FileRecord[]) {
   const usage = new Map<string, { value: string; fileIds: Set<string> }>();
   files.forEach((file) => {
@@ -3241,11 +3607,12 @@ function MasterValueActions({
       <button
         type="button"
         onClick={onDeactivate}
-        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-amber-500/40 px-2 text-xs font-medium text-amber-700 hover:bg-amber-500/10"
-        aria-label={`Mark ${label} inactive`}
-        title={`Used in ${row.usageCount} file${row.usageCount === 1 ? "" : "s"} including Archive. Mark inactive instead of deleting.`}
+        disabled
+        className="inline-flex h-8 cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground opacity-70"
+        aria-label={`Cannot remove ${label}; it is in use`}
+        title={`Used in ${row.usageCount} file${row.usageCount === 1 ? "" : "s"} including Archive. Remove or update those references first.`}
       >
-        <X className="size-3.5" /> Inactivate
+        <Lock className="size-3.5" /> In use
       </button>
     );
   }
@@ -3287,6 +3654,7 @@ function ValueThresholdSettings() {
     formatThresholdLevels(settings.valueThresholdLevels ?? []),
   );
   const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setLevels(formatThresholdLevels(settings.valueThresholdLevels ?? []));
@@ -3309,7 +3677,7 @@ function ValueThresholdSettings() {
     normalizeLevelsForSave(levels),
     normalizeLevelsForSave(formatThresholdLevels(settings.valueThresholdLevels ?? [])),
   );
-  const save = (nextLevels = levels) => {
+  const save = async (nextLevels = levels) => {
     const normalized = normalizeLevelsForSave(nextLevels);
     const invalid = normalized.find((level) => {
       const min = parseOptionalPositiveNumber(level.minValue);
@@ -3329,9 +3697,17 @@ function ValueThresholdSettings() {
 	      setMessage(rangeMessage);
 	      return;
 	    }
-	    setLevels(normalized);
-    setMessage("Thresholds saved.");
-    store.updateSettings({ valueThresholdLevels: normalized });
+    setSaving(true);
+    setMessage("");
+    try {
+      await store.saveSettings({ valueThresholdLevels: normalized });
+      setLevels(normalized);
+      setMessage("Thresholds saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save thresholds.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateCount = (count: number) => {
@@ -3454,14 +3830,162 @@ function ValueThresholdSettings() {
         <div className="text-xs text-muted-foreground">{message}</div>
         <button
           type="button"
-          onClick={() => save()}
-          disabled={!thresholdsChanged}
+          onClick={() => void save()}
+          disabled={!thresholdsChanged || saving}
           className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <Check className="size-4" /> Save thresholds
+          <Check className="size-4" /> {saving ? "Saving..." : "Save thresholds"}
         </button>
       </div>
     </div>
+  );
+}
+
+const defaultBgReceiptDelayDays = [10, 30, 60];
+
+function normalizeBgReceiptDelaySettings(value: number[] | undefined) {
+  const thresholds = Array.from(
+    new Set(
+      (value ?? defaultBgReceiptDelayDays).filter(
+        (days) => Number.isInteger(days) && days >= 0,
+      ),
+    ),
+  )
+    .sort((left, right) => left - right)
+    .slice(0, 6);
+  return thresholds.length ? thresholds : defaultBgReceiptDelayDays;
+}
+
+function BgReceiptDelaySettings() {
+  const settings = useSettings();
+  const activeUser = useActiveUser();
+  const [days, setDays] = useState(() =>
+    normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays).map(String),
+  );
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDays(normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays).map(String));
+    setMessage("");
+  }, [settings.bgReceiptDelayDays]);
+
+  const normalized = days.map((value) => Number(value));
+  const valid =
+    days.length > 0 &&
+    days.length <= 6 &&
+    days.every((value) => /^\d+$/.test(value.trim())) &&
+    normalized.every((value) => Number.isInteger(value) && value >= 0) &&
+    new Set(normalized).size === normalized.length;
+  const savedDays = normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays);
+  const changed =
+    valid &&
+    JSON.stringify([...normalized].sort((a, b) => a - b)) !== JSON.stringify(savedDays);
+
+  const save = async (nextDays = normalized) => {
+    const sorted = [...nextDays].sort((left, right) => left - right);
+    if (
+      !sorted.length ||
+      sorted.length > 6 ||
+      sorted.some((value) => !Number.isInteger(value) || value < 0) ||
+      new Set(sorted).size !== sorted.length
+    ) {
+      setMessage("Enter distinct, non-negative whole-number thresholds.");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      await store.saveSettings({ bgReceiptDelayDays: sorted });
+      setDays(sorted.map(String));
+      setMessage("BG receipt-delay thresholds saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not save thresholds.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (activeUser?.role !== "admin") {
+    return (
+      <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
+        Only administrators can change the shared BG receipt-delay thresholds.
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold">BG receipt-delay thresholds</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Applied to Reports &gt; BG receipt delay for all users. Defaults: 10, 30, and 60 days.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {days.map((value, index) => (
+          <label key={index} className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <span>Threshold {index + 1} (days)</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={value}
+              onChange={(event) => {
+                setDays((current) =>
+                  current.map((day, dayIndex) => (dayIndex === index ? event.target.value : day)),
+                );
+                setMessage("");
+              }}
+              className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground"
+            />
+          </label>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground" role="status">{message}</div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={saving || days.length >= 6}
+            onClick={() => setDays((current) => [...current, String((Number(current.at(-1)) || 0) + 30)])}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Add threshold
+          </button>
+          <button
+            type="button"
+            disabled={saving || days.length <= 1}
+            onClick={() => setDays((current) => current.slice(0, -1))}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Remove last
+          </button>
+          <button
+            type="button"
+            disabled={saving || !changed}
+            onClick={() => void save()}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Save className="size-3.5" /> Save
+          </button>
+          <button
+            type="button"
+            disabled={saving || JSON.stringify(savedDays) === JSON.stringify(defaultBgReceiptDelayDays)}
+            onClick={() => {
+              setDays(defaultBgReceiptDelayDays.map(String));
+              void save(defaultBgReceiptDelayDays);
+            }}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Reset defaults
+          </button>
+        </div>
+      </div>
+      {!valid ? (
+        <p className="mt-2 text-xs text-destructive">Thresholds must be distinct, non-negative whole numbers.</p>
+      ) : null}
+    </section>
   );
 }
 
@@ -3931,6 +4455,7 @@ function AnomalyGovernanceSettings() {
 
 function MilestoneSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
@@ -3949,7 +4474,7 @@ function MilestoneSettings() {
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
   const updateMilestones = (next: string[]) => {
-    store.updateSettings({ milestones: next });
+    updateSettings({ milestones: next });
   };
 
   const add = () => {
@@ -4109,6 +4634,7 @@ function MilestoneSettings() {
 
 function TableFieldPresetSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   const presets = settings.tableFieldPresets ?? [];
   const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
@@ -4125,7 +4651,7 @@ function TableFieldPresetSettings() {
   }, [presets, selectedPreset]);
 
   const updatePresets = (next: TableFieldPreset[]) => {
-    store.updateSettings({ tableFieldPresets: next });
+    updateSettings({ tableFieldPresets: next });
   };
 
   const updateSelectedPreset = (patch: Partial<TableFieldPreset>) => {
@@ -4306,6 +4832,7 @@ function TableFieldPresetSettings() {
 
 function DemandProcessingPresetSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const presets = normalizeDemandProcessingPresets(settings.demandProcessingPresets);
   const dayRanges = normalizeDemandProcessingDayRanges(settings.demandProcessingDayRanges);
   const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
@@ -4317,7 +4844,7 @@ function DemandProcessingPresetSettings() {
   }, [presets, selectedPreset]);
 
   const updatePresets = (next: DemandProcessingPreset[]) => {
-    store.updateSettings({ demandProcessingPresets: next });
+    updateSettings({ demandProcessingPresets: next });
   };
 
   const updateSelectedPreset = (patch: Partial<DemandProcessingPreset>) => {
@@ -4350,7 +4877,7 @@ function DemandProcessingPresetSettings() {
     const message = validateDemandProcessingDayRanges(normalized);
     setDayRangeMessage(message);
     if (message) return;
-    store.updateSettings({ demandProcessingDayRanges: normalized });
+    updateSettings({ demandProcessingDayRanges: normalized });
   };
   const updateDayRange = (id: string, patch: Partial<DemandProcessingDayRange>) => {
     updateDayRanges(dayRanges.map((range) => (range.id === id ? { ...range, ...patch } : range)));
@@ -4691,6 +5218,7 @@ function DemandProcessingDayRangeSettings({
 
 function MmgSummarySettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const fields = normalizeMmgSummaryFields(
     settings.mmgSummaryFields,
     settings.modes,
@@ -4706,7 +5234,7 @@ function MmgSummarySettings() {
   const optionGroups = Array.from(new Set(mmgSummaryFieldOptions.map((option) => option.group)));
 
   const updateFields = (nextFields: typeof fields) => {
-    store.updateSettings({ mmgSummaryFields: nextFields });
+    updateSettings({ mmgSummaryFields: nextFields });
   };
 
   const updateField = (key: string, patch: Partial<(typeof fields)[number]>) => {
@@ -5070,10 +5598,11 @@ function isValidEmailFormat(value: string | undefined) {
 
 function FirmRatingSettings() {
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const config = normalizeFirmRatingConfig(settings.firmRatingConfig);
 
   const updateFields = (fields: FirmRatingConfig["fields"]) => {
-    store.updateSettings({ firmRatingConfig: normalizeFirmRatingConfig({ fields }) });
+    updateSettings({ firmRatingConfig: normalizeFirmRatingConfig({ fields }) });
   };
 
   const updateField = (index: number, patch: Partial<FirmRatingConfig["fields"][number]>) => {
@@ -5174,6 +5703,7 @@ function FirmRatingSettings() {
 function FirmDatabaseSettings() {
   const activeUser = useActiveUser();
   const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
   const files = useSettingsUsageFiles();
   const firmUsage = getFirmUsage(files);
   const canManage =
@@ -5260,7 +5790,7 @@ function FirmDatabaseSettings() {
     );
     const selected = existing ?? trimmed;
     if (!existing) {
-      void store.updateSettings({ firmTypes: normalizeFirmTypes([...firmTypeOptions, trimmed]) });
+      updateSettings({ firmTypes: normalizeFirmTypes([...firmTypeOptions, trimmed]) });
     }
     if (target === "new") updateDraft("firmType", selected);
     else updateEditDraft("firmType", selected);
@@ -5332,7 +5862,7 @@ function FirmDatabaseSettings() {
 
   const saveFirmUniqueNoLabel = async () => {
     if (activeUser?.role !== "admin") return;
-    await store.updateSettings({ firmUniqueNoLabel: labelDraft.trim() || "Firm Unique No." });
+    await store.saveSettings({ firmUniqueNoLabel: labelDraft.trim() || "Firm Unique No." });
   };
 
   return (
@@ -6858,7 +7388,10 @@ function UserSettings() {
 
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-      <h2 className="text-sm font-semibold mb-1">Authorised users</h2>
+      <h2 className="mb-1 inline-flex items-center gap-1.5 text-sm font-semibold">
+        Authorised users
+        <AuthorisedUserRolesTooltip />
+      </h2>
       <p className="text-xs text-muted-foreground mb-5">
         Add users and assign the divisions they should be allowed to work with.
       </p>

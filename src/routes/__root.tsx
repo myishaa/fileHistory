@@ -121,17 +121,17 @@ function RootComponent() {
   const settings = useSettings();
   const activeUser = useActiveUser();
   const storeStatus = useStoreStatus();
-  const [hydrated, setHydrated] = useState(false);
   const [filterScopeWarningActive, setFilterScopeWarningActive] = useState(false);
   const themeClass = settings.theme === "dark" ? "dark" : "";
   const tintClass = `theme-tint-${settings.themeTint}`;
   const isPublicLivePage = pathname === "/mmg-live";
+  const isNoticeBoardEmbed =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("noticeBoardEmbed") === "1";
   const isOpeningSession =
-    hydrated && !isPublicLivePage && !activeUser && !storeStatus.loaded && storeStatus.loading;
-
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
+    !isPublicLivePage &&
+    !activeUser &&
+    (!storeStatus.authChecked || storeStatus.loading || Boolean(storeStatus.error));
 
   useEffect(() => {
     const updateWarning = (event: Event) => {
@@ -149,23 +149,59 @@ function RootComponent() {
           `${themeClass} ${tintClass} min-h-screen w-full overflow-y-auto text-foreground ` +
           (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
         }
-        style={{
-          "--chart-bar-color": settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
-          ...chartColorVariables(settings.chartColorOrder),
-        } as CSSProperties}
+        style={
+          {
+            "--chart-bar-color":
+              settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
+            ...chartColorVariables(settings.chartColorOrder),
+          } as CSSProperties
+        }
       >
         {isPublicLivePage ? (
           <Outlet />
         ) : isOpeningSession ? (
           <main className="grid min-h-screen place-items-center bg-background px-4">
-            <div className="rounded-lg border border-border bg-card px-5 py-4 text-sm text-muted-foreground shadow-[var(--shadow-card)]">
-              Opening software...
+            <div className="max-w-md text-center">
+              {storeStatus.error ? (
+                <>
+                  <p role="alert" className="text-sm text-destructive">
+                    {storeStatus.error}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void store.reload()}
+                    className="mt-3 text-sm font-medium text-primary underline underline-offset-2"
+                  >
+                    Retry connection
+                  </button>
+                </>
+              ) : (
+                <p role="status" className="text-sm text-muted-foreground">
+                  Opening software...
+                </p>
+              )}
             </div>
           </main>
         ) : activeUser ? (
           <>
-            <TopBar />
-            <main className="p-6 lg:p-8">
+            {!isNoticeBoardEmbed ? <TopBar /> : null}
+            {storeStatus.error ? (
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive lg:mx-8"
+              >
+                <p>{storeStatus.error}</p>
+                <button
+                  type="button"
+                  onClick={() => store.clearError()}
+                  className="shrink-0 font-medium underline underline-offset-2"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ) : null}
+            <main className={isNoticeBoardEmbed ? "p-0" : "p-6 lg:p-8"}>
               <Outlet />
             </main>
           </>

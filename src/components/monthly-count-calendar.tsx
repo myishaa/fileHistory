@@ -21,10 +21,12 @@ export function MonthlyCountCalendar({
   monthKey,
   days,
   onClose,
+  showClose = true,
 }: {
   monthKey: string;
   days: MonthlyCalendarDay[];
   onClose: () => void;
+  showClose?: boolean;
 }) {
   const [year, month] = monthKey.split("-").map(Number);
   if (!year || !month) return null;
@@ -44,15 +46,17 @@ export function MonthlyCountCalendar({
     >
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">{monthLabel}</h3>
-        <button
-          type="button"
-          onClick={onClose}
-          className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Close monthly calendar"
-          title="Close monthly calendar"
-        >
-          <X className="size-4" />
-        </button>
+        {showClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Close monthly calendar"
+            title="Close monthly calendar"
+          >
+            <X className="size-4" />
+          </button>
+        ) : null}
       </div>
       <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((weekday) => (

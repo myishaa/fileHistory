@@ -1,6 +1,7 @@
 export type QuickEntryExcelPreset = {
   id: string;
   name: string;
+  note?: string;
   fields: string[];
   fileTypes?: string[];
   scopeMode?: "fy" | "so";
@@ -76,6 +77,8 @@ export const quickEntryExcelFieldGroups: QuickEntryExcelFieldGroup[] = [
       ["cncDate", "CNC Date"],
       ["cncApprovalDate", "CNC Approval Date"],
       ["gemUndertakingDate", "GeM Undertaking Date"],
+      ["refloatGemUndertakingDate", "Refloat GeM Undertaking"],
+      ["refloatRecommendationDate", "Refloat Recommendation"],
       ["gemBiddingMode", "GeM Bidding Mode"],
       ["psb", "PSB Applicable"],
       ["bg", "BG Applicable"],
@@ -97,6 +100,7 @@ export const quickEntryExcelFieldGroups: QuickEntryExcelFieldGroup[] = [
       ["refloatPreBidMeetingDate", "Refloat Pre-Bid Meeting Date"],
       ["refloatBiddingDate", "Refloat Bidding Date"],
       ["refloatBidOpeningDate", "Refloat Bid Opening Date"],
+      ["refloatBiddingStageOver", "Refloat Bidding Stage Over"],
       ["refloatPostTcecDate", "Refloat Post-TCEC Date"],
       ["refloatPostTcecMinutesDate", "Refloat Post-TCEC Minutes Date"],
       ["refloatPostTcecCommitteeNo", "Refloat Post-TCEC Committee No."],
@@ -124,7 +128,7 @@ export const quickEntryExcelFieldGroups: QuickEntryExcelFieldGroup[] = [
   {
     label: "Delivery and contract",
     fields: [
-      ["dpDate", "Original D.P."],
+      ["dpDate", "S.O. D.P. / Last Stage Effective D.P."],
       ["deliveryPeriodStartDate", "Delivery Period Start Date"],
       ["dpExtension", "D.P. Extension"],
       ["dpExtensionCount", "D.P. Extension Count"],
@@ -259,13 +263,11 @@ export const quickEntryExcelFieldLabels = new Map<string, string>(
   quickEntryExcelFieldGroups.flatMap((group) => group.fields),
 );
 
-const presetsUpdatedEvent = "quick-entry-excel-presets-updated";
-
 function storageKey(userId: string) {
   return `recordkeeper.quickEntryExcel.user.${userId}.presets.v1`;
 }
 
-export function readQuickEntryExcelPresets(userId: string): QuickEntryExcelPreset[] {
+export function readLegacyQuickEntryExcelPresets(userId: string): QuickEntryExcelPreset[] {
   if (typeof window === "undefined") return [];
   try {
     const value: unknown = JSON.parse(window.localStorage.getItem(storageKey(userId)) ?? "[]");
@@ -280,18 +282,4 @@ export function readQuickEntryExcelPresets(userId: string): QuickEntryExcelPrese
   } catch {
     return [];
   }
-}
-
-export function saveQuickEntryExcelPresets(userId: string, presets: QuickEntryExcelPreset[]) {
-  window.localStorage.setItem(storageKey(userId), JSON.stringify(presets));
-  window.dispatchEvent(new Event(presetsUpdatedEvent));
-}
-
-export function subscribeQuickEntryExcelPresets(onUpdate: () => void) {
-  window.addEventListener(presetsUpdatedEvent, onUpdate);
-  window.addEventListener("storage", onUpdate);
-  return () => {
-    window.removeEventListener(presetsUpdatedEvent, onUpdate);
-    window.removeEventListener("storage", onUpdate);
-  };
 }

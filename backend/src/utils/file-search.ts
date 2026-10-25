@@ -45,7 +45,8 @@ import {
   latestBillReturnCycle,
 } from "./refloat-returned-bill.js";
 
-const biddingDelayMilestoneKey = "bidding";
+const biddingNonRfpDelayMilestoneKey = "biddingNonRfp";
+const biddingRfpDelayMilestoneKey = "biddingRfp";
 const supplementaryBillReturnedDelayMilestoneKey = "supplementaryBillReturnedForCorrection";
 export type IncludeExcludeFilter = "none" | "include" | "exclude";
 export type DatePresenceMode = "filled" | "blank" | "yes" | "no";
@@ -268,6 +269,7 @@ const supplyOrderMilestoneNames = [
   "Advance Payment",
   "Supply Order",
   "Delivery Period",
+  "Job Completion",
   "PSB",
   "PWB",
   "PSB+PWB",
@@ -336,6 +338,7 @@ const searchableFileKeys = [
   "postTcecCommitteeNumber",
   "refloatBiddingDate",
   "refloatBidOpeningDate",
+  "refloatBiddingStageOver",
   "refloatPostTcecDate",
   "refloatPostTcecMinutesDate",
   "refloatPostTcecCommitteeNo",
@@ -1159,6 +1162,7 @@ const yesNoFieldConditionKeys = new Set<string>([
   "refloatPreBidMeeting",
   "rst",
   "biddingStageOver",
+  "refloatBiddingStageOver",
   "demandCancelled",
   "soCancelled",
   "shortclosure",
@@ -2053,8 +2057,12 @@ function isRefloatBiddingInProgressFile(file: FileRecord) {
     isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
     hasFilledString(file.refloatBiddingDate) &&
-    !isYes(file.biddingStageOver)
+    !isRefloatBiddingStageComplete(file)
   );
+}
+
+function isRefloatBiddingStageComplete(file: FileRecord) {
+  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -3016,17 +3024,55 @@ function isDateToday(date: string | undefined) {
   return dateTime === todayTime;
 }
 
+function getGemUndertakingDelayStartDate(file: FileRecord) {
+  if (!isYes(file.gem) || !isBiddingApplicableForFile(file)) return undefined;
+  if (isYes(file.refloat)) {
+    return isYes(file.tcec) ? file.postTcecDate : file.refloatRecommendationDate;
+  }
+  return file.cfaDate;
+}
+
+function isGemUndertakingDelayMatch(file: FileRecord, thresholdDays: number) {
+  const startDate = getGemUndertakingDelayStartDate(file);
+  const endDate = isYes(file.refloat)
+    ? file.refloatGemUndertakingDate
+    : file.gemUndertakingDate;
+  if (
+    !startDate ||
+    hasFilledString(endDate) ||
+    isCancelledFile(file) ||
+    isFileClosed(file)
+  ) {
+    return false;
+  }
+  const daysInStage = getDaysSinceDate(startDate);
+  return daysInStage !== undefined && daysInStage > thresholdDays;
+}
+
 function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMilestoneKey: string) {
+  const gemUndertakingMatch =
+    (selectedMilestoneKey === "all" || selectedMilestoneKey === "gemUndertaking") &&
+    isGemUndertakingDelayMatch(file, thresholdDays);
   const biddingMatch =
-    (selectedMilestoneKey === "all" || selectedMilestoneKey === biddingDelayMilestoneKey) &&
-    isBiddingDelayMatch(file, thresholdDays);
+    (selectedMilestoneKey === "all" ||
+      selectedMilestoneKey === "bidding" ||
+      selectedMilestoneKey === biddingNonRfpDelayMilestoneKey ||
+      selectedMilestoneKey === biddingRfpDelayMilestoneKey ||
+      selectedMilestoneKey === "refloatBidding") &&
+    isBiddingDelayMatch(file, thresholdDays, selectedMilestoneKey);
+  const nonTcecTechnicalEvaluationMatch =
+    (selectedMilestoneKey === "all" || selectedMilestoneKey === "nonTcecTechnicalEvaluation") &&
+    isNonTcecTechnicalEvaluationDelayMatch(file, thresholdDays);
   const milestone = milestoneDefinitions
     .filter((item) => !isSupplyOrderDrivenDelayMilestoneKey(item.key))
-    .filter((item) => item.key !== biddingDelayMilestoneKey)
+    .filter((item) => item.key !== "bidding")
     .find((item) => isManualActiveMilestone(file, item));
   const mainMatch = (() => {
     if (!milestone) return false;
     if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return false;
+    if (milestone.key === "postTcec" && (!isYes(file.tcec) || !isYes(file.biddingStageOver))) {
+      return false;
+    }
     if (isMilestoneComplete(file, milestone)) return false;
 
     const stageStartDate = getMilestoneStageStartDate(file, milestone);
@@ -3034,7 +3080,9 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
     return daysInStage !== undefined && daysInStage > thresholdDays;
   })();
   return (
+    gemUndertakingMatch ||
     biddingMatch ||
+    nonTcecTechnicalEvaluationMatch ||
     mainMatch ||
     isPaymentPreSubmissionDelayMatch(file, thresholdDays, selectedMilestoneKey) ||
     isPaymentPostSubmissionDelayMatch(file, thresholdDays, selectedMilestoneKey) ||
@@ -3042,6 +3090,47 @@ function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMil
     isOrderDelayStatusMatch(file, thresholdDays, selectedMilestoneKey) ||
     isSupplementaryBillReturnedDelayMatch(file, thresholdDays, selectedMilestoneKey)
   );
+}
+
+function isNonTcecTechnicalEvaluationDelayMatch(file: FileRecord, thresholdDays: number) {
+  if (
+    isCancelledFile(file) ||
+    isFileClosed(file) ||
+    isYes(file.tcec) ||
+    !isBiddingApplicableForFile(file)
+  ) {
+    return false;
+  }
+  const cycle = getNonTcecTechnicalEvaluationCycle(file);
+  if (!isYes(cycle.stageOver)) return false;
+  const daysInStage = getDaysSinceDate(cycle.stageStartDate);
+  return (
+    daysInStage !== undefined &&
+    daysInStage > thresholdDays &&
+    !cycle.endDate &&
+    rawSupplyOrders(file).some(
+      (order) => !isSupplyOrderCancelled(file, order) && !hasFilledString(order.financialSanctionDate),
+    )
+  );
+}
+
+function getNonTcecTechnicalEvaluationCycle(file: FileRecord) {
+  const refloat = isYes(file.refloat);
+  const refloatCycle = refloat && hasFilledString(file.refloatBidOpeningDate);
+  if (refloatCycle) {
+    return {
+      stageStartDate: file.refloatBidOpeningDate,
+      endDate: getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+      stageOver: file.refloatBiddingStageOver,
+    };
+  }
+  return {
+    stageStartDate: file.bidOpeningDate,
+    endDate: refloat
+      ? file.refloatRecommendationDate
+      : getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+    stageOver: file.biddingStageOver,
+  };
 }
 
 function isPaymentPreSubmissionDelayMatch(
@@ -3231,10 +3320,26 @@ function isCumulativePaymentRankingMatch(file: FileRecord) {
   );
 }
 
-function isBiddingDelayMatch(file: FileRecord, thresholdDays: number, breakupKey?: string) {
+function isBiddingDelayMatch(
+  file: FileRecord,
+  thresholdDays: number,
+  selectedMilestoneKey: string,
+  breakupKey?: string,
+) {
   const status = getBiddingDelayStatus(file);
   if (!status) return false;
   if (breakupKey && status.key !== breakupKey) return false;
+  const statusMilestoneKey = isYes(file.refloat)
+    ? "refloatBidding"
+    : isYes(file.rfpVetting)
+      ? biddingRfpDelayMilestoneKey
+      : biddingNonRfpDelayMilestoneKey;
+  if (selectedMilestoneKey === "bidding" && statusMilestoneKey === "refloatBidding") return false;
+  if (
+    selectedMilestoneKey !== "all" &&
+    selectedMilestoneKey !== "bidding" &&
+    selectedMilestoneKey !== statusMilestoneKey
+  ) return false;
   const daysInStage = getDaysSinceDate(status.stageStartDate);
   return daysInStage !== undefined && daysInStage > thresholdDays;
 }
@@ -3242,25 +3347,27 @@ function isBiddingDelayMatch(file: FileRecord, thresholdDays: number, breakupKey
 function getBiddingDelayStatus(file: FileRecord) {
   if (isCancelledFile(file) || isFileClosed(file)) return undefined;
   if (!isBiddingApplicableForFile(file)) return undefined;
-  if (!hasFilledString(file.cfaDate) || isYes(file.biddingStageOver)) return undefined;
-  const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
-  const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
-  const prerequisiteDoneDate =
-    latestDateValue([file.cfaDate, file.gemUndertakingDate, file.rfpVettingApprovalDate]) ??
-    file.cfaDate;
-  if (isYes(file.gem) && !hasFilledString(file.gemUndertakingDate)) {
+  const refloat = isYes(file.refloat);
+  const nonTcecRefloatRestart =
+    refloat &&
+    !isYes(file.tcec) &&
+    isYes(file.biddingStageOver) &&
+    hasFilledString(file.refloatRecommendationDate);
+  if (nonTcecRefloatRestart) {
+    if (hasFilledString(file.refloatBiddingDate)) return undefined;
+    return { key: "tenderLivePending", stageStartDate: file.refloatRecommendationDate };
+  }
+  if (refloat && !isYes(file.tcec)) return undefined;
+  if ((!refloat && !hasFilledString(file.cfaDate)) || (refloat && isYes(file.biddingStageOver))) return undefined;
+  const bidDate = refloat ? file.refloatBiddingDate : file.bidDate;
+  const bidOpeningDate = refloat ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  if (!refloat && hasFilledString(bidDate)) return undefined;
+  const prerequisiteDoneDate = refloat
+    ? getRefloatBiddingStartDate(file) ?? file.refloatBiddingDate
+    : file.cfaDate;
+  if (refloat && !hasFilledString(bidDate) && !prerequisiteDoneDate) return undefined;
+  if (!refloat && isYes(file.gem) && !hasFilledString(file.gemUndertakingDate)) {
     return { key: "gemUndertakingPending", stageStartDate: file.cfaDate };
-  }
-  const rfpStartDate = isYes(file.gem) ? file.gemUndertakingDate || file.cfaDate : file.cfaDate;
-  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingInitiationDate)) {
-    return { key: "rfpVettingInitiationPending", stageStartDate: rfpStartDate };
-  }
-  if (
-    isYes(file.rfpVetting) &&
-    hasFilledString(file.rfpVettingInitiationDate) &&
-    !hasFilledString(file.rfpVettingApprovalDate)
-  ) {
-    return { key: "rfpVettingApprovalPending", stageStartDate: file.rfpVettingInitiationDate };
   }
   if (!hasFilledString(bidDate)) {
     return { key: "tenderLivePending", stageStartDate: prerequisiteDoneDate };
@@ -3279,6 +3386,17 @@ function getBiddingDelayStatus(file: FileRecord) {
     };
   }
   return undefined;
+}
+
+function getRefloatBiddingStartDate(file: FileRecord) {
+  if (isYes(file.tcec)) {
+    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
+  }
+  if (!hasFilledString(file.bidOpeningDate)) return undefined;
+  return latestDateValue([
+    file.bidOpeningDate,
+    isYes(file.refloatPreBidMeeting) ? file.refloatPreBidMeetingDate : undefined,
+  ]);
 }
 
 function isSupplyOrderDrivenDelayMilestoneKey(key: string) {
@@ -3348,7 +3466,9 @@ function getOrderDelayMilestones() {
       key: "supplyOrder",
       current: "supplyorder",
       start: (file: FileRecord, order: SupplyOrderDetail) =>
-        order.financialSanctionDate || getMainTimelineLastFilledDateValue(file),
+        isYes(file.tcec)
+          ? getTcecSupplyOrderDelayStartDate(file, order)
+          : order.financialSanctionDate,
       complete: (order: SupplyOrderDetail) => order.soDate,
     },
     {
@@ -3377,12 +3497,14 @@ function getOrderDelayMilestones() {
       current: "irpreparation",
       start: (_file: FileRecord, order: SupplyOrderDetail) => order.materialReceiptDate,
       complete: (order: SupplyOrderDetail) => order.irPreparationDate,
+      applies: (file: FileRecord) => isDeliveryInspectionApplicable(file) && isYes(file.ir),
     },
     {
       key: "irReceipt",
       current: "irreceipt",
       start: (_file: FileRecord, order: SupplyOrderDetail) => order.irPreparationDate,
       complete: (order: SupplyOrderDetail) => order.irReceiptDate,
+      applies: (file: FileRecord) => isDeliveryInspectionApplicable(file) && isYes(file.ir),
     },
     {
       key: "billPreparation",
@@ -3448,6 +3570,36 @@ function getEarliestOpenSupplementaryBillReturnDate(bill: SupplementaryBillDetai
   return latest && !hasFilledString(latest.resubmittedDate) ? latest.returnedDate : undefined;
 }
 
+function getTcecSupplyOrderDelayStartDate(file: FileRecord, order: SupplyOrderDetail) {
+  const supplyOrderIndex = milestoneDefinitions.findIndex((milestone) => milestone.key === "supplyOrder");
+  const cutoff =
+    parseLocalDateTime(order.soDate ?? "") ??
+    parseLocalDateTime(formatLocalDate(new Date()));
+  if (supplyOrderIndex < 0 || cutoff === undefined) return undefined;
+
+  const candidates = [file.receivedDate];
+  milestoneDefinitions.slice(0, supplyOrderIndex).forEach((milestone) => {
+    if (milestone.key === "financialSanction") return;
+    if (!isMilestoneApplicable(file, milestone) || !isMilestoneComplete(file, milestone)) return;
+    const date = milestone.key === "bidding"
+      ? isYes(file.refloat)
+        ? file.refloatBidOpeningDate || file.refloatBiddingDate
+        : file.bidOpeningDate || file.bidDate
+      : milestone.key === "refloatBidding"
+        ? file.refloatBidOpeningDate || file.refloatBiddingDate
+        : getFieldDateValue(file, milestone.current);
+    const time = parseLocalDateTime(date ?? "");
+    if (date && time !== undefined && time <= cutoff) candidates.push(date);
+  });
+
+  return latestDateValue(
+    candidates.filter((date) => {
+      const time = parseLocalDateTime(date ?? "");
+      return time !== undefined && time <= cutoff;
+    }),
+  );
+}
+
 function getSupplyOrderStageStartDate(file: FileRecord) {
   const supplyOrderMilestone = milestoneDefinitions.find((item) => item.key === "supplyOrder");
   return supplyOrderMilestone ? getMilestoneStageStartDate(file, supplyOrderMilestone) : undefined;
@@ -3471,6 +3623,8 @@ function getLastFilledDateValue(file: FileRecord) {
     file.cfaSentDate,
     file.cfaDate,
     file.gemUndertakingDate,
+    file.refloatGemUndertakingDate,
+    file.refloatRecommendationDate,
     file.rfpVettingInitiationDate,
     file.rfpVettingApprovalDate,
     file.bidDate,
@@ -3528,6 +3682,8 @@ function getOrderTimelineLastFilledDateValue(file: FileRecord, order: SupplyOrde
     file.cfaSentDate,
     file.cfaDate,
     file.gemUndertakingDate,
+    file.refloatGemUndertakingDate,
+    file.refloatRecommendationDate,
     file.rfpVettingInitiationDate,
     file.rfpVettingApprovalDate,
     file.bidDate,
@@ -3568,8 +3724,54 @@ function getMilestoneStageStartDate(
   file: FileRecord,
   milestone: (typeof milestoneDefinitions)[number],
 ) {
-  void milestone;
-  return getLastFilledDateValue(file);
+  if (milestone.key === "postTcec" &&
+    (!isYes(file.tcec) || !isYes(file.biddingStageOver) || !hasFilledString(file.bidOpeningDate))) {
+    return undefined;
+  }
+  if (milestone.key === "refloatPostTcec" &&
+    (!isYes(file.refloat) || !isYes(file.tcec) || !isYes(file.biddingStageOver) || !hasFilledString(file.refloatBidOpeningDate))) {
+    return undefined;
+  }
+  const milestoneIndex = milestoneDefinitions.findIndex((item) => item.key === milestone.key);
+  const fileMilestoneEnd = milestoneDefinitions.findIndex(
+    (item) => item.key === "financialSanction",
+  );
+  const possiblePredecessors = isFlexiblePreControlMilestone(milestone)
+    ? milestoneDefinitions
+        .slice(0, fileMilestoneEnd < 0 ? milestoneDefinitions.length : fileMilestoneEnd)
+        .filter(
+          (candidate) =>
+            candidate.key === "scrutiny" || isFlexiblePreControlMilestone(candidate),
+        )
+    : milestoneDefinitions.slice(0, milestoneIndex);
+  const cutoff = parseLocalDateTime(formatLocalDate(new Date()));
+  const candidates = [file.receivedDate].filter((date): date is string => {
+    const time = parseLocalDateTime(date ?? "");
+    return time !== undefined && (cutoff === undefined || time <= cutoff);
+  });
+
+  possiblePredecessors.forEach((candidate) => {
+    if (
+      candidate.key === milestone.key ||
+      !isMilestoneApplicable(file, candidate) ||
+      !isMilestoneComplete(file, candidate)
+    ) {
+      return;
+    }
+    const date = candidate.key === "bidding"
+      ? isYes(file.refloat)
+        ? file.refloatBidOpeningDate
+        : file.bidOpeningDate
+      : candidate.key === "refloatBidding"
+        ? file.refloatBidOpeningDate
+        : getFieldDateValue(file, candidate.current);
+    const time = parseLocalDateTime(date ?? "");
+    if (date && time !== undefined && (cutoff === undefined || time <= cutoff)) {
+      candidates.push(date);
+    }
+  });
+
+  return latestDateValue(candidates);
 }
 
 function getPreviousApplicableMilestone(
@@ -3618,6 +3820,33 @@ function latestDateValue(values: Array<string | undefined>) {
     .sort((a, b) => (parseLocalDateTime(b) ?? 0) - (parseLocalDateTime(a) ?? 0))[0];
 }
 
+function getMilestoneClearingBiddingStartDate(file: FileRecord) {
+  if (isYes(file.refloat) && isYes(file.tcec)) {
+    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
+  }
+  if (!isYes(file.tcec)) return file.cfaDate;
+  if (!hasFilledString(file.cfaDate)) return undefined;
+  const gemUndertakingApplies =
+    isYes(file.gem) &&
+    (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison";
+  if (gemUndertakingApplies && !hasFilledString(file.gemUndertakingDate)) return undefined;
+  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingApprovalDate)) return undefined;
+  return latestDateValue([
+    file.cfaDate,
+    gemUndertakingApplies ? file.gemUndertakingDate : undefined,
+    isYes(file.rfpVetting) ? file.rfpVettingApprovalDate : undefined,
+  ]);
+}
+
+function getMilestoneClearingBiddingEndDate(file: FileRecord) {
+  if (!isYes(file.tcec)) {
+    return isYes(file.refloat) && hasFilledString(file.refloatBiddingDate)
+      ? file.refloatBiddingDate
+      : file.bidDate;
+  }
+  return isYes(file.refloat) ? file.refloatPostTcecDate : file.postTcecDate;
+}
+
 function getMainTimelineLastFilledDateValue(file: FileRecord) {
   return [
     file.receivedDate,
@@ -3636,6 +3865,8 @@ function getMainTimelineLastFilledDateValue(file: FileRecord) {
     file.cfaSentDate,
     file.cfaDate,
     file.gemUndertakingDate,
+    file.refloatGemUndertakingDate,
+    file.refloatRecommendationDate,
     file.rfpVettingInitiationDate,
     file.rfpVettingApprovalDate,
     file.bidDate,
@@ -4159,7 +4390,7 @@ function isFlexiblePreControlMilestone(
 function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
   if (milestone.key === "bidding") return isYes(file.biddingStageOver);
   if (milestone.key === "refloatBidding") {
-    return isYes(file.refloat) && isYes(file.biddingStageOver);
+    return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
   }
   if (milestone.key === "financialSanction")
     return matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
@@ -4463,9 +4694,106 @@ function matchesDashboardFilter(file: FileRecord, filter: string, bgReturnOffset
   if (filter === "analyticsMilestoneClearing:paymentCumulative") {
     return isCumulativePaymentRankingMatch(file);
   }
+  if (filter === "analyticsMilestoneClearing:bidding") {
+    if (!isBiddingApplicableForFile(file)) return false;
+    const completedSamples = isYes(file.tcec)
+      ? [[getMilestoneClearingBiddingStartDate(file), getMilestoneClearingBiddingEndDate(file)]]
+      : [
+          [file.cfaDate, file.bidDate],
+          ...(
+            isYes(file.refloat) &&
+            isYes(file.biddingStageOver) &&
+            hasFilledString(file.refloatRecommendationDate)
+              ? [[file.refloatRecommendationDate, file.refloatBiddingDate]]
+              : []
+          ),
+        ];
+    return isYes(file.tcec) && !isYes(file.biddingStageOver)
+      ? false
+      : completedSamples.some(([startDate, endDate]) => {
+          const duration = getDateDifference(startDate, endDate);
+          const cumulativeDuration = getDateDifference(file.receivedDate, endDate);
+          return (
+            duration !== undefined &&
+            duration >= 0 &&
+            cumulativeDuration !== undefined &&
+            cumulativeDuration >= 0
+          );
+        });
+  }
+  if (filter === "analyticsMilestoneClearing:gemUndertaking") {
+    if (
+      !isYes(file.gem) ||
+      String(file.gemBiddingMode ?? "").trim().toLowerCase() === "comparison"
+    ) {
+      return false;
+    }
+    const completedSamples = [
+      [file.cfaDate, file.gemUndertakingDate],
+      ...(!isYes(file.tcec) && isYes(file.refloat)
+        ? [[file.refloatRecommendationDate, file.refloatGemUndertakingDate]]
+        : []),
+    ];
+    return completedSamples.some(([startDate, endDate]) => {
+      const duration = getDateDifference(startDate, endDate);
+      const cumulativeDuration = getDateDifference(file.receivedDate, endDate);
+      return (
+        duration !== undefined &&
+        duration >= 0 &&
+        cumulativeDuration !== undefined &&
+        cumulativeDuration >= 0
+      );
+    });
+  }
+  if (filter === "analyticsMilestoneClearing:rfpVetting") {
+    const gemUndertakingApplies =
+      isYes(file.gem) &&
+      String(file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
+      hasFilledString(file.cfaDate);
+    const startDate = gemUndertakingApplies ? file.gemUndertakingDate : file.cfaDate;
+    const duration = getDateDifference(startDate, file.rfpVettingApprovalDate);
+    const cumulativeDuration = getDateDifference(file.receivedDate, file.rfpVettingApprovalDate);
+    return (
+      isYes(file.rfpVetting) &&
+      duration !== undefined &&
+      duration >= 0 &&
+      cumulativeDuration !== undefined &&
+      cumulativeDuration >= 0
+    );
+  }
+  if (filter === "analyticsMilestoneClearing:nonTcecTechnicalEvaluation") {
+    if (!isBiddingApplicableForFile(file) || isYes(file.tcec)) return false;
+    const matchesPair = (startDate: string | undefined, endDate: string | undefined) => {
+      const duration = getDateDifference(startDate, endDate);
+      const cumulativeDuration = getDateDifference(file.receivedDate, endDate);
+      return (
+        duration !== undefined &&
+        duration >= 0 &&
+        cumulativeDuration !== undefined &&
+        cumulativeDuration >= 0
+      );
+    };
+    const firstCycleEnd = isYes(file.refloat)
+      ? file.refloatRecommendationDate
+      : getEarliestSupplyOrderDate(file, "financialSanctionDate");
+    if (
+      isYes(file.biddingStageOver) &&
+      matchesPair(file.bidOpeningDate, firstCycleEnd)
+    ) {
+      return true;
+    }
+    return (
+      isYes(file.refloat) &&
+      isYes(file.refloatBiddingStageOver) &&
+      matchesPair(
+        file.refloatBidOpeningDate,
+        getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+      )
+    );
+  }
   if (filter.startsWith("biddingDelay:")) {
     const [, daysValue = "0", breakupKey = ""] = filter.split(":");
-    return isBiddingDelayMatch(file, getDelayThresholdDays(daysValue), breakupKey);
+    return isBiddingDelayMatch(file, getDelayThresholdDays(daysValue), "all", breakupKey);
   }
   if (filter.startsWith("attribute:")) {
     const [, key, value] = filter.split(":");
@@ -4582,7 +4910,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string, bgReturnOffset
     const normalized = normalizeMilestoneName(milestone);
     if (normalized === "bankguarantee") return isBgReceived(file);
     if (normalized === "refloatbidding") {
-      return !isCancelledFile(file) && isYes(file.refloat) && isYes(file.biddingStageOver);
+      return !isCancelledFile(file) && isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (normalized === "refloatposttcec") {
       return (
@@ -4865,7 +5193,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string, bgReturnOffset
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(17));
     if (!milestone) return true;
     if (milestone.key === "refloatBidding") {
-      return isYes(file.refloat) && isYes(file.biddingStageOver);
+      return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (milestone.key === "refloatPostTcec") {
       return (
@@ -5533,6 +5861,17 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
   if (isYes(file.demandCancelled)) return false;
   if (!isPaymentMilestone(normalized) && isCancelledFile(file)) return false;
   if (normalized === "supplyorder") return hasPlacedSupplyOrder(file);
+  if (normalized === "jobcompletion") {
+    return (
+      isJobCompletionWorkflow(file) &&
+      fileSupplyOrders(file).some(
+        (order) =>
+          !isSupplyOrderCancelled(file, order) &&
+          hasSupplyOrderDate(order) &&
+          isJobCompletionDone(order),
+      )
+    );
+  }
   if (normalized === "advancepayment") {
     return advancePaymentEntries([file]).some(
       ({ file: entryFile, order }) =>

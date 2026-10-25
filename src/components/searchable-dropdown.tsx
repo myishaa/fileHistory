@@ -1,5 +1,6 @@
 import { ChevronDown, Info, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { HelperContent } from "@/components/helper-content";
 import {
   type ChangeEvent,
   type FocusEvent,
@@ -59,7 +60,7 @@ export function SearchableDropdown({
   showClearOption = false,
   preserveOptionOrder = false,
   onEnter,
-  optionHelpClassName = "max-w-72",
+  optionHelpClassName = "w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]",
 }: SearchableDropdownProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const internalInputRef = useRef<HTMLInputElement | null>(null);
@@ -350,13 +351,9 @@ export function SearchableDropdown({
                       </TooltipTrigger>
                       <TooltipContent
                         side="right"
-                        className={`${optionHelpClassName} leading-relaxed`}
+                        className={`${optionHelpClassName} max-h-[min(80dvh,var(--radix-popper-available-height,80dvh))] overflow-y-auto overscroll-contain touch-pan-y border border-border bg-background p-2 text-foreground shadow-lg leading-relaxed`}
                       >
-                        <ul className="list-disc space-y-1 pl-4">
-                          {option.helpText.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
+                        <HelperContent lines={option.helpText} />
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>

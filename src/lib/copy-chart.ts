@@ -155,6 +155,20 @@ function appendDomElement(
   if (source instanceof SVGElement) {
     const clone = source.cloneNode(true) as SVGElement;
     inlineTreeStyles(source, clone);
+    const sourceText = Array.from(source.querySelectorAll<SVGTextElement>("text"));
+    const cloneText = Array.from(clone.querySelectorAll<SVGTextElement>("text"));
+    sourceText.forEach((text, index) => {
+      const copiedText = cloneText[index];
+      if (!copiedText) return;
+      const computed = window.getComputedStyle(text);
+      copiedText.setAttribute("fill", computed.fill);
+      copiedText.style.fill = computed.fill;
+      copiedText.style.fontFamily = computed.fontFamily;
+      copiedText.style.fontSize = computed.fontSize;
+      copiedText.style.fontWeight = computed.fontWeight;
+      copiedText.style.opacity = computed.opacity;
+      copiedText.style.visibility = computed.visibility;
+    });
     clone.querySelectorAll(".recharts-tooltip-cursor, .recharts-tooltip-wrapper").forEach((element) => element.remove());
     if (removePieRectangles) clone.querySelectorAll("rect").forEach((element) => element.remove());
     const bounds = source.getBoundingClientRect();

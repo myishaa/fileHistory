@@ -20,6 +20,7 @@ import {
 } from "@/lib/money";
 import { DateInput } from "@/components/date-input";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { formatIndiaDate } from "@/lib/india-date";
 
 export const Route = createFileRoute("/year-setup")({
   component: YearSetupPage,
@@ -34,7 +35,7 @@ type DraftAllocation = {
 type YearSetupSubview = "setup" | "merge" | "split";
 
 function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
+  return formatIndiaDate();
 }
 
 function YearSetupPage() {

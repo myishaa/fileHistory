@@ -1,5 +1,6 @@
 import { createFileRoute, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  createContext,
   Fragment,
   type ReactElement,
   type ReactNode,
@@ -7,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useContext,
 } from "react";
 import {
   type Division,
@@ -49,6 +51,8 @@ import {
   isSupplyOrderMilestoneCurrent as isCanonicalSupplyOrderMilestoneCurrent,
   isValidDeliveryPeriodEntry,
   rawSupplyOrders as normalizedRawSupplyOrders,
+  getParentStagePaymentDate,
+  isParentStagePaymentOrder,
 } from "@/lib/effective-deliveries";
 import { downloadBackendExport, downloadBackendFileSearchExport, type ExportPlot, type ExportTable } from "@/lib/export-download";
 import { promptPassword } from "@/lib/delete-password";
@@ -86,8 +90,10 @@ import {
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
-import { HelperContent } from "@/components/helper-content";
+import { HelperContent, HelperPdfButton } from "@/components/helper-content";
 import { ChartCopyButton, TableChartToggle, type ResultView } from "@/components/table-chart-toggle";
+import { AnalyticsChartRenderer } from "@/components/analytics-chart-renderer";
+import { SnapshotChartRenderer } from "@/components/snapshot-chart-renderer";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -95,6 +101,7 @@ import {
   Bar,
   BarChart,
   Cell,
+  Customized,
   Legend,
   Line,
   LineChart,
@@ -145,6 +152,32 @@ type DashboardTab =
   | "finance"
   | "fyActivity"
   | "finance1";
+
+function FinancePositionYAxisTitle({
+  offset,
+  axisWidth,
+}: {
+  offset?: { left: number; top: number; height: number };
+  axisWidth: number;
+}) {
+  if (!offset) return null;
+  const x = offset.left - axisWidth + 14;
+  const y = offset.top + offset.height / 2;
+  return (
+    <text
+      x={x}
+      y={y}
+      transform={`rotate(-90 ${x} ${y})`}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      fill="#707078"
+      fontSize={13}
+    >
+      Value (Lakhs)
+    </text>
+  );
+}
+
 const dashboardTabOptions = [
   { key: "status", label: "Status-1" },
   { key: "liveStatus", label: "Status-2" },
@@ -297,8 +330,11 @@ type AnalyticsPanel = {
 type HelperExamples = {
   title: string;
   inline?: boolean;
+  plain?: boolean;
   items?: string[];
   groups?: Array<{ title: string; items: string[] }>;
+  columns?: string[];
+  rows?: string[][];
 };
 type HelperDetails = {
   title: string;
@@ -306,11 +342,14 @@ type HelperDetails = {
   buttonLabel?: string;
 };
 
+const HelperPopupExpansionContext = createContext<(expanded: boolean) => void>(() => {});
+
 const fileYearSubfilterHelper = [
   "Global Filter chooses the files to show. File Initiation Year can narrow that list.",
   "A selected year keeps files started in that FY. All file years includes every start year in the Global Filter results.",
   "With Global Filter = All files, All file years is called Entire database.",
-  "Example: Global Filter 2026-27 + File Initiation Year 2025-26 returns 2025-26 files that meet the 2026-27 rules.",
+  "Example table: Global Filter | File Initiation Year | Result",
+  "Example row: 2026-27 | 2025-26 | Files started in 2025-26 that also meet the 2026-27 view rules.",
   "Selection lasts for the current browser tab only.",
 ];
 
@@ -326,9 +365,12 @@ const fileInitiationDateRangeHelper = [
 ];
 
 const analyticsMainHelper = [
-  "Count basis: File counts are unique files. Other count columns represent the listed S.O., payment, meeting, sample, or other records; one file may contribute more than one record.",
-  "The page filters select which files Analytics can use.",
-  "Each option has its own counting rule: some use event dates, while others show current status or recorded file history.",
+  "Purpose: Provides counts, values, schedules, status summaries, and elapsed-time measures for the selected files and related records.",
+  "Example table: Measure type | What one result can represent | How to read it",
+  "Example row: File count | One selected file | A file is counted once even when it has several related records.",
+  "Example row: S.O., payment, meeting, or sample count | An individual related record | One file can contribute more than one result.",
+  "Filters: Page filters choose the files available to Analytics. Each option may apply additional event-date, status, or record rules shown in its helper.",
+  "Count basis: File counts are unique files. Other count columns represent the listed S.O., payment, meeting, sample, or other records.",
   "Charts use the same measure as their table. For milestone durations, Files counts unique files and Samples counts qualifying date pairs.",
   "Click a value to open its matching files in Search.",
   "Cancelled demands and S.O.s are handled according to each measure; check that option's helper for its exclusions.",
@@ -336,34 +378,43 @@ const analyticsMainHelper = [
 
 const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
   status: [
+    "Purpose: Shows the recorded workflow position and completed steps of files in the selected scope.",
+    "Example table: File history | File count | Work-item count",
+    "Example row: One file has two pending S.O.s | 1 where the measure counts files | 2 where the measure counts S.O.s.",
     "Count basis: Each row's label or tooltip says whether it counts unique files or individual S.O., payment, BG, or other work items. One file may contribute multiple items.",
     "These counts show recorded workflow status for files in the selected scope; completed steps may have happened in an earlier FY.",
     "Status-3 presents the Status-1 measures in tables.",
-    "A row may count files, S.O.s, or stages. Check the row label and tooltip for its count unit.",
     "Cancelled demands appear only in their cancellation count.",
     "A file whose every S.O. is cancelled may remain in Total Files, but is excluded from pending-work and related payment, delivery, BG, and liability counts.",
   ],
   liveStatus: [
+    "Purpose: Shows work items still awaiting action now.",
     "Count basis: These are pending work-item counts, not unique-file counts. One file can contribute several S.O. or delivery-stage items; Search lists a matching file once.",
-    "Shows work that is still waiting now; it is not a count of when the work began.",
     "A D.P. case is counted when its delivery period applies and neither an original nor revised D.P. date is recorded.",
     "Material Receipt is counted when a delivery with a D.P. has no receipt recorded.",
     "For Goods & Services with IR = No and for contract files, Job Completion Received Date is used instead of Material Receipt.",
+    "Example table: Workflow | Dates recorded | Live Status result",
+    "Example row: Inspection applies | D.P.: 30 Oct; Material Receipt blank; today: 23 Oct | Delivery is still pending; the D.P. has not expired.",
+    "Example row: Job Completion workflow | D.P.: 20 Oct; Job Completion Received: 22 Oct; Actual Job Completion blank | Receipt can trigger payment timing; it does not establish actual completion for PWB delay.",
   ],
   status3: [
+    "Purpose: Shows the Status-1 measures in a table, using the same selected scope.",
     "Count basis: The table uses the same count units as Status-1; each row's label or tooltip identifies files versus individual work items.",
-    "Status-3 presents the Status-1 measures in tables.",
-    "The selected filters and count rules are the same as Status-1.",
     "Completed steps may have happened in an earlier FY; the table is not a reconstruction of status at the end of the selected FY.",
     "Each row's tooltip identifies what is counted and what opens when clicked.",
   ],
   status4: [
+    "Purpose: Compares milestone work that applies, is cleared, and remains current.",
+    "Example table: File at selected milestone | Applicable | Cleared | Current",
+    "Example row: Stage applies and is completed | 1 file | 1 file | 0 files.",
     "Count basis: Each value is a unique-file count for that milestone; a file counts once even if it has several S.O.s.",
-    "For each milestone, the chart compares work where it applies, work completed, and work still in progress.",
     "Files where a milestone does not apply are not counted for that milestone.",
     "Cancelled S.O.s do not change these counts.",
   ],
   snapshot: [
+    "Purpose: Groups the selected files and related S.O.s into a current Snapshot.",
+    "Example table: Selected file | File-category count | Firm Type count",
+    "Example row: One file with two qualifying S.O.s | 1 file | 2 S.O. records, subject to the Firm Type rules.",
     "Count basis: File categories count unique files. Firm Type counts related S.O. records; one file can contribute more than one S.O.",
     "The Global Filter and other page filters select the files included in Snapshot.",
     "File Type describes those files. Firm Type is based on related S.O. records and follows its own date and cancellation rules, shown in its tooltip.",
@@ -371,11 +422,14 @@ const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
   ],
   analytics: analyticsMainHelper,
   finance: [
+    "Purpose: Shows budgets, commitments, payments, and unpaid amounts for the selected scope.",
     "Count and value basis: File counts are unique files; S.O. and payment counts may count individual records. Amounts sum the records described by each measure's tooltip.",
-    "Finance reports budgets, estimated and committed values, recorded payments, and unpaid amounts.",
     "Cancelled demands and cancelled S.O.s are left out of Finance calculations.",
   ],
   fyActivity: [
+    "Purpose: Shows financial activity by the selected FY and related S.O. year.",
+    "Example table: File/S.O. history | Selected activity FY | Result",
+    "Example row: In-scope older S.O. paid during 2026-27 | 2026-27 | Payment uses its payment date; carry-forward uses the S.O. FY.",
     "Count basis: File counts are unique files; S.O. and payment counts are individual records. Amounts sum the payments or liabilities described by each panel.",
     "Global Filter selects the activity FY and file scope.",
     "File Initiation Year narrows the files by their start year.",
@@ -386,11 +440,9 @@ const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
     "Each panel's tooltip explains its time period, count unit, and cancellation rules.",
   ],
   finance1: [
-    "Count basis: File and closure counts are unique files; payment, S.O., and liability counts may count individual records. Amounts sum the records included by each measure.",
+    "FY Snapshot tracks files initiated according to the Global Filter.",
     "The cutoff date is shown on the page.",
     "For an FY still in progress, the cutoff is today.",
-    "Intended, Booked, Committed, and S.O.-placed/file-closed counts follow the Global Filter's file scope.",
-    "Payment, liability, and Firm Type Distribution figures use the snapshot file scope and other filters, not the Global Filter's status scope.",
     "Each card and section has a tooltip with its specific date and file rules.",
   ],
 };
@@ -543,6 +595,7 @@ const statusFileExportHelpers = {
 
 const dashboardSectionRuleHelpers = {
   status1: [
+    "Purpose: Summarises each file's recorded workflow position and related work items.",
     "Count basis: Each row's label or tooltip identifies unique files versus individual S.O., payment, BG, or other work items.",
     "These counts show recorded workflow status for files in the selected scope; completed steps may have happened in an earlier FY.",
     "Due, Reviewed, Pending, and Completed are different positions in a stage. Use each row's tooltip to see its count unit.",
@@ -550,33 +603,34 @@ const dashboardSectionRuleHelpers = {
     "The Global Filter decides whether closed files are included.",
   ],
   status2: [
+    "Purpose: Summarises work still awaiting action now.",
     "Count basis: Counts are pending work items, not unique files. One file can contribute several S.O. or delivery-stage items; Search lists a matching file once.",
-    "Status-2 shows work still waiting now, not when it began.",
     "The Global Filter sets which files are in scope. Cancelled demands are not counted as pending work.",
     "A D.P. case is counted when its delivery period applies and neither an original nor revised D.P. date is recorded.",
     "Recording either D.P. date removes the case from the D.P. count. Material Receipt and Job Completion Received Date are separate recorded dates.",
   ],
   status3: [
+    "Purpose: Shows the Status-1 measures as a table.",
     "Count basis: The table uses the same units as Status-1; each row's label or tooltip identifies files versus individual work items.",
-    "Status-3 presents the Status-1 measures in tables using the same filters and count rules.",
     "Completed steps may have happened in an earlier FY; this is not an end-of-year reconstruction.",
     "Each row's tooltip identifies what is counted and what opens when clicked.",
   ],
   status4: [
+    "Purpose: Compares applicable, cleared, and current work at each milestone.",
     "Count basis: Each value is a unique-file count for that milestone; one file counts once even if it has several S.O.s.",
-    "For each milestone, the chart compares work where it applies, work completed, and work still in progress.",
     "Cancelled demands are left out; cancelled S.O.s do not change Status-4 counts.",
     "Only files where a stage applies are counted for that stage.",
   ],
   snapshot: [
+    "Purpose: Groups selected files and related S.O.s into a current Snapshot.",
     "Count basis: File categories count unique files. Firm Type counts related S.O. records, so one file can contribute multiple S.O.s.",
-    "Snapshot groups the selected files and related records into the displayed categories.",
     "Cancelled demands are left out of regular Snapshot counts.",
     "Firm Type uses related S.O. records and has its own date and cancellation rules; see its tooltip.",
     "The Global Filter decides whether closed files are included.",
     "Clicking a number opens the files included in that count.",
   ],
   finance: [
+    "Purpose: Combines finance amounts and counts for the selected file and activity scope.",
     "Count and value basis: File counts are unique files; S.O. and payment counts may count individual records. Amounts sum the records described by each measure's tooltip.",
     "Finance combines payments dated in the selected FY with current values for files matching the Dashboard filters.",
     "With a specific FY selected, some figures include only activity dated in that FY. Other figures show today's values for the selected files.",
@@ -589,6 +643,7 @@ const dashboardSectionRuleHelpers = {
     "Closed files appear only when the selected Global Filter includes them.",
   ],
   analytics: [
+    "Purpose: Compares file counts, related activity, values, and durations across the selected scope.",
     "Count basis: File counts are unique files. Other count columns represent the listed S.O., payment, meeting, sample, or other records; one file may contribute more than one record.",
     "Global Filter, File Initiation Year, Initiation Date range, Division, and File Type select the files available to Analytics.",
     "Each option may apply its own date, count, and inclusion rules; see that option's helper.",
@@ -899,6 +954,7 @@ const fallbackDelayMilestoneOptions = [
   { key: "control", label: "Controlling" },
   { key: "ifa", label: "IFA" },
   { key: "cfa", label: "CFA" },
+  { key: "gemUndertaking", label: "GeM Undertaking" },
   { key: "bidding", label: "Bidding" },
   { key: "postTcec", label: "Post-TCEC" },
   { key: "cnc", label: "CNC" },
@@ -919,15 +975,16 @@ const fallbackDelayMilestoneOptions = [
     key: "supplementaryBillReturnedForCorrection",
     label: "Supplementary bill returned for correction",
   },
-  { key: "paymentPreSubmission", label: "Payment cycle (ASL)" },
-  { key: "paymentPostSubmission", label: "Payment cycle (PCDA)" },
-  { key: "paymentCumulative", label: "Payment (ASL + PCDA)" },
+  { key: "paymentPreSubmission", label: "Payment cycle (ASL, bill trigger to bill submission)" },
+  { key: "paymentPostSubmission", label: "Payment cycle (PCDA, bill submission to payment)" },
+  { key: "paymentCumulative", label: "Payment cycle (ASL+PCDA, bill trigger to payment)" },
 ] satisfies DelayMilestoneOption[];
 
 function getAnalyticsDelayBasisText(milestoneKey: string) {
   const mainTimelineBasis = [
-    "Starts from the latest recorded date on the file/S.O. timeline.",
-    "This may not be the immediately preceding milestone date.",
+    "Starts from the latest actual completion date among applicable predecessors earlier in this milestone's configured workflow. Dates from later milestones and inapplicable workflows do not start this stage.",
+    "Example table: Eligible predecessor completions | Current milestone completion | As-of date | Interpretation",
+    "Example row: Eligible predecessor A: 1 Oct; eligible predecessor B: 10 Oct | Blank | 23 Oct | Uses 10 Oct, the latest eligible completion; current-stage age is 13 days and qualifies only when greater than the selected threshold.",
   ];
   const basisByMilestone: Record<string, string[]> = {
     workflowNotStarted: [
@@ -942,32 +999,85 @@ function getAnalyticsDelayBasisText(milestoneKey: string) {
     control: mainTimelineBasis,
     ifa: mainTimelineBasis,
     cfa: mainTimelineBasis,
+    gemUndertaking: [
+      "For normal applicable GeM files, starts from CFA Approval Date and ends when GeM Undertaking Date is recorded. For Non-TCEC Refloat + GeM files, the common GeM Undertaking delay starts from Refloat recommendation and ends when Refloat GeM undertaking is recorded. TCEC Refloat + GeM continues to use its Post-TCEC approval start and Refloat GeM undertaking end.",
+      "Applies to applicable GeM files; GeM Comparison files are excluded.",
+      "If the required start date is blank, no fallback is used: the row contributes neither zero days nor an average sample.",
+      "Example table: Scenario | Recorded dates | Result",
+      "Example row: GeM = Yes; GeM Undertaking Date blank | CFA Approval: 1 Oct; as of 23 Oct | GeM Undertaking pending for 22 days.",
+      "Example row: GeM = Yes; undertaking completed | CFA Approval: 1 Oct; GeM Undertaking: 5 Oct | No current GeM Undertaking delay after 5 Oct.",
+      "Example row: TCEC Refloat + GeM; Refloat GeM undertaking blank | Post-TCEC Approval: 1 Oct; as of 23 Oct | The same GeM Undertaking delay is pending for 22 days; it ends when Refloat GeM undertaking is recorded.",
+    ],
     bidding: [
-      "Starts from the date the current bidding step began: CFA/GeM/RFP prerequisite, RFP initiation, scheduled Bid Opening, or Bid Opening while Bidding Stage Over is pending.",
-      "Refloat uses its corresponding refloat dates.",
+      "Bidding covers normal bidding cases. Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Starts from CFA Approval Date for every normal Bidding case. GeM Undertaking is a separate delay item.",
+      "Example table: Scenario | Recorded dates | Result",
+      "Example row: Bid Date blank | CFA: 1 Oct; GeM = No; as of 23 Oct | Bidding pending for 22 days.",
+      "Example row: GeM applies; Bid Date blank | CFA: 1 Oct; GeM Undertaking: 5 Oct; as of 23 Oct | Bidding pending for 22 days from CFA Approval Date.",
+      "Example row: Bid Date entered | CFA: 1 Oct; Bid Date: 20 Oct | No longer counted as Bidding delay.",
+    ],
+    biddingNonRfp: [
+      "Bidding covers normal bidding cases. Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Starts from CFA Approval Date for every normal Bidding case. GeM Undertaking is a separate delay item.",
+      "Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Example table: Scenario | Recorded dates | Result",
+      "Example row: Bid Date blank | CFA: 1 Oct; GeM = No; as of 23 Oct | Bidding pending for 22 days.",
+      "Example row: GeM applies; Bid Date blank | CFA: 1 Oct; GeM Undertaking: 5 Oct; as of 23 Oct | Bidding pending for 22 days from CFA Approval Date.",
+      "Example row: Bid Date entered | CFA: 1 Oct; Bid Date: 20 Oct | No longer counted as Bidding delay.",
+    ],
+    biddingRfp: [
+      "Bidding covers normal bidding cases. Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Starts from CFA Approval Date for every normal Bidding case. GeM Undertaking is a separate delay item.",
+      "Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Example table: Scenario | Recorded dates | Result",
+      "Example row: Bid Date blank | CFA: 1 Oct; GeM = No; as of 23 Oct | Bidding pending for 22 days.",
+      "Example row: GeM applies; Bid Date blank | CFA: 1 Oct; GeM Undertaking: 5 Oct; as of 23 Oct | Bidding pending for 22 days from CFA Approval Date.",
+      "Example row: Bid Date entered | CFA: 1 Oct; Bid Date: 20 Oct | No longer counted as Bidding delay.",
     ],
     refloatBidding: [
       "Uses the refloat bidding dates.",
       "The current step starts from the applicable refloat prerequisite, refloat bid, or refloat Bid Opening date.",
+      "Example table: Refloat dates | Status on 23 Oct | Interpretation",
+      "Example row: Refloat prerequisites complete 12 Oct; no refloat Bid Date | Bidding not started | Pending age is 11 days, subject to the selected threshold.",
     ],
-    postTcec: mainTimelineBasis,
-    refloatPostTcec: mainTimelineBasis,
-    cnc: mainTimelineBasis,
+    postTcec: [
+      "Requires TCEC = Yes, Bidding Stage Over = Yes, and a recorded Bid Closing Date. Otherwise Post-TCEC is not counted.",
+      "The start is the latest completed, applicable predecessor by date. If Bidding is latest, its completion date is Bid Closing Date; Bid Date is never a fallback.",
+      "The interval ends on Post-TCEC Minutes Date. While that date is blank, age runs through today.",
+      "Example table: Completed predecessors | Bid Closing / Post-TCEC dates | Result (as of 23 Aug)",
+      "Example row: Pre-TCEC: 10 Aug; R&QA: 18 Aug | Bid Closing: 20 Aug; Post-TCEC Minutes: blank | Starts 20 Aug; pending 3 days.",
+      "Example row: Pre-TCEC: 10 Aug; R&QA: 18 Aug | Bid Closing: 15 Aug; Post-TCEC Minutes: blank | Starts 18 Aug; pending 5 days.",
+      "Example row: Bidding Stage Over = No, or Bid Closing blank | Post-TCEC Minutes: blank | Not counted; no fallback date is used.",
+      "Example row: Bidding Stage Over = Yes; Bid Closing: 20 Aug | Post-TCEC Minutes: 22 Aug | Ends 22 Aug; duration is 2 days.",
+    ],
+    refloatPostTcec: [
+      "Requires Refloat = Yes, TCEC = Yes, Bidding Stage Over = Yes, and a recorded Refloat Bid Closing Date.",
+      "The start is the latest completed, applicable predecessor by date. Refloat Bidding contributes its Refloat Bid Closing Date only; there is no fallback to Refloat Bid Date.",
+      "The interval ends on Refloat Post-TCEC Minutes Date. If the closing date is missing, the delay is not counted and no older date is used as a fallback.",
+    ],
+    cnc: [
+      "Starts only from Post-TCEC Minutes Date (the Post-TCEC approval date) and ends at CNC Approval Date.",
+      "TCEC only. If Post-TCEC Minutes Date is blank, CNC timing is not counted; no earlier milestone or other date is used as a fallback.",
+      "Example table: Scenario | Recorded dates | Result",
+      "Example row: Post-TCEC Minutes: 10 Oct; CNC Approval: blank | As of 23 Oct | CNC pending for 13 days.",
+      "Example row: Post-TCEC Minutes: blank; earlier milestone: 8 Oct; CNC Approval: blank | As of 23 Oct | No CNC duration; the earlier milestone is not used as a fallback.",
+    ],
     financialSanction: [
       "CNC Approval Date → today while an expected TCEC S.O. awaits sanction.",
       "TCEC only. Each expected S.O. still awaiting Financial Sanction counts as one pending case.",
+      "For normal Non-TCEC cases, Financial Sanction is the end date for Technical Evaluation. During a Refloat cycle, Refloat recommendation is the end date; after that cycle, the next cycle uses Financial Sanction instead.",
     ],
     supplyOrder: [
-      "TCEC: starts from the latest earlier completed applicable file-level milestone, usually CNC Approval.",
+      "TCEC: starts from CNC Approval Date. No earlier-milestone or File Received Date fallback is used.",
       "Non-TCEC: starts from that S.O.'s Financial Sanction date.",
       "Each S.O. is assessed separately.",
     ],
     advancePayment: ["For each S.O., starts from its S.O. date."],
     psb: ["For each S.O., starts from its S.O. date."],
     pwb: [
-      "For each S.O., starts from its Material Receipt date.",
-      "For Goods & Services with IR = No, starts from Job Completion Received Date.",
-      "With staged payments, it starts at the first completed stage; without staged payments, it starts after all stages are complete.",
+      "For Goods & Services with IR = Yes, starts from the S.O.-level IR Receipt Date. Stage dates are not used.",
+      "For Goods & Services with IR = No, starts from Job Completion Date.",
+      "For Goods & Services with IR = No: stagewise payment starts from the earliest stage Job Completion Date; common payment starts from the latest date after all stages are completed.",
     ],
     psbPwb: ["For each S.O., starts from its S.O. date."],
     delivery: [
@@ -1001,17 +1111,18 @@ function getAnalyticsDelayBasisText(milestoneKey: string) {
     ],
     paymentCumulative: [
       "Applicable payment trigger → Payment Date, or today while unpaid.",
-      "A returned bill stops at its first Bill Sent for Payment date; return and resubmission time is excluded.",
+      "Returned payment cases are excluded entirely, matching the Milestone Clearing ranking.",
       "Stagewise payments count separately. One common staged payment counts once and starts from the latest applicable stage trigger.",
       "Advances and supplementary bills have no pre-submission period; cumulative timing starts at their own first submission date.",
       "Payment-specific Include/Exclude affects this timing result only.",
     ],
     paymentPreSubmission: [
-      "Applicable trigger → today while no first submission date is recorded.",
+      "Meaning: Measures the time from the applicable bill trigger to the first Bill Sent for Payment date. While the first submission is missing, Delay Status measures the pending age through today.",
       "Counts included regular or stage payment cases with no first Bill Sent for Payment date.",
       "Group A with IR = Yes starts from IR Receipt Date. Group A with IR = No and Group B start from Job Completion Received Date.",
       "Stagewise payments use each stage's date. A common staged payment starts from the latest applicable stage date.",
       "There is no D.P. + 1 fallback. Advances and supplementary bills are excluded.",
+      "Returned payment cases are excluded.",
     ],
   };
 
@@ -1166,6 +1277,22 @@ function isDashboardTab(value: unknown): value is DashboardTab {
 
 export function Dashboard() {
   const locationSearch = useRouterState({ select: (state) => state.location.search });
+  const isNoticeBoardFinanceSnapshot =
+    locationSearch.noticeBoardView === "financialPosition" && locationSearch.tab === "finance1";
+  const isNoticeBoardFyActivity =
+    locationSearch.noticeBoardView === "fyActivitySummary" && locationSearch.tab === "fyActivity";
+  const isNoticeBoardEmbed =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("noticeBoardEmbed") === "1" &&
+    (locationSearch.tab === "analytics" || isNoticeBoardFinanceSnapshot || isNoticeBoardFyActivity);
+  const requestedTcecView =
+    isNoticeBoardEmbed && locationSearch.analyticsPanel === "tcecStatus"
+      ? new URLSearchParams(window.location.search).get("tcecView")
+      : null;
+  const noticeBoardTcecView =
+    requestedTcecView === "monthly" || requestedTcecView === "committee"
+      ? requestedTcecView
+      : null;
   const files = useAccessibleFiles();
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
@@ -1173,6 +1300,7 @@ export function Dashboard() {
   const [filterCombinationLock, setFilterCombinationLock] = useState<FilterCombinationLock | undefined>(() =>
     readFilterCombinationLock(activeUser?.id),
   );
+  const appliedFilterCombinationLock = isNoticeBoardEmbed ? undefined : filterCombinationLock;
   const navigate = useNavigate();
   const divisionFilterStorageKey = `recordkeeper:division-filter:${activeUser?.id ?? "anonymous"}`;
   const fileCategoryFilterStorageKey = `recordkeeper:file-category-filter:${activeUser?.id ?? "anonymous"}`;
@@ -1277,8 +1405,14 @@ export function Dashboard() {
   const [selectedFirmAnalysisRoles, setSelectedFirmAnalysisRoles] = useState<FirmAnalysisRoleKey[]>(
     ["bq", "invited", "participated", "order"],
   );
-  const [countValueAnalysisMode, setCountValueAnalysisMode] =
-    useState<CountValueAnalysisMode>("demandValue");
+  const [countValueAnalysisMode, setCountValueAnalysisMode] = useState<CountValueAnalysisMode>(
+    () => {
+      const requestedMode = locationSearch.boardMetric;
+      return countValueAnalysisOptions.some((option) => option.key === requestedMode)
+        ? (requestedMode as CountValueAnalysisMode)
+        : "demandValue";
+    },
+  );
   const [financeFirmTypeDistributionKey, setFinanceFirmTypeDistributionKey] =
     useState<FinanceFirmTypeDistributionKey>("supplyOrderValue");
   const [indentorsByFilesLimit, setIndentorsByFilesLimit] = useState<AnalyticsResultLimitKey>("10");
@@ -1325,16 +1459,59 @@ export function Dashboard() {
   const [milestoneClearingSourceFiles, setMilestoneClearingSourceFiles] = useState<FileRecord[]>();
   const [milestoneClearingFilesLoading, setMilestoneClearingFilesLoading] = useState(false);
   const [milestoneClearingFilesError, setMilestoneClearingFilesError] = useState<string>();
-  const [analyticsDelayDays, setAnalyticsDelayDays] = useState("5");
+  const [analyticsDelayDays, setAnalyticsDelayDays] = useState(
+    String(settings.delayStatusDefaultDays ?? 5),
+  );
   const [analyticsDelayMilestoneKey, setAnalyticsDelayMilestoneKey] = useState("all");
+  useEffect(() => {
+    setAnalyticsDelayDays(String(settings.delayStatusDefaultDays ?? 5));
+  }, [settings.delayStatusDefaultDays]);
   const [tcecStatusStage, setTcecStatusStage] = useState<TcecStatusStage>("pre");
+  useEffect(() => {
+    if (!isNoticeBoardEmbed || locationSearch.analyticsPanel !== "tcecStatus") return;
+    const requestedStage = new URLSearchParams(window.location.search).get("tcecStage");
+    if (requestedStage === "pre" || requestedStage === "post")
+      setTcecStatusStage(requestedStage);
+  }, [isNoticeBoardEmbed, locationSearch.analyticsPanel]);
   const [selectedPreBidFiscalYear, setSelectedPreBidFiscalYear] = useState("");
   const [selectedPreBidMonth, setSelectedPreBidMonth] = useState("");
   const [selectedTcecFiscalYear, setSelectedTcecFiscalYear] = useState("");
   const [selectedTcecMonth, setSelectedTcecMonth] = useState("");
+  useEffect(() => {
+    if (
+      isNoticeBoardEmbed &&
+      locationSearch.analyticsPanel === "tcecStatus" &&
+      !selectedTcecFiscalYear
+    ) {
+      const fiscalYear = settings.selectedYear || settings.financialYear;
+      if (fiscalYear) setSelectedTcecFiscalYear(fiscalYear);
+    }
+  }, [
+    isNoticeBoardEmbed,
+    locationSearch.analyticsPanel,
+    selectedTcecFiscalYear,
+    settings.financialYear,
+    settings.selectedYear,
+  ]);
   const [selectedTcecCommittee, setSelectedTcecCommittee] = useState("");
   const [selectedCncFiscalYear, setSelectedCncFiscalYear] = useState("");
   const [selectedCncMonth, setSelectedCncMonth] = useState("");
+  useEffect(() => {
+    if (
+      isNoticeBoardEmbed &&
+      locationSearch.analyticsPanel === "cncSummary" &&
+      !selectedCncFiscalYear
+    ) {
+      const fiscalYear = settings.selectedYear || settings.financialYear;
+      if (fiscalYear) setSelectedCncFiscalYear(fiscalYear);
+    }
+  }, [
+    isNoticeBoardEmbed,
+    locationSearch.analyticsPanel,
+    selectedCncFiscalYear,
+    settings.financialYear,
+    settings.selectedYear,
+  ]);
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(() => {
       if (typeof window === "undefined") return allFileCategoryKeys;
@@ -1471,9 +1648,41 @@ export function Dashboard() {
     DelayMilestoneOption[]
   >([]);
   const hasLoadedDashboardSummaryRef = useRef(false);
-  const effectiveDelayMilestoneOptions = backendDelayMilestoneOptions.length
-    ? backendDelayMilestoneOptions
-    : fallbackDelayMilestoneOptions;
+  const effectiveDelayMilestoneOptions = (() => {
+    const sourceOptions = backendDelayMilestoneOptions.length
+      ? backendDelayMilestoneOptions
+      : fallbackDelayMilestoneOptions;
+    const gemUndertakingOption = { key: "gemUndertaking", label: "GeM Undertaking" };
+    const biddingOptions = [{ key: "bidding", label: "Bidding" }];
+    const legacyBiddingIndex = sourceOptions.findIndex((option) =>
+      ["bidding", "biddingNonRfp", "biddingRfp"].includes(option.key),
+    );
+    const options = sourceOptions.filter(
+      (option) =>
+        option.key !== "bidding" &&
+        option.key !== "biddingNonRfp" &&
+        option.key !== "biddingRfp" &&
+        option.key !== "gemUndertaking",
+    );
+    const cfaIndex = options.findIndex((option) => option.key === "cfa");
+    const gemUndertakingIndex = sourceOptions.findIndex((option) => option.key === "gemUndertaking");
+    const gemInsertAt = gemUndertakingIndex >= 0
+      ? sourceOptions
+          .slice(0, gemUndertakingIndex)
+          .filter((option) => !["bidding", "biddingNonRfp", "biddingRfp", "gemUndertaking"].includes(option.key))
+          .length
+      : cfaIndex + 1;
+    options.splice(gemInsertAt < 0 ? options.length : gemInsertAt, 0, gemUndertakingOption);
+    const insertAt =
+      legacyBiddingIndex >= 0
+        ? sourceOptions
+            .slice(0, legacyBiddingIndex)
+            .filter((option) => !["bidding", "biddingNonRfp", "biddingRfp"].includes(option.key))
+            .length
+        : Math.max(0, options.findIndex((option) => option.key === "cfa") + 1);
+    options.splice(insertAt < 0 ? options.length : insertAt, 0, ...biddingOptions);
+    return options;
+  })();
   useEffect(() => {
     if (
       analyticsDelayMilestoneKey !== "all" &&
@@ -1530,7 +1739,7 @@ export function Dashboard() {
   }, [visibleFileCategoryKeys]);
   const selectedDivisionIsAccessible =
     selectedDivision === "all" || divisions.some((division) => division.name === selectedDivision);
-  const activeDivision = selectedDivisionIsAccessible ? selectedDivision : "all";
+  const activeDivision = isNoticeBoardEmbed || !selectedDivisionIsAccessible ? "all" : selectedDivision;
   const fileYearOptions = useMemo(
     () => Array.from(new Set(settings.financialYears ?? [])).filter(Boolean),
     [settings.financialYears],
@@ -1548,10 +1757,11 @@ export function Dashboard() {
       );
   }, [fileYearOptions, settings.selectedYear]);
   const finance1Year =
-    normalizeFinancialYearLabel(settings.selectedYear) ||
-    settings.financialYear ||
-    availableFileYearOptions[0] ||
-    "";
+    (isNoticeBoardFinanceSnapshot
+      ? normalizeFinancialYearLabel(settings.financialYear) || settings.financialYear
+      : normalizeFinancialYearLabel(settings.selectedYear) ||
+        settings.financialYear ||
+        availableFileYearOptions[0]) || "";
   const finance1YearDateRange = getFinancialYearDateRange(finance1Year);
   const setFinance1InitiationDate = (field: keyof FileInitiationDateRange, value: string) => {
     if (!finance1YearDateRange) return;
@@ -1604,8 +1814,21 @@ export function Dashboard() {
     : activeDashboardTab === "finance"
       ? financeFileYear
       : selectedFileYear;
+  const noticeBoardRecommendedFileYear =
+    activeDashboardTab === "analytics"
+      ? analyticsPanelGroups.find((group) => group.keys.includes(activeAnalyticsPanel))
+          ?.recommendedFileYear === "all"
+        ? "all"
+        : settings.financialYear
+      : activeDashboardTab === "fyActivity"
+        ? "all"
+        : activeDashboardTab === "finance1"
+          ? finance1Year
+          : undefined;
   const activeFileYear =
-    activeDashboardTab === "finance1"
+    isNoticeBoardEmbed && noticeBoardRecommendedFileYear
+      ? noticeBoardRecommendedFileYear
+      : activeDashboardTab === "finance1"
       ? finance1Year || defaultFileYear
       : pageFileYear === "all" || availableFileYearOptions.includes(pageFileYear)
         ? pageFileYear
@@ -1621,17 +1844,17 @@ export function Dashboard() {
   useEffect(() => {
     if (previousDashboardTabRef.current === activeDashboardTab) return;
     previousDashboardTabRef.current = activeDashboardTab;
-    if (filterCombinationLock) {
+    if (appliedFilterCombinationLock) {
       setFileYearLocked(false);
-      const lockedGlobalYear = normalizeFinancialYearLabel(filterCombinationLock.globalYear);
+      const lockedGlobalYear = normalizeFinancialYearLabel(appliedFilterCombinationLock.globalYear);
       const fixedDashboardYear =
         lockedGlobalYear ||
         normalizeFinancialYearLabel(settings.selectedYear) ||
         settings.financialYear;
       const usesFixedYear = activeDashboardTab === "snapshot" || activeDashboardTab === "finance1";
-      const globalYear = usesFixedYear ? fixedDashboardYear : filterCombinationLock.globalYear;
+      const globalYear = usesFixedYear ? fixedDashboardYear : appliedFilterCombinationLock.globalYear;
       store.updateSessionSelectedYear(globalYear);
-      const fileYear = usesFixedYear ? globalYear : filterCombinationLock.fileYear;
+      const fileYear = usesFixedYear ? globalYear : appliedFilterCombinationLock.fileYear;
       setSelectedFileYear(fileYear);
       if (activeDashboardTab === "fyActivity") setFyActivityFileYear(fileYear);
       else setFinanceFileYear(fileYear);
@@ -1685,7 +1908,7 @@ export function Dashboard() {
     }
   }, [
     activeDashboardTab,
-    filterCombinationLock,
+    appliedFilterCombinationLock,
     financeFileYear,
     financeGlobalYear,
     fyActivityFileYearStorageKey,
@@ -1697,9 +1920,9 @@ export function Dashboard() {
   ]);
   useEffect(() => {
     if (typeof window === "undefined" || !availableFileYearOptions.length) return;
-    if (filterCombinationLock) {
+    if (appliedFilterCombinationLock) {
       setFileYearLocked(false);
-      const lockedGlobalYear = normalizeFinancialYearLabel(filterCombinationLock.globalYear);
+      const lockedGlobalYear = normalizeFinancialYearLabel(appliedFilterCombinationLock.globalYear);
       const fixedDashboardYear =
         lockedGlobalYear ||
         normalizeFinancialYearLabel(settings.selectedYear) ||
@@ -1707,7 +1930,7 @@ export function Dashboard() {
       const year =
         activeDashboardTab === "snapshot" || activeDashboardTab === "finance1"
           ? fixedDashboardYear
-          : filterCombinationLock.fileYear;
+          : appliedFilterCombinationLock.fileYear;
       setSelectedFileYear(year);
       if (activeDashboardTab === "fyActivity") setFyActivityFileYear(year);
       else setFinanceFileYear(year);
@@ -1746,14 +1969,14 @@ export function Dashboard() {
     availableFileYearOptions,
     currentFileYearFilterStorageKey,
     defaultFileYear,
-    filterCombinationLock,
+    appliedFilterCombinationLock,
     settings.financialYear,
     settings.selectedYear,
   ]);
   useEffect(() => {
     if (activeDashboardTab !== "snapshot" || typeof window === "undefined") return;
     const snapshotYear =
-      normalizeFinancialYearLabel(filterCombinationLock?.globalYear ?? "") ||
+      normalizeFinancialYearLabel(appliedFilterCombinationLock?.globalYear ?? "") ||
       normalizeFinancialYearLabel(settings.financialYear) ||
       settings.financialYear;
     setSelectedFileYear(snapshotYear);
@@ -1767,9 +1990,9 @@ export function Dashboard() {
       window.sessionStorage.setItem(fileYearFilterStorageKey, JSON.stringify({ year: snapshotYear }));
     }
     window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
-  }, [activeDashboardTab, fileYearFilterStorageKey, filterCombinationLock, settings.financialYear, settings.selectedYear]);
+  }, [activeDashboardTab, fileYearFilterStorageKey, appliedFilterCombinationLock, settings.financialYear, settings.selectedYear]);
   const updateFileYearSelection = (year: string) => {
-    if (filterCombinationLock) return;
+    if (appliedFilterCombinationLock) return;
     setSelectedFileYear(year);
     if (activeDashboardTab === "fyActivity") setFyActivityFileYear(year);
     else setFinanceFileYear(year);
@@ -1783,12 +2006,12 @@ export function Dashboard() {
   };
   useEffect(() => {
     if (activeDashboardTab !== "analytics") return;
-    if (filterCombinationLock) {
-      store.updateSessionSelectedYear(filterCombinationLock.globalYear);
-      setSelectedFileYear(filterCombinationLock.fileYear);
+    if (appliedFilterCombinationLock) {
+      store.updateSessionSelectedYear(appliedFilterCombinationLock.globalYear);
+      setSelectedFileYear(appliedFilterCombinationLock.fileYear);
       window.sessionStorage.setItem(
         fileYearFilterStorageKey,
-        JSON.stringify({ year: filterCombinationLock.fileYear }),
+        JSON.stringify({ year: appliedFilterCombinationLock.fileYear }),
       );
       window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
       return;
@@ -1822,7 +2045,7 @@ export function Dashboard() {
       }
       window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
     }
-  }, [activeAnalyticsPanel, activeDashboardTab, fileYearFilterStorageKey, filterCombinationLock, settings.financialYear]);
+  }, [activeAnalyticsPanel, activeDashboardTab, fileYearFilterStorageKey, appliedFilterCombinationLock, settings.financialYear]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (activeDashboardTab === "finance") {
@@ -1880,8 +2103,11 @@ export function Dashboard() {
   const clearFileInitiationDateRange = () =>
     updateFileInitiationDateRange({ fromDate: "", toDate: "" });
   const activeFileInitiationDateRange = useMemo(
-    () => getActiveFileInitiationDateRange(fileInitiationFromDate, fileInitiationToDate),
-    [fileInitiationFromDate, fileInitiationToDate],
+    () =>
+      isNoticeBoardEmbed
+        ? undefined
+        : getActiveFileInitiationDateRange(fileInitiationFromDate, fileInitiationToDate),
+    [fileInitiationFromDate, fileInitiationToDate, isNoticeBoardEmbed],
   );
   const fileInitiationDateQueryParams = useMemo(
     () => getFileInitiationDateSearchParams(activeFileInitiationDateRange),
@@ -1905,6 +2131,7 @@ export function Dashboard() {
   const fileYearSubfilterLockedByPage = activeDashboardTab === "finance1";
   const fileInitiationDateFilterActive = Boolean(activeFileInitiationDateRange);
   const fileCategoryFilterActive =
+    !isNoticeBoardEmbed &&
     fileCategoryFilterTouched &&
     selectedFileCategories.filter((category) => visibleFileCategoryKeys.includes(category))
       .length !== visibleFileCategoryKeys.length;
@@ -2015,7 +2242,7 @@ export function Dashboard() {
     const params = new URLSearchParams();
     params.set("version", dashboardSummaryQueryVersion);
     params.set("division", activeDivision);
-    params.set("selectedYear", settings.selectedYear);
+    params.set("selectedYear", isNoticeBoardFyActivity ? settings.financialYear : settings.selectedYear);
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     if (activeDashboardTab !== "finance1") {
       Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
@@ -2041,11 +2268,13 @@ export function Dashboard() {
     activeFileYear,
     activeFileCategoriesParam,
     activeDashboardTab,
+    isNoticeBoardFyActivity,
     finance1Year,
     finance1RefreshDay,
     finance1InitiationRange,
     selectedLiveMilestones,
     settings.selectedYear,
+    settings.financialYear,
   ]);
   const coBiddingQuery = useMemo(() => {
     if (!coParticipantFirm.trim()) return "";
@@ -2128,12 +2357,15 @@ export function Dashboard() {
   const finance1AtYearEndLabel = `as of ${finance1YearEndLabel}`;
   const finance1PeriodLabel = `FY ${finance1YearLabel}`;
   const finance1CutoffIsFyEnd = Boolean(
-    finance1YearDateRange && finance1Summary.cutoffDate === finance1YearDateRange.end,
+    finance1YearDateRange && finance1RefreshDay >= finance1YearDateRange.end,
   );
+  const finance1LiveStatusLabel = "(Live)";
+  const finance1CutoffStatusLabel = "(Frozen at FY-end)";
   const finance1CutoffLabel = finance1CutoffIsFyEnd ? "FY-end" : "cutoff";
   const finance1PositionLabel = finance1CutoffIsFyEnd
     ? `Position at FY-end (${finance1YearEndLabel})`
     : `Position as of ${finance1YearEndLabel}`;
+  const finance1LivePositionLabel = `${finance1PositionLabel} (Live)`;
   const finance1PaymentFlowLabel = finance1CutoffIsFyEnd
     ? `Payments recorded during FY ${finance1YearLabel}`
     : `Payments recorded in FY ${finance1YearLabel} through ${finance1YearEndLabel}`;
@@ -2902,17 +3134,19 @@ export function Dashboard() {
     capital: financeTotals.paidTillDateCapital ?? localFinancePaidTillDate.capital,
     revenue: financeTotals.paidTillDateRevenue ?? localFinancePaidTillDate.revenue,
   };
-  const selectedFinanceYear = getFinancialYearDateRange(settings.selectedYear)
-    ? settings.selectedYear
-    : settings.financialYear;
+  const selectedFinanceYear = isNoticeBoardFyActivity
+    ? settings.financialYear
+    : getFinancialYearDateRange(settings.selectedYear)
+      ? settings.selectedYear
+      : settings.financialYear;
   const selectedFinanceYearLabel = selectedFinanceYear || "selected FY";
   const isSameGlobalAndSubfilterFinanceFy =
-    Boolean(getFinancialYearDateRange(settings.selectedYear)) &&
+    Boolean(getFinancialYearDateRange(selectedFinanceYear)) &&
     Boolean(getFinancialYearDateRange(activeFileYear)) &&
-    settings.selectedYear === activeFileYear;
+    selectedFinanceYear === activeFileYear;
   const isCurrentFinanceYearSameFyView =
     isSameGlobalAndSubfilterFinanceFy && selectedFinanceYear === settings.financialYear;
-  const selectedGlobalFinanceYearStart = getFinancialYearStartNumber(settings.selectedYear);
+  const selectedGlobalFinanceYearStart = getFinancialYearStartNumber(selectedFinanceYear);
   const activeFileYearStart = getFinancialYearStartNumber(activeFileYear);
   const isSpecificGlobalFinanceFy = selectedGlobalFinanceYearStart !== undefined;
   const isSpecificGlobalEarlierFileYearFinanceView =
@@ -3093,7 +3327,8 @@ export function Dashboard() {
     (sum, division) => sum + (parseAmount(division.allocatedRevenue) ?? 0),
     0,
   );
-  const financePaymentInYearBasisLabel = `Basis: payment date in FY ${selectedFinanceYearLabel}`;
+  const financePaymentInYearBasisLabel =
+    `Basis: Payment Date or Advance Payment Date in FY ${selectedFinanceYearLabel}`;
   const financePreviousCarryBasisLabel = selectedFinanceYearLabel === settings.financialYear
     ? `Basis: older FY liability still unpaid as of today (${selectedFinanceYearLabel} is in progress)`
     : `Basis: older FY liability still unpaid at ${selectedFinanceYearLabel} end`;
@@ -3196,23 +3431,38 @@ export function Dashboard() {
     financePaidTillDate.revenue,
     financeTotals.allocatedRevenue,
   );
-  const financePreviousCarryExampleSource = isSpecificGlobalEarlierFileYearFinanceView
-    ? `FY ${activeFileYear} liability`
-        : "an older FY payment obligation";
   const financeCarryForwardExamples = {
     previous: [
-      `${financePreviousCarryExampleSource}: ₹100 was unpaid before ${selectedFinanceYearLabel}.`,
-      `Paid during ${selectedFinanceYearLabel}: ₹40.`,
-      `Unpaid at ${selectedFinanceYearLabel} end: ₹60.`,
-      isSpecificGlobalEarlierFileYearFinanceView
-        ? `Shows ₹60 for FY ${activeFileYear} source liabilities still unpaid.`
-        : "Shows ₹60 as still unpaid from previous-FY liabilities.",
+      {
+        title: "Example-1",
+        items: [
+          "S.O.: 2025-26",
+          "D.P.: 2027-28",
+          "S.O. amount appears under Balance Carry Forward from previous FYs for 2027-28.",
+        ],
+      },
+      {
+        title: "Example-2",
+        items: [
+          "S.O.: 2025-26",
+          "D.P.: 2027-28",
+          "Payment Date: 2026-27",
+          "Does not appear in Balance Carry Forward from previous FYs for the current year.",
+          "Appears under Cleared Carry Forward for 2026-27.",
+        ],
+      },
     ],
     cleared: [
-      `An S.O. was placed in an earlier FY; its payment became due during ${selectedFinanceYearLabel}.`,
-      `₹40 was paid during ${selectedFinanceYearLabel}.`,
-      `The ₹40 appears under Cleared Carry Forward in ${selectedFinanceYearLabel} because the S.O. FY is earlier and the payment date is in this FY.`,
-      "This does not mean the liability was already due and unpaid at the previous FY-end.",
+      {
+        title: "Example-2",
+        items: [
+          "S.O.: 2025-26",
+          "D.P.: 2027-28",
+          "Payment Date: 2026-27",
+          "Does not appear in Balance Carry Forward from previous FYs for the current year.",
+          "Appears under Cleared Carry Forward for 2026-27.",
+        ],
+      },
     ],
     carryForward: [
       `The payment obligation began in ${selectedFinanceYearLabel}: ₹75.`,
@@ -3439,18 +3689,27 @@ export function Dashboard() {
   const shortclosedPayableHelper =
     "An amount is pending when payment work has started or become due and no payment date is recorded. No Further Action stops the specified unfinished follow-up; it does not erase recorded payment history. For a shortclosed S.O., this removes the unresolved balance from pending follow-up.";
   const paymentPendingLogicDetails: HelperDetails = {
-    title: "Payment pending and shortclosure logic",
+    title: "Miscellaneous",
+    buttonLabel: "Miscellaneous",
+    items: [
+      "Details: The advance is pending when advance bill/payment details, an advance amount, or an advance return/resubmission record has been entered and the Advance Payment Date is still blank.",
+      "Details: Supplementary bill becomes pending when it is submitted, returned, or resubmitted and its payment date is blank.",
+      "Details: No Further Action or shortclosure stops unfinished payment follow-up; it does not erase recorded payment history.",
+    ],
+  };
+  const paymentInYearLogicDetails: HelperDetails = {
+    title: "Payment logic",
     buttonLabel: "Payment logic",
     items: [
-      "An amount is pending when payment work has started or become due and no payment date is recorded.",
-      "Main/stage payment signals include bill preparation, bill submission, returned-bill history, Material Receipt / IR, Job Completion Received Date, an applicable D.P. trigger, or an entered bill/payment amount.",
-      "Advance Payment = Yes by itself means advance is applicable. It becomes pending only when advance bill/payment details, advance amount, or advance return/resubmission workflow exists and advance payment date is blank.",
-      "Supplementary bill becomes pending when it is submitted, returned, or resubmitted and its payment date is blank.",
-      "No Further Action stops the specified unfinished follow-up; it does not erase recorded payment history. For a shortclosed S.O., it stops pending delivery, Job Completion, payment, and BG receipt work, including an unpaid bill waiting for return or resubmission. BG and warranty tracking for a BG already received continues.",
+      "Includes final, stage, supplementary, and advance payments recorded in the selected financial year.",
+      "Final, stage, and supplementary payments use Payment Date; advance payments use Advance Payment Date. Cancelled demands and cancelled S.O.s are excluded.",
     ],
   };
   const shortclosedPayableHelp = (items: string | string[]) => (
     <HelperWithExamples items={items} details={paymentPendingLogicDetails} />
+  );
+  const paymentInYearHelp = (items: string | string[]) => (
+    <HelperWithExamples items={items} details={paymentInYearLogicDetails} />
   );
   const financeHelperText = isSameGlobalAndSubfilterFinanceFy
     ? {
@@ -3491,10 +3750,12 @@ export function Dashboard() {
           "The percentage is against the selected FY allocation.",
         ],
         paymentInYear: [
-          `Payments made during ${selectedFinanceYearLabel} for files started in that FY.`,
-          "Uses payment date or advance payment date.",
-          "Includes final/stage/supplementary payments and advance payments.",
-          "Paid Till Date is cumulative; Payment in FY uses payment dates within the selected FY.",
+          `Shows payment amounts recorded during FY ${selectedFinanceYearLabel}.`,
+          "Includes final, stage, supplementary, and advance payments.",
+          "File Initiation Year only limits the eligible files; it does not decide the payment FY.",
+          `Only files initiated in FY ${selectedFinanceYearLabel} are eligible in this view.`,
+          "This is payment activity during the selected FY, not total paid to date.",
+          "Cancelled demands and cancelled S.O.s are excluded.",
         ],
         previousCarryForward: isCurrentFinanceYearSameFyView
           ? [
@@ -3502,6 +3763,8 @@ export function Dashboard() {
               "Before FY-end, this is the unpaid balance as of today; it can change when payments are recorded.",
               "Prior-FY liabilities that remain unpaid are available for follow-up in the current FY.",
               "Can include payment obligations from earlier FYs for these files.",
+              "The liability FY is based on the related S.O. date, not the D.P. date.",
+              `An S.O. placed in an earlier FY remains an earlier-FY liability even when its D.P. falls in ${selectedFinanceYearLabel}; the D.P. date affects when payment becomes due.`,
             ]
           : [
               "Hidden in historical same-FY view to avoid confusion.",
@@ -3521,16 +3784,14 @@ export function Dashboard() {
           "If paid after FY end, the same liability can appear in the cleared-later panel.",
         ],
         futureClearedCarryForward: [
-          `Liabilities sourced in FY ${selectedFinanceYearLabel} that were unpaid at FY-end and paid later.`,
+          `Amount for S.O.s placed in FY ${selectedFinanceYearLabel} with D.P. in ${selectedFinanceYearLabel} or in later years that remained unpaid at FY-end and were paid in a later FY.`,
           "Updates when later payment entries are recorded.",
           "Explains how unpaid year-end liabilities were cleared later.",
         ],
           firmType: [
             `Firm-type totals for S.O.s and payments recorded during ${selectedFinanceYearLabel} for files started in that FY.`,
             `S.O. value counts only S.O.s placed during ${selectedFinanceYearLabel}.`,
-            `Actual payment counts only payment and advance-payment dates falling in ${selectedFinanceYearLabel}.`,
             "The File Initiation Year subfilter only narrows which files are eligible.",
-            "Supplementary bill payments are included by their payment date.",
           ],
         }
     : isSpecificGlobalEarlierFileYearFinanceView
@@ -3574,15 +3835,18 @@ export function Dashboard() {
             `It is not restricted to payments made inside ${selectedFinanceYearLabel}.`,
           ],
           paymentInYear: [
-            `Payments actually made during ${selectedFinanceYearLabel} for visible files initiated in ${activeFileYear}.`,
-            "Uses payment date or advance payment date.",
-            "Includes final/stage/supplementary payments and advance payments.",
-            "Payments recorded in a later FY remain visible for files started in an earlier FY.",
+            `Shows payment amounts recorded during FY ${selectedFinanceYearLabel}.`,
+            "Includes final, stage, supplementary, and advance payments.",
+            "File Initiation Year only limits the eligible files; it does not decide the payment FY.",
+            `Only files initiated in FY ${activeFileYear} are eligible in this view.`,
+            "This is payment activity during the selected FY, not total paid to date.",
+            "Cancelled demands and cancelled S.O.s are excluded.",
           ],
           previousCarryForward: [
             `Payment liabilities sourced in FY ${activeFileYear}, within files initiated in that FY, that remained unpaid at the end of ${selectedFinanceYearLabel}.`,
             `Here, ${activeFileYear} is both the file start year and the S.O. FY; the S.O. FY comes from the related S.O. date.`,
             "Before FY-end, this unpaid amount is provisional and decreases if a payment is recorded before year-end.",
+            "The D.P. date affects when payment becomes due; it does not change the liability's S.O. FY.",
           ],
           clearedCarryForward: [
             `Liabilities sourced in FY ${activeFileYear}, within files initiated in ${activeFileYear}, that were paid during ${selectedFinanceYearLabel}.`,
@@ -3603,9 +3867,7 @@ export function Dashboard() {
           firmType: [
             `Activity-year distribution by firm type for visible files initiated in ${activeFileYear}.`,
             `S.O. value counts only S.O.s placed during ${selectedFinanceYearLabel}.`,
-            `Actual payment counts only payment and advance-payment dates falling in ${selectedFinanceYearLabel}.`,
             `Only files initiated in ${activeFileYear} are eligible.`,
-            "Supplementary bill payments are included by their payment date.",
           ],
         }
     : isSpecificGlobalAllFileYearsFinanceView
@@ -3645,41 +3907,45 @@ export function Dashboard() {
             "The percentage is compared with the selected FY allocation.",
           ],
           paymentInYear: [
-            `Payments actually made during ${selectedFinanceYearLabel} across all visible initiation years.`,
-            "Uses payment date or advance payment date.",
-            "Includes final/stage/supplementary payments and advance payments.",
-            "Main measure for payments recorded during the selected FY.",
+            `Shows payment amounts recorded during FY ${selectedFinanceYearLabel}.`,
+            "Includes final, stage, supplementary, and advance payments.",
+            "File Initiation Year only limits the eligible files; it does not decide the payment FY.",
+            "Files from earlier initiation years can contribute when included by the selected filters.",
+            "This is payment activity during the selected FY, not total paid to date.",
+            "Cancelled demands and cancelled S.O.s are excluded.",
           ],
           previousCarryForward: [
-            `Payment obligations from before ${selectedFinanceYearLabel} that were still unpaid at that FY-end.`,
-            ...(selectedFinanceYearLabel === settings.financialYear
-              ? ["The selected FY is in progress, so this balance is as of today and may change before year-end."]
-              : []),
-            "Because File Initiation Year is All file years, this includes all previous liability years, grouped year-wise in the panel.",
-            "Each year link opens only obligations that began in that FY, within the current filters.",
+            "Includes all previous liability years, grouped year-wise in the panel.",
+            "Click the liability row to open files containing matching liabilities linked to that S.O. FY.",
+            "Purpose: The liability FY is based on the related S.O. date, not the D.P. date.",
+            `Purpose: An S.O. placed in an earlier FY remains an earlier-FY liability even when its D.P. falls in ${selectedFinanceYearLabel}; the D.P. date affects when payment becomes due.`,
+            "An S.O. placed in an earlier FY is included here when its payment remains unpaid, even if its D.P. was in an earlier FY.",
           ],
           clearedCarryForward: [
             `Payments made during ${selectedFinanceYearLabel} against liabilities linked to S.O.s from any earlier FY.`,
             "This can include an older liability even if it was not shown as unpaid carry-forward at the end of the immediately previous FY.",
-            "Each year link opens matching files, grouped by the related S.O. FY.",
+            "Click the liability row to open matching files, grouped by the related S.O. FY.",
           ],
           carryForward: [
             ...(selectedFinanceYearLabel === settings.financialYear
-              ? [`Liabilities linked to S.O.s dated in ${selectedFinanceYearLabel} that are unpaid as of today. This in-progress FY balance may change before year-end.`]
-              : [`Liabilities linked to S.O.s dated in ${selectedFinanceYearLabel} that were unpaid at that FY-end. Payments made later do not remove them from this year-end figure.`]),
-            "Unpaid amounts are grouped by S.O. FY across all visible file start years.",
-            shortclosedPayableHelper,
+              ? [`Shows unpaid payment liabilities for S.O.s placed in FY ${selectedFinanceYearLabel}; this in-progress FY balance may change before year-end.`]
+              : [`Shows payment liabilities for S.O.s placed in FY ${selectedFinanceYearLabel} that were unpaid at that FY-end. Payments made later do not remove them from this year-end figure.`]),
+            "The S.O. date decides the liability FY, not the file start year.",
+            "The liability FY is based on the related S.O. date, not the D.P. date.",
+            `An S.O. placed in ${selectedFinanceYearLabel} remains a ${selectedFinanceYearLabel} liability even when its D.P. falls in a later FY; the D.P. date affects when payment becomes due.`,
+            "The file may have started in another FY; its related S.O. date places it in this FY.",
+            "Later payment-date entries or corrections can change this carry-forward total.",
+            "Supplementary bills are included if they are still unpaid.",
+            "Shortclosed S.O. rows remain included.",
+            "Click the liability row to open the contributing files and S.O.s.",
           ],
           futureClearedCarryForward: [
-            `${selectedFinanceYearLabel} carry-forward liabilities that were paid after FY-end.`,
+            `Amount for S.O.s placed in FY ${selectedFinanceYearLabel} with D.P. in ${selectedFinanceYearLabel} or in later years that remained unpaid at FY-end and were paid in a later FY.`,
             "Covers all visible initiation years.",
             "It mainly becomes meaningful after the selected FY has ended.",
           ],
           firmType: [
             `S.O. value by firm type is restricted to S.O.s placed during ${selectedFinanceYearLabel}.`,
-            `Actual payment by firm type is restricted to payment/advance payment dates falling in ${selectedFinanceYearLabel}.`,
-            "Supplementary bill payments are included by their payment date.",
-            "All visible initiation years are eligible.",
             "Global Filter FY based, not live cumulative.",
           ],
         }
@@ -4033,13 +4299,15 @@ export function Dashboard() {
         ],
         previousCarryForward: [
           "Unpaid payment rows from earlier FYs that are still unpaid.",
-          "Liability-source-FY based, not File Initiation Year based.",
-          "A payment or unpaid amount can belong to a file started in another FY when its related S.O. or bill date matches this FY and the file is in scope.",
+          "Liability-source-FY based, not file-start-year based.",
+          "The liability FY is based on the related S.O. date, not the D.P. date.",
+          `An S.O. placed in an earlier FY remains an earlier-FY liability even when its D.P. falls in ${selectedFinanceYearLabel}; the D.P. date affects when payment becomes due.`,
+          "An S.O. placed in an earlier FY is included here when its payment remains unpaid, even if its D.P. was in an earlier FY.",
+          "The file may have started in another FY; its related S.O. or bill date places it in this FY.",
           "Later payment-date entries or corrections can change this carry-forward total.",
           "Supplementary bills are included if they are still unpaid.",
-          "Closed Files are included when payment liability history matches.",
           "Shortclosed S.O. rows remain included.",
-          "The S.O. FY link opens the matching pending files and S.O.s.",
+          "Click the liability row to open the matching pending files and S.O.s.",
         ],
         clearedCarryForward: [
           `Earlier-FY carry-forward rows that were paid during ${selectedFinanceYearLabel}.`,
@@ -4047,19 +4315,18 @@ export function Dashboard() {
           "It is not restricted to files initiated in the selected FY.",
           "If a payment date is edited later, rows can move into or out of this panel.",
           "Supplementary bills are included if their payment date falls in this FY.",
-          "Closed Files are included when payment liability history matches.",
           "Shortclosed S.O. rows remain included.",
-          "The S.O. FY link shows the FY when the related S.O. was placed.",
+          "The liability row shows the FY when the related S.O. was placed.",
         ],
         carryForward: [
-          `Payment obligations that began in ${selectedFinanceYearLabel} and were still unpaid at FY-end.`,
+          `Shows unpaid payment liabilities for S.O.s placed in FY ${selectedFinanceYearLabel}.`,
           "The FY of a payment obligation comes from its related S.O. or bill date, not the file's start year.",
-          "It can include files started in another FY when the related S.O. or bill date falls in this FY.",
+          `An S.O. placed in FY ${selectedFinanceYearLabel} remains in this block even when its D.P. falls in a later FY; the D.P. date affects when payment becomes due.`,
+          "It can include files started in another FY when the related S.O. date falls in this FY.",
           "If payment is later recorded after FY end, that row may also appear in the cleared-later panel.",
           "Supplementary bills are included if they remain unpaid at FY end.",
-          "Closed Files are included when payment liability history matches.",
           "Shortclosed S.O. rows remain included.",
-          "The S.O. FY link opens the contributing files and S.O.s.",
+          "Click the liability row to open the contributing files and S.O.s.",
         ],
         futureClearedCarryForward: [
           `${selectedFinanceYearLabel} carry-forward rows that were paid after this FY ended.`,
@@ -4067,7 +4334,6 @@ export function Dashboard() {
           "It is not a frozen year-end snapshot; later payment entries intentionally update this panel.",
           "It is not restricted by file initiation FY.",
           "Supplementary bills are included if they were carried forward and later paid.",
-          "Closed Files are included when payment liability history matches.",
           "Shortclosed S.O. rows remain included.",
           "Clearing FY button shows the future clearing FY.",
         ],
@@ -4220,6 +4486,15 @@ export function Dashboard() {
       revenue: finance1Summary.paidTillDate.revenue,
     },
   ];
+  const financePositionYAxisWidth = (rows: typeof financePositionChartRows) => {
+    const maximum = Math.max(0, ...rows.flatMap((row) => [row.capital, row.revenue]));
+    const largestTick = formatThousandsAndLakhs((maximum * 1.1) / 100_000, 0);
+    return Math.max(72, largestTick.length * 8 + 42);
+  };
+  const finance1PositionYAxisWidth = financePositionYAxisWidth(finance1PositionChartRows);
+  const financePositionYAxisWidthCurrent = financePositionYAxisWidth(financePositionChartRows);
+  const finance1FollowUpColumns = (selected: string | number, following: string | number) =>
+    finance1CutoffIsFyEnd ? [selected, following] : [following, "—"];
   const finance1SnapshotExportTables: ExportTable[] = [
     {
       title: `Financial Position ${finance1AtYearEndLabel}`,
@@ -4268,25 +4543,25 @@ export function Dashboard() {
         ["Bills sent for payment", finance1Summary.activityCounts.billsSentInSelectedFy, finance1Summary.activityCounts.billsSentInFollowingFy, "Payment cases"],
         [`Bills sent in ${finance1YearLabel} and paid in ${finance1YearLabel}`, finance1Summary.activityCounts.selectedFyBillsPaidInSelectedFy, "-", "Payment cases"],
         [`Bills sent in ${finance1YearLabel} and paid in later FYs`, "-", finance1Summary.activityCounts.selectedFyBillsPaidInFollowingFy, "Payment cases"],
-        [`Bills sent in ${finance1YearLabel} and still unpaid`, "-", finance1Summary.activityCounts.selectedFyBillsStillUnpaid, "Payment cases"],
+        [`Bills sent in ${finance1YearLabel} and still unpaid`, ...finance1FollowUpColumns("-", finance1Summary.activityCounts.selectedFyBillsStillUnpaid), "Payment cases"],
         [`Payment due, bill not submitted at ${finance1YearEndLabel}`, finance1Summary.drillFileIds?.paymentDueButBillNotSubmitted?.length ?? 0, "-", "Files"],
         ["Year-end payment due, bill sent later", "-", finance1Summary.drillFileIds?.paymentDueBillSubmittedLater?.length ?? 0, "Files"],
-        ["Year-end payment due, bill still not submitted", "-", finance1Summary.drillFileIds?.paymentDueStillNotSubmittedToday?.length ?? 0, "Files"],
+        ["Year-end payment due, bill still not submitted", ...finance1FollowUpColumns("-", finance1Summary.drillFileIds?.paymentDueStillNotSubmittedToday?.length ?? 0), "Files"],
         [`Unpaid liability at ${finance1YearEndLabel}`, finance1Summary.unpaidLiabilityAtFyEnd.count, "-", "Payment cases"],
         ["Year-end payment due cleared in later FYs", "-", finance1Summary.yearEndLiabilityPaidLater.count, "Payment cases"],
-        ["Year-end payment due still unpaid", "-", finance1Summary.yearEndLiabilityStillUnpaidToday.count, "Payment cases"],
+        ["Year-end payment due still unpaid", ...finance1FollowUpColumns("-", finance1Summary.yearEndLiabilityStillUnpaidToday.count), "Payment cases"],
         [`Delivery pending at ${finance1YearEndLabel}`, finance1Summary.drillFileIds?.materialReceiptPendingByFyEnd?.length ?? 0, "-", "Files"],
         [`Job Completion pending at ${finance1YearEndLabel}`, finance1Summary.drillFileIds?.jobCompletionPendingByFyEnd?.length ?? 0, "-", "Files"],
         ["Delivery pending at year-end completed later", "-", finance1Summary.drillFileIds?.deliveryPendingCompletedLater?.length ?? 0, "Files"],
         ["Job Completion pending at year-end completed later", "-", finance1Summary.drillFileIds?.jobCompletionPendingCompletedLater?.length ?? 0, "Files"],
-        ["Delivery pending at year-end and still pending", "-", finance1Summary.drillFileIds?.deliveryPendingStillOpenToday?.length ?? 0, "Files"],
-        ["Job Completion pending at year-end and still pending", "-", finance1Summary.drillFileIds?.jobCompletionPendingStillOpenToday?.length ?? 0, "Files"],
+        ["Delivery pending at year-end and still pending", ...finance1FollowUpColumns("-", finance1Summary.drillFileIds?.deliveryPendingStillOpenToday?.length ?? 0), "Files"],
+        ["Job Completion pending at year-end and still pending", ...finance1FollowUpColumns("-", finance1Summary.drillFileIds?.jobCompletionPendingStillOpenToday?.length ?? 0), "Files"],
         ["S.O.s placed by year-end and cancelled later", "-", finance1Summary.activityCounts.supplyOrdersPlacedByYearEndCancelledLater, "S.O. cases"],
         ["S.O. cases completed after year-end", "-", finance1Summary.activityCounts.regularSupplyOrdersCompletedLater, "S.O. cases"],
         ["Stage cases completed after year-end", "-", finance1Summary.activityCounts.stageSupplyOrdersCompletedLater, "Stage cases"],
         ["S.O. payment cases with bills sent after year-end", "-", finance1Summary.activityCounts.regularSupplyOrderPaymentsWithBillSentLater, "Payment cases"],
         ["Stage payment cases with bills sent after year-end", "-", finance1Summary.activityCounts.stageSupplyOrderPaymentsWithBillSentLater, "Payment cases"],
-        ["S.O./stage payment cases still unpaid", "-", finance1Summary.activityCounts.supplyOrdersPlacedByYearEndStillUnpaid, "Payment cases"],
+        ["S.O./stage payment cases still unpaid", ...finance1FollowUpColumns("-", finance1Summary.activityCounts.supplyOrdersPlacedByYearEndStillUnpaid), "Payment cases"],
         ["Files closed", finance1Summary.activityCounts.filesClosedInSelectedFy, finance1Summary.activityCounts.filesClosedInFollowingFy, "Files"],
         ["Files active at year-end and demand-cancelled later", "-", finance1Summary.activityCounts.filesActiveAtYearEndDemandCancelledLater, "Files"],
         ["Year-end liability stopped by NFA", "-", finance1Summary.yearEndLiabilityClosedByNfa.count, "Payment cases"],
@@ -4294,13 +4569,13 @@ export function Dashboard() {
       ],
     },
     {
-      title: `File Type Distribution ${finance1AtYearEndLabel}`,
-      headers: ["File Type", "Files", "Files with S.O.", "Active", "Closed", "Cancelled", "Capital (Lakhs)", "Revenue (Lakhs)", "Value Share"],
+      title: "File Type Distribution (Live)",
+      headers: ["File Type", "Files", "Files with S.O. (Live)", "Active (Live)", "Closed (Live)", "Cancelled (Live)", "Capital (Lakhs) (Live)", "Revenue (Lakhs) (Live)", "Value Share (Live)"],
       columnWidths: [30, 16, 16, 16, 16, 16, 16, 16, 16],
-      rows: finance1Summary.fileTypeDistribution.map((row) => [row.fileType, row.files, row.filesWithSo, row.activeAtFyEnd, row.closedByFyEnd, row.cancelledByFyEnd, formatLakhsValue(row.capital), formatLakhsValue(row.revenue), formatPercent(finance1Summary.fileGroup.total ? (row.total / finance1Summary.fileGroup.total) * 100 : 0)]),
+      rows: finance1Summary.fileTypeDistribution.map((row) => [row.fileType, row.files, row.filesWithSoLive, row.active, row.closed, row.cancelled, formatLakhsValue(row.capital), formatLakhsValue(row.revenue), formatPercent(finance1Summary.fileGroup.total ? (row.total / finance1Summary.fileGroup.total) * 100 : 0)]),
     },
     {
-      title: `Firm Type Distribution ${finance1PeriodLabel}`,
+      title: `Firm Type Distribution ${finance1PeriodLabel} ${finance1CutoffStatusLabel}`,
       headers: ["Firm Type", "S.O.", "Capital (Lakhs)", "Revenue (Lakhs)", "Total S.O. Value (Lakhs)", "Share"],
       rows: finance1Summary.firmTypeDistribution.map((row) => [row.firmType, row.supplyOrders, formatLakhsValue(row.capital), formatLakhsValue(row.revenue), formatLakhsValue(row.total), formatPercent(finance1Summary.firmTypeDistribution.reduce((sum, item) => sum + item.total, 0) ? (row.total / finance1Summary.firmTypeDistribution.reduce((sum, item) => sum + item.total, 0)) * 100 : 0)]),
     },
@@ -4578,7 +4853,7 @@ export function Dashboard() {
         "preBidCompleted",
         "refloatPreBidDue",
         "refloatPreBidCompleted",
-      ]).filter((row) => getFiscalYearForMonthKey(String(row.monthKey)) === selectedPreBidFiscalYear)
+      ], selectedPreBidFiscalYear)
         .map((row) => ({ ...row, monthDrilldown: 1, fiscalYear: selectedPreBidFiscalYear }))
     : [];
   const displayedPreBidRows = selectedPreBidFiscalYear
@@ -4622,8 +4897,7 @@ export function Dashboard() {
     ["reviewed"],
   );
   const tcecMonthRows = selectedTcecFiscalYear
-    ? getCalendarMonthSummaryRows(tcecDateRows, "date", ["reviewed", "signed", "pending"])
-        .filter((row) => getFiscalYearForMonthKey(String(row.monthKey)) === selectedTcecFiscalYear)
+    ? getCalendarMonthSummaryRows(tcecDateRows, "date", ["reviewed", "signed", "pending"], selectedTcecFiscalYear)
         .map((row) => ({
           ...row,
           monthDrilldown: 1,
@@ -4662,7 +4936,7 @@ export function Dashboard() {
         "approvalPending",
         "financialSanctionPending",
         "supplyOrderPending",
-      ]).filter((row) => getFiscalYearForMonthKey(String(row.monthKey)) === selectedCncFiscalYear)
+      ], selectedCncFiscalYear)
         .map((row) => ({ ...row, monthDrilldown: 1, fiscalYear: selectedCncFiscalYear }))
     : [];
   const displayedCncRows = selectedCncFiscalYear
@@ -4678,11 +4952,22 @@ const analyticsPanels: AnalyticsPanel[] = [
     title: "Demand processing analysis",
     subtitle: "Elapsed time between selected file, S.O., delivery, and payment dates.",
     helper: [
-      "Global Filter, Division, File Type, File Initiation Year, and access permissions determine which files are included.",
-      "The activity date range checks the date selected in the From field; it does not filter by the selected To event date.",
-      "Cancelled demands are excluded; closed files follow the Global Filter. Cancelled S.O.s are excluded from S.O.-linked, stage, advance, and payment comparisons, while file-level date pairs can still be compared. Shortclosed S.O.s are not excluded.",
-      "Date-pair, record, payment-mode, and day-range details are available beside their respective controls and measures.",
+      "Purpose: Measures elapsed days between the selected start and end dates for file, S.O., delivery, and payment workflows.",
+      "A result is a valid date interval: both dates are present and the end date is not earlier than the start date.",
+      "Filters: Global Filter, Division, File Type, File Initiation Year, access permissions, and the activity date range narrow the included records. The From date controls the activity range; the selected To event is not used as a second date filter.",
+      "Included and excluded: Cancelled demands are excluded. Cancelled S.O.s are excluded from S.O.-linked, stage, advance, and payment comparisons, but file-level date pairs can still be compared. Shortclosed S.O.s remain included.",
+      "Details: The controls beside each measure define the date pair, record type, payment mode, and day range being compared.",
     ],
+    helperExamples: {
+      title: "Examples",
+      inline: true,
+      columns: ["Comparison", "Recorded dates", "Result"],
+      rows: [
+        ["Demand to first S.O.", "Demand received: 1 May; first S.O.: 8 May", "7 elapsed days; one valid file interval."],
+        ["Payment interval", "Bill sent: 10 May; payment: 18 May", "8 elapsed days; counted only when the selected payment rule applies."],
+        ["Incomplete interval", "Start date recorded; end date blank", "No elapsed-day result until the end date is recorded."],
+      ],
+    },
     columns: [],
     rows: [],
   },
@@ -4691,11 +4976,22 @@ const analyticsPanels: AnalyticsPanel[] = [
     title: "Firm Performance",
     subtitle: "S.O. count and value, order progress, delivery, BG status, delay, and rating.",
     helper: [
-      "Global Filter selects the files. Division, File Type, File Initiation Year, and access permissions narrow that file set.",
-      "Cancelled demands are excluded; closed files follow the Global Filter. Cancelled S.O.s are excluded from active value, delivery, BG, rating, and delay measures, but remain represented in Total S.O. and Cancelled S.O. Shortclosed S.O.s remain included unless cancelled.",
-      "Counts, value, completion, delivery delay, BG, rating, and click-through rules are explained beside their respective column headings.",
-      "The view retains its firm ranking, column selection, chart, and file drilldown controls.",
+      "Purpose: Compares firms using their S.O. count, S.O. value, progress, delivery, BG, delay, and rating measures.",
+      "Each column has its own unit. Files and S.O. columns are counts; value columns are amounts; delivery, delay, and rating columns use their displayed units.",
+      "Filters: Global Filter, Division, File Type, File Initiation Year, and access permissions narrow the selected files.",
+      "Included and excluded: Cancelled demands are excluded. Cancelled S.O.s are excluded from active value, delivery, BG, rating, and delay measures, but remain represented in Total S.O. and Cancelled S.O. Shortclosed S.O.s remain included unless cancelled.",
+      "Details: Use the column help, ranking controls, chart, and row click to see the rule or matching files for a specific measure.",
     ],
+    helperExamples: {
+      title: "Examples",
+      inline: true,
+      columns: ["Firm record", "Measure", "Result"],
+      rows: [
+        ["One firm has two placed S.O.s in selected files", "S.O. count", "Counts two S.O. records; it is not reduced to one file."],
+        ["One cancelled S.O. and one active S.O.", "Active value", "Only the active S.O. contributes to active value; cancelled history remains visible in cancellation measures."],
+        ["Shortclosed but not cancelled S.O.", "Delivery / payment measures", "Remains included when the specific measure allows shortclosed S.O.s."],
+      ],
+    },
     columns: [],
     rows: [],
   },
@@ -4704,9 +5000,12 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Division Ranking by Files and S.O.",
       subtitle: `Ranked by ${divisionFilesRankBy === "files" ? "files" : "S.O. records"}`,
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Files counts each selected file once under its division. S.O. counts each recorded S.O. with a placement date; one file can contribute multiple S.O.s.",
-        "The Rank by control changes the ordering only. Both measures use the same selected files; cancelled demands are excluded and closed files follow the Global Filter.",
+        "Purpose: Ranks divisions by the number of selected files and placed S.O. records.",
+        "Files counts each selected file once. S.O. counts each placed S.O.; one file can contribute multiple S.O.s.",
+        "Example table: Division data | Recorded records | Result",
+        "Example row: Division A | 3 selected files and 5 placed S.O.s | Files = 3; S.O. = 5.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. Cancelled demands are excluded and closed files follow the Global Filter.",
+        "Details: Rank by changes the ordering only; both columns continue to use the same selected files.",
       ],
       columns: withRankAnalyticsColumns([
         { key: "name", label: "Division", align: "left" },
@@ -4735,10 +5034,12 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Division ranking by value",
       subtitle: "",
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Intended, booked, committed, and S.O. values come from those files, even if the value was entered in another FY.",
-        "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
-        "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
+        "Purpose: Compares Capital, Revenue, and Total value by division for the selected files and S.O. history.",
+        "Example table: Position | Capital and Revenue | Interpretation",
+        "Example row: Intended | Demand Capital ₹60 lakh; Revenue ₹40 lakh | Total = ₹100 lakh for the selected division.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. Values can have been recorded in another FY and still belong to a selected file.",
+        "Included and excluded: Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
+        "Details: For All Files, All Active Files, and Active + current FY closed, allocation uses the current FY allocation. Values are shown in Lakhs.",
       ],
       columns: withRankAnalyticsColumns(
         getDivisionValueAnalyticsColumns(visibleDivisionValueMetrics, divisionValueDisplayMode),
@@ -4750,10 +5051,12 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Division ranking by total value",
       subtitle: "Allocated, intended, booked, and committed totals",
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Intended, booked, committed, and S.O. totals come from those files, even if the value was entered in another FY.",
-        "Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
-        "For All files / All active files / Active + current FY closed, allocation uses the current FY allocation.",
+        "Purpose: Shows the combined Capital + Revenue amount for each value position by division.",
+        "Example table: Capital | Revenue | Total",
+        "Example row: ₹60 lakh | ₹40 lakh | ₹100 lakh.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. Values can have been recorded in another FY and still belong to a selected file.",
+        "Included and excluded: Cancelled S.O. value is excluded from S.O.-value calculations; shortclosed S.O.s remain included.",
+        "Details: For All Files, All Active Files, and Active + current FY closed, allocation uses the current FY allocation. Values are shown in Lakhs.",
       ],
       columns: withRankAnalyticsColumns(
         getDivisionTotalValueAnalyticsColumns(
@@ -4768,10 +5071,11 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Division turnaround ranking",
       subtitle: "Average days from Demand received date to first S.O.",
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Average days run from Demand Received to the first S.O. date for each selected file.",
-        "Cancelled demand files are excluded.",
-        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
+        "Purpose: Ranks divisions by the average number of days from Demand Received to the first placed S.O.",
+        "Example table: Demand Received | First S.O. date | Turnaround",
+        "Example row: 1 May | 8 May | 7 days for that file; the division average includes all files with valid dates.",
+        "Filters: Global Filter and File Initiation Year choose the selected files.",
+        "Included and excluded: Cancelled demand files are excluded. Files missing either date, or with a negative interval, do not contribute. Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: withRankAnalyticsColumns(getAverageDaysAnalyticsColumns("Division")),
       rows: withAnalyticsRanks(
@@ -4786,35 +5090,19 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Firms ranking by S.O. value",
       subtitle: "Supply order value, capital plus revenue",
       helper: [
-        "Purpose: Rank firms by the S.O. value recorded in the selected files.",
-        "Count rule: Each firm's ranking uses recorded S.O. values from the selected files. Cancelled S.O.s can still contribute to this history; demand-cancelled files are excluded.",
+        "Purpose: Ranks firms by the Capital + Revenue value of their recorded S.O.s.",
+        "Count rule: Each placed S.O. contributes its own S.O. value. Values are shown in Lakhs; cancelled S.O.s remain part of historical S.O. value analysis.",
+        "Filters: Global Filter, Division, File Type, File Initiation Year, and access permissions determine the selected files. Demand-cancelled files are excluded.",
+        "Details: The ranking and sort control change the order only; click a result to open matching files.",
       ],
       helperExamples: {
         title: "Examples",
         inline: true,
-        groups: [
-          {
-            title: "Example-1",
-            items: [
-              "Filter: Global = 2026-27; Subfilter = 2023-24.",
-              "A file initiated in 2023-24 qualifies if it was open on 1 April 2026, and stays in scope if it closes during 2026-27.",
-              "Its S.O.s from 2024-25 can count; the Global FY selects files, not S.O. dates.",
-            ],
-          },
-          {
-            title: "Example-2",
-            items: [
-              "Filter: Global = 2025-26; Subfilter = 2025-26.",
-              "Files initiated in 2025-26 qualify. An S.O. placed in 2026-27 can count if it belongs to one of those files.",
-            ],
-          },
-          {
-            title: "Example-3",
-            items: [
-              "Filter: Global = All Active Files; Subfilter = All file years.",
-              "Currently open files qualify, regardless of initiation year. Demand-cancelled files and files whose S.O.s are all cancelled are excluded. Recorded S.O. values from any FY can count; use All Files to include closed files.",
-            ],
-          },
+        columns: ["Selected filters", "Example record", "Result"],
+        rows: [
+          ["Global 2026-27; initiation FY 2023-24", "File was active on 1 Apr 2026 and closes during 2026-27; its S.O. was placed in 2024-25", "The file and its 2024-25 S.O. value can count; the Global FY selects files, not S.O. dates."],
+          ["Global 2025-26; initiation FY 2025-26", "Qualifying file has an S.O. placed in 2026-27", "That S.O. can count because the order belongs to a selected file."],
+          ["All Active Files; all initiation years", "Open file with S.O.s from several FYs", "All recorded S.O. values can count; demand-cancelled and all-S.O.-cancelled files are excluded. Use All Files to include closed files."],
         ],
       },
       columns: withRankAnalyticsColumns(getValueAnalyticsColumns("Firm", "S.O. value")),
@@ -4828,34 +5116,18 @@ const analyticsPanels: AnalyticsPanel[] = [
         : "Select a firm to see BQ, invitation, tender participation, and order conversion.",
       helper: [
         "Purpose: Compare firms' involvement at the BQ, invitation, bidding, and S.O. stages.",
-        "Count rule: Each stage counts a firm at most once per file. Cancelled S.O.s can still appear in the S.O. history; demand-cancelled files are excluded.",
+        "Count rule: Each stage counts a firm at most once per file. A firm with several invitations or bids in one file still contributes one count to that stage. Cancelled S.O.s can still appear in S.O. history; demand-cancelled files are excluded.",
+        "Filters: The same Analytics filters apply. Select a firm and choose the role and operator controls to narrow the comparison.",
+        "Details: S.O. value is shown in Lakhs; role filters affect the selected-firm result and its click-through files.",
       ],
       helperExamples: {
         title: "Examples",
         inline: true,
-        groups: [
-          {
-            title: "Example-1",
-            items: [
-              "Filter: Global = 2026-27; Subfilter = 2023-24.",
-              "A file initiated in 2023-24 qualifies if it was open on 1 April 2026, and stays in scope if it closes during 2026-27.",
-              "Its BQ, invitation, bidding, and S.O. records from 2024-25 can count; the Global FY selects files, not activity dates.",
-            ],
-          },
-          {
-            title: "Example-2",
-            items: [
-              "Filter: Global = 2025-26; Subfilter = 2025-26.",
-              "Files initiated in 2025-26 qualify. BQ, invitation, bidding, or S.O. activity from another FY can count if recorded on one of those files.",
-            ],
-          },
-          {
-            title: "Example-3",
-            items: [
-              "Filter: Global = All Active Files; Subfilter = All file years.",
-              "Currently open files qualify, regardless of initiation year. Demand-cancelled files and files whose S.O.s are all cancelled are excluded. Firm-stage history from any FY can count; use All Files to include closed files.",
-            ],
-          },
+        columns: ["Selected filters", "Example record", "Result"],
+        rows: [
+          ["Global 2026-27; initiation FY 2023-24", "File was active on 1 Apr 2026 and closes during 2026-27; BQ/invitation/bidding/S.O. activity occurred in 2024-25", "Qualifying stage history can count even though activity predates the Global FY."],
+          ["Global 2025-26; initiation FY 2025-26", "Selected file has BQ, invitation, bidding, or S.O. activity in another FY", "That activity can count because the Global FY selects files, not activity dates."],
+          ["All Active Files; all initiation years", "Open file with firm-stage history; demand is not cancelled and not all S.O.s are cancelled", "History from any FY can count. Use All Files to include closed files."],
         ],
       },
       columns: getFirmAnalysisColumns(),
@@ -4875,34 +5147,18 @@ const analyticsPanels: AnalyticsPanel[] = [
       ].join("\n"),
       helper: [
         "Purpose: Show which firms received an indentor's S.O.s, or which indentors placed S.O.s with a firm.",
-        "Count rule: Each placed S.O. is counted once; value uses the S.O. header amount. Cancelled S.O.s remain part of award history. Common includes links to other matching records; Unique includes only links to the selected indentor or firm. Demand-cancelled files are excluded.",
+        "Count rule: Each placed S.O. is counted once; value uses the S.O. header amount in Lakhs. Cancelled S.O.s remain part of award history.",
+        "Filters: Choose the direction, selected indentor or firm, match type, and S.O. count or value sort.",
+        "Included and excluded: Demand-cancelled files are excluded; shortclosed and cancelled S.O.s remain part of award history.",
       ],
       helperExamples: {
         title: "Examples",
         inline: true,
-        groups: [
-          {
-            title: "Example-1",
-            items: [
-              "Filter: Global = 2026-27; Subfilter = 2023-24.",
-              "A file initiated in 2023-24 qualifies if it was open on 1 April 2026, and stays in scope if it closes during 2026-27.",
-              "Its S.O.s from 2024-25 can count; the Global FY selects files, not S.O. dates.",
-            ],
-          },
-          {
-            title: "Example-2",
-            items: [
-              "Filter: Global = 2025-26; Subfilter = 2025-26.",
-              "Files initiated in 2025-26 qualify. An S.O. placed in 2026-27 can count if it belongs to one of those files.",
-            ],
-          },
-          {
-            title: "Example-3",
-            items: [
-              "Filter: Global = All Active Files; Subfilter = All file years.",
-              "Currently open files qualify, regardless of initiation year. Demand-cancelled files and files whose S.O.s are all cancelled are excluded. Recorded S.O.s from any FY can count; use All Files to include closed files.",
-            ],
-          },
+        columns: ["Selected filters", "Example record", "Result"],
+        rows: [
+          ["Global 2026-27; initiation FY 2023-24", "File was active on 1 Apr 2026 and closes during 2026-27; its S.O. was placed in 2024-25", "The S.O. relationship can count; the Global FY selects files, not S.O. dates."],
+          ["Global 2025-26; initiation FY 2025-26", "Selected file has an S.O. placed in 2026-27", "The S.O. can count because it belongs to a selected file."],
+          ["All Active Files; all initiation years", "Open file with recorded S.O.s; demand is not cancelled and not all S.O.s are cancelled", "S.O. history from any FY can count. Use All Files to include closed files."],
         ],
       },
       columns: [
@@ -4938,10 +5194,11 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Top Indentors by Files and S.O.",
       subtitle: `Ranked by ${indentorsByFilesRankBy === "files" ? "files" : "S.O. records"}`,
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Files counts each selected file once under its indentor. S.O. counts each recorded S.O. with a placement date; one file can contribute multiple S.O.s.",
-        "The Rank by control changes the ordering only. Both measures use the same selected files. Cancelled demand files are excluded.",
-        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
+        "Purpose: Ranks indentors by selected file count or placed S.O. count.",
+        "Example table: Indentor data | Files | S.O. records",
+        "Example row: One indentor linked to 3 selected files containing 5 placed S.O.s | 3 | 5.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. Cancelled demand files are excluded.",
+        "Details: The Rank by control changes the ordering only; both measures use the same selected files. Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: withRankAnalyticsColumns([
         { key: "name", label: "Indentor", align: "left" },
@@ -4959,11 +5216,12 @@ const analyticsPanels: AnalyticsPanel[] = [
         "Total"
       } value.`,
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Capital and Revenue sum the recorded demand values of those files, grouped by indentor.",
-        "A selected file contributes its recorded demand values even if the demand or S.O. activity happened in another FY.",
-        "Cancelled demand files are excluded.",
-        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
+        "Purpose: Ranks indentors by the recorded Capital, Revenue, or Total demand value of selected files.",
+        "Example table: Demand values | Capital | Revenue | Total",
+        "Example row: One selected file | ₹60 lakh | ₹40 lakh | ₹100 lakh.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. A selected file contributes its demand values even if demand or S.O. activity happened in another FY.",
+        "Included and excluded: Cancelled demand files are excluded. Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
+        "Details: The sort control changes the ranking order only. Values are shown in Lakhs.",
       ],
       columns: withRankAnalyticsColumns(getIndentorValueAnalyticsColumns()),
       rows: indentorsByValuePagination.rows,
@@ -4973,10 +5231,12 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Bidding mode mix",
       subtitle: "Distribution by mode",
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "The count for each mode is the number of selected files using it.",
-        "Cancelled demand files are excluded.",
-        "Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
+        "Purpose: Shows how many selected files use each recorded bidding mode.",
+        "Example table: Selected files | Bidding mode | Count",
+        "Example row: 10 selected files | GeM | 4 files with GeM as their recorded mode.",
+        "Filters: Global Filter and File Initiation Year choose the selected files.",
+        "Count rule: Each file contributes once to its recorded mode. A missing or unrecognised mode is grouped as Unassigned.",
+        "Included and excluded: Cancelled demand files are excluded. Closed files and files with cancelled or shortclosed S.O.s remain included when the Global Filter includes them.",
       ],
       columns: getCountAnalyticsColumns("Mode"),
       rows: analytics.biddingModeMix,
@@ -4986,19 +5246,20 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Count and Value analysis",
       subtitle: getCountValueAnalysisSubtitle(countValueAnalysisMode),
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Count mode groups files by the configured value ranges.",
-        "S.O. value mode uses each parent S.O. header value; stage amounts are not added.",
-        "Cancelled demand files are excluded.",
-        "Cancelled S.O. and shortclosed S.O. rows remain included in S.O. value slabs for historical analysis.",
+        "Purpose: Groups demand values or S.O. values into the configured threshold ranges and, where selected, shows count share and value share.",
+        "Filters: Global Filter and File Initiation Year choose the selected files. Use the mode control to switch between Demand Value, S.O. Value, and count/value share views.",
+        "Included and excluded: Cancelled demand files are excluded. Cancelled and shortclosed S.O.s remain included in S.O. value slabs for historical analysis. Stage amounts are not added to the parent S.O. header value.",
+        "Details: Thresholds are configured in Settings; values are shown in Lakhs.",
       ],
       helperExamples: {
         title: "Count and Value examples",
+        inline: true,
         items: [
-          "File value mode: a file with demand value 8 lakh appears in the 0-10 lakh slab.",
-          "S.O. value mode: if one file has S.O.s of 6 lakh and 35 lakh, it can contribute to both matching S.O. slabs.",
-          "Cancelled S.O. of 20 lakh: it remains included in S.O. value slabs.",
-          "Shortclosed S.O. of 20 lakh: it remains included.",
+          "Example table: Mode | Recorded value | Result",
+          "Example row: File value | Demand value ₹8 lakh | File appears in the ₹0–10 lakh slab.",
+          "Example row: S.O. value | S.O. 1: ₹6 lakh; S.O. 2: ₹35 lakh | The file contributes to both matching S.O. slabs; orders are assessed individually.",
+          "Example row: S.O. value | Cancelled S.O.: ₹20 lakh | Included in historical S.O. value slabs.",
+          "Example row: S.O. value | Shortclosed S.O.: ₹20 lakh | Included in historical S.O. value slabs.",
         ],
       },
       columns: getCountValueAnalysisColumns(countValueAnalysisMode),
@@ -5007,12 +5268,11 @@ const analyticsPanels: AnalyticsPanel[] = [
     {
       key: "paymentPending",
       title: "Payment pending by division",
-      subtitle: "Delivery/job completion done but payment not completed",
+      subtitle: "Unpaid payment cases by division",
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Each division's count is the number of unpaid payment cases in its matching files.",
-        "Main S.O., stage, returned-bill, advance, and supplementary payments are included.",
-        "The count is payment cases, not unique files. One file can contribute more than one pending case.",
+        "Purpose: Shows unpaid payment cases by division, including regular, stage, returned-bill, advance, and supplementary payment cases.",
+        "Filters: Global Filter and File Initiation Year choose the selected files.",
+        "Count rule: Counts payment cases, not unique files. One file can contribute more than one pending case.",
         "For physical delivery/inspection cases, payment can become pending after material receipt.",
         "For Goods & Services where IR is No, payment can become pending after Job Completion Received Date.",
         "For Group B (Contract), payment is due the day after the effective D.P. expires. For a short-closed S.O., payment becomes due from the Job Completion Received Date, not the D.P. expiry date.",
@@ -5024,15 +5284,17 @@ const analyticsPanels: AnalyticsPanel[] = [
       ],
       helperExamples: {
         title: "Payment pending examples",
+        inline: true,
         items: [
-          "Material received, but Payment Date is blank.",
-          "For a short-closed Contract S.O. or a Goods & Services S.O. with IR marked No, Job Completion Received Date is recorded but the Payment Date is blank.",
-          "A stage delivery/job is completed, but payment date for that stage is blank.",
-          "A returned main bill is still unpaid.",
-          "Advance Payment is Yes, but advance payment date is blank.",
-          "A supplementary bill is submitted, returned, or resubmitted, but payment date is blank.",
-          "Cancelled S.O.: excluded.",
-          "Shortclosed S.O.: payment for delivered/completed work can still keep the file pending.",
+          "Example table: Payment case | Recorded dates / status | Pending result",
+          "Example row: Inspection S.O. | Material Receipt: 10 May; Payment Date blank | Included as pending payment if the S.O. is otherwise eligible.",
+          "Example row: Contract short-closed S.O. | Job Completion Received: 10 May; Payment Date blank | Payment follow-up can remain pending from the received date.",
+          "Example row: Stagewise S.O. | Stage 2 completed; Stage 2 Payment Date blank | Stage 2 contributes one pending payment case.",
+          "Example row: Returned regular bill | Returned; no payment date | Included while the returned bill remains unpaid.",
+          "Example row: Advance | Advance Payment = Yes; Advance Payment Date blank | Included as pending advance payment.",
+          "Example row: Supplementary bill | Sent/returned/resubmitted; Supplementary Payment Date blank | Included as a pending supplementary payment case.",
+          "Example row: Cancelled S.O. | S.O. cancelled | Excluded from pending payment cases.",
+          "Example row: Shortclosed S.O. | Delivered/completed work; payment still due | Can remain pending; short-closure does not erase the liability.",
         ],
       },
       columns: withRankAnalyticsColumns(getCountAnalyticsColumns("Division")),
@@ -5053,20 +5315,22 @@ const analyticsPanels: AnalyticsPanel[] = [
         ? `Month-wise Pre-Bid Meeting schedule for FY ${selectedPreBidFiscalYear}`
         : "FY-wise Pre-Bid Meeting schedule",
       helper: [
-        "Global Filter selects the files. File Initiation Year and other Analytics filters narrow that list.",
-        "Rows are grouped by Pre-Bid meeting date and its FY or month, not by file initiation FY.",
-        "Select an FY, then a month, to view daily meeting counts in a calendar.",
-        "Refloat Pre-Bid dates are included in Pre-Bid history.",
-        "With Active Files, closed files and files whose S.O.s are all cancelled are excluded. All Files or a specific FY can include them when a Pre-Bid date is recorded.",
+        "Purpose: Shows regular and Refloat Pre-Bid meeting events by financial year, month, and date.",
+        "Completed means the meeting date is before today. Due means the meeting date is today or later. Total counts meeting events, so one file can contribute a regular and a Refloat event.",
+        "Filters: Global Filter, File Initiation Year, Division, File Type, and other Analytics filters narrow the selected files. The event is grouped by its meeting date, not file initiation date.",
+        "Details: Select an FY, then a month, to view daily counts. With Active Files, closed files and files whose S.O.s are all cancelled are excluded; All Files or a specific FY can include them when a meeting date is recorded.",
+        "Shortclosing an S.O. does not erase earlier Pre-Bid history.",
       ],
       helperExamples: {
         title: "Pre-Bid examples",
+        inline: true,
         items: [
-          "File initiated in FY 2025-26 with Pre-Bid Meeting Date 10-May-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Pre-Bid date falls there.",
-          "Active files selected: File Closed and all-S.O.-cancelled files with Pre-Bid date are excluded.",
-          "All files or a specific FY selected: the same closed file can appear in the month/FY where its Pre-Bid date falls.",
-          "Refloat Pre-Bid Date 15-Jul-2026 filled: it is counted in Refloat Pre-Bid history.",
-          "If S.O. gets shortclosed: the earlier Pre-Bid history remains valid and can remain visible.",
+          "Example table: File / event | Filters applied | Calendar result",
+          "Example row: File initiated 2025-26; Pre-Bid: 10 May 2026 | Global FY 2026-27; initiation FY 2025-26 | File can qualify, and the event appears in May 2026 under FY 2026-27.",
+          "Example row: File closed; Pre-Bid: 10 May 2026 | Active Files | Excluded from the active cohort.",
+          "Example row: Same closed file; Pre-Bid: 10 May 2026 | All Files or specific FY | Included under the event's FY/month if it meets the selected scope.",
+          "Example row: Refloat Pre-Bid: 15 Jul 2026 | Refloat history included | Counted as a historical Refloat Pre-Bid event in July 2026.",
+          "Example row: S.O. short-closed after Pre-Bid | Any scope including the file | Earlier Pre-Bid history remains; short-closure does not erase it.",
         ],
       },
       columns: selectedPreBidFiscalYear
@@ -5090,22 +5354,23 @@ const analyticsPanels: AnalyticsPanel[] = [
           ? "Pre-TCEC FY-wise review and minutes status"
           : "Post-TCEC FY-wise review and minutes status",
       helper: [
-        "Global Filter selects the files. File Initiation Year and other Analytics filters narrow that list.",
-        "Rows are grouped by TCEC meeting date and its FY, not by file initiation FY.",
-        "Select an FY, then a month, to view daily reviewed, signed, and pending counts across committees.",
-        "Pre-TCEC and Post-TCEC are separate stages. Post-TCEC includes Refloat Post-TCEC.",
-        "With Active Files, closed files and files whose S.O.s are all cancelled are excluded. All Files or a specific FY can include them when a TCEC date is recorded.",
-        "Shortclosing an S.O. does not remove the file's TCEC history.",
+        "Purpose: Shows Pre-TCEC or Post-TCEC meeting activity by financial year, month, date, and committee.",
+        "Reviewed means a TCEC meeting date or minutes date is recorded. Signed means a Minutes Date is recorded. Pending means the item is reviewed but its Minutes Date is blank.",
+        "Filters: Global Filter, File Initiation Year, Division, File Type, stage, committee, and other Analytics filters narrow the selected files. Rows are grouped by TCEC meeting date, not file initiation date.",
+        "Details: Pre-TCEC and Post-TCEC are separate stages. Post-TCEC includes Refloat Post-TCEC. Select an FY, then a month, to view daily counts. With Active Files, closed files and files whose S.O.s are all cancelled are excluded.",
+        "Shortclosing an S.O. does not erase earlier TCEC history.",
       ],
       helperExamples: {
         title: "TCEC examples",
+        inline: true,
         items: [
-          "File initiated in FY 2025-26 with Post-TCEC Date 05-Apr-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because the Post-TCEC date falls there.",
-          "Active files selected: File Closed and all-S.O.-cancelled files with TCEC dates are excluded.",
-          "All files or a specific FY selected: the same closed file can appear in Pre-TCEC or Post-TCEC history if the relevant TCEC date exists.",
-          "Post-TCEC selected: normal Post-TCEC and Refloat Post-TCEC are counted together.",
-          "Pre-TCEC selected: Pre-TCEC remains separate and is not mixed with Post-TCEC.",
-          "Minutes Date blank: the file is reviewed/pending, not signed.",
+          "Example table: Recorded event | Selected filters / TCEC stage | Result",
+          "Example row: File initiated 2025-26; Post-TCEC: 5 Apr 2026 | Global FY 2026-27; initiation FY 2025-26 | Event appears in FY 2026-27 because grouping follows its event date.",
+          "Example row: Closed file with TCEC date | Active Files | Excluded from the active cohort.",
+          "Example row: Same closed file with TCEC date | All Files or matching specific FY | Included if its event date and selected scope qualify.",
+          "Example row: Post-TCEC: 5 Apr; Refloat Post-TCEC: 12 Apr 2026 | Post-TCEC view | Both normal and refloat history are included in the Post-TCEC category.",
+          "Example row: Pre-TCEC: 2 Apr; Post-TCEC: blank | Pre-TCEC view | Pre-TCEC remains a separate stage; it is not counted as Post-TCEC.",
+          "Example row: TCEC review date recorded; Minutes Date blank | Reviewed / signed status | Counts as reviewed but pending signature, not signed.",
         ],
       },
       columns: selectedTcecFiscalYear
@@ -5126,24 +5391,25 @@ const analyticsPanels: AnalyticsPanel[] = [
         ? `CNC date-wise review, approval, financial sanction, and S.O. status for FY ${selectedCncFiscalYear}`
         : "FY-wise CNC review, approval, financial sanction, and S.O. status",
       helper: [
-        "Global Filter selects the files. File Initiation Year and other Analytics filters narrow that list.",
-        "Rows are grouped by CNC date and its FY, not by file initiation FY.",
-        "Select an FY, then a month, to view daily CNC counts in a calendar.",
-        "A CNC date means the file was reviewed. CNC Approval Date shows whether approval is complete.",
-        "After CNC approval, Financial Sanction is the next applicable stage.",
-        "With Active Files, closed files and files whose S.O.s are all cancelled are excluded. All Files or a specific FY can include them when a CNC date is recorded.",
-        "Shortclosing an S.O. does not remove the file's CNC history.",
+        "Purpose: Shows CNC-reviewed cases and their approval, Financial Sanction, and S.O. follow-up status by financial year, month, and date.",
+        "Reviewed means CNC Date is recorded. Approved means CNC Approval Date is recorded. Approval pending means CNC Date is recorded but CNC Approval Date is blank.",
+        "Financial Sanction signed means at least one non-cancelled S.O. has a Financial Sanction date. S.O. placed means at least one non-cancelled S.O. is placed.",
+        "Filters: Global Filter, File Initiation Year, Division, File Type, and other Analytics filters narrow the selected files. Rows are grouped by CNC Date, not file initiation date.",
+        "Details: Select an FY, then a month, to view daily CNC counts. With Active Files, closed files and files whose S.O.s are all cancelled are excluded; All Files or a specific FY can include them when a CNC Date is recorded.",
+        "Shortclosing an S.O. does not erase earlier CNC history.",
       ],
       helperExamples: {
         title: "CNC examples",
+        inline: true,
         items: [
-          "File initiated in FY 2025-26 with CNC Date 20-Apr-2026: File Initiation Year FY 2025-26 can select the file, but the row appears under FY 2026-27 because CNC Date falls there.",
-          "CNC Date filled and CNC Approval Date blank: the file counts as reviewed and approval pending.",
-          "CNC Approval Date filled but no non-cancelled S.O. has Financial Sanction: the file counts under Financial Sanction pending.",
-          "Financial Sanction completed but no non-cancelled S.O. placed: the file counts under S.O. pending.",
-          "Active files selected: File Closed and all-S.O.-cancelled files with CNC Date are excluded.",
-          "All files or a specific FY selected: the same closed file can appear in CNC summary.",
-          "Shortclosed S.O. later: CNC history remains valid because shortclosure is not cancellation.",
+          "Example table: Recorded event / state | Filters applied | Result",
+          "Example row: File initiated 2025-26; CNC Date: 20 Apr 2026 | Global FY 2026-27; initiation FY 2025-26 | Appears in the FY 2026-27 CNC calendar based on CNC Date.",
+          "Example row: CNC Date: 20 Apr; CNC Approval Date blank | CNC summary | Counts as reviewed with approval pending.",
+          "Example row: CNC Approval: 22 Apr; no non-cancelled S.O. has Financial Sanction | Financial Sanction status | Counts under Financial Sanction pending.",
+          "Example row: Financial Sanction recorded; no non-cancelled S.O. placed | Supply Order status | Counts under S.O. pending.",
+          "Example row: Closed file with CNC Date | Active Files | Excluded from the active cohort.",
+          "Example row: Same closed file with CNC Date | All Files or matching specific FY | Can appear in CNC history if otherwise in scope.",
+          "Example row: S.O. short-closed after CNC | Any scope including the file | CNC history remains valid; short-closure is not cancellation.",
         ],
       },
       columns: selectedCncFiscalYear
@@ -5167,8 +5433,9 @@ const analyticsPanels: AnalyticsPanel[] = [
               displayedSuspectedAnomalyRows.length === 1 ? "" : "s"
             } found.`,
       helper: [
-        "The bell and list use the same filters: Global Filter, File Initiation Year, initiation date, Division, and File Type. Access permissions also apply.",
-        "Each row names a suspected data issue in a matching file.",
+        "Purpose: Lists possible data-quality issues detected in files matching the current scope.",
+        "Filters: The bell and list use Global Filter, File Initiation Year, initiation date, Division, and File Type. Access permissions also apply.",
+        "Each row names a suspected issue in a matching file; it is a warning for review, not proof that the underlying record is wrong.",
         "To correct a hidden staged S.O. value, open the flagged file in Search Files, choose Edit, use the clear button shown on the staged S.O., and save. Stage records are kept; the hidden parent fields are cleared only after you confirm and save.",
         "Closed files, demand-cancelled files, and files with all S.O.s cancelled are excluded from duplicate file, S.O., and BG number checks; other applicable anomalies can still be reported for them.",
         "A required Yes/No flag left blank on an active file appears as a data-completeness anomaly.",
@@ -5176,13 +5443,15 @@ const analyticsPanels: AnalyticsPanel[] = [
       ],
       helperExamples: {
         title: "Anomaly examples",
+        inline: true,
         items: [
-          "File Closed but BG return is blank: the file can appear as a suspected anomaly.",
-          "File Closed but payment liability is still pending: the file can appear as a suspected anomaly.",
-          "Active file with TCEC, GeM, or IFA left blank: the file can appear as a data-completeness anomaly.",
-          "Cancelled demand: anomaly rules that only apply to active files should treat it as inactive.",
-          "All S.O.s cancelled: the file is treated as inactive for anomaly checks even if File Closed is not ticked.",
-          "An accepted anomaly may stop appearing until the acceptance is revoked or the rule changes.",
+          "Example table: File data | Applicable rule / state | Anomaly-list result",
+          "Example row: File Closed; applicable BG return date blank | BG return is required | Can still appear as a suspected anomaly.",
+          "Example row: File Closed; payment liability remains pending | Payment follow-up rule applies | Can still appear as a suspected anomaly.",
+          "Example row: Active file; required TCEC, GeM, or IFA flag blank | Required Yes/No field is missing | Can appear as a data-completeness anomaly.",
+          "Example row: Demand cancelled | Rule applies only to active files | Treated as inactive for that rule.",
+          "Example row: Every S.O. cancelled; File Closed not selected | Duplicate file/S.O./BG checks | Treated as inactive for those checks.",
+          "Example row: Anomaly accepted or suppressed | Acceptance remains active | Hidden until acceptance is revoked or rule behavior changes.",
         ],
       },
       columns: getSuspectedAnomalyColumns(
@@ -5196,23 +5465,68 @@ const analyticsPanels: AnalyticsPanel[] = [
       title: "Delay status",
       subtitle: `Live files currently stuck for more than ${Number.parseInt(analyticsDelayDays, 10) || 0} days. Average ${analyticsDelaySummary?.averageDays ?? 0} days; longest ${analyticsDelaySummary?.longestDays ?? 0} days.`,
       helper: [
-        "Global Filter and File Initiation Year choose which files are included.",
-        "Delay Status checks only milestones or S.O. tasks that are currently pending.",
-        "Completed milestones are not counted as current delays.",
-        "Payment cycle (ASL) counts included regular or stage payment cases with no first Bill Sent for Payment date. It starts at IR Receipt Date when Group A IR = Yes; otherwise it starts at Job Completion Received Date. A common staged payment starts from the latest applicable stage date. Advances and supplementary bills are excluded.",
-        "Payment cycle (PCDA) counts included regular, stagewise, advance, and supplementary payment cases submitted but unpaid, with no return history. It starts at the first Bill Sent for Payment date; resubmission does not restart it. Advances and supplementary bills use their own submission dates.",
-        "Payment (ASL + PCDA) measures the included payment case from its applicable delivery trigger to Payment Date, or to today while unpaid. For a returned bill, timing stops at its first Bill Sent for Payment date; return and resubmission time is excluded. Advances and supplementary bills start at their own first submission date.",
-        "Delay days and Milestone filters narrow the results further.",
-        "PSB, PWB, and PSB+PWB count S.O.-level BG records; Financial Sanction counts S.O.s; all three payment timing measures count payment cases; other milestones count files.",
+        "Purpose: Lists currently pending workflow milestones, S.O. tasks, BG tasks, bill tasks, and payment tasks whose pending age is greater than the selected number of days.",
+        "Purpose: Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+        "Filters: Global Filter, File Initiation Year, initiation date, Division, and File Type choose the files in scope. Days and Milestone further narrow the result.",
+        "Threshold: A row is included only when pending age is strictly greater than the selected Days value. A case at exactly the threshold is not included.",
+        "Calculation: A completed task runs from its applicable start date to its recorded completion date. A pending task runs from its applicable start date through today.",
+        "Current status: Delay Status shows only work that is still pending. A completed milestone is not shown as a live delay, even if it took longer than the selected threshold.",
+        "Count unit: The clickable count is file-level so it matches the Search Files landing. A file can still contain multiple underlying S.O., stage, BG, bill, or payment cases; those case details remain visible after opening the file.",
+        "Scope: Cancelled files are excluded. Cancelled S.O.s, demand-cancelled files, and no-further-action payment cases are excluded from applicable S.O. and payment delay rows.",
+        "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Other file-level milestones start from the latest applicable earlier completed predecessor and remain open through today.",
+        "Bidding: Normal bidding starts from CFA Approval Date and ends when Bid Date is recorded. For a Non-TCEC Refloat, after Refloat recommendation and Bidding Stage Over = Yes, the common Bidding delay restarts from Refloat recommendation and ends when Refloat bidding date is recorded.",
+        "GeM Undertaking: For normal applicable GeM files other than GeM Comparison, starts at CFA Approval Date and ends at GeM Undertaking Date. For a Non-TCEC Refloat + GeM, the common status starts at Refloat recommendation and ends at Refloat GeM undertaking. If the required start date is blank, no fallback, zero-day value, or average sample is created.",
+        "Non-TCEC Technical Evaluation: The recorded Bid closing date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid closing to the first Financial Sanction. If Refloat = Yes before Refloat bid closing is recorded, it runs from Bid closing to Refloat recommendation. After Refloat bid closing, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat bid closing to Financial Sanction.",
+        "Order workflow: Financial Sanction, Supply Order, PSB, PWB, PSB+PWB, Delivery, Job Completion, IR, Bill preparation, Bill sent for payment, and open bill returns use their own applicable S.O. or stage dates.",
+        "Job Completion and payment are independent delay items. An overdue payment does not suppress Job Completion, and a pending Job Completion does not create or replace a payment delay.",
+        "Payment cycle (ASL, bill trigger to bill submission): Counts included regular or stage payment cases without a first Bill Sent for Payment date. Group A with IR = Yes starts at IR Receipt Date; Group A with IR = No and Group B start at Job Completion Received Date. Common staged payment starts at the last applicable stage date. Returned payment cases, advances, and supplementary bills are excluded.",
+        "Payment cycle (PCDA, bill submission to payment): Counts submitted but unpaid included regular, stagewise, advance, and supplementary payment cases with no return history. Advance and supplementary cases use their own submission dates.",
+        "Payment cycle (ASL+PCDA, bill trigger to payment): Counts unpaid included payment cases from the applicable trigger to today. Returned payment cases are excluded entirely.",
+        "Returned bills: Open regular and supplementary bill-return cases are shown as separate pending tasks from the earliest currently open return date.",
       ],
       helperExamples: {
-        title: "Delay examples",
-        items: [
-          "Delay days set to 30: a file pending at a milestone for 31 days can appear.",
-          "Delay days set to 60: the same 31-day pending file will not appear.",
-          "Milestone set to Scrutiny: only files currently delayed at Scrutiny are counted.",
-          "Milestone set to All milestones: files delayed at any pending milestone can appear.",
-          "A milestone already cleared before the delay limit is not counted because it is not a live/current delay.",
+        title: "Delay status rules",
+        inline: true,
+        columns: [
+          "Delay item",
+          "Applicable case",
+          "Start / pending clock",
+          "Completion / current condition",
+          "Count and exclusions",
+        ],
+        rows: [
+          ["Workflow Not Started", "Active file with no current milestone, completed milestone, or workflow date", "Demand Received; file creation date if Demand Received is blank", "Remains pending through today", "One file; closed or cancelled files excluded"],
+          ["Scrutiny", "Current file milestone", "Demand Received", "Scrutiny Completion Date", "One file"],
+          ["High Value", "Applicable current file milestone", "Latest applicable earlier completed predecessor; Received Date if none", "High Value Minutes Date", "One file; only while pending"],
+          ["Pre-TCEC", "TCEC file; current Pre-TCEC milestone", "Latest applicable earlier completed predecessor", "Pre-TCEC Minutes Date", "One file; only while pending"],
+          ["AD", "Applicable current AD milestone", "Latest applicable earlier completed predecessor", "AD Vetting Date", "One file; only while pending"],
+          ["R&QA", "Applicable current R&QA milestone", "Latest applicable earlier completed predecessor", "R&QA Approval Date", "One file; only while pending"],
+          ["Controlling", "Applicable current Controlling milestone", "Latest applicable earlier completed predecessor", "Demand Control Date", "One file; only while pending"],
+          ["IFA", "Applicable current IFA milestone", "Latest applicable earlier completed predecessor", "IFA Final Date", "One file; only while pending"],
+          ["CFA", "Applicable current CFA milestone", "Latest applicable earlier completed predecessor", "CFA Approval Date", "One file; only while pending"],
+          ["GeM Undertaking", "Normal GeM, or Refloat + GeM", "Normal: CFA Approval Date; Non-TCEC Refloat: Refloat recommendation", "Normal: GeM Undertaking Date; Refloat: Refloat GeM undertaking", "One file; same status is merged; missing required start date is excluded, not counted as zero"],
+          ["Bidding", "Normal bidding", "CFA Approval Date", "Bid Date ends this delay", "One file"],
+          ["Refloat bidding", "Non-TCEC Refloat after recommendation and Bidding Stage Over = Yes", "Refloat recommendation", "Refloat bidding date", "One file; counted in the common Bidding delay"],
+          ["Non-TCEC Technical Evaluation", "Non-TCEC file with a past Bid closing; first cycle requires Bidding Stage Over = Yes; later refloat cycle requires Refloat Bidding Stage Over = Yes", "First cycle: Bid closing; later cycle: Refloat bid closing date", "Refloat = No: Financial Sanction; first Refloat cycle: Refloat recommendation; later Refloat cycle: Financial Sanction", "One row per file; no row before the applicable stage-over field is Yes or after the applicable end date"],
+          ["Post-TCEC", "TCEC file; Bidding Stage Over = Yes; Bid Opening Date recorded", "Bid Opening Date", "Post-TCEC Minutes Date", "One file"],
+          ["CNC", "Current TCEC CNC milestone", "Post-TCEC Minutes Date (approval date)", "CNC Approval Date", "One file; only while pending; no fallback"],
+          ["Financial Sanction", "Expected TCEC S.O. awaiting sanction", "CNC Approval Date", "Financial Sanction Date for that S.O.", "One row per expected S.O."],
+          ["Supply Order", "Active S.O. awaiting placement", "TCEC: CNC Approval Date; Non-TCEC: that S.O.'s Financial Sanction Date", "S.O. Date", "One row per active S.O.; TCEC has no fallback"],
+          ["Advance Payment", "Active advance payment case", "S.O. Date", "Advance Payment Date", "One payment case; cancelled and no-further-action cases excluded"],
+          ["PSB", "S.O. with PSB applicable and BG not received", "S.O. Date", "PSB BG Received Date", "One S.O.-BG record"],
+          ["PWB", "S.O. with PWB applicable and BG not received", "IR Receipt Date for Goods & Services with IR = Yes; Job Completion Date for Goods & Services with IR = No", "PWB BG Received Date", "One S.O.-BG record; IR = Yes uses the S.O.-level date; For Goods & Services with IR = No: stagewise payment starts from the earliest stage Job Completion Date; common payment starts from the latest date after all stages are completed."],
+          ["PSB+PWB", "S.O. with combined BG applicable and not received", "S.O. Date", "Combined BG Received Date", "One S.O.-BG record"],
+          ["Delivery", "Applicable inspection delivery or delivery stage", "Effective D.P.; revised D.P. when present", "Material Receipt Date", "One order or delivery-stage case"],
+          ["Job Completion", "Group A / Goods & Services with IR = No, or Group B", "Effective D.P.; revised D.P. when present", "Job Completion Received Date", "One order or stage; evaluated independently from payment status"],
+          ["IR Preparation", "Applicable inspection workflow with IR = Yes", "Material Receipt Date", "IR Preparation Date", "One order or delivery-stage case"],
+          ["IR Receipt", "Applicable inspection workflow with IR = Yes", "IR Preparation Date", "IR Receipt Date", "One order or delivery-stage case"],
+          ["Bill preparation", "Active payment case", "IR Receipt Date for inspection; Job Completion Received Date for Job Completion workflows; common staged payment uses latest applicable stage date", "Bill Preparation Date", "One payment case or stage; required dates must be recorded"],
+          ["Bill sent for payment", "Active payment case with Bill Preparation recorded", "Bill Preparation Date", "Bill Sent for Payment Date", "One payment case"],
+          ["Returned Bills", "Open regular bill-return case", "Earliest currently open Bill Returned Date", "Remains pending until the return cycle is closed", "Separate payment case; shown independently from ordinary payment timing"],
+          ["Supplementary bill returned", "Open supplementary bill-return case", "Earliest currently open supplementary return date", "Remains pending until the supplementary return cycle is closed", "Separate supplementary payment case"],
+          ["Payment cycle (ASL, bill trigger to bill submission)", "Included regular or stage payment without first submission and without return history", "IR Receipt for Group A IR = Yes; Job Completion Received Date for Group A IR = No and Group B; latest applicable stage date for common staged payment", "First Bill Sent for Payment Date; today while still unsubmitted", "Payment case; returned cases, advances, and supplementary bills excluded"],
+          ["Payment cycle (PCDA, bill submission to payment)", "Submitted but unpaid payment with no return history", "First Bill Sent for Payment Date", "Payment Date; today while unpaid", "Payment case; returned bills excluded"],
+          ["Payment cycle (ASL+PCDA, bill trigger to payment)", "Unpaid included regular, stage, advance, or supplementary payment without return history", "Applicable delivery trigger; advance and supplementary cases use first submission date", "Payment Date; today while unpaid", "Payment case; returned cases excluded entirely"],
         ],
       },
       columns: [
@@ -5223,13 +5537,10 @@ const analyticsPanels: AnalyticsPanel[] = [
       rows: (analyticsDelaySummary?.byMilestone ?? []).map((row) => ({
         ...row,
         name: row.label,
-        unit: ["psb", "pwb", "psbPwb"].includes(row.key)
-          ? "S.O.-BG records"
-          : row.key === "financialSanction"
-            ? "S.O.s"
-            : ["paymentPreSubmission", "paymentPostSubmission", "paymentCumulative"].includes(row.key)
-              ? "Payment cases"
-            : "Files",
+        count: row.fileCount ?? row.count,
+        unit: row.fileCount !== undefined
+          ? "Files (underlying cases shown inside)"
+          : "Files",
       })),
     },
     {
@@ -5371,7 +5682,13 @@ const analyticsPanels: AnalyticsPanel[] = [
         column.key !== "rank" &&
         displayedAnalyticsPanel.rows.some((row) => typeof row[column.key] === "number"),
     );
-  const analyticsChartViews: ResultView[] = ["table", "bar"];
+  const analyticsChartViews: ResultView[] = [
+    "table",
+    "bar",
+    ...(displayedAnalyticsPanel.key === "tcecStatus" || displayedAnalyticsPanel.key === "cncSummary"
+      ? ["pie" as const]
+      : []),
+  ];
   const analyticsSortControlEnabled =
     displayedAnalyticsPanel.columns.some((column) => column.key === "rank") &&
     displayedAnalyticsPanel.key !== "indentorFirmLinkage" &&
@@ -5482,10 +5799,10 @@ const analyticsPanels: AnalyticsPanel[] = [
       store.updateSessionSelectedYear(financeGlobalYear);
       setSelectedFileYear(financeFileYear);
     } else if (tab === "fyActivity") {
-      if (filterCombinationLock) {
-        store.updateSessionSelectedYear(filterCombinationLock.globalYear);
-        setSelectedFileYear(filterCombinationLock.fileYear);
-        setFyActivityFileYear(filterCombinationLock.fileYear);
+      if (appliedFilterCombinationLock) {
+        store.updateSessionSelectedYear(appliedFilterCombinationLock.globalYear);
+        setSelectedFileYear(appliedFilterCombinationLock.fileYear);
+        setFyActivityFileYear(appliedFilterCombinationLock.fileYear);
       } else {
         store.updateSessionSelectedYear(settings.financialYear);
         setFyActivityGlobalYear(settings.financialYear);
@@ -5495,7 +5812,7 @@ const analyticsPanels: AnalyticsPanel[] = [
       }
     } else if (tab === "finance1" || tab === "snapshot") {
       const year =
-        normalizeFinancialYearLabel(filterCombinationLock?.globalYear ?? "") ||
+        normalizeFinancialYearLabel(appliedFilterCombinationLock?.globalYear ?? "") ||
         settings.financialYear;
       store.updateSessionSelectedYear(year);
       setSelectedFileYear(year);
@@ -5506,6 +5823,8 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         tab,
         analyticsPanel: tab === "analytics" ? activeAnalyticsPanel : undefined,
+        noticeBoardView: undefined,
+        boardMetric: undefined,
       },
       replace: true,
     });
@@ -5519,6 +5838,8 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         tab: "analytics",
         analyticsPanel: panel,
+        noticeBoardView: undefined,
+        boardMetric: undefined,
       },
       replace: true,
     });
@@ -5555,9 +5876,9 @@ const analyticsPanels: AnalyticsPanel[] = [
                 </button>
               </TooltipTrigger>
               <TooltipContent
-                side="right"
-                align="start"
-                className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+                side="bottom"
+                align="center"
+                className="box-border w-[min(80rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] max-h-[min(80dvh,var(--radix-popper-available-height,80dvh))] overflow-y-auto overscroll-contain touch-pan-y border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
               >
                 <HelperWithExamples items={panel.helper} examples={panel.helperExamples} />
               </TooltipContent>
@@ -5610,7 +5931,7 @@ const analyticsPanels: AnalyticsPanel[] = [
           drillItem("FY Snapshot", snapshotHref),
           drillItem(finance1Summary.fiscalYear, snapshotHref),
           drillItem(section, snapshotHref),
-          drillItem(metric),
+          drillItem(metric, snapshotHref),
         ]),
       },
     });
@@ -5664,7 +5985,7 @@ const analyticsPanels: AnalyticsPanel[] = [
           drillItem("Dashboard", "/dashboard"),
           drillItem("FY Activity", snapshotHref),
           drillItem(selectedFinanceYearLabel, snapshotHref),
-          drillItem(metric),
+          drillItem(metric, snapshotHref),
         ]),
       },
     });
@@ -5696,7 +6017,7 @@ const analyticsPanels: AnalyticsPanel[] = [
           drillItem("Dashboard", "/dashboard"),
           drillItem("Status-2", "/dashboard?tab=liveStatus"),
           drillItem(division, "/dashboard?tab=liveStatus"),
-          drillItem(filterMilestoneName),
+          drillItem(filterMilestoneName, "/dashboard?tab=liveStatus"),
         ]),
       },
     });
@@ -5745,7 +6066,7 @@ const analyticsPanels: AnalyticsPanel[] = [
           drillItem("Dashboard", "/dashboard"),
           drillItem("Analytics", analyticsHref),
           drillItem(displayedAnalyticsPanel.title, analyticsHref),
-          drillItem("Send to Search Files"),
+          drillItem("Send to Search Files", analyticsHref),
         ]),
       },
     });
@@ -5806,18 +6127,26 @@ const analyticsPanels: AnalyticsPanel[] = [
           drillItem("Dashboard", "/dashboard"),
           drillItem("Analytics", "/dashboard?tab=analytics"),
           drillItem("Firm Analysis", "/dashboard?tab=analytics&analyticsPanel=firmAnalysis"),
-          drillItem("Co-bidding Firms"),
-          ...(coParticipantFirm ? [drillItem(coParticipantFirm)] : []),
+          drillItem("Co-bidding Firms", "/dashboard?tab=analytics&analyticsPanel=firmAnalysis"),
+          ...(coParticipantFirm
+            ? [drillItem(coParticipantFirm, "/dashboard?tab=analytics&analyticsPanel=firmAnalysis")]
+            : []),
           ...(selectedCoParticipantFirm
             ? [
                 drillItem(
                   coBiddingFirms.find((firm) => firm.key === selectedCoParticipantFirm)?.name ??
                     "Co-bidding firm",
+                  "/dashboard?tab=analytics&analyticsPanel=firmAnalysis",
                 ),
               ]
             : []),
           ...(rows.length === 1
-            ? [drillItem(rows[0].uniqueCode || rows[0].controlNo || "Shared tender")]
+            ? [
+                drillItem(
+                  rows[0].uniqueCode || rows[0].controlNo || "Shared tender",
+                  "/dashboard?tab=analytics&analyticsPanel=firmAnalysis",
+                ),
+              ]
             : []),
         ]),
       },
@@ -5864,6 +6193,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         dashboardFilter: `delayStatus:${Number.parseInt(analyticsDelayDays, 10) || 0}:${
           milestoneKey || "all"
         }`,
+        ...getDelayStatusSearchFocus(milestoneKey),
       };
     }
     const milestoneClearingContext: AnalyticsSearchContext | undefined =
@@ -5997,7 +6327,7 @@ const analyticsPanels: AnalyticsPanel[] = [
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
+      <div className={isNoticeBoardEmbed ? "hidden" : "space-y-2"}>
         <div className="w-full min-w-0 overflow-x-auto rounded-lg border border-primary/25 bg-primary/5 p-1">
           <div className="inline-flex min-w-max rounded-md p-1">
           {dashboardTabOptions.map((tab) => {
@@ -6095,7 +6425,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                       value || recommendedAnalyticsFileYear || "all",
                     )
                   }
-                  disabled={fileYearSubfilterLockedByPage || Boolean(filterCombinationLock)}
+                  disabled={fileYearSubfilterLockedByPage || Boolean(appliedFilterCombinationLock)}
                   className={filterControlClass(
                     fileYearFilterActive,
                     "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-80",
@@ -6931,12 +7261,14 @@ const analyticsPanels: AnalyticsPanel[] = [
           <div
             className={
               "grid grid-cols-1 gap-4 " +
-              (analyticsSidePanelHooked
+              (isNoticeBoardEmbed
+                ? "lg:grid-cols-1"
+                : analyticsSidePanelHooked
                 ? "lg:grid-cols-[260px_minmax(0,1fr)]"
                 : "lg:grid-cols-[48px_minmax(0,1fr)]")
             }
           >
-            {analyticsSidePanelHooked ? (
+            {!isNoticeBoardEmbed && analyticsSidePanelHooked ? (
             <aside className="rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
               <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
                 <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
@@ -6972,7 +7304,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                 })}
               </div>
             </aside>
-            ) : (
+            ) : !isNoticeBoardEmbed ? (
               <aside className="rounded-xl border border-border bg-card p-2 shadow-[var(--shadow-card)]">
                 <button
                   type="button"
@@ -6984,9 +7316,9 @@ const analyticsPanels: AnalyticsPanel[] = [
                   <span className="[writing-mode:vertical-rl] rotate-180">Hook panel</span>
                 </button>
               </aside>
-            )}
+            ) : null}
             <div className="min-w-0">
-              <div
+              {!isNoticeBoardEmbed ? <div
                 role="tablist"
                 aria-label="Analytics analysis groups"
                 className="mb-4 flex flex-wrap items-end gap-5 border-b border-border"
@@ -7003,7 +7335,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                       aria-selected={selected}
                       onClick={() => {
                         if (selected) return;
-                        if (!filterCombinationLock) {
+                        if (!appliedFilterCombinationLock) {
                           const recommendedFileYear =
                             group.recommendedFileYear === "current" ? settings.financialYear : "all";
                           store.updateSessionSelectedYear(settings.financialYear);
@@ -7029,7 +7361,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     </button>
                   );
                 })}
-              </div>
+              </div> : null}
               <div
                 id="analytics-group-panel"
                 role="tabpanel"
@@ -7062,13 +7394,19 @@ const analyticsPanels: AnalyticsPanel[] = [
               ) : (
               <AnalyticsChartCard
                 title={
-                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  noticeBoardTcecView
+                    ? `${tcecStatusStage === "pre" ? "Pre-TCEC" : "Post-TCEC"} ${noticeBoardTcecView === "monthly" ? "monthwise" : "committee-wise"} distribution`
+                    : displayedAnalyticsPanel.key === "firmAnalysis" &&
                   firmAnalysisView === "coParticipants"
                     ? "Co-bidding Firms"
                     : displayedAnalyticsPanel.title
                 }
                 subtitle={
-                  displayedAnalyticsPanel.key === "firmAnalysis" &&
+                  noticeBoardTcecView
+                    ? noticeBoardTcecView === "monthly"
+                      ? `Monthly distribution for FY ${selectedTcecFiscalYear}`
+                      : `Committee distribution for FY ${selectedTcecFiscalYear}`
+                    : displayedAnalyticsPanel.key === "firmAnalysis" &&
                   firmAnalysisView === "coParticipants"
                     ? "Select a firm to see the other firms that co-bid with it."
                     : displayedAnalyticsPanel.subtitle
@@ -7382,7 +7720,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                   <div className="flex flex-wrap items-end gap-2">
                     <label
                       className={filterLabelClass(
-                        analyticsDelayDays !== "5",
+                        analyticsDelayDays !== String(settings.delayStatusDefaultDays ?? 5),
                         "flex w-32 flex-col gap-1 text-xs text-muted-foreground",
                       )}
                     >
@@ -7404,7 +7742,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                               align="start"
                               className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                             >
-                              <HelperBulletList items="Default is 5 days. Use reset to restore the default threshold." />
+                              <HelperBulletList items={`Default is ${settings.delayStatusDefaultDays ?? 5} days, as set in Settings. Use reset to restore it.`} />
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -7416,13 +7754,15 @@ const analyticsPanels: AnalyticsPanel[] = [
                           value={analyticsDelayDays}
                           onChange={(event) => setAnalyticsDelayDays(event.target.value)}
                           className={filterControlClass(
-                            analyticsDelayDays !== "5",
+                            analyticsDelayDays !== String(settings.delayStatusDefaultDays ?? 5),
                             "h-8 min-w-0 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/40",
                           )}
                         />
                         <button
                           type="button"
-                          onClick={() => setAnalyticsDelayDays("5")}
+                          onClick={() =>
+                            setAnalyticsDelayDays(String(settings.delayStatusDefaultDays ?? 5))
+                          }
                           className="btn-ghost h-8 w-8 p-0"
                           title="Reset days"
                           aria-label="Reset days"
@@ -7682,7 +8022,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     />
                   </>
                 ) : null}
-                {displayedAnalyticsPanel.key === "tcecStatus" ? (
+                {displayedAnalyticsPanel.key === "tcecStatus" && !noticeBoardTcecView ? (
                   <>
                     <DashboardBreadcrumb
                       items={[
@@ -7777,6 +8117,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     ]}
                   />
                 ) : null}
+                <div className={noticeBoardTcecView === "committee" ? "hidden" : undefined}>
                 {displayedAnalyticsPanel.key === "suspectedAnomaly" ? (
                   <DashboardBreadcrumb
                     items={[{ label: "Analytics" }, { label: "Monitoring / Exceptions" }]}
@@ -7815,10 +8156,18 @@ const analyticsPanels: AnalyticsPanel[] = [
                         view={analyticsResultView}
                         title={displayedAnalyticsPanel.title}
                         stage={tcecStatusStage}
+                        fiscalYear={selectedTcecFiscalYear}
                         rows={displayedAnalyticsPanel.rows}
                         onPlotChange={setAnalyticsExportPlot}
                         getSearchTarget={getAnalyticsCellSearchTarget}
                         onOpenSearchTarget={openAnalyticsSearchTarget}
+                      />
+                    ) : displayedAnalyticsPanel.key === "cncSummary" ? (
+                      <CncSummaryChart
+                        view={analyticsResultView}
+                        title={displayedAnalyticsPanel.title}
+                        fiscalYear={selectedCncFiscalYear}
+                        rows={displayedAnalyticsPanel.rows}
                       />
                     ) : (
                       <AnalyticsHorizontalBarChart
@@ -7850,6 +8199,12 @@ const analyticsPanels: AnalyticsPanel[] = [
                       <AnalyticsRankingTable
                         columns={displayedAnalyticsPanel.columns}
                         rows={displayedAnalyticsPanel.rows}
+                        getRowNameHelpBreadcrumb={(row) => [
+                          "Dashboard",
+                          "Analytics",
+                          displayedAnalyticsPanel.title,
+                          String(row.name ?? "Details"),
+                        ]}
                         getRowNameHelpText={
                           displayedAnalyticsPanel.key === "delayStatus"
                             ? (row) => getAnalyticsDelayBasisText(String(row.key ?? "all"))
@@ -7868,6 +8223,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     </>
                   )
                 )}
+                </div>
                 {displayedAnalyticsPanel.key === "firmAnalysis" && firmAnalysisView === "coParticipants" ? (
                   <section className="mt-5 space-y-5">
                     <p className="max-w-4xl border-l-2 border-border pl-3 text-xs leading-relaxed text-muted-foreground">
@@ -7893,7 +8249,9 @@ const analyticsPanels: AnalyticsPanel[] = [
                     />
                   </section>
                 ) : null}
-                {displayedAnalyticsPanel.key === "tcecStatus" && activeTcecCommitteeRows.length ? (
+                {displayedAnalyticsPanel.key === "tcecStatus" &&
+                noticeBoardTcecView !== "monthly" &&
+                activeTcecCommitteeRows.length ? (
                   <section className="mt-5 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <h3 className="text-sm font-semibold">TCEC committee breakup</h3>
@@ -7954,7 +8312,9 @@ const analyticsPanels: AnalyticsPanel[] = [
                     )}
                   </section>
                 ) : null}
-                {displayedAnalyticsPanel.key === "tcecStatus" && activeTcecCommittee ? (
+                {displayedAnalyticsPanel.key === "tcecStatus" &&
+                !noticeBoardTcecView &&
+                activeTcecCommittee ? (
                   <div className="mt-4 space-y-2">
                     <div>
                       <h3 className="text-sm font-semibold">{activeTcecCommittee} meeting dates</h3>
@@ -8062,19 +8422,20 @@ const analyticsPanels: AnalyticsPanel[] = [
                     helpAlign="end"
                     helpInline
                     help={[
+                      "FY Snapshot tracks files initiated according to the Global Filter.",
                       `The cutoff date is ${finance1YearEndLabel}.`,
                       `For an FY still in progress, the cutoff is today, not the full FY-end.`,
                       `Intended, Booked, and Committed use files initiated in FY ${finance1YearLabel}, narrowed by the Global Filter and other file filters.`,
                       "S.O.-placed and file-closed counts follow the Global Filter's file scope.",
-                      "Payment, liability, and payment-movement figures use the snapshot file scope and other filters, not the Global Filter's status scope.",
-                      "Firm Type Distribution uses the snapshot file scope and other filters, not the Global Filter's status scope.",
+                      "Payment, liability, and payment-movement figures use the snapshot file scope and other filters.",
+                      "Firm Type Distribution uses the snapshot file scope and other filters.",
                       "Intended and Booked use the file's currently recorded demand value; Committed uses current S.O. values.",
                       `Paid ${finance1AtYearEndLabel} includes regular, stage, supplementary, and advance payments dated on or before the cutoff for files in the snapshot file scope.`,
                     ]}
                   />
                   <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                     <Finance1AmountMetricCard
-                      title={`Allocated FY ${finance1YearLabel}`}
+                      title={`Allocated FY ${finance1YearLabel} ${finance1LiveStatusLabel}`}
                       metric={{
                         count: 0,
                         capital: finance1AllocatedCapital,
@@ -8084,58 +8445,60 @@ const analyticsPanels: AnalyticsPanel[] = [
                       showCount={false}
                       help={<HelperBulletList items={[
                         `Budget currently recorded for FY ${finance1YearLabel}.`,
-                        "Uses the divisions selected in the Division filter; it is not tied to file initiation years or file activity.",
+                        "Uses the divisions selected in the Division filter.",
                       ]} />}
                     />
                     <Finance1AmountMetricCard
-                      title={`Intended ${finance1AtYearEndLabel}`}
+                      title={`Intended ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`}
                       metric={finance1Summary.intendedAtFyEnd}
                       unitLabel="files"
                       amountFirst
                       help={<HelperBulletList items={[
-                        `Files initiated in FY ${finance1YearLabel} and included by the selected Global Filter.`,
+                        `Files initiated in FY ${finance1YearLabel}.`,
                         `No Controlling date and no S.O. by ${finance1YearEndLabel}; value uses the currently recorded file estimate.`,
                       ]} />}
-                      onClick={finance1DrillClick("intendedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Intended ${finance1AtYearEndLabel}`)}
+                      onClick={finance1DrillClick("intendedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Intended ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Booked ${finance1AtYearEndLabel}`}
+                      title={`Booked ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`}
                       metric={finance1Summary.bookedAtFyEnd}
                       unitLabel="files"
                       amountFirst
                       help={<HelperBulletList items={[
-                        `Files initiated in FY ${finance1YearLabel} and included by the selected Global Filter.`,
+                        `Files initiated in FY ${finance1YearLabel}.`,
                         `Controlling is recorded on or before ${finance1YearEndLabel}, with no S.O. by that date; value uses the currently recorded file estimate.`,
                       ]} />}
-                      onClick={finance1DrillClick("bookedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Booked ${finance1AtYearEndLabel}`)}
+                      onClick={finance1DrillClick("bookedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Booked ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Committed ${finance1AtYearEndLabel}`}
+                      title={`Committed ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`}
                       metric={finance1Summary.committedAtFyEnd}
                       countText={`${finance1Summary.drillFileIds?.committedAtFyEnd?.length ?? 0} Files / ${finance1Summary.committedAtFyEnd.count} S.O.`}
                       amountFirst
                       help={<HelperBulletList items={[
-                        `S.O.s placed on or before ${finance1YearEndLabel} for files initiated in FY ${finance1YearLabel} and included by the selected Global Filter.`,
+                        `S.O.s placed on or before ${finance1YearEndLabel} for files initiated in FY ${finance1YearLabel}.`,
                         "Uses current S.O. values; the historical value is not frozen.",
                         "Shortclosed S.O.s remain included here because shortclosure is not cancellation.",
                       ]} />}
-                      onClick={finance1DrillClick("committedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Committed ${finance1AtYearEndLabel}`)}
+                      onClick={finance1DrillClick("committedAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Committed ${finance1AtYearEndLabel} ${finance1LiveStatusLabel}`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Paid ${finance1AtYearEndLabel}`}
+                      title={`Paid ${finance1AtYearEndLabel} ${finance1CutoffStatusLabel}`}
                       metric={finance1Summary.paidByFyEnd}
                       showCount={false}
                       help={<HelperBulletList items={[
                         `Payments dated on or before ${finance1YearEndLabel} for files initiated in FY ${finance1YearLabel}.`,
                         "Includes Regular, Stage, Supplementary, and Advance payments.",
                         "Calculation: Regular + Stage + Supplementary + Advance = Paid as of the cutoff date.",
-                        "Example: 40 + 20 + 10 + 5 = 75 Lakh paid as of the cutoff date.",
+                        "Example table: Payment type | Amount | Treatment",
+                        "Example row: Regular | ₹40 lakh | Added to paid amount when payment date is on or before cutoff.",
+                        "Example row: Stage + Supplementary + Advance | ₹20 + ₹10 + ₹5 lakh | Added by their recorded payment dates; total paid by cutoff is ₹75 lakh.",
                         `Payments dated after ${finance1YearEndLabel} are excluded. Uses the snapshot file scope and other file filters, not the Global Filter's status scope.`,
                       ]} />}
-                      onClick={finance1DrillClick("paidByFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Paid ${finance1AtYearEndLabel}`)}
+                      onClick={finance1DrillClick("paidByFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Paid ${finance1AtYearEndLabel} ${finance1CutoffStatusLabel}`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Unpaid liability ${finance1AtYearEndLabel}`}
+                      title={`Unpaid ${finance1AtYearEndLabel} ${finance1CutoffStatusLabel}`}
                       metric={finance1Summary.unpaidLiabilityAtFyEnd}
                       showCount={false}
                       help={shortclosedPayableHelp([
@@ -8144,34 +8507,40 @@ const analyticsPanels: AnalyticsPanel[] = [
                         "Liability starts at Material Receipt for Goods & Services with IR = Yes, Job Completion Received Date for Goods & Services with IR = No, or the day after D.P. for Group-B contracts. Shortclosed Group-B S.O.s use Job Completion Received Date.",
                         "Stage Payment = Yes is assessed by stage; Stage Payment = No uses one S.O.-level trigger after all stages meet the applicable condition.",
                         `Payments recorded after ${finance1YearEndLabel} do not change this year-end amount; they are shown in the later-status table.`,
+                        "Example table: Trigger/payment dates | Amounts | Year-end treatment",
+                        `Example row: S.O. placed in FY ${finance1YearLabel}; liability trigger reached by ${finance1YearEndLabel}; Payment Date blank | ₹20 lakh payable | ₹20 lakh remains unpaid at the cutoff.`,
+                        `Example row: S.O. placed in FY ${finance1YearLabel}; liability trigger reached by ${finance1YearEndLabel}; Payment Date after ${finance1YearEndLabel} | ₹20 lakh payable | ₹20 lakh remains unpaid at the cutoff; the later payment appears in later-status activity.`,
                         "For shortclosed S.O.s, the remaining unpaid balance counts while No Further Action is No; Yes removes the unresolved balance.",
                       ])}
-                      onClick={finance1DrillClick("unpaidLiabilityAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Unpaid liability ${finance1AtYearEndLabel}`)}
+                      onClick={finance1DrillClick("unpaidLiabilityAtFyEnd", `Financial Position ${finance1AtYearEndLabel}`, `Unpaid ${finance1AtYearEndLabel} ${finance1CutoffStatusLabel}`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Total paid ${finance1TodayAsOfLabel}`}
+                      title={`Total paid ${finance1TodayAsOfLabel} (Live)`}
                       metric={finance1Summary.paidTillDate}
                       showCount={false}
                       help={shortclosedPayableHelp([
-                        `Includes Regular, Stage, Supplementary, and Advance payments dated on or before ${formatIsoDateForDisplay(finance1RefreshDay)} for files initiated in FY ${finance1YearLabel}.`,
-                        "Uses the snapshot FY file scope and other file filters; it does not use the Global Filter's status scope.",
+                        `Includes payments recorded on or before ${formatIsoDateForDisplay(finance1RefreshDay)} for files initiated in FY ${finance1YearLabel}, regardless of the S.O. placement year.`,
+                        "Uses the snapshot FY file scope and other filters.",
                         "Calculation: Regular + Stage + Supplementary + Advance = Total paid.",
-                        "Example: 40 + 20 + 10 + 5 = 75 Lakh paid.",
+                        "Example table: Regular | Stage | Supplementary | Advance | Total paid",
+                        "Example row: 40 | 20 | 10 | 5 | 75 Lakh.",
                         `Payments made after the snapshot FY-end are included if dated on or before ${formatIsoDateForDisplay(finance1RefreshDay)}.`,
                       ])}
-                      onClick={finance1DrillClick("paidTillDate", `Financial Position ${finance1AtYearEndLabel}`, `Total paid ${finance1TodayAsOfLabel}`)}
+                      onClick={finance1DrillClick("paidTillDate", `Financial Position ${finance1AtYearEndLabel}`, `Total paid ${finance1TodayAsOfLabel} (Live)`)}
                     />
                     <Finance1AmountMetricCard
-                      title={`Balance unpaid ${finance1TodayAsOfLabel}`}
+                      title={`Balance unpaid ${finance1TodayAsOfLabel} (Live)`}
                       metric={finance1Summary.balanceUnpaidToday}
                       showCount={false}
                       help={shortclosedPayableHelp([
                         `Unpaid S.O. and bill balances as of ${formatIsoDateForDisplay(finance1RefreshDay)} for files initiated in FY ${finance1YearLabel}, where the S.O. was placed by that date.`,
-                        "Uses the snapshot FY file scope and other file filters; it does not use the Global Filter's status scope.",
-                        "Includes amounts whose payment trigger is still in the future; this is not an overdue-only total and is not directly comparable with year-end liability.",
+                        "Uses the snapshot FY file scope and other filters.",
+                        "Includes unpaid liabilities whose payment trigger has already arrived.",
+                        "Also includes unpaid liabilities whose applicable trigger is still in the future, including future D.P.-based triggers.",
+                        "This is not an overdue-only total and is not directly comparable with year-end liability.",
                         "For shortclosed S.O.s, an unpaid balance remains unless No Further Action = Yes.",
                       ])}
-                      onClick={finance1DrillClick("balanceUnpaidToday", `Financial Position ${finance1AtYearEndLabel}`, `Balance unpaid ${finance1TodayAsOfLabel}`)}
+                      onClick={finance1DrillClick("balanceUnpaidToday", `Financial Position ${finance1AtYearEndLabel}`, `Balance unpaid ${finance1TodayAsOfLabel} (Live)`)}
                     />
                   </div>
                 </div>
@@ -8181,10 +8550,10 @@ const analyticsPanels: AnalyticsPanel[] = [
                 <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
                   <div className="flex items-center gap-1">
                     <h3 className="text-sm font-semibold">
-                      Capital and Revenue comparison as on {formatIsoDateForDisplay(finance1RefreshDay)}
+                      Capital and Revenue comparison as on {formatIsoDateForDisplay(finance1RefreshDay)} (Live)
                     </h3>
                     <FloatingHelp
-                      label={`Capital and Revenue comparison as on ${formatIsoDateForDisplay(finance1RefreshDay)} details`}
+                      label={`Capital and Revenue comparison as on ${formatIsoDateForDisplay(finance1RefreshDay)} (Live) details`}
                       side="bottom"
                       align="start"
                     >
@@ -8211,23 +8580,24 @@ const analyticsPanels: AnalyticsPanel[] = [
                       <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
                       <XAxis dataKey="position" axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tick={{ fontSize: 13 }} />
                       <YAxis
-                        width={58}
+                        width={finance1PositionYAxisWidth}
                         allowDecimals={false}
                         axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                         tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                         tick={{ fontSize: 13 }}
                         tickFormatter={(value: number) => formatThousandsAndLakhs(value / 100_000, 0)}
-                        label={{ value: "Value (Lakhs)", angle: -90, position: "insideLeft" }}
                       />
                       <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
                       <Legend wrapperStyle={{ fontSize: 13 }} />
                       <Bar dataKey="capital" name="Capital" fill="var(--chart-color-1)" barSize={24} radius={0} />
                       <Bar dataKey="revenue" name="Revenue" fill="var(--chart-color-2)" barSize={24} radius={0} />
+                      <Customized component={FinancePositionYAxisTitle} axisWidth={finance1PositionYAxisWidth} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </section>
 
+              {!isNoticeBoardFinanceSnapshot ? <>
               <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
                 <FinanceSectionTitle
                   title="Payment position and reconciliation"
@@ -8235,13 +8605,13 @@ const analyticsPanels: AnalyticsPanel[] = [
                   helpAlign="start"
                   helpInline
                   help={[
-                    `${finance1PositionLabel}. The cutoff is the earlier of the selected as-of date and FY-end. The other rows show later payment, No Further Action closure, or remaining unpaid balance through ${formatIsoDateForDisplay(finance1RefreshDay)}.`,
-                    "Uses the snapshot FY file scope and other file filters, not the Global Filter's status scope.",
+                    `${finance1LivePositionLabel}. The cutoff is the earlier of the selected as-of date and FY-end. The other rows show later payment, No Further Action closure, or remaining unpaid balance through ${formatIsoDateForDisplay(finance1RefreshDay)}.`,
+                    "Uses the snapshot FY file scope and other filters.",
                     "Amounts are split across later payment, No Further Action closure, and remaining unpaid balance. Counts are payment cases, not unique files, and can overlap when a case is partly paid but still has an unpaid balance.",
                   ]}
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {finance1PositionLabel}. Later activity is tracked through {formatIsoDateForDisplay(finance1RefreshDay)}.
+                  {finance1LivePositionLabel}. Later activity is tracked through {formatIsoDateForDisplay(finance1RefreshDay)}.
                 </p>
                 <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
                   <table className="w-full min-w-[720px] border-collapse text-sm">
@@ -8251,7 +8621,8 @@ const analyticsPanels: AnalyticsPanel[] = [
                         <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Payment cases</th>
                         <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Capital (Lakhs)</th>
                         <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Revenue (Lakhs)</th>
-                        <th className="border-b border-border px-3 py-2 text-right font-semibold">Total (Lakhs)</th>
+                        <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Total (Lakhs)</th>
+                        <th className="border-b border-border px-3 py-2 font-semibold">Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -8260,21 +8631,25 @@ const analyticsPanels: AnalyticsPanel[] = [
                           label: `Unpaid at ${finance1CutoffLabel} (${finance1YearEndLabel})`,
                           key: "unpaidLiabilityAtFyEnd",
                           metric: finance1Summary.unpaidLiabilityAtFyEnd,
+                          status: "Frozen at FY-end",
                         },
                         {
                           label: `Paid after ${finance1CutoffLabel} through ${formatIsoDateForDisplay(finance1RefreshDay)}`,
                           key: "yearEndLiabilityPaidLater",
                           metric: finance1Summary.yearEndLiabilityPaidLater,
+                          status: "Live",
                         },
                         {
                           label: `Closed by No Further Action by ${formatIsoDateForDisplay(finance1RefreshDay)}`,
                           key: "yearEndLiabilityClosedByNfa",
                           metric: finance1Summary.yearEndLiabilityClosedByNfa,
+                          status: "Live",
                         },
                         {
                           label: `Still unpaid as of ${formatIsoDateForDisplay(finance1RefreshDay)}`,
                           key: "yearEndLiabilityStillUnpaidToday",
                           metric: finance1Summary.yearEndLiabilityStillUnpaidToday,
+                          status: "Live",
                         },
                       ] as const).map((row) => (
                         <tr key={row.key} className="border-b border-border/70 last:border-0">
@@ -8292,7 +8667,8 @@ const analyticsPanels: AnalyticsPanel[] = [
                           </td>
                           <td className="border-r border-border px-3 py-2 text-right tabular-nums">{formatLakhsValue(row.metric.capital)}</td>
                           <td className="border-r border-border px-3 py-2 text-right tabular-nums">{formatLakhsValue(row.metric.revenue)}</td>
-                          <td className="px-3 py-2 text-right font-medium tabular-nums">{formatLakhsValue(row.metric.total)}</td>
+                          <td className="border-r border-border px-3 py-2 text-right font-medium tabular-nums">{formatLakhsValue(row.metric.total)}</td>
+                          <td className="px-3 py-2 font-medium text-muted-foreground">{row.status}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -8326,17 +8702,18 @@ const analyticsPanels: AnalyticsPanel[] = [
                           <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Payment cases</th>
                           <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Capital (Lakhs)</th>
                           <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Revenue (Lakhs)</th>
-                          <th className="border-b border-border px-3 py-2 text-right font-semibold">Total (Lakhs)</th>
+                          <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Total (Lakhs)</th>
+                          <th className="border-b border-border px-3 py-2 font-semibold">Status</th>
                         </tr>
                       </thead>
                       <tbody>
                         {([
-                          { label: "Regular / common S.O.", key: "activity:paymentPaid:regular:selected", metric: finance1PaymentsInSelectedFy.regular },
-                          { label: "Stage", key: "activity:paymentPaid:stage:selected", metric: finance1PaymentsInSelectedFy.stage },
-                          { label: "Supplementary", key: "activity:supplementaryPaid:selected", metric: finance1PaymentsInSelectedFy.supplementary },
-                          { label: "Advance", key: "activity:advancePaid:selected", metric: finance1PaymentsInSelectedFy.advance },
-                          { label: "Total", key: "activity:paymentPaid:all:selected", metric: finance1PaymentsInSelectedFy.total, total: true },
-                        ] as Array<{ label: string; key?: string; metric: Finance1AmountMetric; total?: boolean }>).map((row) => (
+                          { label: "Regular / common S.O.", key: "activity:paymentPaid:regular:selected", metric: finance1PaymentsInSelectedFy.regular, status: "Frozen at FY-end" },
+                          { label: "Stage", key: "activity:paymentPaid:stage:selected", metric: finance1PaymentsInSelectedFy.stage, status: "Frozen at FY-end" },
+                          { label: "Supplementary", key: "activity:supplementaryPaid:selected", metric: finance1PaymentsInSelectedFy.supplementary, status: "Frozen at FY-end" },
+                          { label: "Advance", key: "activity:advancePaid:selected", metric: finance1PaymentsInSelectedFy.advance, status: "Frozen at FY-end" },
+                          { label: "Total", key: "activity:paymentPaid:all:selected", metric: finance1PaymentsInSelectedFy.total, total: true, status: "Frozen at FY-end" },
+                        ] as Array<{ label: string; key?: string; metric: Finance1AmountMetric; total?: boolean; status: "Live" | "Frozen at FY-end" }>).map((row) => (
                           <tr key={row.label} className="border-b border-border/70 last:border-0">
                             <th className={`border-r border-border px-3 py-2 text-left ${row.total ? "font-semibold" : "font-medium"}`}>
                               {row.label}
@@ -8356,9 +8733,10 @@ const analyticsPanels: AnalyticsPanel[] = [
                             </td>
                             <td className="border-r border-border px-3 py-2 text-right tabular-nums">{formatLakhsValue(row.metric.capital)}</td>
                             <td className="border-r border-border px-3 py-2 text-right tabular-nums">{formatLakhsValue(row.metric.revenue)}</td>
-                            <td className={`px-3 py-2 text-right tabular-nums ${row.total ? "font-semibold" : "font-medium"}`}>
+                            <td className={`border-r border-border px-3 py-2 text-right tabular-nums ${row.total ? "font-semibold" : "font-medium"}`}>
                               {formatLakhsValue(row.metric.total)}
                             </td>
+                            <td className="px-3 py-2 font-medium text-muted-foreground">{row.status}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -8373,6 +8751,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                         <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">{finance1YearLabel}</th>
                         <th className="border-b border-r border-border px-3 py-2 text-right font-semibold">Later FYs</th>
                         <th className="border-b border-border px-3 py-2 font-semibold">Unit</th>
+                        <th className="border-b border-border px-3 py-2 font-semibold">Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -8384,27 +8763,27 @@ const analyticsPanels: AnalyticsPanel[] = [
                           { label: "Supplementary bills paid", selected: finance1Summary.activityCounts.supplementaryPaymentsInSelectedFy, following: finance1Summary.activityCounts.supplementaryPaymentsInFollowingFy, selectedDrillKeys: "activity:supplementaryPaid:selected", followingDrillKeys: "activity:supplementaryPaid:later", status: "Payments dated in the selected FY or later" },
                           { label: "Advance payments recorded", selected: finance1Summary.activityCounts.advancePaymentsInSelectedFy, following: finance1Summary.activityCounts.advancePaymentsInFollowingFy, selectedDrillKeys: "activity:advancePaid:selected", followingDrillKeys: "activity:advancePaid:later", status: "Payments dated in the selected FY or later" },
                           { label: "Bills sent for payment", selected: finance1Summary.activityCounts.billsSentInSelectedFy, following: finance1Summary.activityCounts.billsSentInFollowingFy, selectedDrillKeys: "activity:billsSent:selected", followingDrillKeys: "activity:billsSent:later", status: "Submission date falls in the selected FY or later" },
-                          { label: `Bills sent in ${finance1YearLabel} and paid in ${finance1YearLabel}`, selected: finance1Summary.activityCounts.selectedFyBillsPaidInSelectedFy, following: "—", selectedDrillKeys: "activity:selectedBillsPaid:selected", status: "Paid within the same FY they were sent" },
+                          { label: `Bills sent in ${finance1YearLabel} and paid in ${finance1YearLabel}`, selected: finance1Summary.activityCounts.selectedFyBillsPaidInSelectedFy, following: "—", selectedDrillKeys: "activity:selectedBillsPaid:selected", status: "Paid within the same FY they were sent", liveStatus: "Frozen at FY-end" },
                           { label: `Bills sent in ${finance1YearLabel} and paid in later FYs`, selected: "—", following: finance1Summary.activityCounts.selectedFyBillsPaidInFollowingFy, followingDrillKeys: "activity:selectedBillsPaid:later", status: "Paid after the selected FY ended" },
-                          { label: `Bills sent in ${finance1YearLabel} and still unpaid`, selected: "—", following: finance1Summary.activityCounts.selectedFyBillsStillUnpaid, followingDrillKeys: "activity:selectedBillsStillUnpaid", status: "Still unpaid" },
-                          { label: `Payment due, bill not submitted at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.paymentDueButBillNotSubmitted?.length ?? 0, following: "—", selectedDrillKeys: "paymentDueButBillNotSubmitted", status: "Total files due without a submitted bill at year-end" },
+                          { label: `Bills sent in ${finance1YearLabel} and still unpaid`, selected: "—", following: finance1Summary.activityCounts.selectedFyBillsStillUnpaid, followingDrillKeys: "activity:selectedBillsStillUnpaid", status: "Still unpaid", moveToSelectedWhileRunning: true },
+                          { label: `Payment due, bill not submitted at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.paymentDueButBillNotSubmitted?.length ?? 0, following: "—", selectedDrillKeys: "paymentDueButBillNotSubmitted", status: "Total files due without a submitted bill at year-end", liveStatus: "Frozen at FY-end" },
                           { label: "Year-end payment due, bill sent later", selected: "—", following: finance1Summary.drillFileIds?.paymentDueBillSubmittedLater?.length ?? 0, followingDrillKeys: "paymentDueBillSubmittedLater", status: "Files whose bill was submitted after year-end" },
-                          { label: "Year-end payment due, bill still not submitted", selected: "—", following: finance1Summary.drillFileIds?.paymentDueStillNotSubmittedToday?.length ?? 0, followingDrillKeys: "paymentDueStillNotSubmittedToday", status: "Files whose bill remains unsubmitted" },
-                          { label: `Unpaid liability at ${finance1YearEndLabel}`, selected: finance1Summary.unpaidLiabilityAtFyEnd.count, following: "—", selectedDrillKeys: "unpaidLiabilityAtFyEnd", status: "Total payment cases pending at year-end" },
+                          { label: "Year-end payment due, bill still not submitted", selected: "—", following: finance1Summary.drillFileIds?.paymentDueStillNotSubmittedToday?.length ?? 0, followingDrillKeys: "paymentDueStillNotSubmittedToday", status: "Files whose bill remains unsubmitted", moveToSelectedWhileRunning: true },
+                          { label: `Unpaid at ${finance1YearEndLabel}`, selected: finance1Summary.unpaidLiabilityAtFyEnd.count, following: "—", selectedDrillKeys: "unpaidLiabilityAtFyEnd", status: "Total payment cases pending at year-end", liveStatus: "Frozen at FY-end" },
                           { label: `Year-end payment due cleared in later FYs`, selected: "—", following: finance1Summary.yearEndLiabilityPaidLater.count, followingDrillKeys: "activity:yearEndLiabilityPaidLater", status: "Cases from the year-end liability later paid" },
-                          { label: `Year-end payment due still unpaid`, selected: "—", following: finance1Summary.yearEndLiabilityStillUnpaidToday.count, followingDrillKeys: "activity:yearEndLiabilityStillUnpaid", status: "Cases from the year-end liability still unpaid" },
-                          { label: `Delivery pending at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.materialReceiptPendingByFyEnd?.length ?? 0, following: "—", selectedDrillKeys: "materialReceiptPendingByFyEnd", status: "Files awaiting Material Receipt at year-end" },
-                          { label: `Job Completion pending at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.jobCompletionPendingByFyEnd?.length ?? 0, following: "—", selectedDrillKeys: "jobCompletionPendingByFyEnd", status: "Files awaiting Job Completion at year-end" },
+                          { label: `Year-end payment due still unpaid`, selected: "—", following: finance1Summary.yearEndLiabilityStillUnpaidToday.count, followingDrillKeys: "activity:yearEndLiabilityStillUnpaid", status: "Cases from the year-end liability still unpaid", moveToSelectedWhileRunning: true },
+                          { label: `Delivery pending at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.materialReceiptPendingByFyEnd?.length ?? 0, following: "—", selectedDrillKeys: "materialReceiptPendingByFyEnd", status: "Files awaiting Material Receipt at year-end", liveStatus: "Frozen at FY-end" },
+                          { label: `Job Completion pending at ${finance1YearEndLabel}`, selected: finance1Summary.drillFileIds?.jobCompletionPendingByFyEnd?.length ?? 0, following: "—", selectedDrillKeys: "jobCompletionPendingByFyEnd", status: "Files awaiting Job Completion at year-end", liveStatus: "Frozen at FY-end" },
                           { label: "Delivery pending at year-end completed later", selected: "—", following: finance1Summary.drillFileIds?.deliveryPendingCompletedLater?.length ?? 0, followingDrillKeys: "deliveryPendingCompletedLater", status: "Files whose delivery was pending at year-end and completed later" },
                           { label: "Job Completion pending at year-end completed later", selected: "—", following: finance1Summary.drillFileIds?.jobCompletionPendingCompletedLater?.length ?? 0, followingDrillKeys: "jobCompletionPendingCompletedLater", status: "Files whose Job Completion was pending at year-end and completed later" },
-                          { label: "Delivery pending at year-end and still pending", selected: "—", following: finance1Summary.drillFileIds?.deliveryPendingStillOpenToday?.length ?? 0, followingDrillKeys: "deliveryPendingStillOpenToday", status: "Files whose delivery is still pending" },
-                          { label: "Job Completion pending at year-end and still pending", selected: "—", following: finance1Summary.drillFileIds?.jobCompletionPendingStillOpenToday?.length ?? 0, followingDrillKeys: "jobCompletionPendingStillOpenToday", status: "Files whose Job Completion is still pending" },
+                          { label: "Delivery pending at year-end and still pending", selected: "—", following: finance1Summary.drillFileIds?.deliveryPendingStillOpenToday?.length ?? 0, followingDrillKeys: "deliveryPendingStillOpenToday", status: "Files whose delivery is still pending", moveToSelectedWhileRunning: true },
+                          { label: "Job Completion pending at year-end and still pending", selected: "—", following: finance1Summary.drillFileIds?.jobCompletionPendingStillOpenToday?.length ?? 0, followingDrillKeys: "jobCompletionPendingStillOpenToday", status: "Files whose Job Completion is still pending", moveToSelectedWhileRunning: true },
                           { label: "S.O.s placed by year-end and cancelled later", selected: "—", following: finance1Summary.activityCounts.supplyOrdersPlacedByYearEndCancelledLater, followingDrillKeys: "activity:soCancelledLater" },
                           { label: "S.O. cases completed after year-end", selected: "—", following: finance1Summary.activityCounts.regularSupplyOrdersCompletedLater, followingDrillKeys: "activity:soCompletedLater:regular", status: "Regular S.O. cases completed after year-end" },
                           { label: "Stage cases completed after year-end", selected: "—", following: finance1Summary.activityCounts.stageSupplyOrdersCompletedLater, followingDrillKeys: "activity:soCompletedLater:stage", status: "Stage cases completed after year-end" },
                           { label: "S.O. payment cases with bills sent after year-end", selected: "—", following: finance1Summary.activityCounts.regularSupplyOrderPaymentsWithBillSentLater, followingDrillKeys: "activity:billsSentLater:regular", status: "Regular S.O. payment cases whose bill was sent after year-end" },
                           { label: "Stage payment cases with bills sent after year-end", selected: "—", following: finance1Summary.activityCounts.stageSupplyOrderPaymentsWithBillSentLater, followingDrillKeys: "activity:billsSentLater:stage", status: "Stage payment cases whose bill was sent after year-end" },
-                          { label: "S.O./stage payment cases still unpaid", selected: "—", following: finance1Summary.activityCounts.supplyOrdersPlacedByYearEndStillUnpaid, followingDrillKeys: "activity:paymentStillUnpaid", status: "Payment cases placed by year-end whose trigger has been reached and payment is still unpaid" },
+                          { label: "S.O./stage payment cases still unpaid", selected: "—", following: finance1Summary.activityCounts.supplyOrdersPlacedByYearEndStillUnpaid, followingDrillKeys: "activity:paymentStillUnpaid", status: "Payment cases placed by year-end whose trigger has been reached and payment is still unpaid", moveToSelectedWhileRunning: true },
                           { label: "Files closed", selected: finance1Summary.activityCounts.filesClosedInSelectedFy, following: finance1Summary.activityCounts.filesClosedInFollowingFy, selectedDrillKeys: "activity:filesClosed:selected", followingDrillKeys: "activity:filesClosed:later", status: "Closure date falls in the selected FY or later" },
                           { label: "Files active at year-end and demand-cancelled later", selected: "—", following: finance1Summary.activityCounts.filesActiveAtYearEndDemandCancelledLater, followingDrillKeys: "activity:filesDemandCancelledLater" },
                           { label: `Year-end liability stopped by NFA`, selected: "—", following: finance1Summary.yearEndLiabilityClosedByNfa.count, followingDrillKeys: "activity:yearEndLiabilityNfa", status: "Cases from the year-end liability closed by No Further Action" },
@@ -8416,6 +8795,8 @@ const analyticsPanels: AnalyticsPanel[] = [
                           selectedDrillKeys?: string | string[];
                           followingDrillKeys?: string | string[];
                           status?: string;
+                          liveStatus?: "Live" | "Frozen" | "Frozen at FY-end";
+                          moveToSelectedWhileRunning?: boolean;
                         }>
                       ).map((row) => {
                         const renderCell = (
@@ -8443,16 +8824,22 @@ const analyticsPanels: AnalyticsPanel[] = [
                             </Fragment>
                           ));
                         };
+                        const moveFollowUpToSelected = row.moveToSelectedWhileRunning && !finance1CutoffIsFyEnd;
+                        const selectedValue = moveFollowUpToSelected ? row.following : row.selected;
+                        const followingValue = moveFollowUpToSelected ? "—" : row.following;
+                        const selectedKeys = moveFollowUpToSelected ? row.followingDrillKeys : row.selectedDrillKeys;
+                        const followingKeys = moveFollowUpToSelected ? undefined : row.followingDrillKeys;
                         return (
                           <tr key={row.label} className="border-b border-border/70 last:border-0">
                             <th className="border-r border-border px-3 py-2 text-left font-medium">{row.label}</th>
                             <td className="border-r border-border px-3 py-2 text-right tabular-nums">
-                              {renderCell(row.selected, row.selectedDrillKeys, finance1YearLabel)}
+                              {renderCell(selectedValue, selectedKeys, finance1YearLabel)}
                             </td>
                             <td className="border-r border-border px-3 py-2 text-right tabular-nums">
-                              {renderCell(row.following, row.followingDrillKeys, "Later FYs")}
+                              {renderCell(followingValue, followingKeys, "Later FYs")}
                             </td>
                             <td className="px-3 py-2 text-muted-foreground">{getFinanceSnapshotUnit(row.label)}</td>
+                            <td className="px-3 py-2 font-medium text-muted-foreground">{row.liveStatus ?? "Live"}</td>
                           </tr>
                         );
                       })}
@@ -8464,13 +8851,11 @@ const analyticsPanels: AnalyticsPanel[] = [
               <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1">
-                    <h3 className="text-sm font-extrabold text-foreground">{`File Type Distribution ${finance1AtYearEndLabel}`}</h3>
-                    <FloatingHelp label={`File Type Distribution ${finance1AtYearEndLabel} details`}>
+                    <h3 className="text-sm font-extrabold text-foreground">File Type Distribution (Live)</h3>
+                    <FloatingHelp label="File Type Distribution (Live) details">
                       {[
-                    `Includes files initiated in FY ${finance1YearLabel} within the selected initiation-date range and other file filters; it does not use Global Filter's status scope.`,
-                    "The Files column includes every in-scope file. Files with S.O. counts each file once if it had at least one qualifying S.O. by the cutoff, regardless of the number of S.O.s or delivery stages.",
-                    `Status columns are evaluated as of ${finance1YearEndLabel}.`,
-                    "Capital and Revenue show the currently recorded demand or estimate amounts; they are not historical values from the cutoff date.",
+                    `Includes files initiated in FY ${finance1YearLabel} within the selected initiation-date range and other file filters.`,
+                    "Files with S.O., Active, Closed, Cancelled, Capital, Revenue, and Value Share show current values.",
                       ]}
                     </FloatingHelp>
                   </div>
@@ -8478,7 +8863,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     {(finance1FileTypeView === "bar" || finance1FileTypeView === "column") ? (
                       <select value={finance1FileTypeMetric} onChange={(event) => setFinance1FileTypeMetric(event.target.value as typeof finance1FileTypeMetric)}
                         className="h-8 rounded-md border border-input bg-background px-2 text-xs">
-                        <option value="files">Files</option><option value="withSo">Files with S.O. {finance1AtYearEndLabel}</option><option value="active">Active {finance1AtYearEndLabel}</option><option value="closed">Closed {finance1AtYearEndLabel}</option><option value="cancelled">Cancelled {finance1AtYearEndLabel}</option>
+                        <option value="files">Files</option><option value="withSo">Files with S.O. (Live)</option><option value="active">Active (Live)</option><option value="closed">Closed (Live)</option><option value="cancelled">Cancelled (Live)</option>
                       </select>
                     ) : null}
                     <TableChartToggle value={finance1FileTypeView} onChange={setFinance1FileTypeView}
@@ -8487,9 +8872,9 @@ const analyticsPanels: AnalyticsPanel[] = [
                 </div>
                 {(finance1FileTypeView === "bar" || finance1FileTypeView === "column") ? (
                   <div className="mt-3">
-                    <CategoryBarChart title={`File Type Distribution ${finance1AtYearEndLabel}`} valueLabel={finance1FileTypeMetric === "withSo" ? `Files with S.O. ${finance1AtYearEndLabel}` : finance1FileTypeMetric === "active" ? `Active ${finance1AtYearEndLabel}` : finance1FileTypeMetric === "closed" ? `Closed ${finance1AtYearEndLabel}` : finance1FileTypeMetric === "cancelled" ? `Cancelled ${finance1AtYearEndLabel}` : "Files"} rows={finance1Summary.fileTypeDistribution.map((row) => ({
+                    <CategoryBarChart title="File Type Distribution (Live)" valueLabel={finance1FileTypeMetric === "withSo" ? "Files with S.O. (Live)" : finance1FileTypeMetric === "active" ? "Active (Live)" : finance1FileTypeMetric === "closed" ? "Closed (Live)" : finance1FileTypeMetric === "cancelled" ? "Cancelled (Live)" : "Files"} rows={finance1Summary.fileTypeDistribution.map((row) => ({
                       label: row.fileType,
-                      value: row[finance1FileTypeMetric === "withSo" ? "filesWithSo" : finance1FileTypeMetric === "active" ? "activeAtFyEnd" : finance1FileTypeMetric === "closed" ? "closedByFyEnd" : finance1FileTypeMetric === "cancelled" ? "cancelledByFyEnd" : "files"],
+                      value: row[finance1FileTypeMetric === "withSo" ? "filesWithSoLive" : finance1FileTypeMetric === "active" ? "active" : finance1FileTypeMetric === "closed" ? "closed" : finance1FileTypeMetric === "cancelled" ? "cancelled" : "files"],
                     }))} orientation={finance1FileTypeView === "column" ? "vertical" : "horizontal"} showHorizontalAxis={finance1FileTypeView === "bar"} showColumnAxis={finance1FileTypeView === "column"} />
                   </div>
                 ) : (
@@ -8504,25 +8889,25 @@ const analyticsPanels: AnalyticsPanel[] = [
                           Files
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Files with S.O.
+                          Files with S.O. (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Active
+                          Active (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Closed
+                          Closed (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Cancelled
+                          Cancelled (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Capital (Lakhs)
+                          Capital (Lakhs) (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Revenue (Lakhs)
+                          Revenue (Lakhs) (Live)
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
-                          Value Share
+                          Value Share (Live)
                         </th>
                       </tr>
                     </thead>
@@ -8531,47 +8916,47 @@ const analyticsPanels: AnalyticsPanel[] = [
                         finance1Summary.fileTypeDistribution.map((row) => (
                           <tr key={row.fileType} className="border-t border-border">
                             <td className="px-3 py-2 font-medium">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, `File Type Distribution ${finance1AtYearEndLabel}`, row.fileType)}>
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution (Live)", row.fileType)}>
                                 {row.fileType}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Files`)}>
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution (Live)", `${row.fileType}: Files`)}>
                                 {row.files}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:withSo`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Files with S.O. ${finance1AtYearEndLabel}`)}>
-                                {row.filesWithSo}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:liveWithSo`, "File Type Distribution (Live)", `${row.fileType}: Files with S.O. (Live)`)}>
+                                {row.filesWithSoLive}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:active`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Active ${finance1AtYearEndLabel}`)}>
-                                {row.activeAtFyEnd}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:liveActive`, "File Type Distribution (Live)", `${row.fileType}: Active (Live)`)}>
+                                {row.active}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:closed`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Closed ${finance1AtYearEndLabel}`)}>
-                                {row.closedByFyEnd}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:liveClosed`, "File Type Distribution (Live)", `${row.fileType}: Closed (Live)`)}>
+                                {row.closed}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:cancelled`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Cancelled ${finance1AtYearEndLabel}`)}>
-                                {row.cancelledByFyEnd}
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:liveCancelled`, "File Type Distribution (Live)", `${row.fileType}: Cancelled (Live)`)}>
+                                {row.cancelled}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Capital (Lakhs)`)}>
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution (Live)", `${row.fileType}: Capital (Lakhs) (Live)`)}>
                                 {formatLakhsValue(row.capital)}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Revenue (Lakhs)`)}>
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution (Live)", `${row.fileType}: Revenue (Lakhs) (Live)`)}>
                                 {formatLakhsValue(row.revenue)}
                               </Finance1DrillCell>
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, `File Type Distribution ${finance1AtYearEndLabel}`, `${row.fileType}: Value Share`)}>
+                              <Finance1DrillCell onClick={finance1DrillClick(`fileType:${row.fileType.toLowerCase()}:files`, "File Type Distribution (Live)", `${row.fileType}: Value Share (Live)`)}>
                                 {formatPercent(
                                   finance1Summary.fileGroup.total
                                     ? (row.total / finance1Summary.fileGroup.total) * 100
@@ -8597,14 +8982,10 @@ const analyticsPanels: AnalyticsPanel[] = [
               <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1">
-                    <h3 className="text-sm font-extrabold text-foreground">{`Firm Type Distribution ${finance1PeriodLabel}`}</h3>
-                    <FloatingHelp label={`Firm Type Distribution ${finance1PeriodLabel} details`}>
+                    <h3 className="text-sm font-extrabold text-foreground">{`Firm Type Distribution ${finance1PeriodLabel} ${finance1CutoffStatusLabel}`}</h3>
+                    <FloatingHelp label={`Firm Type Distribution ${finance1PeriodLabel} ${finance1CutoffStatusLabel} details`}>
                       {[
                     `Includes qualifying S.O.s placed on or before ${finance1YearEndLabel} for files initiated in FY ${finance1YearLabel} and within the selected initiation-date range and other file filters.`,
-                    "S.O.s counts actual Supply Order records; delivery stages are not counted as separate S.O.s.",
-                    "Grouped by firm type recorded in S.O. details.",
-                    `Exclude S.O.s cancelled by ${finance1YearEndLabel}.`,
-                    "Included S.O. values use the amounts currently recorded.",
                       ]}
                     </FloatingHelp>
                   </div>
@@ -8729,6 +9110,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                 </div>
                 )}
               </div>
+              </> : null}
             </div>
           </TooltipProvider>
         </section>
@@ -9070,7 +9452,8 @@ const analyticsPanels: AnalyticsPanel[] = [
                     <FinanceSectionTitle
                       title={`Payment in ${selectedFinanceYearLabel}`}
                       basis={financePaymentInYearBasisLabel}
-                      help={shortclosedPayableHelp(financeHelperText.paymentInYear)}
+                      help={paymentInYearHelp(financeHelperText.paymentInYear)}
+                      helpWide
                     />
                     <div className="mt-3">
                       <div className="grid w-full max-w-full grid-cols-1 gap-3 sm:grid-cols-2">
@@ -9122,7 +9505,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                             emptyText={`No older unpaid carry-forward as on ${selectedFinanceYearLabel} end.`}
                             help={financeHelperText.previousCarryForward}
                             details={paymentPendingLogicDetails}
-                            examples={{ title: "Example", items: financeCarryForwardExamples.previous }}
+                            examples={{ title: "", groups: financeCarryForwardExamples.previous, plain: true }}
                             onOpenFilter={openSearchFilter}
                           />
                           <FinanceCarryForwardPanel
@@ -9134,7 +9517,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                             emptyText={`No previous-year carry-forward cleared in ${selectedFinanceYearLabel}.`}
                             help={financeHelperText.clearedCarryForward}
                             details={paymentPendingLogicDetails}
-                            examples={{ title: "Example", items: financeCarryForwardExamples.cleared }}
+                            examples={{ title: "", groups: financeCarryForwardExamples.cleared, plain: true }}
                             onOpenFilter={openSearchFilter}
                           />
                         </>
@@ -9157,7 +9540,6 @@ const analyticsPanels: AnalyticsPanel[] = [
                         rows={financeTotals.futureClearedCarryForwardBreakup}
                         emptyText={`No ${selectedFinanceYearLabel} carry-forward cleared in later FYs.`}
                         help={financeHelperText.futureClearedCarryForward}
-                        details={paymentPendingLogicDetails}
                         examples={{ title: "Example", items: financeCarryForwardExamples.futureCleared }}
                         onOpenFilter={openSearchFilter}
                       />
@@ -9236,7 +9618,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     Activity and payment liabilities recorded during {selectedFinanceYearLabel}
                   </p>
                 </div>
-                {!isFinanceCombinationBlocked ? (
+                {!isFinanceCombinationBlocked && !isNoticeBoardFyActivity ? (
                   <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -9277,7 +9659,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                   </div>
                 ) : null}
               </div>
-              <div role="tablist" aria-label={"FY Activity views"} className="mb-4 flex flex-wrap gap-1 border-b border-border">
+              <div role="tablist" aria-label={"FY Activity views"} className={isNoticeBoardFyActivity ? "hidden" : "mb-4 flex flex-wrap gap-1 border-b border-border"}>
                 {[
                   { key: "activity", label: `Activity and liabilities for ${selectedFinanceYearLabel}` },
                 ].map((tab) => (
@@ -9305,7 +9687,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                 role="tabpanel"
                 aria-labelledby={`${"fy-activity"}-tab-${fyActivityView}`}
               >
-              {isFinanceCombinationBlocked ? (
+              {isFinanceCombinationBlocked && !isNoticeBoardFyActivity ? (
                 <div className="rounded-lg border border-dashed border-border bg-secondary/35 p-5">
                   <h3 className="text-sm font-bold text-foreground">
                     {fyActivityCombinationBlockedReason.title}
@@ -9345,7 +9727,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                 </div>
               ) : (
                 <>
-              <SectionRuleToolbar
+              {!isNoticeBoardFyActivity ? <SectionRuleToolbar
                 title={
                   isSameGlobalAndSubfilterFinanceFy
                     ? "Same-FY rules"
@@ -9364,7 +9746,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                                 : "Global rules"
                 }
                 items={financeHelperText.rules}
-              />
+              /> : null}
               {fyActivityView === "current" ? (
                 <div className="mb-3 text-xs text-muted-foreground">
                   <HelperBulletList items={[
@@ -9658,7 +10040,8 @@ const analyticsPanels: AnalyticsPanel[] = [
                     <FinanceSectionTitle
                       title={`Payment in ${selectedFinanceYearLabel} (Lakhs)`}
                       basis={financePaymentInYearBasisLabel}
-                      help={shortclosedPayableHelp(financeHelperText.paymentInYear)}
+                      help={paymentInYearHelp(financeHelperText.paymentInYear)}
+                      helpWide
                         compact
                     />
                     <div className="mt-3">
@@ -9717,7 +10100,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                           items={[
                             "Counts are grouped by the FY each file was initiated.",
                             "S.O.s are counted by placement date, even if cancelled later.",
-                            "Live S.O.s exclude cancelled and short-closed S.O.s and require no recorded file closure date.",
+                            "Live S.O.s exclude cancelled and short-closed S.O.s.",
                           ]}
                         />
                       </FinanceInteractiveHelp>
@@ -9776,7 +10159,6 @@ const analyticsPanels: AnalyticsPanel[] = [
                         <HelperBulletList
                           items={[
                             "Payment cases count recorded payment entries, not unique files.",
-                            `The breakdown uses the same payment records as the Payment in ${selectedFinanceYearLabel} figures above, so it is not limited to carry-forward liabilities.`,
                           ]}
                         />
                       </FinanceInteractiveHelp>
@@ -9848,18 +10230,18 @@ const analyticsPanels: AnalyticsPanel[] = [
                         <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
                         <XAxis dataKey="position" axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }} tick={{ fontSize: 13 }} />
                         <YAxis
-                          width={58}
+                          width={financePositionYAxisWidthCurrent}
                           allowDecimals={false}
                           axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                           tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                           tick={{ fontSize: 13 }}
                           tickFormatter={(value: number) => formatThousandsAndLakhs(value / 100_000, 0)}
-                          label={{ value: "Value (Lakhs)", angle: -90, position: "insideLeft" }}
                         />
                         <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
                         <Legend wrapperStyle={{ fontSize: 13 }} />
                         <Bar dataKey="capital" name="Capital" fill="var(--chart-color-1)" barSize={24} radius={0} />
                         <Bar dataKey="revenue" name="Revenue" fill="var(--chart-color-2)" barSize={24} radius={0} />
+                        <Customized component={FinancePositionYAxisTitle} axisWidth={financePositionYAxisWidthCurrent} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -9885,7 +10267,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                             }
                             help={financeHelperText.previousCarryForward}
                             details={paymentPendingLogicDetails}
-                            examples={{ title: "Example", items: financeCarryForwardExamples.previous }}
+                            examples={{ title: "", groups: financeCarryForwardExamples.previous, plain: true }}
                             onOpenFilter={openSearchFilter}
                           />
                           <FinanceCarryForwardPanel
@@ -9897,7 +10279,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                             emptyText={`No previous-year carry-forward cleared in ${selectedFinanceYearLabel}.`}
                             help={financeHelperText.clearedCarryForward}
                             details={paymentPendingLogicDetails}
-                            examples={{ title: "Example", items: financeCarryForwardExamples.cleared }}
+                            examples={{ title: "", groups: financeCarryForwardExamples.cleared, plain: true }}
                             onOpenFilter={openSearchFilter}
                           />
                         </>
@@ -9924,7 +10306,6 @@ const analyticsPanels: AnalyticsPanel[] = [
                         rows={financeTotals.futureClearedCarryForwardBreakup}
                         emptyText={`No ${selectedFinanceYearLabel} carry-forward cleared in later FYs.`}
                         help={financeHelperText.futureClearedCarryForward}
-                        details={paymentPendingLogicDetails}
                         examples={{ title: "Example", items: financeCarryForwardExamples.futureCleared }}
                         onOpenFilter={openSearchFilter}
                       />
@@ -9936,7 +10317,7 @@ const analyticsPanels: AnalyticsPanel[] = [
                     FY-specific payment and carry-forward measures are not available for this cumulative file view. Any Firm Type Distribution shown uses the basis stated in that section.
                   </p>
                 ) : null}
-                {shouldShowFinanceFirmTypeDistribution ? (
+                {shouldShowFinanceFirmTypeDistribution && !isNoticeBoardFyActivity ? (
               <div className="mt-4 rounded-lg border border-border bg-secondary/35 p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -10181,21 +10562,36 @@ function CategoryBarChart({
   formatValue = (value) => value.toLocaleString(),
   valueLabel = "Value",
   horizontalValueLabel,
+  periodLabel,
+  legendItems,
   maxWidth,
   showHorizontalAxis = false,
   showColumnAxis = false,
+  showColumnValues = false,
+  straightColumnLabels = false,
 }: {
   title?: string;
-  rows: Array<{ label: string; value: number; onClick?: () => void; color?: string; displayValue?: ReactNode }>;
+  rows: Array<{
+    label: string;
+    value: number;
+    onClick?: () => void;
+    color?: string;
+    displayValue?: ReactNode;
+    segments?: Array<{ value: number; color: string }>;
+  }>;
   orientation?: "horizontal" | "vertical";
   formatValue?: (value: number) => string;
   valueLabel?: string;
   horizontalValueLabel?: string;
+  periodLabel?: string;
+  legendItems?: Array<{ label: string; color: string }>;
   maxWidth?: number;
   showHorizontalAxis?: boolean;
   showColumnAxis?: boolean;
+  showColumnValues?: boolean;
+  straightColumnLabels?: boolean;
 }) {
-  const maximum = Math.max(1, ...rows.map((row) => row.value));
+  const maximum = Math.max(1, ...rows.map((row) => row.segments?.reduce((sum, segment) => sum + segment.value, 0) ?? row.value));
   const valueScale = /lakh/i.test(valueLabel) ? 100_000 : 1;
   const scaledMaximum = maximum / valueScale;
   const getAxisScale = (value: number) => {
@@ -10224,9 +10620,35 @@ function CategoryBarChart({
     value.toLocaleString("en-IN").length * 7 + 8,
   ));
   const columnAxisGutterWidth = Math.max(52, columnAxisTickWidth + 16);
-  const columnPlotHeight = 250;
+  const columnPlotHeight = 280;
   const columnChartHeight = 22 + columnPlotHeight + columnLabelHeight;
   const useStyledFrame = showHorizontalAxis || showColumnAxis;
+  if (useStyledFrame) {
+    const segmentCount = Math.max(1, ...rows.map((row) => row.segments?.length ?? 1));
+    const chartSeries = Array.from({ length: segmentCount }, (_, index) => ({
+      key: `value${index}`,
+      label: legendItems?.[index]?.label ?? valueLabel,
+      color: legendItems?.[index]?.color ?? rows.find((row) => row.segments?.[index])?.segments?.[index]?.color ?? rows[0]?.color ?? "var(--chart-bar-color, #0f766e)",
+    }));
+    return <SnapshotChartRenderer
+      title={title || "Category distribution"}
+      periodLabel={periodLabel}
+      maxWidth={maxWidth}
+      rows={rows.map((row) => ({
+        label: row.label,
+        values: Object.fromEntries(chartSeries.map((item, index) => [item.key, (row.segments?.[index]?.value ?? (index === 0 ? row.value : 0)) / valueScale])),
+        color: row.segments?.length ? undefined : row.color,
+        source: row,
+      }))}
+      series={chartSeries}
+      kind={orientation === "vertical" ? "column" : "bar"}
+      valueLabel={orientation === "horizontal" ? horizontalValueLabel ?? valueLabel : valueLabel}
+      stacked={segmentCount > 1}
+      showValues={showColumnValues}
+      formatValue={(value) => formatValue(value * valueScale)}
+      onPointClick={(row) => (row.source as typeof rows[number]).onClick?.()}
+    />;
+  }
   return (
     <div data-chart-copy-area className={`w-full ${useStyledFrame ? "rounded-none" : "rounded-md"} border border-border bg-background p-4 ${maxWidth ? "mx-auto" : ""}`} style={maxWidth ? { maxWidth: `${maxWidth}px` } : undefined}>
       {orientation === "horizontal" ? (
@@ -10237,11 +10659,21 @@ function CategoryBarChart({
         </div>
       ) : (
         <div className="mb-2 grid min-w-0 grid-cols-[1fr_auto_1fr] items-center gap-2">
-          <span aria-hidden="true" />
+          <span className="min-w-0 text-sm font-semibold text-muted-foreground">{periodLabel}</span>
           <span data-chart-copy-title className="min-w-0 truncate text-center text-base font-semibold text-foreground">{title || "Category distribution"}</span>
           <div className="justify-self-end"><ChartCopyButton /></div>
         </div>
       )}
+      {legendItems?.length ? (
+        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {legendItems.map((item) => (
+            <span key={item.label} className="inline-flex items-center gap-1.5">
+              <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {orientation === "vertical" ? (
         <div className={`w-full min-w-0 ${showColumnAxis ? "overflow-visible bg-transparent p-0" : "overflow-hidden rounded-md border border-border bg-card p-2 sm:p-3"}`}>
         <div className="flex min-w-0" style={{ height: columnChartHeight }}>
@@ -10249,7 +10681,7 @@ function CategoryBarChart({
             <svg className="absolute left-0 text-muted-foreground" style={{ top: 22, height: columnPlotHeight }} width="24" viewBox={`0 0 24 ${columnPlotHeight}`} aria-hidden="true">
               <text x="12" y={columnPlotHeight / 2} transform={`rotate(-90 12 ${columnPlotHeight / 2})`} textAnchor="middle" dominantBaseline="middle" fill="currentColor" fontSize="12" fontWeight="500">{valueLabel}</text>
             </svg>
-            {axisTicks.map((value, index) => <span key={value} className="absolute right-0 w-10 -translate-y-1/2 text-right text-xs tabular-nums text-muted-foreground" style={{ top: 22 + index * columnPlotHeight / (axisTicks.length - 1) }}>{value.toLocaleString("en-IN")}</span>)}
+            {axisTicks.map((value, index) => <span key={value} className="absolute right-2 w-10 -translate-y-1/2 text-right text-xs tabular-nums text-muted-foreground" style={{ top: 22 + index * columnPlotHeight / (axisTicks.length - 1) }}>{value.toLocaleString("en-IN")}</span>)}
           </div>
           <div role="group" aria-label="Category column chart" className={`relative grid min-w-0 flex-1 bg-background ${showColumnAxis ? "" : "border border-border/80"}`} style={{ gridTemplateColumns: `repeat(${rows.length}, minmax(0, 1fr))`, gridTemplateRows: `22px ${columnPlotHeight}px ${columnLabelHeight}px` }}>
             {showColumnAxis ? <svg className="pointer-events-none absolute inset-x-0 top-[22px] z-[2] w-full overflow-visible" style={{ height: columnPlotHeight }} viewBox={`0 0 100 ${columnPlotHeight}`} preserveAspectRatio="none" aria-hidden="true">
@@ -10259,11 +10691,21 @@ function CategoryBarChart({
             {rows.map((row) => (
               <button key={row.label} type="button" disabled={!row.onClick} onClick={row.onClick} title={`${row.label}: ${row.displayValue ?? formatValue(row.value)}`} className="grid min-w-0 text-center disabled:cursor-default" style={{ gridTemplateRows: `22px ${columnPlotHeight}px ${columnLabelHeight}px` }}>
                 <span className="truncate text-[11px] font-semibold tabular-nums">
-                  {showColumnAxis || rows.length > 14 ? "" : row.displayValue ?? formatValue(row.value)}
+                  {showColumnAxis && !showColumnValues || rows.length > 14 ? "" : row.displayValue ?? formatValue(row.value)}
                 </span>
-                <span className={`relative flex items-end justify-center px-1 ${showColumnAxis ? "z-[3]" : "z-[1]"}`} style={{ height: columnPlotHeight }}><span className="w-5 max-w-5" style={{ height: row.value > 0 ? `${Math.max(1, Math.min(100, row.value / (axisMaximum * valueScale) * 100))}%` : "0%", backgroundColor: row.color ?? "var(--chart-bar-color, #0f766e)" }} /></span>
+                <span className={`relative flex items-end justify-center px-1 ${showColumnAxis ? "z-[3]" : "z-[1]"}`} style={{ height: columnPlotHeight }}>
+                  {row.segments?.length ? (
+                    <span className="flex w-5 max-w-5 flex-col-reverse overflow-hidden" style={{ height: row.value > 0 ? `${Math.max(1, Math.min(100, row.value / (axisMaximum * valueScale) * 100))}%` : "0%" }}>
+                      {row.segments.map((segment, index) => <span key={`${row.label}:${index}`} className="block min-h-0" style={{ height: `${row.value > 0 ? segment.value / row.value * 100 : 0}%`, backgroundColor: segment.color }} />)}
+                    </span>
+                  ) : <span className="w-5 max-w-5" style={{ height: row.value > 0 ? `${Math.max(1, Math.min(100, row.value / (axisMaximum * valueScale) * 100))}%` : "0%", backgroundColor: row.color ?? "var(--chart-bar-color, #0f766e)" }} />}
+                </span>
                 <span className="relative block min-w-0 overflow-visible pt-2 text-[11px] leading-tight text-muted-foreground">
-                  <span data-chart-copy-rotated-label="55" className="absolute left-1/2 top-2 w-max origin-top-left rotate-[55deg] whitespace-nowrap text-left" title={row.label}>{row.label}</span>
+                  {straightColumnLabels ? (
+                    <span className="block whitespace-nowrap text-center" title={row.label}>{row.label}</span>
+                  ) : (
+                    <span data-chart-copy-rotated-label="55" className="absolute left-1/2 top-2 w-max origin-top-left rotate-[55deg] whitespace-nowrap text-left" title={row.label}>{row.label}</span>
+                  )}
                 </span>
               </button>
             ))}
@@ -10290,7 +10732,9 @@ function CategoryBarChart({
             </svg>
             <div className="relative z-[1] grid" style={{ gridTemplateRows: horizontalAxisRowHeights.map((height) => `${height}px`).join(" ") }}>
               {rows.map((row, index) => <button key={row.label} type="button" disabled={!row.onClick} onClick={row.onClick} title={`${row.label}: ${row.displayValue ?? formatValue(row.value)}`} className="flex items-center text-left disabled:cursor-default" style={{ minHeight: horizontalAxisRowHeights[index] }}>
-                <span className="block h-5" style={{ width: `${row.value > 0 ? Math.min(100, row.value / (horizontalAxisMaximum * valueScale) * 100) : 0}%`, backgroundColor: row.color ?? "var(--chart-bar-color, #0f766e)" }} />
+                <span className="flex h-5 overflow-hidden" style={{ width: `${row.value > 0 ? Math.min(100, row.value / (horizontalAxisMaximum * valueScale) * 100) : 0}%`, backgroundColor: row.segments?.length ? undefined : row.color ?? "var(--chart-bar-color, #0f766e)" }}>
+                  {row.segments?.map((segment, index) => <span key={`${row.label}:${index}`} className="h-full" style={{ width: `${row.value > 0 ? segment.value / row.value * 100 : 0}%`, backgroundColor: segment.color }} />)}
+                </span>
               </button>)}
             </div>
           </div>
@@ -10375,7 +10819,7 @@ function SummaryMetric({
             );
             const wrapSubMetricHelp = (element: ReactElement) =>
               item.help ? (
-                <TooltipProvider delayDuration={150}>
+                <TooltipProvider key={subMetricKey} delayDuration={150}>
                   <Tooltip>
                     <TooltipTrigger asChild>{element}</TooltipTrigger>
                     <TooltipContent
@@ -10510,11 +10954,13 @@ function FloatingHelp({
   children,
   side = "top",
   align = "center",
+  wide = false,
 }: {
   label: string;
   children: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
+  wide?: boolean;
 }) {
   const content =
     typeof children === "string" ||
@@ -10540,7 +10986,7 @@ function FloatingHelp({
           side={side}
           align={align}
           collisionPadding={12}
-          className="box-border w-[min(36rem,calc(100vw-1.5rem))] max-h-[calc(100vh-1.5rem)] overflow-y-auto whitespace-normal break-words border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed [overflow-wrap:anywhere]"
+          className={`box-border ${wide ? "w-[min(60rem,calc(100vw-1.5rem))]" : "w-[min(36rem,calc(100vw-1.5rem))]"} max-h-[min(80dvh,var(--radix-popper-available-height,80dvh))] overflow-y-auto overscroll-contain touch-pan-y whitespace-normal break-words border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed [overflow-wrap:anywhere]`}
         >
           {content}
         </TooltipContent>
@@ -10573,6 +11019,7 @@ function FinanceSectionTitle({
   helpSide,
   helpAlign,
   helpInline = false,
+  helpWide = false,
   compact = false,
 }: {
   title: string;
@@ -10581,6 +11028,7 @@ function FinanceSectionTitle({
   helpSide?: "top" | "right" | "bottom" | "left";
   helpAlign?: "start" | "center" | "end";
   helpInline?: boolean;
+  helpWide?: boolean;
   compact?: boolean;
 }) {
   return (
@@ -10589,7 +11037,7 @@ function FinanceSectionTitle({
         <div className={helpInline ? "flex items-center gap-1" : undefined}>
           <div className={compact ? "text-[11px] font-semibold text-foreground" : "text-sm font-extrabold text-foreground"}>{title}</div>
           {helpInline ? (
-            <FloatingHelp label={`${title} details`} side={helpSide} align={helpAlign}>
+            <FloatingHelp label={`${title} details`} side={helpSide} align={helpAlign} wide={helpWide}>
               {help}
             </FloatingHelp>
           ) : null}
@@ -10597,7 +11045,7 @@ function FinanceSectionTitle({
         {basis ? <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">{basis}</div> : null}
       </div>
       {!helpInline ? (
-        <FloatingHelp label={`${title} details`} side={helpSide} align={helpAlign}>
+        <FloatingHelp label={`${title} details`} side={helpSide} align={helpAlign} wide={helpWide}>
           {help}
         </FloatingHelp>
       ) : null}
@@ -10761,6 +11209,7 @@ function Finance1DrillCell({
 }
 
 function FinanceInteractiveHelp({ label, children }: { label: string; children: ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -10777,9 +11226,11 @@ function FinanceInteractiveHelp({ label, children }: { label: string; children: 
         align="center"
         sideOffset={8}
         collisionPadding={12}
-        className="box-border w-[min(36rem,calc(100vw-1.5rem))] max-h-[min(70dvh,var(--radix-popper-available-height))] overflow-y-auto overscroll-contain whitespace-normal break-words p-3 text-xs leading-relaxed [overflow-wrap:anywhere]"
+        className={`box-border ${expanded ? "w-[min(80rem,calc(100vw-2rem))]" : "w-[min(36rem,calc(100vw-1.5rem))]"} max-h-[min(70dvh,var(--radix-popover-content-available-height,70dvh))] overflow-y-auto overscroll-contain touch-pan-y whitespace-normal break-words p-3 text-xs leading-relaxed [overflow-wrap:anywhere]`}
       >
-        {children}
+        <HelperPopupExpansionContext.Provider value={setExpanded}>
+          {children}
+        </HelperPopupExpansionContext.Provider>
       </PopoverContent>
     </Popover>
   );
@@ -10899,7 +11350,18 @@ function LiveStatusSection({
   onCountClick: (division: string, milestoneName: string) => void;
 }) {
   const selectedMilestoneSet = new Set(visibleMilestoneNames);
-  const displayedMilestones = milestones.filter((milestone) =>
+  const orderedMilestones = [...milestones];
+  const paymentIndex = orderedMilestones.findIndex((milestone) =>
+    normalizeMilestoneName(milestone.name) === "payment",
+  );
+  const billSentIndex = orderedMilestones.findIndex((milestone) =>
+    normalizeMilestoneName(milestone.name) === "billsentforpayment",
+  );
+  if (paymentIndex !== -1 && billSentIndex !== -1) {
+    const [payment] = orderedMilestones.splice(paymentIndex, 1);
+    orderedMilestones.splice(orderedMilestones.indexOf(milestones[billSentIndex]) + 1, 0, payment);
+  }
+  const displayedMilestones = orderedMilestones.filter((milestone) =>
     selectedMilestoneSet.has(milestone.name),
   );
   const liveTotal = rows.length
@@ -10996,7 +11458,7 @@ function LiveStatusSection({
             </div>
           ) : null}
           <div className="flex flex-wrap gap-1.5">
-            {milestones.map((milestone) => {
+            {orderedMilestones.map((milestone) => {
               const checked = selectedMilestoneSet.has(milestone.name);
               const currentCount = getLiveStatusMilestoneDisplayCount(rows, milestone);
               const helperKey = normalizeMilestoneName(milestone.label);
@@ -11596,7 +12058,7 @@ function Status4MilestoneComparisonChart({
   const legend = (
     <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
-        <span className="size-2.5 rounded-sm bg-gray-300" />
+        <span className="size-2.5 rounded-sm" style={{ backgroundColor: getChartColorAt(2) }} />
         Balance
       </span>
       {(["cleared", "current"] as const).map((metric) => (
@@ -11955,7 +12417,9 @@ function getStatus4HelperItems(drill: Status4DrillState): Array<{
       label: "Applicable",
       items: [
         "Files counted as applicable must pass through this stage.",
-        "Example: IFA applies when IFA is marked Yes; TCEC stages apply to TCEC files.",
+        "Example table: Stage | File condition | Applicable?",
+        "Example row: IFA | IFA marked Yes | Yes.",
+        "Example row: TCEC | File follows TCEC workflow | Yes.",
       ],
     },
     {
@@ -12666,7 +13130,9 @@ function FinanceSnapshotInitiationDateFilter({
               align="start"
               className="max-w-[min(28rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
             >
-              Limits the selected-FY files by their initiation date. This range cannot extend beyond the selected FY.
+              <HelperBulletList
+                items="Limits the selected-FY files by their initiation date. This range cannot extend beyond the selected FY."
+              />
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -13479,6 +13945,17 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
   if (isYes(file.demandCancelled)) return false;
   if (!isPaymentMilestone(normalized) && isCancelledFile(file)) return false;
   if (normalized === "supplyorder") return hasPlacedSupplyOrder(file);
+  if (normalized === "jobcompletion") {
+    return (
+      isJobCompletionWorkflow(file) &&
+      fileSupplyOrders(file).some(
+        (order) =>
+          !isSupplyOrderCancelled(file, order) &&
+          hasSupplyOrderDate(order) &&
+          isJobCompletionDone(order),
+      )
+    );
+  }
   if (normalized === "advancepayment") {
     return advancePaymentEntries([file]).some(
       ({ file: entryFile, order }) =>
@@ -14090,7 +14567,9 @@ function StatusMetricBox({
             align="center"
             className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
-            {Array.isArray(tooltip) ? <HelperBulletList items={tooltip} /> : tooltip}
+            <HelperBulletList
+              items={Array.isArray(tooltip) ? tooltip : [tooltip]}
+            />
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -15419,9 +15898,9 @@ function AnalyticsChartCard({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent
-                  side={stripedHelper ? "bottom" : "right"}
-                  align={stripedHelper ? "center" : "start"}
-                  className={`${stripedHelper ? "w-[min(64rem,calc(100vw-2rem))]" : "w-fit max-w-[min(48rem,calc(100vw-2rem))]"} border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed`}
+                  side={stripedHelper || helperTable || helperExamples ? "bottom" : "right"}
+                  align={stripedHelper || helperTable || helperExamples ? "center" : "start"}
+                  className={`${stripedHelper || helperTable || helperExamples ? "w-[min(64rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]" : "w-fit max-w-[min(48rem,calc(100vw-2rem))]"} border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed`}
                 >
                   <HelperWithExamples
                     items={[
@@ -15431,6 +15910,7 @@ function AnalyticsChartCard({
                     examples={helperExamples}
                     striped={stripedHelper}
                     table={helperTable}
+                  breadcrumb={["Dashboard", "Analytics", title]}
                   />
                 </TooltipContent>
               </Tooltip>
@@ -15455,38 +15935,50 @@ function HelperWithExamples({
   details,
   striped = false,
   table,
+  breadcrumb,
 }: {
   items: string[] | string;
   examples?: HelperExamples;
   details?: HelperDetails;
   striped?: boolean;
   table?: ReactNode;
+  breadcrumb?: string[];
 }) {
   const [showExamples, setShowExamples] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const setPopupExpanded = useContext(HelperPopupExpansionContext);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const inlineExampleLines = examples?.inline
+    ? examples.columns && examples.rows
+      ? [
+          `Example table: ${examples.columns.join(" | ")}`,
+          ...examples.rows.map((row) => `Example row: ${row.join(" | ")}`),
+        ]
+      : examples.items ?? []
+    : [];
+  const contentLines = [
+    ...(Array.isArray(items) ? items : [items]),
+    ...inlineExampleLines,
+  ];
   const showSidePanel =
     (examples && !examples.inline && showExamples) || (details && showDetails);
 
+  useEffect(() => {
+    setPopupExpanded(Boolean(showSidePanel));
+  }, [setPopupExpanded, showSidePanel]);
+
   return (
-    <div className={showSidePanel ? "grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,1fr)]" : "space-y-3"}>
+    <div>
+      <div className="mb-2 flex justify-end">
+        <HelperPdfButton contentRef={contentRef} breadcrumb={breadcrumb} />
+      </div>
+      <div
+        ref={contentRef}
+        className={showSidePanel ? "grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(24rem,0.9fr)]" : "space-y-3"}
+      >
       <div className="space-y-3">
         {table}
-        <HelperBulletList items={items} striped={striped} />
-        {examples?.inline ? (
-          <div className="space-y-3">
-            <div className="font-semibold">{examples.title}</div>
-            {examples.groups?.map((group) => (
-              <section key={group.title} className="space-y-1">
-                <div className="font-semibold">{group.title}</div>
-                <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
-                  {group.items.map((item, index) => (
-                    <li key={`${group.title}-${index}`}>{item}</li>
-                  ))}
-                </ul>
-              </section>
-            ))}
-          </div>
-        ) : null}
+        <HelperContent lines={contentLines} showPdfExport={false} />
         {details || (examples && !examples.inline) ? (
           <div className="flex flex-wrap gap-2">
             {details ? (
@@ -15521,26 +16013,32 @@ function HelperWithExamples({
       {details && showDetails ? (
         <div className="rounded-md border border-border bg-background p-3 text-popover-foreground shadow-sm">
           <div className="mb-2 font-semibold">{details.title}</div>
-          <HelperBulletList items={details.items} />
+          <HelperBulletList items={details.items} showPdfExport={false} />
         </div>
       ) : null}
       {examples && !examples.inline && showExamples ? (
         <div className="rounded-md border border-border bg-background p-3 text-popover-foreground shadow-sm">
-          <div className="mb-2 font-semibold">{examples.title}</div>
+          {examples.title ? <div className="mb-2 font-semibold">{examples.title}</div> : null}
           {examples.groups ? (
             <div className="space-y-3">
               {examples.groups.map((group) => (
                 <section key={group.title}>
                   <div className="mb-1 font-semibold">{group.title}</div>
-                  <HelperBulletList items={group.items} />
+                  <HelperBulletList items={group.items} plain={examples.plain} showPdfExport={false} />
                 </section>
               ))}
             </div>
           ) : examples.items ? (
-            <HelperBulletList items={examples.items} striped={striped} />
+            <HelperBulletList
+              items={examples.items}
+              striped={striped}
+              plain={examples.plain}
+              showPdfExport={false}
+            />
           ) : null}
         </div>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -15548,26 +16046,52 @@ function HelperWithExamples({
 function HelperBulletList({
   items,
   striped = false,
+  plain = false,
+  showPdfExport = true,
 }: {
   items: readonly string[] | string;
   striped?: boolean;
+  plain?: boolean;
+  showPdfExport?: boolean;
 }) {
   const bullets = splitHelperText(items);
-  if (striped) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  if (plain) {
     return (
-      <div className="space-y-1">
+      <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
         {bullets.map((bullet, index) => (
-          <p
-            key={`helper-line-${index}`}
-            className={`rounded-sm border-l-2 border-primary/30 px-2.5 py-1.5 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}`}
+          <li
+            key={`helper-plain-line-${index}`}
+            className={`rounded-sm border-l-2 border-primary/25 px-2 py-1 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}`}
           >
             {bullet}
-          </p>
+          </li>
         ))}
+      </ul>
+    );
+  }
+  if (striped) {
+    return (
+      <div>
+        {showPdfExport ? (
+          <div className="mb-2 flex justify-end">
+            <HelperPdfButton contentRef={contentRef} />
+          </div>
+        ) : null}
+        <div ref={contentRef} className="space-y-1">
+          {bullets.map((bullet, index) => (
+            <p
+              key={`helper-line-${index}`}
+              className={`rounded-sm border-l-2 border-primary/30 px-2.5 py-1.5 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}`}
+            >
+              {bullet}
+            </p>
+          ))}
+        </div>
       </div>
     );
   }
-  return <HelperContent lines={bullets} />;
+  return <HelperContent lines={bullets} showPdfExport={showPdfExport} />;
 }
 
 function splitHelperText(items: readonly string[] | string) {
@@ -16256,17 +16780,27 @@ function getMilestoneClearingPanelHelper(context: MilestoneClearingHelperContext
   ].filter(Boolean);
 
   return [
-    "Filters narrow the files included; they do not change the date rules.",
-    "Use the info icon beside a milestone for its exact date fields.",
-    "Most file-level milestones start at the latest earlier completed applicable milestone; the table shows stages with a specific start-date rule.",
-    "Scrutiny uses Received Date → Scrutiny Completion Date.",
-    "Bidding contributes one sample per file.",
-    "GeM Comparison has no GeM Undertaking or Bidding sample.",
-    "From Supply Order onward, each qualifying S.O., delivery stage, bill, return cycle, or payment row is a separate sample.",
-    "Payment cycle (PCDA) measures first Bill Sent for Payment to Payment Date for included regular, stagewise, advance, and supplementary cases with no return history. Stagewise payments use each stage's dates; one common staged payment uses the S.O.-level dates and counts as one sample. Advances and supplementary bills use their own dates and each count as one payment case.",
-    "Payment (ASL + PCDA) ranking includes paid cases only. It measures the applicable trigger through Payment Date; for a returned bill, timing stops at its first submission. Stagewise payments count separately; one common staged payment counts once. Advances and supplementary bills start at their own first submission date.",
-    "Scope: demand-cancelled files are excluded; closed files follow the Global Filter. Applicable historical milestone records can remain included after an S.O. is cancelled, while payment averages exclude cancelled S.O.s. Search may use a narrower active-file/S.O. scope, so its file results can differ from this ranking.",
+    "Purpose: Measures days taken by each selected milestone. Chronological view follows workflow order; ranking sorts milestones by average days.",
+    "Calculation: Stage duration runs from the applicable start date to the end date. Cumulative duration runs from File Received Date to the milestone end date. The Milestone date rules table in this help panel lists the exact fields.",
+    "Filters: Current filters narrow the files included; they do not change the date rules. File-level stages generally start at the latest earlier applicable completion.",
+    "Sampling: From Supply Order onward, each qualifying S.O., delivery stage, bill, return cycle, or payment case is one sample. Stagewise payments are separate; one common staged payment counts once.",
+    "Special cases: Scrutiny uses Received Date → Scrutiny Completion Date. Bidding contributes one sample per completed cycle; a Non-TCEC Refloat can contribute two. When GeM = Yes and GeM Bidding Mode = Comparison, no GeM Undertaking or Bidding sample is created.",
+    "GeM Undertaking: This single milestone combines the normal CFA Approval Date → GeM Undertaking Date sample with a separate Non-TCEC Refloat sample from Refloat recommendation → Refloat GeM undertaking. A file can therefore contribute two samples while remaining one distinct file.",
+    "Bidding: The single milestone can contain separate completed samples. Normal Non-TCEC and the original cycle of a Non-TCEC Refloat use CFA Approval Date → Bid Date; the Refloat cycle uses Refloat recommendation → Refloat bidding date after the original Bidding Stage Over = Yes prerequisite. Bid-opening dates are not used as the completion endpoint for these Non-TCEC samples.",
+    "Non-TCEC Technical Evaluation: A non-refloat file contributes one completed sample (Bid closing → first Financial Sanction). A Refloat file can contribute two completed samples: first cycle Bid closing → Refloat recommendation, then Refloat bid closing → first Financial Sanction. The first cycle requires Bidding Stage Over = Yes; the second requires Refloat Bidding Stage Over = Yes.",
+    "Post-TCEC counting: Original Post-TCEC and Refloat Post-TCEC are independent completed stages. If both are recorded for one file, each contributes one sample to its own milestone.",
+    "Responsibility split: Job Completion measures effective D.P. (Revised D.P. when present) → Job Completion Received Date. Bill preparation then measures Job Completion Received Date → Bill Preparation Date for Job Completion workflows. Official Payment Due and Delay Status keep their existing liability rules.",
+    "Payment cases with return history are excluded from Payment cycle (PCDA) and Payment cycle (ASL+PCDA). Payment cycle (ASL) counts the trigger-to-first-submission interval for a returned payment case.",
+    "Scope: Demand-cancelled files are excluded; closed files follow the Global Filter; historical milestone records may remain after an S.O. is cancelled; payment averages exclude cancelled S.O.s.",
+    "Search opens unique files, not ranking samples, and may use a narrower active-file/S.O. scope. Its file results can therefore differ from this ranking.",
     "A sample is skipped when a required date is missing or the end date is before the start date.",
+    "Example table: Case | Recorded dates | Calculation and interpretation",
+    "Example row: Scrutiny | Received: 1 May; Scrutiny Completion: 8 May | 8 May − 1 May = 7 days; one completed file-level sample.",
+    "Example row: Stagewise bill preparation | Stage 1 IR Receipt: 1 May; Stage 1 Bill Preparation: 6 May; Stage 2 IR Receipt: 10 May; Stage 2 Bill Preparation: 18 May | Two samples: 5 days and 8 days; stages are measured independently.",
+    "Example table: Payment measure | Paid, no return | Unpaid, no return | Returned and paid | Returned and unpaid | Stagewise | Common staged S.O. | Advance | Supplementary | Cancelled S.O. | Demand Cancelled",
+    "Example row: Payment cycle (ASL, bill trigger to bill submission) | Trigger → first Bill Sent for Payment | Included if first submission is recorded; otherwise no sample | Trigger → first submission | Trigger → first submission, if submitted | Each stage separately | One S.O.-level sample from the latest applicable stage trigger | Excluded | Excluded | Excluded | Excluded",
+    "Example row: Payment cycle (PCDA, bill submission to payment) | First Bill Sent for Payment → Payment Date | Excluded until Payment Date is recorded; Return bill cases are excluded. | Returned bill cases are excluded. | Returned bill cases are excluded. | Each stage separately | One S.O.-level sample from S.O. Bill Sent for Payment | Included when paid and without return history | Included when paid and without return history | Excluded | Excluded",
+    "Example row: Payment cycle (ASL+PCDA, bill trigger to payment) | Trigger → Payment Date | Excluded until Payment Date is recorded; Return bill cases are excluded. | Returned bill cases are excluded. | Returned bill cases are excluded. | Each stage separately | One S.O.-level sample from trigger → Payment Date | Included when paid and without return history | Included when paid and without return history | Excluded | Excluded",
     activeFilters.length ? `Active file filters: ${activeFilters.join(" · ")}.` : "",
   ];
 }
@@ -16281,45 +16815,59 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       end: "Pre-TCEC Minutes Date",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "GeM Undertaking",
-      case: "Applicable GeM file, not Comparison",
+      case: "Normal applicable GeM file",
       start: "CFA Approval Date",
       end: "GeM Undertaking Date",
+    },
+    {
+      path: "Non-TCEC",
+      milestone: "GeM Undertaking",
+      case: "Non-TCEC Refloat with applicable GeM",
+      start: "Refloat recommendation date",
+      end: "Refloat GeM undertaking date",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "RFP Vetting",
+      case: "RFP Vetting = Yes",
+      start: "GeM Undertaking Date when GeM applies; otherwise CFA Approval Date",
+      end: "RFP Vetting Approval Date",
     },
     {
       path: "TCEC",
       milestone: "Bidding",
       case: "TCEC file",
-      start: "GeM Undertaking Date when GeM; otherwise CFA Approval Date",
+      start: "Latest applicable of CFA Approval, GeM Undertaking, and RFP Vetting Approval",
       end: "Post-TCEC Date",
     },
     {
       path: "TCEC",
       milestone: "Bidding",
-      case: "TCEC refloat",
-      start: "GeM Undertaking Date when GeM; otherwise CFA Approval Date",
+      case: "TCEC refloat; first bidding cycle is not a separate sample",
+      start: "Post-TCEC Minutes Date",
       end: "Refloat Post-TCEC Date",
     },
     {
       path: "TCEC",
       milestone: "Post-TCEC",
-      case: "TCEC file",
-      start: "Latest earlier applicable completion",
+      case: "TCEC original cycle",
+      start: "Post-TCEC Date",
       end: "Post-TCEC Minutes Date",
     },
     {
       path: "TCEC",
-      milestone: "Post-TCEC",
-      case: "TCEC refloat",
-      start: "Latest earlier applicable completion",
+      milestone: "Refloat Post-TCEC",
+      case: "TCEC refloat; separate completed stage and separate sample",
+      start: "Refloat Post-TCEC Date",
       end: "Refloat Post-TCEC Minutes Date",
     },
     {
       path: "TCEC",
       milestone: "CNC",
-      case: "TCEC file",
-      start: "Latest earlier applicable completion",
+      case: "TCEC file; no fallback if Post-TCEC approval date is blank",
+      start: "Post-TCEC Minutes Date (approval date)",
       end: "CNC Approval Date",
     },
     {
@@ -16333,29 +16881,50 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       path: "TCEC",
       milestone: "Supply Order",
       case: "For each S.O.",
-      start: "Latest earlier applicable completion",
+      start: "CNC Approval Date",
       end: "S.O. Date for each S.O.",
     },
     {
-      path: "Non-TCEC",
-      milestone: "Bidding",
-      case: "Non-TCEC file",
-      start: "GeM Undertaking Date when GeM; otherwise CFA Approval Date",
-      end: "Bid Opening Date",
+      path: "Non-TCEC + TCEC",
+      milestone: "Job Completion",
+      case: "Group A / Goods & Services with IR = No, or Group B",
+      start: "Effective D.P. (Revised D.P. if present; otherwise D.P.)",
+      end: "Job Completion Received Date",
     },
     {
       path: "Non-TCEC",
       milestone: "Bidding",
-      case: "Non-TCEC refloat",
-      start: "GeM Undertaking Date when GeM; otherwise CFA Approval Date",
-      end: "Refloat Bid Opening Date",
+      case: "Normal Non-TCEC, including original cycle of a Refloat",
+      start: "CFA Approval Date",
+      end: "Bid Date",
     },
     {
       path: "Non-TCEC",
-      milestone: "Technical Evaluation",
-      case: "For each S.O.",
-      start: "Bid Opening Date; refloat: Refloat Bid Opening Date when recorded",
-      end: "Financial Sanction Date for each S.O.",
+      milestone: "Bidding",
+      case: "Non-TCEC Refloat second cycle; original Bidding Stage Over = Yes",
+      start: "Refloat recommendation date",
+      end: "Refloat bidding date",
+    },
+    {
+      path: "Non-TCEC",
+      milestone: "Non-TCEC Technical Evaluation",
+      case: "Non-refloat; Bidding Stage Over = Yes",
+      start: "Bid closing date",
+      end: "First Financial Sanction date",
+    },
+    {
+      path: "Non-TCEC",
+      milestone: "Non-TCEC Technical Evaluation",
+      case: "First Refloat cycle; Bidding Stage Over = Yes",
+      start: "Bid closing date",
+      end: "Refloat recommendation date",
+    },
+    {
+      path: "Non-TCEC",
+      milestone: "Non-TCEC Technical Evaluation",
+      case: "Second Refloat cycle; Refloat Bidding Stage Over = Yes",
+      start: "Refloat bid closing date",
+      end: "First Financial Sanction date",
     },
     {
       path: "Non-TCEC",
@@ -16365,108 +16934,172 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       end: "S.O. Date for that S.O.",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = Yes; Stage Delivery = No",
       start: "IR Receipt Date for the S.O.",
       end: "Bill Preparation Date for the S.O.",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = Yes; Stage Delivery = Yes; Stage Payment = Yes",
       start: "IR Receipt Date for each stage",
       end: "Bill Preparation Date for each stage",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = Yes; Stage Delivery = Yes; Stage Payment = No",
-      start: "IR Receipt Date for the S.O.",
+      start: "Latest IR Receipt Date across all delivery stages",
       end: "The S.O.'s common Bill Preparation Date",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = No; Stage Delivery = No",
       start: "Job Completion Received Date for the S.O.",
       end: "Bill Preparation Date for the S.O.",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = No; Stage Delivery = Yes; Stage Payment = Yes",
       start: "Job Completion Received Date for each stage",
       end: "Bill Preparation Date for each stage",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
       case: "Delivery S.O.; IR = No; Stage Delivery = Yes; Stage Payment = No",
       start: "Latest Job Completion Received Date across stages",
       end: "The S.O.'s common Bill Preparation Date",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
-      case: "Non-delivery S.O.; Stage Delivery = No",
-      start: "Effective D.P. (Revised D.P. if present; otherwise D.P.) + 1 day",
+      case: "Group A / Goods & Services with IR = No, or Group B; Stage Delivery = No",
+      start: "Job Completion Received Date for the S.O.",
       end: "Bill Preparation Date for the S.O.",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
-      case: "Non-delivery S.O.; Stage Delivery = Yes; Stage Payment = Yes",
-      start: "Effective D.P. (Revised D.P. if present; otherwise D.P.) + 1 day for each stage",
+      case: "Group A / Goods & Services with IR = No, or Group B; Stage Delivery = Yes; Stage Payment = Yes",
+      start: "Job Completion Received Date for each stage",
       end: "Bill Preparation Date for each stage",
     },
     {
-      path: "All paths",
+      path: "Non-TCEC + TCEC",
       milestone: "Bill preparation",
-      case: "Non-delivery S.O.; Stage Delivery = Yes; Stage Payment = No",
-      start: "Latest effective D.P. across stages + 1 day",
+      case: "Group A / Goods & Services with IR = No, or Group B; Stage Delivery = Yes; Stage Payment = No",
+      start: "Latest Job Completion Received Date across stages",
       end: "The S.O.'s common Bill Preparation Date",
     },
     {
-      path: "All paths",
-      milestone: "Payment cycle (ASL)",
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL, bill trigger to bill submission)",
       case: "Included regular or stage payment case",
       start: "Applicable IR Receipt or Job Completion Received Date; common payment uses the latest stage date",
       end: "First Bill Sent for Payment Date",
     },
     {
-      path: "All paths",
-      milestone: "Payment cycle (PCDA)",
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (PCDA, bill submission to payment)",
       case: "Included regular or stage payment with no return history",
       start: "Stagewise: each stage's first Bill Sent for Payment Date; common payment: S.O.-level Bill Sent for Payment Date",
       end: "Stagewise: each stage's Payment Date; common payment: S.O.-level Payment Date",
     },
     {
-      path: "All paths",
-      milestone: "Payment (ASL + PCDA)",
-      case: "Included paid regular/stage, advance, or supplementary payment case",
-      start: "Regular/stage: applicable delivery trigger; advance/supplementary: own first submission date",
-      end: "Payment Date; if returned, first submission date",
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = Yes; Stage Delivery = No",
+      start: "IR Receipt Date for the S.O.",
+      end: "Payment Date for the S.O.; returned payment cases excluded",
     },
-  ].filter(
-    (row) =>
-      path === "all" ||
-      row.path === "All paths" ||
-      row.path.toLowerCase() === path.toLowerCase(),
-  );
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = Yes; Stage Delivery = Yes; Stage Payment = Yes",
+      start: "IR Receipt Date for each stage",
+      end: "Payment Date for each stage; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = Yes; Stage Delivery = Yes; Stage Payment = No",
+      start: "Latest IR Receipt Date across all stages",
+      end: "The S.O.'s common Payment Date; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = No; Stage Delivery = No",
+      start: "Job Completion Received Date for the S.O.",
+      end: "Payment Date for the S.O.; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = No; Stage Delivery = Yes; Stage Payment = Yes",
+      start: "Job Completion Received Date for each stage",
+      end: "Payment Date for each stage; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group A / Goods & Services; IR = No; Stage Delivery = Yes; Stage Payment = No",
+      start: "Latest Job Completion Received Date across all stages",
+      end: "The S.O.'s common Payment Date; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group B / Contract or service file; Stage Delivery = No",
+      start: "Job Completion Received Date for the S.O.",
+      end: "Payment Date for the S.O.; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group B / Contract or service file; Stage Delivery = Yes; Stage Payment = Yes",
+      start: "Job Completion Received Date for each stage",
+      end: "Payment Date for each stage; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Group B / Contract or service file; Stage Delivery = Yes; Stage Payment = No",
+      start: "Latest Job Completion Received Date across all stages",
+      end: "The S.O.'s common Payment Date; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Advance payment; paid case with no return history",
+      start: "First Bill Sent for Payment date for the advance payment",
+      end: "Payment Date for the advance payment; returned payment cases excluded",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "Payment cycle (ASL+PCDA, bill trigger to payment)",
+      case: "Supplementary payment; paid case with no return history",
+      start: "First submission date for the supplementary payment",
+      end: "Payment Date for the supplementary payment; returned payment cases excluded",
+    },
+  ].filter((row) => {
+    if (path === "all" || row.path === "Non-TCEC + TCEC") return true;
+    return path === "tcec" ? row.path === "TCEC" : row.path === "Non-TCEC";
+  });
 
   const shortClosureRules = [
     {
-      case: "Non-delivery S.O.; Stage Delivery = No",
-      effect: "Replaces effective D.P. + 1 day with the S.O.'s Job Completion Received Date.",
+      case: "Job Completion workflow",
+      effect: "Milestone Clearing keeps the split: effective D.P. → Job Completion Received Date, then Job Completion Received Date → Bill Preparation Date.",
     },
     {
-      case: "Non-delivery S.O.; Stage Delivery = Yes; Stage Payment = Yes",
-      effect: "Each stage uses its Job Completion Received Date instead of effective D.P. + 1 day.",
-    },
-    {
-      case: "Non-delivery S.O.; Stage Delivery = Yes; Stage Payment = No",
-      effect: "The common payment uses the latest Job Completion Received Date across stages instead of latest effective D.P. + 1 day.",
+      case: "Official Payment Due / Delay Status",
+      effect: "For a short-closed S.O., the official payment trigger uses Job Completion Received Date instead of effective D.P. + 1 day.",
     },
   ];
 
@@ -16475,8 +17108,9 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       <div className="border-b border-border bg-secondary/40 px-2.5 py-1.5 font-semibold">
         Milestone date rules
       </div>
-      <div className="max-h-[min(72vh,38rem)] overflow-auto">
+      <div className="overflow-x-auto">
         <table className="w-full min-w-[54rem] table-fixed border-collapse text-left text-xs">
+          <caption className="sr-only">Milestone Clearing date rules</caption>
           <thead className="bg-secondary/25 text-muted-foreground">
             <tr>
               <th scope="col" className="w-[7rem] px-2 py-1.5 font-semibold">Path</th>
@@ -16490,7 +17124,13 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
             {rows.map((row, index) => (
               <tr key={`${row.path}-${row.milestone}-${row.case}`} className={index % 2 === 0 ? "bg-primary/5" : "bg-muted/40"}>
                 <td className="w-[7rem] border-t border-border/70 px-2 py-1.5 align-top">{row.path}</td>
-                <td className="w-[7rem] border-t border-border/70 px-2 py-1.5 align-top font-medium">{row.milestone}</td>
+                <td className="w-[7rem] border-t border-border/70 px-2 py-1.5 align-top font-medium">
+                  {row.milestone.startsWith("Payment cycle") ? (
+                    <MilestoneClearingNameCell name={row.milestone} path={path} />
+                  ) : (
+                    row.milestone
+                  )}
+                </td>
                 <td className="whitespace-pre-line border-t border-border/70 px-2 py-1.5 align-top">
                   {row.case.replace(/; /g, "\n")}
                 </td>
@@ -16508,7 +17148,7 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
             <thead className="bg-secondary/25 text-muted-foreground">
               <tr>
                 <th scope="col" className="w-[16rem] px-2 py-1.5 font-semibold">Case</th>
-                <th scope="col" className="px-2 py-1.5 font-semibold">Effect on Bill preparation start date</th>
+                <th scope="col" className="px-2 py-1.5 font-semibold">Effect on related timing</th>
               </tr>
             </thead>
             <tbody>
@@ -16560,7 +17200,9 @@ function getMilestoneClearingAnalyticsColumns(
 
 function MilestoneClearingNameCell({ name, path }: { name: string; path: MilestoneClearingPath }) {
   const helper = getMilestoneClearingHelper(name, path);
-  const helperLines = helper ? splitHelperText(helper) : [];
+  const helperLines = helper
+    ? [...splitHelperText(helper), ...getMilestoneClearingExampleLines(name, path)]
+    : [];
   const displayName = getWorkflowDisplayLabel(name);
   if (!helper) return displayName;
   return (
@@ -16578,25 +17220,28 @@ function MilestoneClearingNameCell({ name, path }: { name: string; path: Milesto
             </span>
           </TooltipTrigger>
           <TooltipContent
-            side="right"
-            align="start"
-            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+            side="bottom"
+            align="center"
+            className="w-[min(64rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
-            <ul className="list-disc space-y-1 pl-4">
-              {helperLines.map((line, index) => (
-                <li
-                  key={`${displayName}-helper-${index}`}
-                  className={`rounded-sm border-l-2 border-sky-300 px-2 py-1 ${index % 2 === 0 ? "bg-sky-50 dark:bg-sky-950/30" : "bg-blue-50 dark:bg-blue-950/30"}`}
-                >
-                  {line}
-                </li>
-              ))}
-            </ul>
+            <HelperContent
+              lines={helperLines}
+              breadcrumb={["Dashboard", "Analytics", "Milestone Clearing", displayName]}
+            />
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
     </span>
   );
+}
+
+function normalizeMilestoneClearingName(value: string | undefined) {
+  const normalized = normalizeMilestoneName(value);
+  return {
+    paymentcycleaslbilltriggertobillsubmission: "paymentcycleasl",
+    paymentcyclepcdabillsubmissiontopayment: "paymentcyclepcda",
+    paymentcycleaslpcdabilltriggertopayment: "paymentaslpcda",
+  }[normalized] ?? normalized;
 }
 
 function getMilestoneClearingHelper(name: string, path: MilestoneClearingPath) {
@@ -16613,51 +17258,193 @@ function getMilestoneClearingHelper(name: string, path: MilestoneClearingPath) {
     ifa: "Latest earlier completed applicable milestone date → IFA Final Date.\nIFA Sent Date is not the calculation start.",
     cfa: "Latest earlier completed applicable milestone date → CFA Approval Date.",
     bidding: path === "tcec"
-      ? "GeM Undertaking Date when applicable, otherwise CFA Approval Date → Post-TCEC Date.\nTCEC only. Refloats use Refloat Post-TCEC Date. Bidding Stage Over must be Yes."
+      ? "TCEC normal: latest applicable completed prerequisite (CFA Approval, GeM Undertaking, or RFP Vetting Approval) → Post-TCEC Date. TCEC Refloat: Post-TCEC Minutes Date → Refloat Post-TCEC Date. Bidding Stage Over must be Yes; normal TCEC requires every applicable prerequisite date."
       : path === "nonTcec"
-        ? "GeM Undertaking Date when applicable, otherwise CFA Approval Date → Bid Opening Date.\nNon-TCEC only. Refloats use Refloat Bid Opening Date. Bidding Stage Over must be Yes."
-        : "GeM Undertaking Date when applicable, otherwise CFA Approval Date → Post-TCEC Date (TCEC) or Bid Opening Date (Non-TCEC).\nOne sample per file. Refloats use their corresponding Refloat dates. Bidding Stage Over must be Yes.",
+        ? "Normal Non-TCEC and the original cycle of a Non-TCEC Refloat: CFA Approval Date → Bid Date. Second Non-TCEC Refloat cycle: after original Bidding Stage Over = Yes, Refloat recommendation → Refloat bidding date. Both samples remain under the single Bidding milestone; bid-opening dates are not used as the Non-TCEC completion endpoint."
+        : "TCEC normal uses its existing prerequisite-to-Post-TCEC timing; TCEC Refloat uses Post-TCEC Minutes Date → Refloat Post-TCEC Date. Non-TCEC normal and original Refloat cycles use CFA Approval Date → Bid Date; the second Refloat cycle uses Refloat recommendation → Refloat bidding date after original Bidding Stage Over = Yes. All samples remain under the single Bidding milestone.",
     nontcectechnicalevaluation:
-      "Bid Opening Date (or Refloat Bid Opening Date) → that S.O.'s Financial Sanction Date.\nNon-TCEC only; one sample per S.O.",
+      "Non-refloat: Bid closing → first Financial Sanction Date. First Refloat cycle: Bid closing → Refloat recommendation. Second Refloat cycle: Refloat bid closing date → first Financial Sanction.\nA non-refloat file contributes one completed sample; a Refloat file can contribute two completed samples. Bidding Stage Over = Yes is required for the first cycle; Refloat Bidding Stage Over = Yes is required for the second cycle. Missing dates or an invalid interval contribute no sample.",
     posttcec:
-      "Latest earlier completed applicable milestone date → Post-TCEC Minutes Date.\nTCEC only. Post-TCEC Date is not the calculation start.",
-    cnc: "Latest earlier completed applicable milestone date → CNC Approval Date.\nTCEC only. CNC Date is not the calculation start.",
+      "Post-TCEC Date → Post-TCEC Minutes Date.\nTCEC original Post-TCEC stage. If recorded on a refloat file, it contributes its own sample.",
+    refloatposttcec:
+      "Refloat Post-TCEC Date → Refloat Post-TCEC Minutes Date.\nTCEC refloat stage. It is counted as a separate sample from the original Post-TCEC stage.",
+    cnc: "Post-TCEC Minutes Date (approval date) → CNC Approval Date.\nTCEC only. No earlier milestone or other fallback is used; CNC timing is not counted until the Post-TCEC Minutes Date is recorded.",
     financialsanction:
       "CNC Approval Date → that S.O.'s Financial Sanction Date.\nTCEC only. Each recorded S.O. with a Financial Sanction date is one sample.",
     gemundertaking:
-      "CFA Approval Date → GeM Undertaking Date.\nApplicable GeM files other than Comparison.",
+      "Applicable GeM files other than Comparison contribute the normal CFA Approval Date → GeM Undertaking Date sample. A Non-TCEC Refloat can add a separate Refloat recommendation → Refloat GeM undertaking sample under this same milestone. A file may therefore contribute two samples, while Files remains a distinct-file count. Missing dates or an invalid interval contribute no sample.",
+    rfpvetting:
+      "GeM Undertaking Date when GeM applies (not Comparison); otherwise CFA Approval Date → RFP Vetting Approval Date.\nRFP Vetting = Yes. If GeM applies but its undertaking date is missing, no duration sample is counted. Cumulative days remain File Received Date → RFP Vetting Approval Date.",
     supplyorder:
       path === "nonTcec"
         ? "For each S.O.: Financial Sanction Date → that S.O.'s S.O. Date.\nNon-TCEC only. Cancelled S.O.s remain included in placement history."
         : path === "tcec"
-          ? "For each S.O.: latest earlier completed applicable file-level milestone date → that S.O.'s S.O. Date.\nTCEC only. Delay Status uses the same start rule. Cancelled S.O.s remain included in placement history."
-          : "Non-TCEC: that S.O.'s Financial Sanction Date → S.O. Date. TCEC: latest earlier completed applicable file milestone date → S.O. Date.\nOne sample per S.O. Cancelled S.O.s remain included in placement history.",
+          ? "For each S.O.: CNC Approval Date → that S.O.'s S.O. Date.\nTCEC only. There is no fallback if CNC Approval Date is blank. Delay Status uses the same start rule. Cancelled S.O.s remain included in placement history."
+          : "TCEC: CNC Approval Date → that S.O.'s S.O. Date, with no fallback if CNC Approval Date is blank. Non-TCEC: that S.O.'s Financial Sanction Date → S.O. Date.\nOne sample per S.O. Cancelled S.O.s remain included in placement history.",
+    jobcompletion:
+      "Effective D.P. (Revised D.P. when present) → Job Completion Received Date.\nApplies to Group A / Goods & Services with IR = No and Group B. Stagewise cases use each stage; common staged cases use the latest effective D.P. and latest Job Completion date, with all required stage dates recorded.",
     irpreparation:
       "Material Receipt Date → IR Preparation Date.\nFor each applicable S.O. or delivery stage.",
     irreceipt:
       "IR Preparation Date → IR Receipt Date.\nFor each applicable S.O. or delivery stage.",
     billpreparation:
-      "Applicable Bill Preparation start date → Bill Preparation Date.\nThe start is IR Receipt Date when IR applies; otherwise it follows the applicable S.O. rule (effective D.P./Revised D.P. + 1, Job Completion Received Date, or Material Receipt).",
+      "Job Completion workflows (Group A / Goods & Services with IR = No, and Group B): Job Completion Received Date → Bill Preparation Date.\nInspection workflows with IR = Yes use IR Receipt Date; common staged cases use the latest applicable stage date, and every required stage date must be recorded.",
     billsentforpayment:
       "Bill Preparation Date → Bill Sent for Payment Date.\nEach payment case is a separate sample.",
     payment:
       "First Bill Sent for Payment Date → Payment Date.\nApplies to included regular, stagewise, advance, or supplementary cases with no return history. Advances and supplementary bills use their own dates. Stagewise payments use each stage's dates; one common staged payment counts once using the S.O.-level dates. Cancelled S.O.s are excluded.",
     paymentcycleasl:
-      "Applicable trigger → first Bill Sent for Payment Date.\nIncludes only regular/stage cases that reached first submission. Group A with IR = Yes starts at IR Receipt Date; otherwise use Job Completion Received Date. Common staged payment starts from the latest applicable stage date. Returned cycles do not restart the clock; advances and supplementary bills are excluded.",
+      "Start → end: Group A / Goods & Services with IR = Yes: IR Receipt Date → first Bill Sent for Payment Date. Group A with IR = No and Group B: Job Completion Received Date → first Bill Sent for Payment Date. Stagewise payments use each stage; common staged payments use the latest applicable stage date. Advance and supplementary payments are excluded.",
     paymentcyclepcda:
-      "First Bill Sent for Payment Date → Payment Date.\nIncludes paid regular, stagewise, advance, and supplementary cases with no return history. Stagewise payments use each stage's dates; a common staged payment uses the S.O.-level dates and counts once. Advances and supplementary bills use their own submission and payment dates.",
+      "Start → end: first Bill Sent for Payment Date → Payment Date. Regular and stagewise payments use each applicable payment case; a common staged payment uses the S.O.-level dates and counts once. Advance and supplementary payments use their own submission and Payment Date. Only paid cases with no return history are included.",
     paymentaslpcda:
-      "Regular/stage: applicable delivery trigger → Payment Date (or first submission if returned). Advance/supplementary: first submission → Payment Date (or first submission if returned).\nPaid cases only in Milestone Clearing Ranking. Unpaid cases appear in Delay Status instead; returned bills stop at first submission. Stagewise payments use each stage; one common staged payment counts once from the latest applicable stage trigger.",
+      "Start → end: Group A / Goods & Services with IR = Yes: IR Receipt Date → Payment Date. Group A with IR = No and Group B: Job Completion Received Date → Payment Date. Stagewise payments use each stage; common staged payments use the latest applicable stage date across all stages. Advance and supplementary payments use their first submission date → Payment Date. Only paid cases with no return history are included; unpaid and returned cases are excluded from this ranking.",
     paymentbeforesubmission:
       "Applicable trigger → first Bill Sent for Payment Date.\nGroup A with IR = Yes: IR Receipt Date. Group A with IR = No and Group B: Job Completion Received Date. Common staged payments start at the latest applicable stage date. Returned bills stop at their first submission; resubmission is not counted. Advances and supplementary bills are excluded.",
     paymentcumulative:
-      "Regular/stage: applicable delivery trigger → Payment Date. Advance/supplementary: first submission → Payment Date.\nUnpaid cases end today in Delay Status but are excluded from Milestone Clearing Ranking. Returned bills stop at first submission; return/resubmission time is excluded. Stagewise payments use each stage; one common staged payment counts once from the latest stage trigger.",
+      "Regular/stage: applicable delivery trigger → Payment Date. Advance/supplementary: first submission → Payment Date.\nUnpaid cases end today in Delay Status but are excluded from Milestone Clearing Ranking. Returned payment cases are excluded entirely. Stagewise payments use each stage; one common staged payment counts once from the latest stage trigger.",
     billreturnedforcorrection:
       "Bill Returned Date → Bill Resubmission Date.\nOnly a completed return/resubmission cycle contributes to the ranking.",
     supplementarybillreturnedforcorrection:
       "Supplementary Bill Returned Date → Supplementary Bill Resubmission Date.\nOnly a completed return/resubmission cycle contributes to the ranking.",
   };
-  return helpers[normalizeMilestoneName(name)];
+  return helpers[normalizeMilestoneClearingName(name)];
+}
+
+function getMilestoneClearingExampleLines(name: string, path: MilestoneClearingPath) {
+  const key = normalizeMilestoneClearingName(name);
+  if (key === "supplyorder") {
+    const rows = path === "nonTcec"
+      ? [
+          "Example row: Non-TCEC S.O. | Financial Sanction: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
+          "Example row: Non-TCEC S.O., Financial Sanction missing | Financial Sanction: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
+          "Example row: Non-TCEC S.O., sanction after placement | Financial Sanction: 10 May; S.O. Date: 8 May | Negative interval; the sample is skipped.",
+        ]
+      : path === "tcec"
+        ? [
+            "Example row: TCEC S.O. | Latest applicable completed file milestone on or before S.O.: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
+            "Example row: TCEC S.O., no qualifying milestone | No applicable completed milestone on or before 8 May; File Received Date: 1 May; S.O. Date: 8 May | Received Date is the fallback start; one 7-day sample.",
+            "Example row: TCEC S.O., no qualifying start | No applicable completed milestone on or before 8 May; File Received Date: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
+            "Example row: TCEC S.O., later milestone exists | Candidate milestone: 10 May; File Received Date: 1 May; S.O. Date: 8 May | The 10 May milestone is ineligible; Received Date is used as fallback, producing 7 days.",
+          ]
+        : [
+            "Example row: Non-TCEC S.O. | Financial Sanction: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
+            "Example row: TCEC S.O. | Latest applicable completed file milestone on or before S.O.: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
+            "Example row: TCEC S.O., no qualifying milestone | No applicable completed milestone on or before 8 May; File Received Date: 1 May; S.O. Date: 8 May | Received Date is the fallback start; one 7-day sample.",
+            "Example row: Non-TCEC S.O., Financial Sanction missing | Financial Sanction: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
+            "Example row: TCEC S.O., no qualifying start | No applicable completed milestone on or before 8 May; File Received Date: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
+            "Example row: Non-TCEC S.O., sanction after placement | Financial Sanction: 10 May; S.O. Date: 8 May | Negative interval; the sample is skipped.",
+            "Example row: TCEC S.O., later milestone exists | Candidate milestone: 10 May; File Received Date: 1 May; S.O. Date: 8 May | The 10 May milestone is ineligible; Received Date is used as fallback, producing 7 days.",
+          ];
+    return [
+      "Example table: S.O. type | Start and S.O. dates | Calculation / interpretation",
+      ...rows,
+      "Each S.O. is evaluated separately. Missing dates and invalid intervals contribute no sample.",
+    ];
+  }
+  if (key === "bidding") {
+    const tcecRows = [
+      "Example row: TCEC normal bidding; RFP applies | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug; Post-TCEC Date: 20 Aug; Bidding Stage Over: Yes | 20 Aug − 12 Aug = 8 days.",
+      "Example row: TCEC Refloat bidding | Post-TCEC Minutes: 1 Sep; Refloat Post-TCEC Date: 10 Sep; Bidding Stage Over: Yes | 10 Sep − 1 Sep = 9 days.",
+    ];
+    const nonTcecRows = [
+      "Example row: Normal Non-TCEC bidding | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug; Bid Date: 20 Aug | 20 Aug − 1 Aug = 19 days; the GeM/RFP dates do not shift the CFA-based Bidding start.",
+      "Example row: Non-TCEC Refloat original cycle | CFA Approval: 1 Aug; normal Bid Date: 20 Aug | 20 Aug − 1 Aug = 19 days; this is the original-cycle sample.",
+      "Example row: Non-TCEC Refloat second cycle | Refloat recommendation: 22 Aug; Refloat bidding date: 28 Aug; Bidding Stage Over: Yes | 28 Aug − 22 Aug = 6 days; this is a separate sample under Bidding.",
+      "Example row: Same Non-TCEC Refloat file with both cycles complete | Original: 1 Aug → 20 Aug; Refloat: 22 Aug → 28 Aug | Two samples; Files remains 1.",
+    ];
+    const rows = path === "all" ? [...tcecRows, ...nonTcecRows] : path === "tcec" ? tcecRows : nonTcecRows;
+    return [
+      "Example table: Scenario | Recorded dates | Calculation / interpretation",
+      ...rows,
+      "Example row: Non-TCEC required endpoint missing | CFA Approval: 1 Aug; Bid Date: blank | No completed duration sample is produced; a missing endpoint is not treated as zero days.",
+    ];
+  }
+  if (key === "nontcectechnicalevaluation") {
+    return [
+      "Example table: File status | Recorded dates | Calculation / interpretation",
+      "Example row: Non-refloat; Bidding Stage Over = Yes | Bid closing: 10 Aug; first Financial Sanction: 23 Aug | One completed sample: 13 days.",
+      "Example row: Refloat first cycle; Bidding Stage Over = Yes | Bid closing: 10 Aug; Refloat recommendation: 18 Aug | One completed first-cycle sample: 8 days.",
+      "Example row: Refloat second cycle; Refloat Bidding Stage Over = Yes | Refloat bid closing: 20 Aug; first Financial Sanction: 25 Aug | One completed second-cycle sample: 5 days.",
+      "Example row: Same Refloat file with both cycles complete | First cycle: 10 Aug → 18 Aug; second cycle: 20 Aug → 25 Aug | Two samples (8 and 5 days); file count remains 1 and sample size is 2.",
+    ];
+  }
+  if (key === "gemundertaking") {
+    return [
+      "Example table: Sample type | Recorded dates | Calculation / interpretation",
+      "Example row: Normal GeM undertaking | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug | One completed sample: 4 days.",
+      "Example row: Non-TCEC Refloat GeM undertaking | Refloat recommendation: 10 Aug; Refloat GeM undertaking: 15 Aug | One separate completed sample: 5 days.",
+      "Example row: Same file with both cycles complete | Normal sample: 1 Aug → 5 Aug; Refloat sample: 10 Aug → 15 Aug | Two samples (4 and 5 days); Files remains 1 and Samples is 2.",
+      "GeM Comparison files are excluded. Missing dates and invalid intervals contribute no sample.",
+    ];
+  }
+  if (key === "rfpvetting") {
+    return [
+      "Example table: Applicability | Recorded dates | Stage duration | Cumulative duration",
+      "Example row: GeM applies; RFP Vetting applies | Received: 20 Jul; CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug | 12 Aug − 5 Aug = 7 days | 12 Aug − 20 Jul = 23 days.",
+      "Example row: GeM does not apply; RFP Vetting applies | Received: 20 Jul; CFA Approval: 1 Aug; RFP Vetting Approval: 12 Aug | 12 Aug − 1 Aug = 11 days | 12 Aug − 20 Jul = 23 days.",
+      "Example row: GeM applies but undertaking date is missing | CFA Approval: 1 Aug; GeM Undertaking: blank; RFP Vetting Approval: 12 Aug | No sample; CFA is not substituted for a required GeM date | No cumulative sample.",
+    ];
+  }
+  if (key === "paymentcyclepcda") {
+    return [
+      "Example table: Payment setup | Recorded dates | Calculation / interpretation",
+      "Example row: Common payment on staged S.O. | S.O. Bill Sent: 10 May; S.O. Payment: 20 May | 10 days; one S.O.-level sample, not one sample per stage.",
+      "Example row: Stagewise payment | Stage 1 Bill Sent: 10 May; paid: 15 May; Stage 2 Bill Sent: 12 May; paid: 20 May | Two samples: 5 days and 8 days, using each stage's dates.",
+      "Example row: Returned bill | First submission: 10 May; return: 12 May; resubmission: 15 May; payment: 20 May | Excluded from this no-return-history measure; the return cycle is not treated as ordinary PCDA time.",
+    ];
+  }
+  if (key === "paymentaslpcda" || key === "paymentcumulative") {
+    return [
+      "Example table: Payment case | Recorded dates | Calculation / interpretation",
+      "Example row: Paid, never returned | Applicable trigger: 1 May; payment: 20 May | 19 days from trigger to payment.",
+      "Example row: Returned and later paid | Trigger: 1 May; first submission: 4 May; return: 8 May; resubmitted: 12 May; paid: 20 May | Excluded from the Milestone Clearing ranking because the payment case has return history.",
+      "Example row: Unpaid case in Delay Status | Trigger: 1 May; no payment by 23 May | Delay Status can measure through 23 May; unpaid cases do not contribute to the completed Milestone Clearing average.",
+    ];
+  }
+  if (key === "paymentcycleasl" || key === "paymentbeforesubmission") {
+    return [
+      "Example table: Payment setup | Trigger and submission dates | Calculation / interpretation",
+      "Example row: Inspection-based Group A, IR = Yes | IR Receipt: 1 May; first bill sent: 10 May | 9 days from IR Receipt to first submission.",
+      "Example row: Stagewise payment | Stage 1 trigger: 1 May; bill sent: 5 May; Stage 2 trigger: 10 May; bill sent: 18 May | Two stage samples: 4 days and 8 days.",
+      "Example row: Common payment on staged S.O. | Applicable stage triggers: 1 May and 12 May; S.O. bill sent: 17 May | Starts from the latest applicable trigger: 12 May; one 5-day S.O.-level sample.",
+    ];
+  }
+  if (key === "billpreparation") {
+    return [
+      "Example table: Workflow | Trigger and bill-preparation dates | Calculation / interpretation",
+      "Example row: IR applies; stage payment | Stage 1 IR Receipt: 1 May; bill prep: 6 May; Stage 2 IR Receipt: 10 May; bill prep: 18 May | Two samples: 5 days and 8 days.",
+      "Example row: IR applies; common payment | Latest applicable stage IR Receipt: 12 May; S.O. bill prep: 17 May | One common S.O.-level sample of 5 days.",
+      "Example row: Job Completion workflow | Effective D.P.: 10 May; Job Completion Received: 16 May; Bill Preparation: 20 May | Job Completion: 10 May → 16 May; Bill Preparation: 16 May → 20 May.",
+      "Example row: Missing required start date | Bill Preparation: 16 May; applicable trigger blank | No duration sample is produced; the S.O. total or another stage's date is not substituted.",
+    ];
+  }
+  if (key === "jobcompletion") {
+    return [
+      "Example table: Workflow | Start and end dates | Calculation / interpretation",
+      "Example row: Group A / Goods & Services; IR = No | Effective D.P.: 10 May; Job Completion Received: 16 May | One 6-day Job Completion sample.",
+      "Example row: Group B | Revised D.P.: 10 May; Job Completion Received: 16 May | One 6-day Job Completion sample; Revised D.P. is used as the effective D.P.",
+      "Example row: Common staged S.O. | Latest effective stage D.P.: 10 May; latest Job Completion Received: 16 May | One common S.O.-level 6-day sample, only when all required stage dates are recorded.",
+    ];
+  }
+  if (key === "billreturnedforcorrection" || key === "supplementarybillreturnedforcorrection") {
+    const billLabel = key === "billreturnedforcorrection" ? "Regular bill" : "Supplementary bill";
+    return [
+      "Example table: Bill cycle | Return and resubmission dates | Clearing duration",
+      `Example row: ${billLabel} returned once | Returned: 5 May; resubmitted: 10 May | 5 days from return to resubmission.`,
+      `Example row: ${billLabel} returned twice | Returned: 5 May; resubmitted: 8 May; returned: 12 May; resubmitted: 15 May | Two completed cycle samples: 3 days and 3 days.`,
+      `Example row: ${billLabel} still not resubmitted | Returned: 12 May; resubmission blank | No completed return/resubmission duration sample yet.`,
+    ];
+  }
+
+  const rule = getMilestoneClearingHelper(name, path)?.split("\n")[0] ?? "Applicable start date → completion date.";
+  const [startRule = "Applicable start date", endRule = "Completion date"] = rule.split("→");
+  return [
+    "Example table: Start event | Completion event | Calculation | Interpretation",
+    `Example row: ${startRule.trim()}: 1 May | ${endRule.trim()}: 8 May | 8 May − 1 May = 7 days | One valid completed sample contributes 7 days.`,
+    `Example row: ${startRule.trim()} missing | ${endRule.trim()}: 8 May | Not calculable | Required start date is missing, so this record is skipped rather than counted as zero.`,
+    `Example row: ${startRule.trim()}: 10 May | ${endRule.trim()}: 8 May | Negative interval | End date precedes start date, so the sample is skipped.`,
+  ];
 }
 
 function getTcecStatusColumns(
@@ -16759,12 +17546,20 @@ function getCncMonthSummaryColumns(onMonthClick: (monthKey: string) => void): An
       ),
     },
     { key: "reviewed", label: "Cases reviewed" },
-    { key: "approved", label: "CNC approved" },
-    { key: "financialSanctionSigned", label: "Financial sanction signed" },
-    { key: "supplyOrderPlaced", label: "S.O. placed" },
-    { key: "approvalPending", label: "Approval pending" },
-    { key: "financialSanctionPending", label: "Financial sanction pending" },
-    { key: "supplyOrderPending", label: "S.O. pending" },
+    { key: "approved", label: "CNC approved", group: "Completed" },
+    {
+      key: "financialSanctionSigned",
+      label: "Financial sanction signed",
+      group: "Completed",
+    },
+    { key: "supplyOrderPlaced", label: "S.O. placed", group: "Completed" },
+    { key: "approvalPending", label: "Approval pending", group: "Pending" },
+    {
+      key: "financialSanctionPending",
+      label: "Financial sanction pending",
+      group: "Pending",
+    },
+    { key: "supplyOrderPending", label: "S.O. pending", group: "Pending" },
   ];
 }
 
@@ -17225,13 +18020,41 @@ function getAnalyticsSearchTarget(
       : undefined;
   }
   if (panelKey === "milestoneClearingTable" && columnKey === "fileCount") {
+    const milestoneTarget = getMilestoneClearingSearchTarget(name);
+    // The table is ranked from the frontend's completed-sample rows.  Use the
+    // exact file set behind that row when drilling down; a broad milestone
+    // filter can include a different cycle/sample set and make the clicked
+    // result count disagree with the number shown in the table.
+    const fileIds = String(row.fileIds ?? "")
+      .split(",")
+      .map((fileId) => fileId.trim())
+      .filter(Boolean);
     const target = withMilestoneClearingSearchFilters(
-      getMilestoneClearingSearchTarget(name),
+      milestoneTarget && fileIds.length
+        ? {
+            ...milestoneTarget,
+            dashboardFilter: `fileIds:${fileIds.map((fileId) => encodeURIComponent(fileId)).join(",")}`,
+          }
+        : milestoneTarget,
       context,
     );
-    return target
-      ? { ...target, ...getMilestoneClearingSearchFocus(name, target) }
-      : undefined;
+    if (!target) return undefined;
+    const analyticsHref = getAnalyticsPanelHref("milestoneClearingTable");
+    return {
+      ...target,
+      ...getMilestoneClearingSearchFocus(name, target),
+      // The exact file-id filter is intentionally hidden from the breadcrumb;
+      // keep the user-facing path tied to the milestone they clicked.
+      drillPath: [
+        drillItem("Dashboard", "/dashboard"),
+        drillItem("Analytics", analyticsHref),
+        drillItem("Milestone clearing analysis", analyticsHref),
+          // This breadcrumb item must return to the Milestone Clearing panel.
+          // Without an explicit href, Search Files falls back to its current
+          // search URL, so clicking the milestone name appears to do nothing.
+          drillItem(name, analyticsHref),
+      ],
+    };
   }
   return undefined;
 }
@@ -17717,18 +18540,25 @@ function getFinance1DrillFocus(
 }
 
 function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget | undefined {
-  const normalized = normalizeMilestoneName(name);
+  const normalized = normalizeMilestoneClearingName(name);
   if (normalized === "bidding") {
     return {
       dashboardFilter: "analyticsMilestoneClearing:bidding",
       focusSection: "Bidding details",
     };
   }
+  if (normalized === "rfpvetting") {
+    return {
+      dashboardFilter: "analyticsMilestoneClearing:rfpVetting",
+      focusSection: "Bidding details",
+      focusTarget: "rfpVettingApprovalDate",
+    };
+  }
   if (normalized === "nontcectechnicalevaluation") {
     return {
       dashboardFilter: "analyticsMilestoneClearing:nonTcecTechnicalEvaluation",
-      focusSection: "Supply order and payment",
-      focusTarget: "financialSanctionDate",
+      focusSection: "Bidding details",
+      focusTarget: "bidOpeningDate",
     };
   }
   if (normalized === "irpreparation" || normalized === "irreceipt") {
@@ -17741,33 +18571,46 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
   }
   if (normalized === "supplyorder") {
     return {
-      dashboardFilter: "analyticsMilestoneClearing:supplyOrder",
+      dashboardFilter: "milestoneCleared:supplyOrder",
       focusSection: "Supply order and payment",
-      focusTarget: "financialSanctionDate",
+      focusTarget: "supplyorder:completed",
     };
   }
   if (normalized === "gemundertaking") {
     return {
-      dashboardFilter: "gemUndertaking:completed",
+      dashboardFilter: "analyticsMilestoneClearing:gemUndertaking",
       focusSection: "Bidding details",
       focusTarget: "gemUndertakingDate",
     };
   }
   if (normalized === "billpreparation") {
     return {
-      dashboardFilter: "analyticsMilestoneClearing:billPreparation",
+      dashboardFilter: "manualMilestoneCompleted:Bill preparation",
       focusSection: "Supply order and payment",
       focusTarget: "billpreparation:completed",
     };
   }
   if (normalized === "billsentforpayment" || normalized === "billsenttocda") {
     return {
-      dashboardFilter: "analyticsMilestoneClearing:billSentForPayment",
+      dashboardFilter: "manualMilestoneCompleted:Bill sent for payment",
       focusSection: "Supply order and payment",
       focusTarget: "billsentforpayment:completed",
     };
   }
-  if (normalized === "delivery") return { dashboardFilter: "deliveryCompleted" };
+  if (normalized === "jobcompletion") {
+    return {
+      dashboardFilter: "manualMilestoneCompleted:Job Completion",
+      focusSection: "Supply order and payment",
+      focusTarget: "jobcompletion:completed",
+    };
+  }
+  if (normalized === "delivery") {
+    return {
+      dashboardFilter: "deliveryCompleted",
+      focusSection: "Supply order and payment",
+      focusTarget: "delivery:completed",
+    };
+  }
   if (normalized === "paymentcyclepcda" || normalized === "paymentaftersubmission") {
     return {
       dashboardFilter: "analyticsMilestoneClearing:payment",
@@ -17789,11 +18632,132 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
       focusTarget: "payment:completed",
     };
   }
+  const focusedMilestones: Record<
+    string,
+    { filter: string; section: string; target: string }
+  > = {
+    scrutiny: {
+      filter: "milestoneCleared:scrutiny",
+      section: "Scrutiny and control",
+      target: "scrutinyCompletionDate",
+    },
+    highvalue: {
+      filter: "milestoneCleared:highValue",
+      section: "Approval block",
+      target: "highValueMinutesDate",
+    },
+    pretcec: {
+      filter: "milestoneCleared:preTcec",
+      section: "TCEC block",
+      target: "preTcecMinutesDate",
+    },
+    ad: { filter: "milestoneCleared:ad", section: "Approval block", target: "adVettingDate" },
+    rqa: { filter: "milestoneCleared:rqa", section: "Approval block", target: "rqaApprovalDate" },
+    controlling: {
+      filter: "milestoneCleared:controlling",
+      section: "Scrutiny and control",
+      target: "immsDate",
+    },
+    ifa: { filter: "milestoneCleared:ifa", section: "Approval block", target: "ifaFinalDate" },
+    cfa: { filter: "milestoneCleared:cfa", section: "Approval block", target: "cfaDate" },
+    posttcec: {
+      filter: "milestoneCleared:postTcec",
+      section: "TCEC block",
+      target: "postTcecMinutesDate",
+    },
+    refloatposttcec: {
+      filter: "milestoneCleared:refloatPostTcec",
+      section: "TCEC block",
+      target: "refloatPostTcecMinutesDate",
+    },
+    cnc: { filter: "milestoneCleared:cnc", section: "Approval block", target: "cncApprovalDate" },
+    financialsanction: {
+      filter: "milestoneCleared:financialSanction",
+      section: "Supply order and payment",
+      target: "financialsanction:completed",
+    },
+  };
+  const focused = focusedMilestones[normalized];
+  if (focused) {
+    return {
+      dashboardFilter: focused.filter,
+      focusSection: focused.section,
+      focusTarget: focused.target,
+    };
+  }
   const milestone = milestoneDefinitions.find(
     (item) => normalizeMilestoneName(item.label) === normalized,
   );
   if (milestone) return { dashboardFilter: `milestoneCleared:${milestone.key}` };
   return undefined;
+}
+
+function getDelayStatusSearchFocus(
+  milestoneKey: string,
+): Pick<AnalyticsSearchTarget, "focusSection" | "focusMilestone" | "focusTarget"> {
+  const supplyOrderFocusByMilestone: Record<string, string> = {
+    financialSanction: "financialsanction:pending",
+    supplyOrder: "supplyorder:pending",
+    psb: "psb:pending",
+    pwb: "pwb:pending",
+    psbPwb: "psbpwb:pending",
+    delivery: "delivery:pending",
+    jobCompletion: "jobcompletion:pending",
+    irPreparation: "irpreparation:pending",
+    irReceipt: "irreceipt:pending",
+    billPreparation: "billpreparation:pending",
+    billSentForPayment: "billsentforpayment:pending",
+    payment: "payment:pending",
+    paymentPostSubmission: "payment:pending",
+    paymentCumulative: "payment:pending",
+    advancePayment: "advancepayment:pending",
+  };
+  const supplyOrderFocusTarget = supplyOrderFocusByMilestone[milestoneKey];
+  if (supplyOrderFocusTarget) {
+    return { focusSection: "Supply order and payment", focusTarget: supplyOrderFocusTarget };
+  }
+  if (milestoneKey === "paymentPreSubmission") {
+    return {
+      focusSection: "Supply order and payment",
+      focusTarget: "billsentforpayment:pending",
+    };
+  }
+  const dateFieldFocusByMilestone: Record<string, { section: string; focusTarget: string }> = {
+    scrutiny: { section: "Scrutiny and control", focusTarget: "scrutinyCompletionDate" },
+    control: { section: "Scrutiny and control", focusTarget: "immsDate" },
+    controlling: { section: "Scrutiny and control", focusTarget: "immsDate" },
+    highValue: { section: "Approval block", focusTarget: "highValueMinutesDate" },
+    ad: { section: "Approval block", focusTarget: "adVettingDate" },
+    rqa: { section: "Approval block", focusTarget: "rqaApprovalDate" },
+    ifa: { section: "Approval block", focusTarget: "ifaFinalDate" },
+    cfa: { section: "Approval block", focusTarget: "cfaDate" },
+    gemUndertaking: { section: "Bidding details", focusTarget: "gemUndertakingDate" },
+    tcec: { section: "TCEC block", focusTarget: "preTcecMinutesDate" },
+    preTcec: { section: "TCEC block", focusTarget: "preTcecMinutesDate" },
+    postTcec: { section: "TCEC block", focusTarget: "postTcecMinutesDate" },
+    refloatPostTcec: { section: "TCEC block", focusTarget: "refloatPostTcecMinutesDate" },
+    cnc: { section: "Approval block", focusTarget: "cncApprovalDate" },
+  };
+  const dateFieldFocus = dateFieldFocusByMilestone[milestoneKey];
+  if (dateFieldFocus) {
+    return { focusSection: dateFieldFocus.section, focusTarget: dateFieldFocus.focusTarget };
+  }
+  if (milestoneKey === "bidding" || milestoneKey === "refloatBidding" || milestoneKey === "nonTcecTechnicalEvaluation") {
+    return { focusSection: "Bidding details" };
+  }
+  if (milestoneKey === "billReturnedForCorrection") {
+    return {
+      focusSection: "Supply order and payment",
+      focusTarget: "billreturnedforcorrection:pending",
+    };
+  }
+  if (milestoneKey === "supplementaryBillReturnedForCorrection") {
+    return {
+      focusSection: "Supply order and payment",
+      focusTarget: "supplementarybill:returned",
+    };
+  }
+  return {};
 }
 
 function getMilestoneClearingSearchFocus(
@@ -18241,7 +19205,7 @@ function SuspectedAnomalyGroupedView({
                   align="start"
                   className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
                 >
-                  {anomalyWorkflowTabHelp[item.key]}
+                  <HelperBulletList items={anomalyWorkflowTabHelp[item.key]} />
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -18264,6 +19228,20 @@ function SuspectedAnomalyGroupedView({
           : renderDecisionRows(decisionRows)}
     </div>
   );
+}
+
+function formatAnalyticsMonthCategory(
+  row: Record<string, number | string>,
+  label: string,
+  fiscalYear?: string,
+) {
+  if (!fiscalYear) return label;
+  const match = String(row.monthKey ?? label).match(/^\d{4}-(\d{2})$/);
+  if (!match) return label;
+  const monthNumber = Number(match[1]);
+  return monthNumber >= 1 && monthNumber <= 12
+    ? new Intl.DateTimeFormat("en", { month: "short", timeZone: "UTC" }).format(new Date(Date.UTC(2020, monthNumber - 1, 1)))
+    : label;
 }
 
 function AnalyticsHorizontalBarChart({
@@ -18302,6 +19280,9 @@ function AnalyticsHorizontalBarChart({
   const [selectedMetricKey, setSelectedMetricKey] = useState("");
   const selectedDivisionRow = divisionValueSingleDivision && selectedDivision !== "all"
     ? rows.find((row) => String(row.name ?? "") === selectedDivision)
+    : undefined;
+  const monthlyFiscalYear = rows.some((row) => Number(row.monthDrilldown) === 1)
+    ? rows.find((row) => typeof row.fiscalYear === "string")?.fiscalYear as string | undefined
     : undefined;
   const metrics = columns.filter(
     (column) =>
@@ -18387,9 +19368,11 @@ function AnalyticsHorizontalBarChart({
         ? "Percent of allocation"
         : lakhScale > 1 ? `${metric.label} (Lakhs)` : unit ?? metric.label,
       compactBars: title === "Milestone clearing analysis",
-      categories: rows.map((row, index) =>
+      categories: rows.map((row, index) => formatAnalyticsMonthCategory(
+        row,
         String(row[xKey] ?? row.label ?? row.name ?? `Row ${index + 1}`),
-      ),
+        monthlyFiscalYear,
+      )),
       series: [
         {
           name: metric.label,
@@ -18402,7 +19385,7 @@ function AnalyticsHorizontalBarChart({
         },
       ],
     };
-  }, [divisionTotalValuePanel, divisionValueDisplayMode, divisionValueSingleDivision, metric, preferValueRangeLabels, rows, selectedDivision, selectedDivisionRow, title, unit, view]);
+  }, [divisionTotalValuePanel, divisionValueDisplayMode, divisionValueSingleDivision, metric, monthlyFiscalYear, preferValueRangeLabels, rows, selectedDivision, selectedDivisionRow, title, unit, view]);
   const lastExportPlotRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const nextPlotKey = exportPlot ? JSON.stringify(exportPlot) : undefined;
@@ -18497,14 +19480,13 @@ function AnalyticsHorizontalBarChart({
       : metric.key.endsWith("Revenue") ? "allocatedRevenue" : "allocatedCapital";
     const lineRows = rows.map((row, index) => ({
       ...row,
-      chartLabel: String(row[xKey] ?? row.label ?? row.name ?? row.monthKey ?? row.year ?? `Row ${index + 1}`),
+      chartLabel: formatAnalyticsMonthCategory(row, String(row[xKey] ?? row.label ?? row.name ?? row.monthKey ?? row.year ?? `Row ${index + 1}`), monthlyFiscalYear),
       chartValue: isValueRankingPanel && divisionValueDisplayMode === "percent"
         ? Number(getPercent(Number(row[metric.key]) || 0, Number(row[denominatorKey])) ?? 0)
         : Math.max(0, Number(row[metric.key]) || 0) / lineValueScale,
     }));
     return (
       <section data-chart-copy-area aria-label="Trend chart" className="space-y-3">
-        <h3 className="text-lg font-semibold text-foreground">{title} · {metric.label}</h3>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p data-chart-copy-exclude className="text-xs text-muted-foreground">Chronological trend from the same filtered result rows.</p>
           {metrics.length > 1 ? (
@@ -18516,33 +19498,21 @@ function AnalyticsHorizontalBarChart({
               </select>
             </label>
           ) : null}
-          <ChartCopyButton />
         </div>
-        <div className="h-[320px] min-w-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={lineRows} margin={{ top: 12, right: 20, left: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="chartLabel" tick={{ fontSize: 13 }} />
-              <YAxis
-                allowDecimals={false}
-                tick={{ fontSize: 13 }}
-                width={72}
-                tickFormatter={(value) => Number(value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-                label={{
-                  value: axisTitle,
-                  angle: -90,
-                  position: "insideLeft",
-                }}
-              />
-              <ChartTooltip formatter={(value) => isValueRankingPanel && divisionValueDisplayMode === "percent"
-                ? `${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 1 })}%`
-                : lineValueScale > 1
-                  ? `${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 })} Lakh`
-                  : Number(value).toLocaleString()} />
-              <Line type="monotone" dataKey="chartValue" name={metric.label} stroke="#0f766e" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        <AnalyticsChartRenderer
+          title={`${title} · ${metric.label}`}
+          periodLabel={monthlyFiscalYear}
+          kind="line"
+          height={440}
+          valueLabel={axisTitle}
+          rows={lineRows.map((row) => ({ label: row.chartLabel, values: { chartValue: row.chartValue } }))}
+          series={[{ key: "chartValue", label: metric.label, color: "#0f766e" }]}
+          formatValue={(value) => isValueRankingPanel && divisionValueDisplayMode === "percent"
+            ? `${value.toLocaleString("en-IN", { maximumFractionDigits: 1 })}%`
+            : lineValueScale > 1
+              ? `${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })} Lakh`
+              : value.toLocaleString("en-IN")}
+        />
       </section>
     );
   }
@@ -18551,18 +19521,20 @@ function AnalyticsHorizontalBarChart({
     ? "allocatedTotal"
     : metric.key.endsWith("Revenue") ? "allocatedRevenue" : "allocatedCapital";
   const chartRows = rows.map((row, index) => {
-    const label = String(
+    const rawLabel = String(
       (preferValueRangeLabels ? row.range : undefined) ??
         row.name ?? row.division ?? row.label ?? `Result ${index + 1}`,
     );
+    const label = formatAnalyticsMonthCategory(row, rawLabel, monthlyFiscalYear);
     const target = getSearchTarget?.(row, metric);
     return {
       label,
       value: isValueRankingPanel && divisionValueDisplayMode === "percent"
         ? Number(getPercent(Number(row[metric.key]) || 0, Number(row[denominatorKey])) ?? 0)
-        : Math.max(0, Number(row[metric.key]) || 0),
+        : Math.max(0, Number(row[metric.key]) || 0) / (lakhScale ? 100_000 : 1),
       displayValue: formatValue(row),
       onClick: target && onOpenSearchTarget ? () => onOpenSearchTarget(target) : undefined,
+      source: row,
     };
   });
   return (
@@ -18577,16 +19549,20 @@ function AnalyticsHorizontalBarChart({
           </label>
         </div>
       ) : null}
-      <CategoryBarChart
+      <AnalyticsChartRenderer
         title={`${title} · ${metric.label}`}
-        rows={chartRows}
-        orientation={view === "column" ? "vertical" : "horizontal"}
-        formatValue={(value) => value.toLocaleString("en-IN")}
+        rows={chartRows.map((row) => ({ label: row.label, values: { chartValue: row.value }, source: row.source }))}
+        series={[{ key: "chartValue", label: metric.label, color: "var(--chart-color-1, #0f766e)" }]}
+        kind={view === "column" ? "column" : "bar"}
+        height={440}
+        periodLabel={monthlyFiscalYear}
         valueLabel={axisTitle}
-        horizontalValueLabel={view === "bar" ? axisTitle : undefined}
-        maxWidth={640}
-        showHorizontalAxis={view === "bar"}
-        showColumnAxis={view === "column"}
+        formatValue={(value) => value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+        onPointClick={(row) => {
+          const targetRow = row.source as Record<string, number | string> | undefined;
+          const target = targetRow && getSearchTarget?.(targetRow, metric);
+          if (target) onOpenSearchTarget?.(target);
+        }}
       />
     </div>
   );
@@ -18600,7 +19576,6 @@ function TcecCommitteeBreakupChart({
   rows: Array<Record<string, number | string>>;
 }) {
   const horizontal = view === "bar";
-  const chartHeight = Math.max(300, Math.min(620, rows.length * 44 + 100));
   const series = [
     { key: "reviewed", label: "Files reviewed", color: getChartColorAt(0) },
     { key: "signed", label: "Minutes signed", color: getChartColorAt(1) },
@@ -18611,75 +19586,20 @@ function TcecCommitteeBreakupChart({
     <section
       data-chart-copy-area
       aria-label="TCEC committee breakup chart"
-      className="space-y-3 rounded-md border border-border bg-background p-3"
+      className="space-y-3"
     >
-      <div className="flex items-center justify-between gap-3">
-        <h4 data-chart-copy-title className="text-sm font-semibold">TCEC committee breakup</h4>
-        <ChartCopyButton />
-      </div>
-      <div className="h-px bg-border" />
-      <div className="w-full min-w-0 rounded-md border border-border/80 bg-card p-2">
-        <ResponsiveContainer width="100%" height={chartHeight}>
-          <BarChart
-            data={rows}
-            layout={horizontal ? "vertical" : "horizontal"}
-            margin={{ top: 12, right: 20, bottom: horizontal ? 12 : 82, left: horizontal ? 8 : 8 }}
-            barCategoryGap="22%"
-          >
-            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-            {horizontal ? (
-              <>
-                <XAxis
-                  type="number"
-                  allowDecimals={false}
-                  tick={{ fontSize: 12 }}
-                  tickFormatter={(value) => Number(value).toLocaleString("en-IN")}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={160}
-                  tick={{ fontSize: 12 }}
-                  interval={0}
-                />
-              </>
-            ) : (
-              <>
-                <XAxis
-                  dataKey="name"
-                  interval={0}
-                  height={88}
-                  angle={-42}
-                  textAnchor="end"
-                  tickMargin={8}
-                  tick={{ fontSize: 11 }}
-                />
-                <YAxis
-                  allowDecimals={false}
-                  width={52}
-                  tick={{ fontSize: 12 }}
-                  tickFormatter={(value) => Number(value).toLocaleString("en-IN")}
-                />
-              </>
-            )}
-            <ChartTooltip
-              formatter={(value, name) => [Number(value ?? 0).toLocaleString("en-IN"), name]}
-              labelFormatter={(label) => String(label)}
-            />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            {series.map((item) => (
-              <Bar
-                key={item.key}
-                dataKey={item.key}
-                name={item.label}
-                fill={item.color}
-                maxBarSize={22}
-                radius={0}
-              />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <AnalyticsChartRenderer
+        title="TCEC committee breakup"
+        rows={rows.map((row) => ({
+          label: String(row.name ?? ""),
+          values: Object.fromEntries(series.map((item) => [item.key, Number(row[item.key]) || 0])),
+          source: row,
+        }))}
+        series={series}
+        kind={horizontal ? "bar" : "column"}
+        height={440}
+        valueLabel="Files"
+      />
     </section>
   );
 }
@@ -18688,6 +19608,7 @@ function TcecStatusStackedBarChart({
   view,
   title,
   stage,
+  fiscalYear,
   rows,
   onPlotChange,
   getSearchTarget,
@@ -18696,6 +19617,7 @@ function TcecStatusStackedBarChart({
   view: ResultView;
   title: string;
   stage: TcecStatusStage;
+  fiscalYear: string;
   rows: Array<Record<string, number | string>>;
   onPlotChange: (plot?: ExportPlot) => void;
   getSearchTarget?: (
@@ -18706,7 +19628,9 @@ function TcecStatusStackedBarChart({
 }) {
   const signedColor = getChartColorAt(0);
   const pendingColor = getChartColorAt(1);
-  const totalColor = getChartColorAt(2);
+  const monthlyFiscalYear = rows.some((row) => Number(row.monthDrilldown) === 1)
+    ? rows.find((row) => typeof row.fiscalYear === "string")?.fiscalYear as string | undefined
+    : undefined;
   const exportPlot: ExportPlot | undefined = useMemo(() => {
     if (!rows.length) return undefined;
     const xKey = rows.some((row) => row.meetingDate !== undefined) ? "meetingDate" : "name";
@@ -18719,14 +19643,14 @@ function TcecStatusStackedBarChart({
       yAxisTitle: "Files",
       stackedBars: true,
       categories: rows.map((row, index) =>
-        String(row[xKey] ?? row.name ?? `Row ${index + 1}`),
+        formatAnalyticsMonthCategory(row, String(row[xKey] ?? row.name ?? `Row ${index + 1}`), monthlyFiscalYear),
       ),
       series: [
         { name: "Minutes signed", values: rows.map((row) => Number(row.signed) || 0), color: signedColor },
         { name: "Minutes pending", values: rows.map((row) => Number(row.pending) || 0), color: pendingColor },
       ],
     };
-  }, [rows, stage, title]);
+  }, [monthlyFiscalYear, rows, stage, title]);
   const lastExportPlotRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const nextPlotKey = exportPlot ? JSON.stringify(exportPlot) : undefined;
@@ -18738,130 +19662,137 @@ function TcecStatusStackedBarChart({
   if (!rows.length) {
     return <div className="py-8 text-center text-sm text-muted-foreground">No TCEC results to chart.</div>;
   }
-  const maximum = Math.max(1, ...rows.map((row) => Number(row.reviewed) || 0));
-  const segments = [
-    { key: "signed", label: "Minutes signed", color: signedColor },
-    { key: "pending", label: "Minutes pending", color: pendingColor },
-  ] as const;
-
-  if (view === "column") {
-    const plotHeight = 250;
-    const chartTicks = Array.from({ length: 5 }, (_, index) => Math.round(maximum * (4 - index) / 4));
+  if (view === "pie") {
+    const pieRows = [
+      {
+        label: "Minutes signed",
+        value: rows.reduce((sum, row) => sum + Math.max(0, Number(row.signed) || 0), 0),
+        color: signedColor,
+      },
+      {
+        label: "Minutes pending",
+        value: rows.reduce((sum, row) => sum + Math.max(0, Number(row.pending) || 0), 0),
+        color: pendingColor,
+      },
+    ];
     return (
-      <section data-chart-copy-area aria-label="TCEC status column chart" className="mx-auto w-full min-w-0 space-y-3 rounded-md border border-border bg-background p-4">
-        <div className="grid min-w-0 grid-cols-[1fr_auto_1fr] items-center gap-2">
-          <span aria-hidden="true" />
-          <h3 data-chart-copy-title className="min-w-0 truncate text-center text-xl font-semibold text-foreground">{`${title} · ${stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}`}</h3>
-          <div className="flex items-center justify-self-end gap-3 text-sm text-muted-foreground">
-            <span>Files</span><ChartCopyButton />
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 border-b border-border pb-2 text-sm text-muted-foreground">
-          {segments.map((segment) => <span key={segment.key} className="inline-flex items-center gap-1.5"><span className="size-3 rounded-sm" style={{ backgroundColor: segment.color }} />{segment.label}</span>)}
-        </div>
-        <div className="w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-card p-2 sm:p-3">
-        <div className="flex min-w-0 gap-2 sm:gap-3" style={{ height: 432 }}>
-          <div className="relative w-[100px] shrink-0 sm:w-[108px]" aria-hidden="true">
-            <span className="absolute left-0 top-[22px] flex items-center justify-center text-sm font-medium text-muted-foreground [writing-mode:vertical-rl] rotate-180" style={{ height: plotHeight }}>Files</span>
-            {chartTicks.map((value, index) => <span key={`${value}-${index}`} className="absolute right-0 w-[58px] -translate-y-1/2 text-right text-sm tabular-nums text-muted-foreground" style={{ top: 26 + (index / 4) * plotHeight }}>{value}</span>)}
-          </div>
-          <div role="group" aria-label={`${title} stacked column chart`} className="relative grid min-w-0 flex-1 grid-rows-[26px_250px_156px] gap-0 border border-border/80 bg-background" style={{ gridTemplateColumns: `repeat(${rows.length}, minmax(0, 1fr))` }}>
-          <div className="pointer-events-none absolute inset-x-0 top-[26px] h-[250px]" aria-hidden="true">
-            {chartTicks.map((value, index) => <div key={index} className={`absolute inset-x-0 ${index === 4 ? "border-t-2 border-border" : "border-t border-border/60"}`} style={{ top: index * 62.5 }} />)}
-          </div>
-          {rows.map((row, index) => {
-            const label = String(row.name ?? `Result ${index + 1}`);
-            const reviewed = Math.max(0, Number(row.reviewed) || 0);
-            const signed = Math.max(0, Number(row.signed) || 0);
-            const pending = Math.max(0, Number(row.pending) || 0);
-            const target = getSearchTarget?.(row, { key: "reviewed", label: "Files reviewed" });
-            const contents = <><span className="truncate text-sm font-semibold tabular-nums">{reviewed}</span><span className="relative z-[1] flex h-[250px] items-end justify-center px-0.5"><span className="flex w-5 max-w-5 flex-col justify-end overflow-hidden border-2 bg-background" style={{ height: `${reviewed ? Math.max(0, reviewed / maximum * 100) : 0}%`, borderColor: totalColor }}><span style={{ height: `${reviewed ? pending / reviewed * 100 : 0}%`, backgroundColor: pendingColor }} /><span className="block" style={{ height: `${reviewed ? signed / reviewed * 100 : 0}%`, backgroundColor: signedColor }} /></span></span><span className="relative block h-[156px] overflow-visible text-sm text-muted-foreground"><span className="absolute left-1/2 top-2 w-32 origin-top-left rotate-[58deg] text-left" title={label}>{label}</span></span></>;
-            return target && onOpenSearchTarget ? <button key={`${label}-${index}`} type="button" onClick={() => onOpenSearchTarget(target)} title={`Open ${label} results in Search Files`} className="grid min-w-0 grid-rows-[26px_250px_156px] text-center hover:bg-accent/30">{contents}</button> : <div key={`${label}-${index}`} className="grid min-w-0 grid-rows-[26px_250px_156px] text-center">{contents}</div>;
-              })}
-          </div>
-        </div>
-        </div>
-      </section>
+      <AnalyticsChartRenderer
+        title={`${title} · ${stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}`}
+        periodLabel={fiscalYear || monthlyFiscalYear}
+        kind="pie"
+        height={440}
+        valueLabel="Files"
+        rows={pieRows.map((row) => ({ label: row.label, values: { value: row.value }, color: row.color }))}
+        series={[{ key: "value", label: "Files", color: signedColor }]}
+      />
+    );
+  }
+  const chartRows = rows.map((row, index) => {
+    const reviewed = Math.max(0, Number(row.reviewed) || 0);
+    const target = getSearchTarget?.(row, { key: "reviewed", label: "Files reviewed" });
+    return {
+      label: formatAnalyticsMonthCategory(row, String(row.name ?? `Result ${index + 1}`), monthlyFiscalYear),
+      value: reviewed,
+      displayValue: reviewed.toLocaleString("en-IN"),
+      segments: [
+        { value: Math.max(0, Number(row.signed) || 0), color: signedColor },
+        { value: Math.max(0, Number(row.pending) || 0), color: pendingColor },
+      ],
+      onClick: target && onOpenSearchTarget ? () => onOpenSearchTarget(target) : undefined,
+    };
+  });
+  return (
+    <CategoryBarChart
+      title={`${title} · ${stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}`}
+      rows={chartRows}
+      orientation={view === "column" ? "vertical" : "horizontal"}
+      valueLabel="Files reviewed"
+      horizontalValueLabel={view === "bar" ? "Files reviewed" : undefined}
+      periodLabel={monthlyFiscalYear ? `FY ${monthlyFiscalYear}` : undefined}
+      legendItems={[
+        { label: "Minutes signed", color: signedColor },
+        { label: "Minutes pending", color: pendingColor },
+      ]}
+      showHorizontalAxis={view === "bar"}
+      showColumnAxis={view === "column"}
+      showColumnValues={view === "column"}
+      straightColumnLabels={Boolean(monthlyFiscalYear)}
+    />
+  );
+}
+
+function CncSummaryChart({
+  view,
+  title,
+  fiscalYear,
+  rows,
+}: {
+  view: ResultView;
+  title: string;
+  fiscalYear: string;
+  rows: Array<Record<string, number | string>>;
+}) {
+  const series = [
+    { key: "reviewed", label: "Reviewed", color: getChartColorAt(0) },
+    { key: "approved", label: "Approved", color: getChartColorAt(1) },
+    { key: "pending", label: "Pending", color: getChartColorAt(2) },
+  ];
+  const monthlyFiscalYear = rows.some((row) => Number(row.monthDrilldown) === 1)
+    ? String(rows.find((row) => typeof row.fiscalYear === "string")?.fiscalYear ?? "")
+    : undefined;
+  const chartRows = rows.map((row, index) => ({
+    label: formatAnalyticsMonthCategory(
+      row,
+      String(row.name ?? row.cncDate ?? `Result ${index + 1}`),
+      monthlyFiscalYear,
+    ),
+    source: row,
+    values: {
+      reviewed: Math.max(0, Number(row.reviewed) || 0),
+      approved: Math.max(0, Number(row.approved) || 0),
+      pending: Math.max(0, Number(row.approvalPending) || 0),
+    },
+  }));
+
+  if (view === "pie") {
+    const pieRows = series.map((item) => ({
+      label: item.label,
+      color: item.color,
+      values: {
+        value: chartRows.reduce((sum, row) => sum + row.values[item.key as keyof typeof row.values], 0),
+      },
+    }));
+    return (
+      <AnalyticsChartRenderer
+        title={`${title} · Status contribution`}
+        periodLabel={fiscalYear || monthlyFiscalYear}
+        kind="pie"
+        height={440}
+        valueLabel="Count"
+        rows={pieRows}
+        series={[{ key: "value", label: "Count", color: series[0].color }]}
+      />
     );
   }
 
   return (
-    <section data-chart-copy-area aria-label="TCEC status chart" className="space-y-3 rounded-md border border-border bg-background p-4">
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <h3 className="min-w-0 truncate text-xl font-semibold text-foreground">{title} · {stage === "pre" ? "Pre-TCEC" : "Post-TCEC"}</h3>
-        <ChartCopyButton />
-      </div>
-      <div className="flex flex-wrap items-center gap-4 border-b border-border pb-2 text-sm text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="size-3 rounded-sm border-2" style={{ borderColor: totalColor }} />
-          Files reviewed (total)
-        </span>
-        {segments.map((segment) => (
-          <span key={segment.key} className="inline-flex items-center gap-1.5">
-            <span className="size-3 rounded-sm" style={{ backgroundColor: segment.color }} />
-            {segment.label}
-          </span>
-        ))}
-        <span className="ml-auto">Files</span>
-      </div>
-      <div role="group" aria-label={`${title} stacked bar chart`} className="space-y-2 rounded-md border border-border/80 bg-card p-3">
-        {rows.map((row, index) => {
-          const label = String(row.name ?? `Result ${index + 1}`);
-          const reviewed = Math.max(0, Number(row.reviewed) || 0);
-          const signed = Math.max(0, Number(row.signed) || 0);
-          const pending = Math.max(0, Number(row.pending) || 0);
-          const target = getSearchTarget?.(row, { key: "reviewed", label: "Files reviewed" });
-          const chart = (
-            <>
-              <span className="w-40 shrink-0 truncate text-left text-sm font-medium" title={label}>{label}</span>
-              <span className="min-w-0 flex-1 pt-5">
-                <span className="relative block h-6 overflow-visible bg-secondary/70">
-                  <span
-                  className="flex h-full overflow-hidden border-2 bg-background"
-                  style={{ width: `${(reviewed / maximum) * 100}%`, borderColor: totalColor }}
-                  role="img"
-                  aria-label={`${label}: ${reviewed} files reviewed; ${signed} minutes signed; ${pending} minutes pending`}
-                >
-                  {segments.map((segment) => {
-                    const value = segment.key === "signed" ? signed : pending;
-                    const width = reviewed > 0 ? (value / reviewed) * 100 : 0;
-                    return (
-                      <span
-                        key={segment.key}
-                        className="block h-full shrink-0"
-                        style={{ width: `${width}%`, backgroundColor: segment.color }}
-                        title={`${segment.label}: ${value}`}
-                      />
-                    );
-                  })}
-                  </span>
-                  <span className="absolute -top-5 -translate-x-full whitespace-nowrap text-sm font-medium tabular-nums text-foreground" style={{ left: `${(reviewed / maximum) * 100}%` }}>Reviewed: {reviewed}</span>
-                </span>
-              </span>
-            </>
-          );
-          return target && onOpenSearchTarget ? (
-            <button
-              key={`${label}-${index}`}
-              type="button"
-              onClick={() => onOpenSearchTarget(target)}
-              className="flex w-full items-center gap-3 rounded-sm py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title={`Open ${label} results in Search Files`}
-            >
-              {chart}
-            </button>
-          ) : (
-            <div key={`${label}-${index}`} className="flex items-center gap-3 py-1">{chart}</div>
-          );
-        })}
-      </div>
-    </section>
+    <AnalyticsChartRenderer
+      title={`${title} · Status contribution`}
+      periodLabel={fiscalYear || monthlyFiscalYear}
+      kind={view === "column" ? "column" : "bar"}
+      height={440}
+      valueLabel="Count"
+      stacked
+      rows={chartRows}
+      series={series}
+    />
   );
 }
 
 function AnalyticsRankingTable({
   columns,
   rows,
+  getRowNameHelpBreadcrumb,
   getRowNameHelpText,
   compactRankColumn = false,
   wideNameColumn = false,
@@ -18871,6 +19802,7 @@ function AnalyticsRankingTable({
 }: {
   columns: AnalyticsTableColumn[];
   rows: Array<Record<string, number | string>>;
+  getRowNameHelpBreadcrumb?: (row: Record<string, number | string>) => string[];
   getRowNameHelpText?: (row: Record<string, number | string>) => string[] | undefined;
   compactRankColumn?: boolean;
   wideNameColumn?: boolean;
@@ -19011,6 +19943,10 @@ function AnalyticsRankingTable({
                   );
                 const rowNameHelpText =
                   column.key === "name" ? getRowNameHelpText?.(row) : undefined;
+                const rowNameHelpIsWide = Boolean(
+                  rowNameHelpText?.some((line) => /^Example (?:table|row):/i.test(line)) ||
+                    (rowNameHelpText?.join(" ").length ?? 0) > 700,
+                );
                 return (
                   <td
                     key={column.key}
@@ -19035,12 +19971,15 @@ function AnalyticsRankingTable({
                                 <Info className="size-3.5" />
                               </button>
                             </TooltipTrigger>
-                            <TooltipContent side="right" className="max-w-72 leading-relaxed">
-                              <ul className="list-disc space-y-1 pl-4">
-                                {rowNameHelpText.map((item) => (
-                                  <li key={item}>{item}</li>
-                                ))}
-                              </ul>
+                            <TooltipContent
+                              side={rowNameHelpIsWide ? "bottom" : "right"}
+                              align={rowNameHelpIsWide ? "center" : "start"}
+                              className={`${rowNameHelpIsWide ? "w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]" : "w-fit max-w-[min(32rem,calc(100vw-2rem))]"} border border-border bg-background p-2 text-foreground shadow-lg leading-relaxed`}
+                            >
+                              <HelperContent
+                                lines={rowNameHelpText}
+                                breadcrumb={getRowNameHelpBreadcrumb?.(row)}
+                              />
                             </TooltipContent>
                           </Tooltip>
                         </TooltipProvider>
@@ -19984,7 +20923,9 @@ function MetricButton({
             align="center"
             className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
           >
-            {Array.isArray(tooltip) ? <HelperBulletList items={tooltip} /> : tooltip}
+            <HelperBulletList
+              items={Array.isArray(tooltip) ? tooltip : [tooltip]}
+            />
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -21655,6 +22596,7 @@ function getCalendarMonthSummaryRows(
   rows: Array<Record<string, string | number>>,
   dateKey: string,
   metricKeys: string[],
+  fiscalYear: string,
 ) {
   const months = new Map<string, Record<string, string | number>>();
   rows.forEach((row) => {
@@ -21667,7 +22609,19 @@ function getCalendarMonthSummaryRows(
     });
     months.set(monthKey, current);
   });
-  return Array.from(months.values()).sort((a, b) => String(a.monthKey).localeCompare(String(b.monthKey)));
+  const startYear = Number(fiscalYear.slice(0, 4));
+  return Array.from({ length: 12 }, (_, index) => {
+    const monthNumber = ((3 + index) % 12) + 1;
+    const year = startYear + Math.floor((3 + index) / 12);
+    const monthKey = `${year}-${String(monthNumber).padStart(2, "0")}`;
+    const existing = months.get(monthKey);
+    if (existing) return existing;
+    const emptyMonth: Record<string, string | number> = { name: monthKey, monthKey };
+    metricKeys.forEach((key) => {
+      emptyMonth[key] = 0;
+    });
+    return emptyMonth;
+  });
 }
 
 function getMonthlyCalendarDays(
@@ -22138,9 +23092,13 @@ type Finance1FileTypeDistributionRow = {
   fileType: string;
   files: number;
   filesWithSo: number;
+  filesWithSoLive: number;
   activeAtFyEnd: number;
   closedByFyEnd: number;
   cancelledByFyEnd: number;
+  active: number;
+  closed: number;
+  cancelled: number;
   capital: number;
   revenue: number;
   total: number;
@@ -22384,9 +23342,13 @@ function getFinance1Summary(
       fileType: label,
       files: 0,
       filesWithSo: 0,
+      filesWithSoLive: 0,
       activeAtFyEnd: 0,
       closedByFyEnd: 0,
       cancelledByFyEnd: 0,
+      active: 0,
+      closed: 0,
+      cancelled: 0,
       capital: 0,
       revenue: 0,
       total: 0,
@@ -22459,11 +23421,26 @@ function getFinance1Summary(
     if (cancelledByFyEnd) fileTypeRow.cancelledByFyEnd += 1;
     else if (closedByFyEnd) fileTypeRow.closedByFyEnd += 1;
     else fileTypeRow.activeAtFyEnd += 1;
+    const cancelledLive = isCancelledFile(file);
+    const closedLive = isFileClosed(file);
+    if (cancelledLive) fileTypeRow.cancelled += 1;
+    else if (closedLive) fileTypeRow.closed += 1;
+    else fileTypeRow.active += 1;
     const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
     addDrillFile(`${fileTypeKey}:files`, file);
+    const hasSoLive = fileSupplyOrders(file).some(
+      (order) => hasSupplyOrderDate(order) && !isSupplyOrderCancelled(file, order),
+    );
+    if (hasSoLive) {
+      fileTypeRow.filesWithSoLive += 1;
+      addDrillFile(`${fileTypeKey}:liveWithSo`, file);
+    }
     if (cancelledByFyEnd) addDrillFile(`${fileTypeKey}:cancelled`, file);
     if (closedByFyEnd) addDrillFile(`${fileTypeKey}:closed`, file);
     if (!cancelledByFyEnd && !closedByFyEnd) addDrillFile(`${fileTypeKey}:active`, file);
+    if (cancelledLive) addDrillFile(`${fileTypeKey}:liveCancelled`, file);
+    if (closedLive) addDrillFile(`${fileTypeKey}:liveClosed`, file);
+    if (!cancelledLive && !closedLive) addDrillFile(`${fileTypeKey}:liveActive`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
     const soRowsByFyEnd = fileSupplyOrders(file).filter(
@@ -23342,7 +24319,12 @@ function getMilestoneClearingRanking(files: FileRecord[]) {
       };
     })
     .filter((item) => item.sampleSize > 0)
-    .sort((a, b) => b.averageDays - a.averageDays);
+    .sort(
+      (a, b) =>
+        b.averageDays - a.averageDays ||
+        a.sortOrder - b.sortOrder ||
+        a.name.localeCompare(b.name),
+    );
 }
 
 type MilestoneClearingDurationRow = { fileId: string; stageDays: number; cumulativeDays: number };
@@ -23353,32 +24335,89 @@ function getMilestoneClearingDurationRows(
 ) {
   if (definition.name === "GeM Undertaking") {
     return files
+      .filter(
+        (file) =>
+          isYes(file.gem) &&
+          (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
+      )
+      .flatMap((file) => {
+        const rows: MilestoneClearingDurationRow[] = [];
+        const normalRow = getMilestoneClearingDurationRow(
+          file,
+          file.cfaDate,
+          file.gemUndertakingDate,
+        );
+        if (normalRow) rows.push(normalRow);
+        if (!isYes(file.tcec) && isYes(file.refloat)) {
+          const refloatRow = getMilestoneClearingDurationRow(
+            file,
+            file.refloatRecommendationDate,
+            file.refloatGemUndertakingDate,
+          );
+          if (refloatRow) rows.push(refloatRow);
+        }
+        return rows;
+      });
+  }
+  if (definition.name === "RFP Vetting") {
+    return files
       .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
-      .map((file) => getMilestoneClearingDurationRow(file, file.cfaDate, file.gemUndertakingDate))
+      .map((file) => {
+        const gemUndertakingApplies =
+          isYes(file.gem) &&
+          (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
+          hasFilledString(file.cfaDate);
+        return getMilestoneClearingDurationRow(
+          file,
+          gemUndertakingApplies ? file.gemUndertakingDate : file.cfaDate,
+          file.rfpVettingApprovalDate,
+        );
+      })
       .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
   }
   if (definition.name === "Bidding") {
+    return files.flatMap((file) => getMilestoneClearingBiddingDurationRows(file));
+  }
+  if (definition.name === "Post-TCEC") {
+    return files
+      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
+      .map((file) =>
+        getMilestoneClearingDurationRow(file, file.postTcecDate, file.postTcecMinutesDate),
+      )
+      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  }
+  if (definition.name === "Refloat Post-TCEC") {
     return files
       .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
       .map((file) =>
         getMilestoneClearingDurationRow(
           file,
-          isYes(file.gem) ? file.gemUndertakingDate : file.cfaDate,
-          definition.getEndDate?.(file),
+          file.refloatPostTcecDate,
+          file.refloatPostTcecMinutesDate,
+        ),
+      )
+      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+  }
+  if (definition.name === "CNC") {
+    return files
+      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
+      .map((file) =>
+        getMilestoneClearingDurationRow(
+          file,
+          file.postTcecMinutesDate,
+          file.cncApprovalDate,
         ),
       )
       .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
   }
   if (definition.name === "Non-TCEC Technical Evaluation") {
-    return files.flatMap((file) => {
-      if (!isMilestoneClearingDefinitionApplicable(file, definition)) return [];
-      const bidOpeningDate = getEffectiveBidOpeningDate(file);
-      return rawSupplyOrders(file)
-        .map((order) =>
-          getMilestoneClearingDurationRow(file, bidOpeningDate, order.financialSanctionDate),
-        )
-        .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
-    });
+    return files
+      .filter(
+        (file) =>
+          !isYes(file.tcec) &&
+          isBiddingApplicableForFile(file),
+      )
+      .flatMap((file) => getNonTcecTechnicalEvaluationDurationRows(file));
   }
   if (definition.name === "Financial Sanction") {
     return files
@@ -23391,7 +24430,7 @@ function getMilestoneClearingDurationRows(
           .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
       );
   }
-  if (definition.name === "Payment cycle (PCDA)") {
+  if (definition.name === "Payment cycle (PCDA, bill submission to payment)") {
     const regularPaymentRows = files.flatMap((file) =>
       normalizedPaymentEntries([file])
         .filter(
@@ -23435,34 +24474,29 @@ function getMilestoneClearingDurationRows(
     );
     return [...regularPaymentRows, ...supplementaryRows];
   }
-  if (definition.name === "Payment (ASL + PCDA)") {
+  if (definition.name === "Payment cycle (ASL+PCDA, bill trigger to payment)") {
     const regularAndAdvanceRows = files.flatMap((file) =>
       normalizedPaymentEntries([file])
         .filter(({ file: entryFile, order }) => {
           const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
           const submissionDate = order.billSentForPaymentDate;
           const paid = hasFilledString(order.paymentDate);
-          const returned = hasBillReturnHistory(order);
           return (
             order.includeInPaymentTiming !== false &&
             isPaymentOrderActive(entryFile, order) &&
             paid &&
+            !hasBillReturnHistory(order) &&
             (isAdvancePayment || hasFilledString(order.soDate)) &&
-            hasFilledString(submissionDate) &&
-            (!returned || hasFilledString(submissionDate))
+            hasFilledString(submissionDate)
           );
         })
         .map(({ file: entryFile, order }) => {
           const isAdvancePayment = order.stageDeliveryLabel === "Advance Payment";
           const submissionDate = order.billSentForPaymentDate;
-          const returned = hasBillReturnHistory(order);
           const startDate = isAdvancePayment
             ? submissionDate
             : getPaymentTimingTriggerDate(entryFile, order);
-          const endDate = returned
-            ? submissionDate
-            : order.paymentDate;
-          return getMilestoneClearingDurationRow(entryFile, startDate, endDate);
+          return getMilestoneClearingDurationRow(entryFile, startDate, order.paymentDate);
         })
         .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
     );
@@ -23474,18 +24508,15 @@ function getMilestoneClearingDurationRows(
             .filter(
               (bill) =>
                 bill.includeInPaymentTiming !== false &&
+                !hasBillReturnHistory(bill) &&
                 hasFilledString(bill.billSentForPaymentDate) &&
                 hasFilledString(bill.paymentDate),
             )
             .map((bill) => {
-              const returned = hasBillReturnHistory(bill);
-              const endDate = returned
-                ? bill.billSentForPaymentDate
-                : bill.paymentDate;
               return getMilestoneClearingDurationRow(
                 file,
                 bill.billSentForPaymentDate,
-                endDate,
+                bill.paymentDate,
               );
             })
             .filter((row): row is MilestoneClearingDurationRow => Boolean(row)),
@@ -23493,7 +24524,7 @@ function getMilestoneClearingDurationRows(
     );
     return [...regularAndAdvanceRows, ...supplementaryRows];
   }
-  if (definition.name === "Payment cycle (ASL)") {
+  if (definition.name === "Payment cycle (ASL, bill trigger to bill submission)") {
     return files.flatMap((file) =>
       effectivePaymentEntries([file])
         .filter(
@@ -23548,6 +24579,28 @@ function getMilestoneClearingDurationRows(
         : [],
     );
   }
+  if (definition.name === "Job Completion") {
+    return files.flatMap((file) =>
+      isJobCompletionWorkflow(file)
+        ? effectivePaymentEntries([file])
+            .filter(
+              ({ file: entryFile, order }) =>
+                !isAdvancePaymentClearingRow(order) && isPaymentOrderActive(entryFile, order),
+            )
+            .map(({ file: entryFile, order }) => {
+              const commonStagePayment = isParentStagePaymentOrder(order);
+              return getMilestoneClearingDurationRow(
+                entryFile,
+                commonStagePayment ? getParentStageDeliveryPeriodDate(order) : getDeliveryPeriodDate(order),
+                commonStagePayment
+                  ? getParentStagePaymentDate(order, "jobCompletionDate")
+                  : order.jobCompletionDate,
+              );
+            })
+            .filter((row): row is MilestoneClearingDurationRow => Boolean(row))
+        : [],
+    );
+  }
   if (definition.name === "Bill preparation") {
     return files.flatMap((file) =>
       effectivePaymentEntries([file])
@@ -23583,14 +24636,13 @@ function getMilestoneClearingDurationRows(
     );
   }
   if (definition.name === "Supply Order") {
-    const definitionIndex = milestoneClearingDefinitions.indexOf(definition);
     return files.flatMap((file) =>
       rawSupplyOrders(file)
         .map((order) =>
           getMilestoneClearingDurationRow(
             file,
             isYes(file.tcec)
-              ? getPreviousApplicableMilestoneCompletionDate(file, definitionIndex, order.soDate)
+              ? file.cncApprovalDate
               : order.financialSanctionDate,
             order.soDate,
           ),
@@ -23639,6 +24691,77 @@ function isMilestoneClearingDefinitionApplicable(
 ) {
   const applies = "applies" in definition ? definition.applies : undefined;
   return applies ? applies(file) : true;
+}
+
+function getMilestoneClearingBiddingStartDate(file: FileRecord) {
+  if (isYes(file.refloat) && isYes(file.tcec)) {
+    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
+  }
+  if (!isYes(file.tcec)) return file.cfaDate;
+  if (!hasFilledString(file.cfaDate)) return undefined;
+  const gemUndertakingApplies =
+    isYes(file.gem) &&
+    (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison";
+  if (gemUndertakingApplies && !hasFilledString(file.gemUndertakingDate)) return undefined;
+  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingApprovalDate)) return undefined;
+  const candidates = [
+    file.cfaDate,
+    gemUndertakingApplies ? file.gemUndertakingDate : undefined,
+    isYes(file.rfpVetting) ? file.rfpVettingApprovalDate : undefined,
+  ].filter((value): value is string => hasFilledString(value));
+  return candidates.sort(
+    (a, b) => (parseLocalDateTime(b) ?? 0) - (parseLocalDateTime(a) ?? 0),
+  )[0];
+}
+
+function getGeMUndertakingEndDate(file: FileRecord) {
+  if (
+    !isYes(file.tcec) &&
+    isYes(file.refloat) &&
+    hasFilledString(file.refloatRecommendationDate) &&
+    hasFilledString(file.refloatGemUndertakingDate)
+  ) {
+    return file.refloatGemUndertakingDate;
+  }
+  return file.gemUndertakingDate;
+}
+
+function getMilestoneClearingBiddingEndDate(file: FileRecord) {
+  if (!isYes(file.tcec)) {
+    return isYes(file.refloat) && hasFilledString(file.refloatBiddingDate)
+      ? file.refloatBiddingDate
+      : file.bidDate;
+  }
+  return isYes(file.refloat) ? file.refloatPostTcecDate : file.postTcecDate;
+}
+
+function getMilestoneClearingBiddingDurationRows(file: FileRecord) {
+  if (!isBiddingApplicableForFile(file)) return [];
+  if (!isYes(file.tcec)) {
+    const rows: MilestoneClearingDurationRow[] = [];
+    const normalRow = getMilestoneClearingDurationRow(file, file.cfaDate, file.bidDate);
+    if (normalRow) rows.push(normalRow);
+    if (
+      isYes(file.refloat) &&
+      isYes(file.biddingStageOver) &&
+      hasFilledString(file.refloatRecommendationDate)
+    ) {
+      const refloatRow = getMilestoneClearingDurationRow(
+        file,
+        file.refloatRecommendationDate,
+        file.refloatBiddingDate,
+      );
+      if (refloatRow) rows.push(refloatRow);
+    }
+    return rows;
+  }
+  if (!isYes(file.biddingStageOver)) return [];
+  const row = getMilestoneClearingDurationRow(
+    file,
+    getMilestoneClearingBiddingStartDate(file),
+    getMilestoneClearingBiddingEndDate(file),
+  );
+  return row ? [row] : [];
 }
 
 function getPreviousApplicableMilestoneCompletionDate(
@@ -23760,7 +24883,16 @@ function isIrClearingApplicable(file: FileRecord) {
 }
 
 function getBillPreparationStartDate(file: FileRecord, order: SupplyOrderDetail) {
-  if (isIrClearingApplicable(file)) return order.irReceiptDate;
+  if (isIrClearingApplicable(file)) {
+    return isParentStagePaymentOrder(order)
+      ? getParentStagePaymentDate(order, "irReceiptDate")
+      : order.irReceiptDate;
+  }
+  if (isJobCompletionWorkflow(file)) {
+    return isParentStagePaymentOrder(order)
+      ? getParentStagePaymentDate(order, "jobCompletionDate")
+      : order.jobCompletionDate;
+  }
   return getPaymentWorkflowStartDate(file, order);
 }
 
@@ -24075,41 +25207,46 @@ const milestoneClearingDefinitions = [
   },
   {
     name: "GeM Undertaking",
-    getEndDate: (file: FileRecord) => file.gemUndertakingDate,
+    getEndDate: (file: FileRecord) => getGeMUndertakingEndDate(file),
     applies: (file: FileRecord) =>
       isYes(file.gem) &&
-      (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
-      hasFilledString(file.cfaDate),
+      (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
+  },
+  {
+    name: "RFP Vetting",
+    getEndDate: (file: FileRecord) => file.rfpVettingApprovalDate,
+    applies: (file: FileRecord) => isYes(file.rfpVetting),
   },
   {
     name: "Bidding",
-    getEndDate: (file: FileRecord) =>
-      isYes(file.tcec)
-        ? isYes(file.refloat)
-          ? file.refloatPostTcecDate
-          : file.postTcecDate
-        : getEffectiveBidOpeningDate(file),
+    getEndDate: (file: FileRecord) => getMilestoneClearingBiddingEndDate(file),
     applies: (file: FileRecord) =>
       isBiddingApplicableForFile(file) &&
-      isYes(file.biddingStageOver) &&
-      hasFilledString(file.cfaDate) &&
-      (!isYes(file.gem) || hasFilledString(file.gemUndertakingDate)),
+      (!isYes(file.tcec) ||
+        (isYes(file.biddingStageOver) && Boolean(getMilestoneClearingBiddingStartDate(file)))),
   },
   {
     name: "Non-TCEC Technical Evaluation",
-    getEndDate: () => undefined,
+    getEndDate: (file: FileRecord) => getNonTcecTechnicalEvaluationEndDate(file),
     applies: (file: FileRecord) =>
-      !isYes(file.tcec) && isBiddingApplicableForFile(file) && isYes(file.biddingStageOver),
+      !isYes(file.tcec) &&
+      isBiddingApplicableForFile(file),
   },
   {
     name: "Post-TCEC",
-    getStartDate: (file: FileRecord) => getTcecMeetingDate(file, "post"),
-    getEndDate: (file: FileRecord) => getTcecMinutesDate(file, "post"),
+    getStartDate: (file: FileRecord) => file.postTcecDate,
+    getEndDate: (file: FileRecord) => file.postTcecMinutesDate,
     applies: (file: FileRecord) => isYes(file.tcec),
   },
   {
+    name: "Refloat Post-TCEC",
+    getStartDate: (file: FileRecord) => file.refloatPostTcecDate,
+    getEndDate: (file: FileRecord) => file.refloatPostTcecMinutesDate,
+    applies: (file: FileRecord) => isYes(file.tcec) && isYes(file.refloat),
+  },
+  {
     name: "CNC",
-    getStartDate: (file: FileRecord) => file.cncDate,
+    getStartDate: (file: FileRecord) => file.postTcecMinutesDate,
     getEndDate: (file: FileRecord) => file.cncApprovalDate,
     applies: (file: FileRecord) => isYes(file.tcec),
   },
@@ -24122,6 +25259,10 @@ const milestoneClearingDefinitions = [
     name: "Supply Order",
     getStartDate: (file: FileRecord) => file.cfaDate,
     getEndDate: getFirstSoDate,
+  },
+  {
+    name: "Job Completion",
+    applies: (file: FileRecord) => isJobCompletionWorkflow(file),
   },
   {
     name: "IR Preparation",
@@ -24147,17 +25288,17 @@ const milestoneClearingDefinitions = [
     getEndDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "billSentForPaymentDate"),
   },
   {
-    name: "Payment cycle (ASL)",
+    name: "Payment cycle (ASL, bill trigger to bill submission)",
     getStartDate: () => undefined,
     getEndDate: () => undefined,
   },
   {
-    name: "Payment cycle (PCDA)",
+    name: "Payment cycle (PCDA, bill submission to payment)",
     getStartDate: (file: FileRecord) => getEarliestSupplyOrderDate(file, "billSentForPaymentDate"),
     getEndDate: getFirstPaymentDate,
   },
   {
-    name: "Payment (ASL + PCDA)",
+    name: "Payment cycle (ASL+PCDA, bill trigger to payment)",
     getStartDate: () => undefined,
     getEndDate: () => undefined,
   },
@@ -24355,6 +25496,39 @@ function getEarliestSupplyOrderDate(file: FileRecord, key: keyof SupplyOrderDeta
     .map((order) => String(order[key] ?? ""))
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b))[0];
+}
+
+function getNonTcecTechnicalEvaluationDurationRows(file: FileRecord) {
+  const rows: MilestoneClearingDurationRow[] = [];
+  const firstCycleEndDate = isYes(file.refloat)
+    ? file.refloatRecommendationDate
+    : getEarliestSupplyOrderDate(file, "financialSanctionDate");
+  const firstCycleRow = isYes(file.biddingStageOver)
+    ? getMilestoneClearingDurationRow(file, file.bidOpeningDate, firstCycleEndDate)
+    : undefined;
+  if (firstCycleRow) rows.push(firstCycleRow);
+
+  if (
+    isYes(file.refloat) &&
+    hasFilledString(file.refloatBidOpeningDate) &&
+    isYes(file.refloatBiddingStageOver)
+  ) {
+    const secondCycleRow = getMilestoneClearingDurationRow(
+      file,
+      file.refloatBidOpeningDate,
+      getEarliestSupplyOrderDate(file, "financialSanctionDate"),
+    );
+    if (secondCycleRow) rows.push(secondCycleRow);
+  }
+  return rows;
+}
+
+function getNonTcecTechnicalEvaluationEndDate(file: FileRecord) {
+  if (isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)) {
+    return getEarliestSupplyOrderDate(file, "financialSanctionDate");
+  }
+  if (isYes(file.refloat)) return file.refloatRecommendationDate;
+  return getEarliestSupplyOrderDate(file, "financialSanctionDate");
 }
 
 function isSupplyOrderPlacedByDate(file: FileRecord) {
@@ -24830,7 +26004,7 @@ function getManualMilestoneCompletedCount(files: FileRecord[], name: string) {
   if (isBgMilestoneKey(normalized)) return countBgReceivedOrders(files, normalized);
   if (normalized === "refloatbidding") {
     return files.filter(
-      (file) => !isCancelledFile(file) && isYes(file.refloat) && isYes(file.biddingStageOver),
+      (file) => !isCancelledFile(file) && isYes(file.refloat) && isRefloatBiddingStageComplete(file),
     ).length;
   }
   if (normalized === "refloatposttcec") {
@@ -25303,7 +26477,7 @@ function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefin
     return isYes(file.biddingStageOver);
   }
   if (milestone.key === "refloatBidding") {
-    return isYes(file.refloat) && isYes(file.biddingStageOver);
+    return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
   }
   return hasMilestoneDate(file, milestone.current);
 }
@@ -26392,8 +27566,12 @@ function isRefloatBiddingInProgressFile(file: FileRecord) {
     isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
     hasFilledString(file.refloatBiddingDate) &&
-    !isYes(file.biddingStageOver)
+    !isRefloatBiddingStageComplete(file)
   );
+}
+
+function isRefloatBiddingStageComplete(file: FileRecord) {
+  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -27565,7 +28743,7 @@ function getStatus4DrillPath(filter: Status4SearchFilter) {
   }
   parts.push(
     drillItem(filter.milestone, status4Href),
-    drillItem(getStatus4MetricLabel(filter.metric)),
+    drillItem(getStatus4MetricLabel(filter.metric), status4Href),
   );
   return parts;
 }
@@ -27793,7 +28971,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const normalized = normalizeMilestoneName(milestone);
     if (isBgMilestoneKey(normalized)) return isBgReceived(file, milestone);
     if (normalized === "refloatbidding") {
-      return !isCancelledFile(file) && isYes(file.refloat) && isYes(file.biddingStageOver);
+      return !isCancelledFile(file) && isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (normalized === "refloatposttcec") {
       return (
@@ -28073,7 +29251,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(17));
     if (!milestone) return true;
     if (milestone.key === "refloatBidding") {
-      return isYes(file.refloat) && isYes(file.biddingStageOver);
+      return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
     }
     if (milestone.key === "refloatPostTcec") {
       return (
@@ -29242,6 +30420,63 @@ function shouldIncludeAnalyticsExportSerialColumn(panelKey: AnalyticsPanelKey) {
 function getDashboardFilterTitle(filter: string) {
   if (filter.startsWith("analyticsIndentorFirm:")) return "Indentor–Firm S.O. relationship";
   if (filter.startsWith("analyticsCoBidding:")) return "Co-bidding tenders";
+  if (filter.startsWith("analyticsMilestoneClearing:")) {
+    const key = filter.slice("analyticsMilestoneClearing:".length);
+    const labelByKey: Record<string, string> = {
+      bidding: "Bidding",
+      rfpVetting: "RFP Vetting",
+      nonTcecTechnicalEvaluation: "Non-TCEC Technical Evaluation",
+      gemUndertaking: "GeM Undertaking",
+      payment: "Payment cycle (PCDA)",
+      paymentPreSubmission: "Payment cycle (ASL)",
+      paymentCumulative: "Payment cycle (ASL+PCDA)",
+    };
+    return `Milestone clearing - ${labelByKey[key] ?? key}`;
+  }
+  if (filter.startsWith("delayStatus:")) {
+    const [, rawDays = "0", milestoneKey = "all"] = filter.split(":");
+    const labelByKey: Record<string, string> = {
+      workflowNotStarted: "Workflow Not Started",
+      gemUndertaking: "GeM Undertaking",
+      bidding: "Bidding",
+      refloatBidding: "Refloat bidding",
+      nonTcecTechnicalEvaluation: "Non-TCEC Technical Evaluation",
+      scrutiny: "Scrutiny",
+      highValue: "High Value",
+      preTcec: "Pre-TCEC",
+      ad: "AD",
+      rqa: "R&QA",
+      control: "Controlling",
+      controlling: "Controlling",
+      ifa: "IFA",
+      cfa: "CFA",
+      postTcec: "Post-TCEC",
+      refloatPostTcec: "Refloat Post-TCEC",
+      cnc: "CNC",
+      financialSanction: "Financial Sanction",
+      supplyOrder: "Supply Order",
+      advancePayment: "Advance Payment",
+      psb: "PSB",
+      pwb: "PWB",
+      psbPwb: "PSB+PWB",
+      delivery: "Delivery",
+      jobCompletion: "Job Completion",
+      irPreparation: "IR Preparation",
+      irReceipt: "IR Receipt",
+      billPreparation: "Bill preparation",
+      billSentForPayment: "Bill sent for payment",
+      billReturnedForCorrection: "Returned Bills",
+      supplementaryBillReturnedForCorrection: "Supplementary bill returned for correction",
+      paymentPreSubmission: "Payment cycle (ASL)",
+      paymentPostSubmission: "Payment cycle (PCDA)",
+      paymentCumulative: "Payment (ASL + PCDA)",
+    };
+    const label = labelByKey[milestoneKey] ?? (milestoneKey || "All milestones");
+    return `Delay status - ${label} (> ${decodeStatusFilterPart(rawDays)} days)`;
+  }
+  if (filter.startsWith("fileIds:") || filter.startsWith("snapshotFileIds:")) {
+    return "Selected files";
+  }
   if (filter.startsWith("milestoneTotal:")) {
     return `${getMilestoneTitle(filter.slice(15))} - Total files`;
   }
@@ -29483,7 +30718,9 @@ function getDashboardFilterTitle(filter: string) {
                   : "Cases reviewed";
     return `CNC Summary ${metricLabel}${fiscalYear ? ` - FY ${fiscalYear}` : ""}`;
   }
-  return dashboardFilterTitles[filter] ?? "Status export";
+  // Never present the generic export label as a breadcrumb for an unmapped
+  // search filter; it describes an export action, not the result scope.
+  return dashboardFilterTitles[filter] ?? "Filtered results";
 }
 
 function parseValueThresholdDashboardFilterTitle(filter: string, prefix: string) {

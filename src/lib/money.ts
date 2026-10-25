@@ -62,9 +62,10 @@ export function getInrAmount(value: string | number | undefined, file: FileRecor
 export function formatThousandsAndLakhs(value: number, maximumFractionDigits = 2) {
   const sign = value < 0 ? "-" : "";
   const absoluteValue = Math.abs(value);
+  const fractionDigits = Math.min(2, Math.max(0, Math.trunc(maximumFractionDigits)));
   const fixedValue = Number.isInteger(absoluteValue)
     ? String(absoluteValue)
-    : absoluteValue.toFixed(maximumFractionDigits).replace(/\.?0+$/, "");
+    : absoluteValue.toFixed(fractionDigits).replace(/\.?0+$/, "");
   const [integerPart, decimalPart] = fixedValue.split(".");
   const lastThree = integerPart.slice(-3);
   const beforeThousands = integerPart.slice(0, -3);

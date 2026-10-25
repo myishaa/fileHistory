@@ -88,6 +88,9 @@ export const tableFieldPresetGroups: TableFieldPresetGroup[] = [
     fields: [
       { key: "gemBiddingMode", label: "GeM Bidding Mode" },
       { key: "gemUndertakingDate", label: "GeM undertaking date" },
+      { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking" },
+      { key: "refloatRecommendationDate", label: "Refloat recommendation" },
+      { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval" },
       { key: "preBidMeeting", label: "Pre-Bid Meeting (Yes/No)" },

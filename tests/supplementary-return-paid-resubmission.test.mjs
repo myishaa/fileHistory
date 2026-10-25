@@ -30,6 +30,17 @@ function returnedPaidRows(files) {
   }).supplementaryReturnedBillPaidRows;
 }
 
+function submittedRows(files, fromDate, toDate) {
+  return buildReportsSummary({
+    files,
+    division: "all",
+    delayDays: 30,
+    delayMilestone: "all",
+    historicalFromDate: fromDate,
+    historicalToDate: toDate,
+  }).supplementaryBillSentForPaymentRows;
+}
+
 test("supplementary bill with payment but open latest return is not reported as returned-and-paid", () => {
   const rows = returnedPaidRows([
     file("supplementary-open-return", {
@@ -62,6 +73,31 @@ test("supplementary bill with a resubmitted latest return and payment is reporte
       capital: 950,
       revenue: 0,
       total: 950,
+    },
+  ]);
+});
+
+test("supplementary bill paid after the selected To date remains payment-pending in that range", () => {
+  const rows = submittedRows(
+    [
+      file("supplementary-paid-after-range", {
+        billNo: "SUP-CUTOFF",
+        billSentForPaymentDate: "2026-09-10",
+        paymentDate: "2026-10-02",
+        billAmountCapital: "100",
+      }),
+    ],
+    "2026-09-01",
+    "2026-09-30",
+  );
+
+  assert.deepEqual(rows, [
+    {
+      monthKey: "2026-09",
+      month: "Sep-2026",
+      capital: 100,
+      revenue: 0,
+      total: 100,
     },
   ]);
 });

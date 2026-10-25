@@ -7,6 +7,8 @@ import type {
   AppThemeTint,
   FirmRatingConfig,
   FileTypeGroupSetting,
+  QuickEntryExcelPreset,
+  SharedQuickAccessSettings,
   ValueThresholdAppliesTo,
   ValueThresholdLevel,
 } from "../types.js";
@@ -114,6 +116,10 @@ type SettingsRow = {
   pre_so_default_so_offset_days: number;
   pre_so_default_payment_offset_days: number;
   bg_return_offset_days: number;
+  delay_status_default_days: number;
+  shared_quick_access: unknown;
+  quick_entry_excel_presets: unknown;
+  quick_entry_excel_presets_legacy_imported: boolean;
 };
 
 type UserUiPreferencesRow = {
@@ -175,6 +181,115 @@ function readAddEditRibbonFields(value: unknown) {
     throw new HttpError(400, "Select two valid Add/Edit ribbon fields.");
   }
   return unique;
+}
+
+function normalizeSharedQuickAccess(value: unknown): SharedQuickAccessSettings {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const readIds = (candidate: unknown) =>
+    Array.isArray(candidate)
+      ? [
+          ...new Set(
+            candidate.filter(
+              (id): id is string => typeof id === "string" && /^[a-zA-Z0-9-]+$/.test(id),
+            ),
+          ),
+        ]
+      : [];
+  const interval = Number(source.noticeBoardIntervalSeconds);
+  const readTransitionDuration = (key: string, fallback: number) => {
+    const duration = Number(source[key]);
+    return Number.isInteger(duration) && duration >= 100 && duration <= 30000
+      ? duration
+      : fallback;
+  };
+  return {
+    initialized: source.initialized === true,
+    favorites: readIds(source.favorites),
+    noticeBoardItems: readIds(source.noticeBoardItems),
+    noticeBoardIntervalSeconds: Number.isInteger(interval)
+      ? Math.min(120, Math.max(5, interval))
+      : 15,
+    noticeBoardSlideDurationMs: readTransitionDuration("noticeBoardSlideDurationMs", 1200),
+    noticeBoardFadeOutDurationMs: readTransitionDuration("noticeBoardFadeOutDurationMs", 1400),
+    noticeBoardFadeInDurationMs: readTransitionDuration("noticeBoardFadeInDurationMs", 900),
+    noticeBoardVerticalScrollDurationMs: readTransitionDuration("noticeBoardVerticalScrollDurationMs", 2800),
+  };
+}
+
+function readSharedQuickAccess(value: unknown): SharedQuickAccessSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "sharedQuickAccess must be an object.");
+  }
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.favorites) || !Array.isArray(source.noticeBoardItems)) {
+    throw new HttpError(400, "Shared shortcut and Notice Board selections must be lists.");
+  }
+  const interval = Number(source.noticeBoardIntervalSeconds);
+  if (!Number.isInteger(interval) || interval < 5 || interval > 120) {
+    throw new HttpError(400, "Notice Board rotation must be between 5 and 120 seconds.");
+  }
+  for (const key of [
+    "noticeBoardSlideDurationMs",
+    "noticeBoardFadeOutDurationMs",
+    "noticeBoardFadeInDurationMs",
+    "noticeBoardVerticalScrollDurationMs",
+  ]) {
+    if (source[key] === undefined) continue;
+    const duration = Number(source[key]);
+    if (!Number.isInteger(duration) || duration < 100 || duration > 30000) {
+      throw new HttpError(400, "Notice Board transition durations must be between 0.1 and 30 seconds.");
+    }
+  }
+  const normalized = normalizeSharedQuickAccess(source);
+  return { ...normalized, initialized: true, noticeBoardIntervalSeconds: interval };
+}
+
+function readQuickEntryExcelPresets(value: unknown): QuickEntryExcelPreset[] {
+  if (!Array.isArray(value)) throw new HttpError(400, "quickEntryExcelPresets must be a list.");
+  if (value.length > 100) throw new HttpError(400, "At most 100 Excel exports can be configured.");
+
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, `Excel export ${index + 1} is invalid.`);
+    }
+    const source = item as Record<string, unknown>;
+    const id = typeof source.id === "string" ? source.id.trim() : "";
+    const name = typeof source.name === "string" ? source.name.trim() : "";
+    if (!id || id.length > 100 || !name || name.length > 120) {
+      throw new HttpError(400, `Excel export ${index + 1} needs a valid ID and name.`);
+    }
+    const nameKey = name.toLowerCase();
+    if (ids.has(id) || names.has(nameKey)) {
+      throw new HttpError(400, "Excel export IDs and names must be unique.");
+    }
+    ids.add(id);
+    names.add(nameKey);
+
+    const fields = readStringArray(source.fields, `Excel export ${name} fields`);
+    if (!fields.length) throw new HttpError(400, `${name} must include at least one field.`);
+    const scopeMode = source.scopeMode ?? "fy";
+    if (scopeMode !== "fy" && scopeMode !== "so") {
+      throw new HttpError(400, `${name} has an invalid export scope.`);
+    }
+    const financialYear = typeof source.financialYear === "string" ? source.financialYear.trim() : "";
+    const note = typeof source.note === "string" ? source.note.trim() : "";
+    if (note.length > 300) throw new HttpError(400, `${name} note cannot exceed 300 characters.`);
+
+    return {
+      id,
+      name,
+      fields,
+      ...(note ? { note } : {}),
+      fileTypes: readStringArray(source.fileTypes ?? [], `${name} file types`),
+      scopeMode,
+      ...(financialYear ? { financialYear } : {}),
+    };
+  });
 }
 
 function normalizeAddEditRibbonFields(value: unknown) {
@@ -533,6 +648,10 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     preSoDefaultSoOffsetDays: Number(row.pre_so_default_so_offset_days ?? 30),
     preSoDefaultPaymentOffsetDays: Number(row.pre_so_default_payment_offset_days ?? 30),
     bgReturnOffsetDays: Number(row.bg_return_offset_days ?? 60),
+    delayStatusDefaultDays: Number(row.delay_status_default_days ?? 5),
+    sharedQuickAccess: normalizeSharedQuickAccess(row.shared_quick_access),
+    quickEntryExcelPresets: readQuickEntryExcelPresets(row.quick_entry_excel_presets),
+    quickEntryExcelPresetsLegacyImported: row.quick_entry_excel_presets_legacy_imported === true,
     ...(liveStatusLockedFields !== undefined ? { liveStatusLockedFields } : {}),
     activeUserId: fromDbText(row.active_user_id) || undefined,
   };
@@ -620,7 +739,9 @@ async function getSettings(user?: AuthRequest["authUser"]) {
               tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
-              pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days
+              pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days,
+              delay_status_default_days,
+              shared_quick_access, quick_entry_excel_presets, quick_entry_excel_presets_legacy_imported
        from app_settings
        where id = true`,
     );
@@ -640,6 +761,8 @@ function ensurePreSoSettingsSchema() {
          add column if not exists pre_so_default_payment_offset_days integer not null default 30;
        alter table app_settings
          add column if not exists bg_return_offset_days integer not null default 60;
+       alter table app_settings
+         add column if not exists delay_status_default_days integer not null default 5;
        alter table app_settings
          add column if not exists gem_bidding_modes jsonb not null default '["Custom", "Catalogue", "Comparison"]'::jsonb;
        alter table app_settings
@@ -916,23 +1039,61 @@ function removedMasterValues(currentValues: string[], nextValues: string[]) {
     .filter((value) => value && !nextSet.has(normalizeMasterValue(value)));
 }
 
-function noteRemovedValuesBecomeInactive(label: string, removedValues: string[]) {
-  void label;
-  void removedValues;
-  // Removing a used master value from Settings means "inactive for future dropdowns".
-  // Historical active/archive file rows keep their saved text and continue to display it.
+async function assertRemovedValuesUnused(
+  label: string,
+  removedValues: string[],
+  usageQuery: string,
+) {
+  if (!removedValues.length) return;
+  const result = await pool.query<{ value: string; count: string }>(usageQuery, [
+    removedValues.map(normalizeMasterValue),
+  ]);
+  if (!result.rows.length) return;
+  const usedValues = result.rows.map((row) => `${row.value} (${row.count})`).join(", ");
+  throw new HttpError(409, `Cannot remove ${label} currently used by files: ${usedValues}.`);
 }
 
 async function assertFirmTypesCanChange(nextFirmTypes: string[]) {
   const settings = await getSettings();
   const removed = removedMasterValues(settings.firmTypes, nextFirmTypes);
-  noteRemovedValuesBecomeInactive("Firm type", removed);
+  await assertRemovedValuesUnused(
+    "firm types",
+    removed,
+    `select value, count(distinct file_id)::text as count
+     from (
+       select f.id as file_id, trim(f.firm_type) as value from files f
+       union all
+       select so.file_id, trim(so.firm_type) from supply_orders so
+     ) used
+     where lower(trim(value)) = any($1::text[])
+     group by value`,
+  );
 }
 
 async function assertModesCanChange(nextModes: string[]) {
   const settings = await getSettings();
   const removed = removedMasterValues(settings.modes, nextModes);
-  noteRemovedValuesBecomeInactive("Mode", removed);
+  await assertRemovedValuesUnused(
+    "modes",
+    removed,
+    `select trim(mode) as value, count(*)::text as count
+     from files
+     where lower(trim(coalesce(mode, ''))) = any($1::text[])
+     group by trim(mode)`,
+  );
+}
+
+async function assertGemBiddingModesCanChange(nextModes: string[]) {
+  const settings = await getSettings();
+  const removed = removedMasterValues(settings.gemBiddingModes ?? [], nextModes);
+  await assertRemovedValuesUnused(
+    "GeM bidding modes",
+    removed,
+    `select trim(gem_bidding_mode) as value, count(*)::text as count
+     from files
+     where lower(trim(coalesce(gem_bidding_mode, ''))) = any($1::text[])
+     group by trim(gem_bidding_mode)`,
+  );
 }
 
 async function assertSpecialFileMarkersCanChange(nextMarkers: Array<{ code: string }>) {
@@ -940,7 +1101,14 @@ async function assertSpecialFileMarkersCanChange(nextMarkers: Array<{ code: stri
   const currentCodes = normalizeSpecialFileMarkers(settings.specialFileMarkers).map((marker) => marker.code);
   const nextCodes = nextMarkers.map((marker) => marker.code);
   const removed = removedMasterValues(currentCodes, nextCodes);
-  noteRemovedValuesBecomeInactive("Special file marker", removed);
+  await assertRemovedValuesUnused(
+    "special file marker codes",
+    removed,
+    `select trim(fm.text) as value, count(distinct fm.file_id)::text as count
+     from file_markers fm
+     where lower(trim(coalesce(fm.text, ''))) = any($1::text[])
+     group by trim(fm.text)`,
+  );
 }
 
 async function assertTcecCommitteesCanChange(financialYear: string, nextCommittees: string[]) {
@@ -950,13 +1118,55 @@ async function assertTcecCommitteesCanChange(financialYear: string, nextCommitte
     current.filter((item): item is string => typeof item === "string"),
     nextCommittees,
   );
-  noteRemovedValuesBecomeInactive("TCEC committee", removed);
+  await assertRemovedValuesUnused(
+    "TCEC committees",
+    removed,
+    `select value, count(distinct file_id)::text as count
+     from (
+       select f.id as file_id, trim(f.pre_tcec_committee_no) as value from files f
+       union all
+       select f.id, trim(f.post_tcec_committee_number) from files f
+       union all
+       select f.id, trim(f.refloat_post_tcec_committee_no) from files f
+     ) used
+     where lower(trim(value)) = any($1::text[])
+     group by value`,
+  );
 }
 
 async function assertMilestonesCanChange(nextMilestones: string[]) {
   const settings = await getSettings();
   const removed = removedMasterValues(settings.milestones, nextMilestones);
-  noteRemovedValuesBecomeInactive("Milestone", removed);
+  await assertRemovedValuesUnused(
+    "milestones",
+    removed,
+    `select value, count(distinct file_id)::text as count
+     from (
+       select f.id as file_id, trim(f.current_milestone) as value from files f
+       union all
+       select cm.file_id, trim(cm.milestone) from file_completed_milestones cm
+       union all
+       select so.file_id, trim(so.current_milestone) from supply_orders so
+       union all
+       select so.file_id, trim(completed.value)
+       from supply_orders so
+       cross join lateral jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) completed(value)
+       union all
+       select so.file_id, trim(so.advance_payment_detail ->> 'currentMilestone') from supply_orders so
+       union all
+       select so.file_id, trim(completed.value)
+       from supply_orders so
+       cross join lateral jsonb_array_elements_text(
+         case
+           when jsonb_typeof(so.advance_payment_detail -> 'completedMilestones') = 'array'
+             then so.advance_payment_detail -> 'completedMilestones'
+           else '[]'::jsonb
+         end
+       ) completed(value)
+     ) used
+     where lower(trim(value)) = any($1::text[])
+     group by value`,
+  );
 }
 
 function readMmgSummaryFields(value: unknown) {
@@ -1267,6 +1477,7 @@ settingsRouter.patch(
       "preSoDefaultSoOffsetDays",
       "preSoDefaultPaymentOffsetDays",
       "bgReturnOffsetDays",
+      "delayStatusDefaultDays",
     ]);
     const canUpdatePreSoDefaults =
       bodyFields.length > 0 &&
@@ -1425,6 +1636,7 @@ settingsRouter.patch(
       const gemBiddingModes = normalizeGemBiddingModes(
         readStringArray(body.gemBiddingModes, "gemBiddingModes"),
       );
+      await assertGemBiddingModesCanChange(gemBiddingModes);
       addField("gem_bidding_modes", JSON.stringify(gemBiddingModes), "::jsonb");
     }
     if ("mmgLiveEnabled" in body) addField("mmg_live_enabled", body.mmgLiveEnabled === true);
@@ -1505,6 +1717,35 @@ settingsRouter.patch(
         readNonNegativeInteger(body.bgReturnOffsetDays, "BG return offset days"),
       );
     }
+    if ("delayStatusDefaultDays" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin/Sub-admin access required.");
+      }
+      addField(
+        "delay_status_default_days",
+        readNonNegativeInteger(body.delayStatusDefaultDays, "Delay Status default days"),
+      );
+    }
+    if ("sharedQuickAccess" in body) {
+      if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+      addField(
+        "shared_quick_access",
+        JSON.stringify(readSharedQuickAccess(body.sharedQuickAccess)),
+        "::jsonb",
+      );
+    }
+    if ("quickEntryExcelPresets" in body) {
+      if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+      addField(
+        "quick_entry_excel_presets",
+        JSON.stringify(readQuickEntryExcelPresets(body.quickEntryExcelPresets)),
+        "::jsonb",
+      );
+      addField("quick_entry_excel_presets_legacy_imported", true);
+    } else if ("quickEntryExcelPresetsLegacyImported" in body) {
+      if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+      addField("quick_entry_excel_presets_legacy_imported", body.quickEntryExcelPresetsLegacyImported === true);
+    }
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
         "table_field_presets",
@@ -1557,7 +1798,11 @@ settingsRouter.patch(
       !("firmUniqueNoLabel" in body) &&
       !("preSoDefaultSoOffsetDays" in body) &&
       !("preSoDefaultPaymentOffsetDays" in body) &&
-      !("bgReturnOffsetDays" in body)
+      !("bgReturnOffsetDays" in body) &&
+      !("delayStatusDefaultDays" in body) &&
+      !("sharedQuickAccess" in body) &&
+      !("quickEntryExcelPresets" in body) &&
+      !("quickEntryExcelPresetsLegacyImported" in body)
     ) {
       throw new HttpError(400, "No settings fields provided.");
     }

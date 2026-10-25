@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
+import { RoutePending } from "@/components/route-pending";
 import { routeTree } from "./routeTree.gen";
 
 export const getRouter = () => {
@@ -9,6 +10,9 @@ export const getRouter = () => {
     routeTree,
     context: { queryClient },
     scrollRestoration: true,
+    defaultPendingComponent: RoutePending,
+    defaultPendingMs: 120,
+    defaultPendingMinMs: 180,
     defaultPreloadStaleTime: 0,
   });
 

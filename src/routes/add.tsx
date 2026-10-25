@@ -70,6 +70,7 @@ import {
 } from "@/lib/bg-coverage-cleanup";
 import { displayFinancialYearLabel } from "@/lib/year-filter";
 import { DateInput } from "@/components/date-input";
+import { HelperContent } from "@/components/helper-content";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fileTypeGroupOptions,
@@ -165,6 +166,8 @@ const empty = {
   cfaSentDate: "",
   cfaDate: "",
   gemUndertakingDate: "",
+  refloatGemUndertakingDate: "",
+  refloatRecommendationDate: "",
   rfpVettingInitiationDate: "",
   rfpVettingApprovalDate: "",
   preBidMeeting: "No",
@@ -185,6 +188,7 @@ const empty = {
   refloatPostTcecDate: "",
   refloatPostTcecMinutesDate: "",
   refloatPostTcecCommitteeNo: "",
+  refloatBiddingStageOver: "No",
   rst: "No",
   biddingStageOver: "No",
   cncDate: "",
@@ -705,8 +709,14 @@ const tcecDisabledKeys: FieldKey[] = [
   "cncDate",
   "cncApprovalDate",
 ];
+const nonTcecDisabledKeys: FieldKey[] = ["refloatRecommendationDate", "refloatBiddingStageOver"];
 
-const gemDisabledKeys: FieldKey[] = ["gemBiddingMode", "gemUndertakingDate", "gemSoNo"];
+const gemDisabledKeys: FieldKey[] = [
+  "gemBiddingMode",
+  "gemUndertakingDate",
+  "refloatGemUndertakingDate",
+  "gemSoNo",
+];
 const rfpVettingDisabledKeys: FieldKey[] = ["rfpVettingInitiationDate", "rfpVettingApprovalDate"];
 const highValueDisabledKeys: FieldKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
 const rqaDisabledKeys: FieldKey[] = ["rqaSentDate", "rqaApprovalDate"];
@@ -718,6 +728,9 @@ const refloatDisabledKeys: FieldKey[] = [
   "refloatPreBidMeetingDate",
   "refloatBiddingDate",
   "refloatBidOpeningDate",
+  "refloatBiddingStageOver",
+  "refloatGemUndertakingDate",
+  "refloatRecommendationDate",
   "refloatPostTcecDate",
   "refloatPostTcecMinutesDate",
   "refloatPostTcecCommitteeNo",
@@ -825,6 +838,7 @@ function isValidEmailFormat(value: string | undefined) {
   return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 }
 const emptySupplyOrder: Required<SupplyOrderDetail> = {
+  id: "",
   includeInPaymentTiming: true,
   currentMilestone: "",
   completedMilestones: [],
@@ -977,9 +991,24 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
-  { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-  { key: "actualJobCompletionDate", label: "Actual Job Completion Date", type: "date" },
-  { key: "jobCompletionDate", label: "Job Completion Received Date", type: "date" },
+  {
+    key: "materialReceiptDate",
+    label: "Material receipt date",
+    type: "date",
+    helper: "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | Delivery is completed on 22 Oct.",
+  },
+  {
+    key: "actualJobCompletionDate",
+    label: "Actual Job Completion Date",
+    type: "date",
+    helper: "Records when the work was actually completed. Use this for measures that require actual completion, including non-inspection PWB delay.\nExample table: Actual completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | Work completed on 10 Oct; completion was received/recorded on 14 Oct. The dates serve different purposes.",
+  },
+  {
+    key: "jobCompletionDate",
+    label: "Job Completion Received Date",
+    type: "date",
+    helper: "Records when completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for actual completion date.\nExample table: Actual completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; actual-completion measures use 10 Oct.",
+  },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -997,7 +1026,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
     label: "No Further Action",
     options: yesNo,
     helper:
-      "No: continue follow-up for this S.O.\nYes: stop pending delivery, job-completion, and payment work, including unpaid bills and open bill-return/resubmission follow-up. BG receipt, validity, expiry, return, and warranty tracking continue. Recorded events and payments remain in history.",
+      "Purpose: Controls whether unfinished delivery and payment follow-up continues for this S.O.\nExample table: Selection | Unfinished delivery/payment work | Existing records and BG/warranty tracking\nExample row: No | Follow-up continues. | Remain available.\nExample row: Yes | Follow-up stops, including open bill-return/resubmission work. | Recorded events and payments remain; BG receipt, validity, expiry, return, and warranty tracking continue.",
   },
   { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
@@ -1028,9 +1057,24 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
-  { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-  { key: "actualJobCompletionDate", label: "Actual Job Completion Date", type: "date" },
-  { key: "jobCompletionDate", label: "Job Completion Received Date", type: "date" },
+  {
+    key: "materialReceiptDate",
+    label: "Material receipt date",
+    type: "date",
+    helper: "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Stage delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | This stage's delivery is completed on 22 Oct.",
+  },
+  {
+    key: "actualJobCompletionDate",
+    label: "Actual Job Completion Date",
+    type: "date",
+    helper: "Records when this stage's work was actually completed. Use it for measures that require actual completion, including non-inspection PWB delay.\nExample table: Actual completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | This stage's work completed on 10 Oct; completion was received/recorded on 14 Oct.",
+  },
+  {
+    key: "jobCompletionDate",
+    label: "Job Completion Received Date",
+    type: "date",
+    helper: "Records when this stage's completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for actual completion date.\nExample table: Actual completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; actual-completion measures use 10 Oct.",
+  },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -1506,6 +1550,7 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     fields: [
       { key: "gemBiddingMode", label: "GeM Bidding Mode", options: defaultGemBiddingModes },
       { key: "gemUndertakingDate", label: "GeM undertaking date", type: "date" },
+      { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
       { key: "preBidMeeting", label: "Pre-Bid Meeting (Yes/No)", options: yesNo },
@@ -1520,6 +1565,8 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "refloatPreBidMeetingDate", label: "Refloat Pre-Bid Meeting date", type: "date" },
       { key: "refloatBiddingDate", label: "Refloat bidding date", type: "date" },
       { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
+      { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over", options: yesNo },
+      { key: "refloatRecommendationDate", label: "Refloat recommendation", type: "date" },
       { key: "rst", label: "RST (Yes/No)", options: yesNo },
       { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
     ],
@@ -2401,7 +2448,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         patch.exchangeRate = "1";
       }
       if (k === "refloat" && isYes(v)) {
-        patch.biddingStageOver = "No";
+        // Keep the first-cycle flag for Non-TCEC refloats; the second cycle
+        // has its own Refloat Bidding Stage Over field.
+        if (!isNo(f.tcec)) patch.biddingStageOver = "No";
         patch.bidOpened = "NO";
       }
       if (k === "biddingStageOver" && isYes(v)) {
@@ -3267,6 +3316,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           (lockFilledFields && hasFileValueForLock(savedFormForLocks, field.key)) ||
           (["adSentDate", "adVettingDate"].includes(field.key) && isNo(formWithLockedYear.ad)) ||
           (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
+          (!isNo(formWithLockedYear.tcec) && nonTcecDisabledKeys.includes(field.key)) ||
           (gemIsNo && gemDisabledKeys.includes(field.key)) ||
           (highValueIsNo && highValueDisabledKeys.includes(field.key)) ||
           (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
@@ -6937,9 +6987,19 @@ function SupplementaryBillsDraftBlock({
                               <Info className="size-3.5" />
                             </button>
                           </TooltipTrigger>
-                          <TooltipContent side="top" className="max-w-64 text-xs leading-5">
-                            Checked while this bill is unpaid and its latest return is awaiting
-                            resubmission.
+                          <TooltipContent
+                            side="top"
+                            className="w-[min(40rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+                          >
+                            <HelperContent
+                              lines={[
+                                "Details: Current means the supplementary bill is unpaid and its latest return is awaiting resubmission.",
+                                "Example table: Latest return | Resubmission | Payment date | Current status",
+                                "Example row: 12 May | Blank | Blank | Checked; the bill is still awaiting resubmission.",
+                                "Example row: 12 May | 15 May | Blank | Unchecked; the latest return has been resubmitted.",
+                                "Example row: 12 May | Blank | 20 May | Unchecked; a paid bill is not currently awaiting resubmission.",
+                              ]}
+                            />
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -10913,6 +10973,7 @@ function cleanSupplyOrderRows(
     clearInapplicableBgCoverageFields(applySupplyOrderRules(row, form)),
   );
   return normalized.map((row) => ({
+    id: row.id || undefined,
     includeInPaymentTiming: row.includeInPaymentTiming === false ? false : undefined,
     currentMilestone: row.currentMilestone || undefined,
     completedMilestones: normalizeCompletedMilestones(row.completedMilestones),
@@ -11925,6 +11986,7 @@ function applyConditionalRules(form: FormState) {
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
+      refloatBiddingStageOver: "No",
       rst: "No",
       biddingStageOver: "No",
     };
@@ -11967,8 +12029,17 @@ function applyConditionalRules(form: FormState) {
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
       cncDate: "",
       cncApprovalDate: "",
+    };
+  }
+  if (!isNo(next.tcec)) {
+    next = {
+      ...next,
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
     };
   }
   if (isNo(next.gem)) {
@@ -11976,6 +12047,7 @@ function applyConditionalRules(form: FormState) {
       ...next,
       gemBiddingMode: "",
       gemUndertakingDate: "",
+      refloatGemUndertakingDate: "",
       gemSoNo: "",
     };
   }
@@ -12050,6 +12122,9 @@ function applyConditionalRules(form: FormState) {
       refloatPreBidMeetingDate: "",
       refloatBiddingDate: "",
       refloatBidOpeningDate: "",
+      refloatGemUndertakingDate: "",
+      refloatRecommendationDate: "",
+      refloatBiddingStageOver: "No",
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
@@ -12082,7 +12157,7 @@ function applyConditionalRules(form: FormState) {
     next = {
       ...next,
       bidOpened: "NO",
-      biddingStageOver: "No",
+      biddingStageOver: isYes(next.refloat) && isNo(next.tcec) ? next.biddingStageOver : "No",
     };
   }
   return next;
@@ -12106,6 +12181,7 @@ const defaultNoFieldValues = {
   refloatPreBidMeeting: "No",
   rst: "No",
   biddingStageOver: "No",
+  refloatBiddingStageOver: "No",
   demandCancelled: "No",
   soCancelled: "No",
   shortclosure: "No",
@@ -13360,6 +13436,7 @@ function isTimelineFieldDisabled(
   return (
     (["adSentDate", "adVettingDate"].includes(key) && isNo(form.ad)) ||
     (isNo(form.tcec) && tcecDisabledKeys.includes(key)) ||
+    (!isNo(form.tcec) && nonTcecDisabledKeys.includes(key)) ||
     (isNo(form.gem) && gemDisabledKeys.includes(key)) ||
     (isNo(form.highValue) && highValueDisabledKeys.includes(key)) ||
     (isNo(form.rqa) && rqaDisabledKeys.includes(key)) ||
@@ -14170,18 +14247,9 @@ function Field({
                 <TooltipContent
                   side="top"
                   align="start"
-                  className="w-[min(34rem,calc(100vw-2rem))] border border-border bg-popover p-3 text-[13px] font-normal leading-relaxed text-popover-foreground shadow-lg"
+                  className="w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-[13px] font-normal leading-relaxed text-foreground shadow-lg"
                 >
-                  <div className="space-y-2">
-                    {helperLines.map((line, index) => (
-                      <div
-                        key={`${label}-helper-${index}`}
-                        className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm"
-                      >
-                        {line}
-                      </div>
-                    ))}
-                  </div>
+                  <HelperContent lines={helperLines} />
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

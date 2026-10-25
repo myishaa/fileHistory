@@ -94,11 +94,36 @@ export type AppSettings = {
   specialFileMarkers?: SpecialFileMarker[];
   firmUniqueNoLabel?: string;
   firmRatingConfig?: FirmRatingConfig;
+  quickEntryExcelPresets?: QuickEntryExcelPreset[];
+  quickEntryExcelPresetsLegacyImported?: boolean;
   activeUserId?: string;
   addEditRibbonFields?: string[];
   preSoDefaultSoOffsetDays?: number;
   preSoDefaultPaymentOffsetDays?: number;
   bgReturnOffsetDays?: number;
+  delayStatusDefaultDays?: number;
+  sharedQuickAccess?: SharedQuickAccessSettings;
+};
+
+export type QuickEntryExcelPreset = {
+  id: string;
+  name: string;
+  note?: string;
+  fields: string[];
+  fileTypes?: string[];
+  scopeMode?: "fy" | "so";
+  financialYear?: string;
+};
+
+export type SharedQuickAccessSettings = {
+  initialized: boolean;
+  favorites: string[];
+  noticeBoardItems: string[];
+  noticeBoardIntervalSeconds: number;
+  noticeBoardSlideDurationMs: number;
+  noticeBoardFadeOutDurationMs: number;
+  noticeBoardFadeInDurationMs: number;
+  noticeBoardVerticalScrollDurationMs: number;
 };
 
 export type FirmRatingField = {
@@ -153,6 +178,7 @@ export type BillReturnCycle = {
 };
 
 export type SupplyOrderDetail = {
+  id?: string;
   includeInPaymentTiming?: boolean;
   currentMilestone?: string;
   completedMilestones?: string[];
@@ -368,6 +394,8 @@ export type FileRecord = {
   cfaSentDate?: string;
   cfaDate?: string;
   gemUndertakingDate?: string;
+  refloatGemUndertakingDate?: string;
+  refloatRecommendationDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
   preBidMeeting?: string;
@@ -390,6 +418,7 @@ export type FileRecord = {
   refloatPostTcecCommitteeNo?: string;
   rst?: string;
   biddingStageOver?: string;
+  refloatBiddingStageOver?: string;
   cncDate?: string;
   cncApprovalDate?: string;
   noOfSo?: string;

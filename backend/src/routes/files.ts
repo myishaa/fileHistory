@@ -46,9 +46,18 @@ import {
   toDbText,
 } from "../utils/db-values.js";
 import { clearDashboardReportCaches } from "../utils/cache.js";
+import {
+  getQuickEntryBillLifecycleEvents,
+  getQuickEntryExportDpDate,
+  getQuickEntryExportPaidSoFar,
+  getQuickEntryExportSoAmountComponent,
+  getQuickEntryExportRowPlan,
+  isQuickEntryExportFieldApplicable,
+} from "../utils/quick-entry-export.js";
 import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../utils/http.js";
 import {
   contractFileTypeSql,
+  isDeliveryInspectionApplicableByGroup,
   isBiddingApplicableForFile,
   isContractFileType,
   normalizeFileTypeGroups,
@@ -299,6 +308,8 @@ const fileFields = {
   cfaSentDate: ["cfa_sent_date", "date"],
   cfaDate: ["cfa_date", "date"],
   gemUndertakingDate: ["gem_undertaking_date", "date"],
+  refloatGemUndertakingDate: ["refloat_gem_undertaking_date", "date"],
+  refloatRecommendationDate: ["refloat_recommendation_date", "date"],
   rfpVettingInitiationDate: ["rfp_vetting_initiation_date", "date"],
   rfpVettingApprovalDate: ["rfp_vetting_approval_date", "date"],
   preBidMeeting: ["pre_bid_meeting", "text"],
@@ -321,6 +332,7 @@ const fileFields = {
   refloatPostTcecCommitteeNo: ["refloat_post_tcec_committee_no", "text"],
   rst: ["rst", "text"],
   biddingStageOver: ["bidding_stage_over", "text"],
+  refloatBiddingStageOver: ["refloat_bidding_stage_over", "text"],
   cncDate: ["cnc_date", "date"],
   cncApprovalDate: ["cnc_approval_date", "date"],
   noOfSo: ["no_of_so", "integer"],
@@ -927,7 +939,7 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
     [fileIds],
   );
   for (const row of orderRows.rows) {
-    const order: SupplyOrderDetail = {};
+    const order: SupplyOrderDetail = { id: String(row.id ?? "") };
     order.includeInPaymentTiming = row.include_in_payment_timing !== false;
     for (const [frontendKey, [column, kind]] of Object.entries(supplyOrderFields)) {
       (order as Record<string, unknown>)[frontendKey] = fromDbValue(row[column], kind);
@@ -2318,6 +2330,8 @@ const demandProcessingFileDateColumns: Record<string, string> = {
   cfaSentDate: "cfa_sent_date",
   cfaDate: "cfa_date",
   gemUndertakingDate: "gem_undertaking_date",
+  refloatGemUndertakingDate: "refloat_gem_undertaking_date",
+  refloatRecommendationDate: "refloat_recommendation_date",
   rfpVettingInitiationDate: "rfp_vetting_initiation_date",
   rfpVettingApprovalDate: "rfp_vetting_approval_date",
   preBidMeetingDate: "pre_bid_meeting_date",
@@ -2997,6 +3011,8 @@ const fileSearchColumns = {
   cfaSentDate: "f.cfa_sent_date",
   cfaDate: "f.cfa_date",
   gemUndertakingDate: "f.gem_undertaking_date",
+  refloatGemUndertakingDate: "f.refloat_gem_undertaking_date",
+  refloatRecommendationDate: "f.refloat_recommendation_date",
   rfpVettingInitiationDate: "f.rfp_vetting_initiation_date",
   rfpVettingApprovalDate: "f.rfp_vetting_approval_date",
   preBidMeeting: "f.pre_bid_meeting",
@@ -3014,6 +3030,7 @@ const fileSearchColumns = {
   postTcecCommitteeNumber: "f.post_tcec_committee_number",
   refloatBiddingDate: "f.refloat_bidding_date",
   refloatBidOpeningDate: "f.refloat_bid_opening_date",
+  refloatBiddingStageOver: "f.refloat_bidding_stage_over",
   refloatPostTcecDate: "f.refloat_post_tcec_date",
   refloatPostTcecMinutesDate: "f.refloat_post_tcec_minutes_date",
   refloatPostTcecCommitteeNo: "f.refloat_post_tcec_committee_no",
@@ -3106,6 +3123,8 @@ const dateSearchColumns = [
   "f.cfa_sent_date",
   "f.cfa_date",
   "f.gem_undertaking_date",
+  "f.refloat_gem_undertaking_date",
+  "f.refloat_recommendation_date",
   "f.rfp_vetting_initiation_date",
   "f.rfp_vetting_approval_date",
   "f.bid_date",
@@ -3159,6 +3178,7 @@ const yesNoFieldConditionKeys = new Set<string>([
   "refloatPreBidMeeting",
   "rst",
   "biddingStageOver",
+  "refloatBiddingStageOver",
   "demandCancelled",
   "soCancelled",
   "shortclosure",
@@ -4584,8 +4604,8 @@ function bgReceiptDelayBaseExpiredSql(category: string, days: number, nextDays?:
       when ${contract} then so.so_date
       when not ${contract} and ${isNoSql("f.ir")} and ${hasStages}
         then ${stageJobDate}
-      when not ${contract} and not ${isNoSql("f.ir")}
-        then least(so.material_receipt_date, ${genericStageDate("materialReceiptDate")})
+      when not ${contract} and ${isYesSql("f.ir")}
+        then so.ir_receipt_date
       else least(so.actual_job_completion_date, ${genericStageDate("actualJobCompletionDate")})
     end`;
   const elapsedDays = `(current_date - (${baseDate})::date)`;
@@ -5261,7 +5281,10 @@ function dateCastSql(expression: string) {
 
 function milestoneDateExpression(milestone: (typeof statusSummaryMilestones)[number]) {
   if (milestone.key === "bidding") {
-    return `coalesce(${dateCastSql("f.bid_opening_date")}, ${dateCastSql("f.bid_date")})`;
+    return dateCastSql("f.bid_opening_date");
+  }
+  if (milestone.key === "refloatBidding") {
+    return dateCastSql("f.refloat_bid_opening_date");
   }
   if ("supplyOrderDate" in milestone && milestone.supplyOrderDate) {
     const supplyOrderOnlyColumns = new Set([
@@ -5288,23 +5311,55 @@ function milestoneStageStartSql(
   milestone: (typeof statusSummaryMilestones)[number],
   milestoneIndex: number,
 ) {
-  const reviewed =
-    "reviewedColumn" in milestone && milestone.reviewedColumn
-      ? `when ${hasTextSql(milestone.reviewedColumn)} then ${dateCastSql(milestone.reviewedColumn)}`
-      : "";
-  const previousCases = statusSummaryMilestones
-    .slice(0, milestoneIndex)
-    .reverse()
-    .map(
-      (previous) =>
-        `when ${statusAppliesSql(previous)} and ${milestoneDateExpression(previous)} is not null then ${milestoneDateExpression(previous)}`,
-    )
-    .join("\n    ");
-  return `(case
-    ${reviewed}
-    ${previousCases}
-    else coalesce(${dateCastSql("f.received_date")}, ${dateCastSql("f.file_date")})
-  end)`;
+  const fileMilestoneEnd = statusSummaryMilestones.findIndex(
+    (candidate) => candidate.key === "financialSanction",
+  );
+  const fileMilestones = statusSummaryMilestones.slice(
+    0,
+    fileMilestoneEnd < 0 ? statusSummaryMilestones.length : fileMilestoneEnd,
+  );
+  const possiblePredecessors = isFlexiblePreControlStatusMilestone(milestone)
+    ? fileMilestones.filter(
+        (candidate) =>
+          candidate.key === "scrutiny" || isFlexiblePreControlStatusMilestone(candidate),
+      )
+    : statusSummaryMilestones.slice(0, milestoneIndex);
+  const completedDates = possiblePredecessors
+    .filter((candidate) => candidate.key !== milestone.key)
+    .map((candidate) => {
+      const date = milestoneDateExpression(candidate);
+      return `(case when ${statusAppliesSql(candidate)}
+        and ${milestoneCompleteSql(candidate)}
+        and (${date}) <= current_date
+        then (${date}) else null::date end)`;
+    });
+  const receivedDate = dateCastSql("f.received_date");
+  return `greatest(${[
+    `case when ${receivedDate} <= current_date then ${receivedDate} else null::date end`,
+    ...completedDates,
+  ].join(",\n    ")})`;
+}
+
+function tcecSupplyOrderDelayStartSql(soDate: string) {
+  const supplyOrderIndex = statusSummaryMilestones.findIndex((milestone) => milestone.key === "supplyOrder");
+  const cutoff = `coalesce(${soDate}, current_date)`;
+  if (supplyOrderIndex < 0) return "null::date";
+
+  const completedDates = statusSummaryMilestones
+    .slice(0, supplyOrderIndex)
+    .filter((milestone) => milestone.key !== "financialSanction")
+    .map((milestone) => {
+      const date = milestoneDateExpression(milestone);
+      return `(case when ${statusAppliesSql(milestone)}
+        and ${milestoneCompleteSql(milestone)}
+        and (${date}) <= ${cutoff}
+        then (${date}) else null::date end)`;
+    });
+  const receivedDate = dateCastSql("f.received_date");
+  return `greatest(${[
+    `case when ${receivedDate} <= ${cutoff} then ${receivedDate} else null::date end`,
+    ...completedDates,
+  ].join(",\n    ")})`;
 }
 
 const orderDelayMilestones = [
@@ -5440,7 +5495,10 @@ function orderDelayStartSql(start: (typeof orderDelayMilestones)[number]["start"
     case "financialSanction":
       return financialSanctionStart;
     case "supplyOrder":
-      return `coalesce(${financialSanctionDate}, ${financialSanctionStart})`;
+      return `case
+        when ${isYesSql("f.tcec")} then ${tcecSupplyOrderDelayStartSql(soDate)}
+        else ${financialSanctionDate}
+      end`;
     case "advancePayment":
       return effectiveOrderDateSql("so_date", "soDate");
     case "psb":
@@ -5612,9 +5670,15 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
               : milestone.key === "delivery"
                 ? hasTextSql("so.so_date")
                 : milestone.key === "jobCompletion"
-                  ? `${startDate} is not null and not ${contractPaymentDelay}`
-                  : milestone.key === "billPreparation"
-                    ? `${effectiveOrderDateSql("bill_preparation_date", "billPreparationDate")} is null
+                  ? // Job Completion is an independent workflow milestone.  A
+                    // contract payment can also be pending from its DP-based
+                    // trigger, but that must not hide an overdue Job Completion
+                    // row from the Delay Status drilldown.
+                    `${startDate} is not null`
+                  : milestone.key === "irPreparation"
+                    ? `${effectiveOrderDateSql("material_receipt_date", "materialReceiptDate")} is not null`
+                    : milestone.key === "billPreparation"
+                      ? `${effectiveOrderDateSql("bill_preparation_date", "billPreparationDate")} is null
                     and (
                       (${commonStagePaymentCase} and ${commonBillPreparationStart} is not null)
                       or
@@ -5671,6 +5735,7 @@ function expectedTcecSupplyOrderDelaySql(thresholdPlaceholder: string) {
   return `not ${isCancelledFileSql()}
     and not ${isYesSql("f.demand_cancelled")}
     and ${isYesSql("f.tcec")}
+    and ${hasTextSql("f.cnc_approval_date")}
     and coalesce(f.no_of_so, 0) > ${supplyOrderCountSql()}
     and (${startDate}) is not null
     and (current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`;
@@ -5727,65 +5792,114 @@ function biddingDelayStatusSql(
   breakupKey: string | undefined,
   thresholdPlaceholder: string,
   refloatScope: "any" | "normal" | "refloat" = "any",
+  rfpScope: "any" | "no" | "yes" = "any",
 ) {
   const refloatYes = isYesSql("f.refloat");
   const bidDate = `(case when ${refloatYes} then f.refloat_bidding_date else f.bid_date end)`;
   const bidOpeningDate = `(case when ${refloatYes} then f.refloat_bid_opening_date else f.bid_opening_date end)`;
-  const latestPrerequisiteDate = `greatest(
-    f.cfa_date,
-    coalesce(f.gem_undertaking_date, f.cfa_date),
-    coalesce(f.rfp_vetting_approval_date, f.cfa_date)
-  )`;
+  // Normal bidding delay is anchored to CFA Approval Date. GeM undertaking
+  // is a separate prerequisite status and must not move the bidding clock.
+  const normalBiddingStartDate = "f.cfa_date";
+  const tcecRefloat = `(${refloatYes} and ${isYesSql("f.tcec")})`;
+  const refloatNonTcecRestart = `(${refloatYes}
+    and not ${isYesSql("f.tcec")}
+    and ${isYesSql("f.bidding_stage_over")}
+    and ${hasTextSql("f.refloat_recommendation_date")})`;
+  const refloatStartDate = `case
+    when ${isYesSql("f.tcec")} then ${dateCastSql("f.post_tcec_minutes_date")}
+    when ${refloatNonTcecRestart} then ${dateCastSql("f.refloat_recommendation_date")}
+    else null::date
+  end`;
+  const delayStartDate = `(case when ${refloatYes} then (${refloatStartDate}) else (${normalBiddingStartDate}) end)`;
   const refloatPredicate =
     refloatScope === "refloat" ? `and ${refloatYes}` : refloatScope === "normal" ? `and not ${refloatYes}` : "";
+  const rfpPredicate =
+    rfpScope === "yes"
+      ? `and ${isYesSql("f.rfp_vetting")}`
+      : rfpScope === "no"
+        ? `and not ${isYesSql("f.rfp_vetting")}`
+        : "";
+  const refloatStageOverPredicate = `((${tcecRefloat} and not ${isYesSql("f.bidding_stage_over")})
+    or ${refloatNonTcecRestart})`;
+  const biddingStageOverPredicate = refloatScope === "normal"
+    ? ""
+    : refloatScope === "refloat"
+      ? `and ${refloatStageOverPredicate}`
+      : `and (not ${refloatYes} or ${refloatStageOverPredicate})`;
+  const refloatPrerequisiteCondition = `((${tcecRefloat} and ${hasTextSql("f.post_tcec_minutes_date")})
+    or ${refloatNonTcecRestart})`;
+  const refloatPrerequisitePredicate = `and ${refloatPrerequisiteCondition}`;
+  const prerequisitePredicate = refloatScope === "refloat"
+    ? refloatPrerequisitePredicate
+    : refloatScope === "any"
+      ? `and ((${refloatYes} and ${refloatPrerequisiteCondition}) or (not ${refloatYes} and ${hasTextSql("f.cfa_date")}))`
+      : `and ${hasTextSql("f.cfa_date")}`;
   const base = `not ${isYesSql("f.demand_cancelled")}
     and not ${completedMilestoneExists(`${normalizedSql("completed.milestone")} = 'fileclosed'`)}
     and ${biddingApplicableSql()}
-    and ${hasTextSql("f.cfa_date")}
-    and not ${isYesSql("f.bidding_stage_over")}
-    ${refloatPredicate}`;
+    ${prerequisitePredicate}
+    ${biddingStageOverPredicate}
+    ${refloatPredicate}
+    ${refloatScope === "normal" ? "" : `and (not ${refloatNonTcecRestart} or not ${hasTextSql("f.refloat_bidding_date")})`}
+    ${refloatScope === "normal" ? `and not ${hasTextSql("f.bid_date")}` : ""}
+    ${rfpPredicate}`;
   const statusCases: Record<string, string> = {
     gemUndertakingPending: `${base}
+      and not ${refloatYes}
       and ${isYesSql("f.gem")}
       and not ${hasTextSql("f.gem_undertaking_date")}
       and (current_date - f.cfa_date) > ${thresholdPlaceholder}::integer`,
-    rfpVettingInitiationPending: `${base}
-      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
-      and ${isYesSql("f.rfp_vetting")}
-      and not ${hasTextSql("f.rfp_vetting_initiation_date")}
-      and (current_date - (case when ${isYesSql("f.gem")} then coalesce(f.gem_undertaking_date, f.cfa_date) else f.cfa_date end)) > ${thresholdPlaceholder}::integer`,
-    rfpVettingApprovalPending: `${base}
-      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
-      and ${isYesSql("f.rfp_vetting")}
-      and ${hasTextSql("f.rfp_vetting_initiation_date")}
-      and not ${hasTextSql("f.rfp_vetting_approval_date")}
-      and (current_date - f.rfp_vetting_initiation_date) > ${thresholdPlaceholder}::integer`,
     tenderLivePending: `${base}
-      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
-      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
-      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and (not ${isYesSql("f.gem")} or ${hasTextSql("f.gem_undertaking_date")} or ${refloatYes})
       and ${bidDate} is null
-      and (current_date - (${latestPrerequisiteDate})::date) > ${thresholdPlaceholder}::integer`,
+      and (current_date - (${delayStartDate})::date) > ${thresholdPlaceholder}::integer`,
     bidOpeningOverdue: `${base}
-      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
-      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
-      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and (not ${isYesSql("f.gem")} or ${hasTextSql("f.gem_undertaking_date")} or ${refloatYes})
       and ${bidOpeningDate} is not null
       and ${bidOpeningDate} < current_date
       and not ${isYesSql("f.bid_opened")}
       and (current_date - (${bidOpeningDate})::date) > ${thresholdPlaceholder}::integer`,
     biddingStageCompletionPending: `${base}
-      and not (${isYesSql("f.gem")} and not ${hasTextSql("f.gem_undertaking_date")})
-      and not (${isYesSql("f.rfp_vetting")} and not ${hasTextSql("f.rfp_vetting_initiation_date")})
-      and not (${isYesSql("f.rfp_vetting")} and ${hasTextSql("f.rfp_vetting_initiation_date")} and not ${hasTextSql("f.rfp_vetting_approval_date")})
+      and (not ${isYesSql("f.gem")} or ${hasTextSql("f.gem_undertaking_date")} or ${refloatYes})
       and not (${bidOpeningDate} is not null and ${bidOpeningDate} < current_date and not ${isYesSql("f.bid_opened")})
       and ${isYesSql("f.bid_opened")}
-      and (current_date - coalesce(${bidOpeningDate}, ${bidDate}, ${latestPrerequisiteDate})::date) > ${thresholdPlaceholder}::integer`,
+      and (current_date - coalesce(${bidOpeningDate}, ${bidDate}, ${delayStartDate})::date) > ${thresholdPlaceholder}::integer`,
   };
   if (breakupKey && statusCases[breakupKey]) return `(${statusCases[breakupKey]})`;
   return `(${Object.values(statusCases)
     .map((clause) => `(${clause})`)
     .join(" or ")})`;
+}
+
+function gemUndertakingDelayFilterSql(
+  milestoneKey: string,
+  thresholdPlaceholder: string,
+) {
+  if (milestoneKey !== "all" && milestoneKey !== "gemUndertaking") return "false";
+  const refloatTcec = `(${isYesSql("f.refloat")} and ${isYesSql("f.tcec")})`;
+  const refloatNonTcec = `(${isYesSql("f.refloat")} and not ${isYesSql("f.tcec")})`;
+  const startDate = `(case
+    when ${refloatTcec} then ${dateCastSql("f.post_tcec_date")}
+    when ${refloatNonTcec} then ${dateCastSql("f.refloat_recommendation_date")}
+    else ${dateCastSql("f.cfa_date")} end)`;
+  const pending = `(
+    (not ${isYesSql("f.refloat")}
+      and ${hasTextSql("f.cfa_date")}
+      and not ${hasTextSql("f.gem_undertaking_date")})
+    or (${refloatTcec}
+      and ${hasTextSql("f.post_tcec_date")}
+      and not ${hasTextSql("f.refloat_gem_undertaking_date")})
+    or (${refloatNonTcec}
+      and ${hasTextSql("f.refloat_recommendation_date")}
+      and not ${hasTextSql("f.refloat_gem_undertaking_date")})
+  )`;
+  return `not ${isCancelledFileSql()}
+    and not (${completedMilestoneExists(`${normalizedSql("completed.milestone")} = 'fileclosed'`)})
+    and ${isYesSql("f.gem")}
+    and ${biddingApplicableSql()}
+    and ${pending}
+    and (${startDate}) is not null
+    and (current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`;
 }
 
 function dateColumnToJsonKey(column: string) {
@@ -5826,16 +5940,56 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
         and ${financialSanctionStartDate} is not null
         and (current_date - (${financialSanctionStartDate})::date) > ${thresholdPlaceholder}::integer)`
       : "false";
+  const nonTcecTechnicalEvaluationClause =
+    milestoneKey === "all" || milestoneKey === "nonTcecTechnicalEvaluation"
+      ? `(
+        not ${isYesSql("f.tcec")}
+        and not ${isCancelledFileSql()}
+        and not ${completedMilestoneExists(`${normalizedSql("completed.milestone")} = 'fileclosed'`)}
+        and ${biddingApplicableSql()}
+        and (case
+          when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_bid_opening_date")}
+            then ${isYesSql("f.refloat_bidding_stage_over")}
+          else ${isYesSql("f.bidding_stage_over")}
+        end)
+        and (case
+          when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_bid_opening_date")}
+            then ${dateCastSql("f.refloat_bid_opening_date")}
+          else ${dateCastSql("f.bid_opening_date")}
+        end) is not null
+        and (current_date - (case
+          when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_bid_opening_date")}
+            then ${dateCastSql("f.refloat_bid_opening_date")}
+          else ${dateCastSql("f.bid_opening_date")}
+        end)) > ${thresholdPlaceholder}::integer
+        and (case
+          when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_bid_opening_date")}
+            then (select min(${dateCastSql("so_end.financial_sanction_date")})
+              from supply_orders so_end
+              where so_end.file_id = f.id)
+          when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_recommendation_date")}
+            then ${dateCastSql("f.refloat_recommendation_date")}
+          else (select min(${dateCastSql("so_end.financial_sanction_date")})
+            from supply_orders so_end
+            where so_end.file_id = f.id)
+        end) is null
+      )`
+      : "false";
   const workflowNotStartedClause =
     milestoneKey === "all" || milestoneKey === "workflowNotStarted"
       ? `(${workflowNotStartedSql()} and (current_date - coalesce(f.received_date, f.created_at::date)) > ${thresholdPlaceholder}::integer)`
       : "false";
+  const gemUndertakingClause = gemUndertakingDelayFilterSql(milestoneKey, thresholdPlaceholder);
   const biddingClause = milestoneKey === "all"
-    ? biddingDelayStatusSql(undefined, thresholdPlaceholder)
+    ? biddingDelayStatusSql(undefined, thresholdPlaceholder, "normal")
     : milestoneKey === "bidding"
       ? biddingDelayStatusSql(undefined, thresholdPlaceholder, "normal")
-      : "false";
-  const refloatBiddingClause = milestoneKey === "refloatBidding"
+      : milestoneKey === "biddingNonRfp"
+        ? biddingDelayStatusSql(undefined, thresholdPlaceholder, "normal", "no")
+        : milestoneKey === "biddingRfp"
+          ? biddingDelayStatusSql(undefined, thresholdPlaceholder, "normal", "yes")
+          : "false";
+  const refloatBiddingClause = milestoneKey === "all" || milestoneKey === "refloatBidding"
     ? biddingDelayStatusSql(undefined, thresholdPlaceholder, "refloat")
     : "false";
   const clauses = statusSummaryMilestones
@@ -5849,7 +6003,17 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
     )
     .map(({ milestone, index }) => {
       const startDate = milestoneStageStartSql(milestone, index);
+      const postTcecGate = milestone.key === "postTcec"
+        ? `and ${statusAppliesSql(milestone)}
+          and ${isYesSql("f.bidding_stage_over")}
+          and ${hasTextSql("f.bid_opening_date")}`
+        : milestone.key === "refloatPostTcec"
+          ? `and ${statusAppliesSql(milestone)}
+            and ${isYesSql("f.bidding_stage_over")}
+            and ${hasTextSql("f.refloat_bid_opening_date")}`
+          : "";
       return `(${statusActiveSql(milestone)}
+        ${postTcecGate}
         and not (${milestoneCompleteSql(milestone)})
         and ${startDate} is not null
         and (current_date - ${startDate}::date) > ${thresholdPlaceholder}::integer)`;
@@ -5877,8 +6041,8 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
     thresholdPlaceholder,
   );
   return clauses.length
-    ? `((${workflowNotStartedClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${clauses.join(" or ")}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or ${paymentCumulativeClause})`
-    : `((${workflowNotStartedClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or ${paymentCumulativeClause})`;
+    ? `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or (${clauses.join(" or ")}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`
+    : `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`;
 }
 
 function paymentTimingJsonDateSql(value: string) {
@@ -6071,6 +6235,7 @@ function paymentCumulativeDelaySql(milestoneKey: string, thresholdPlaceholder: s
       ${include}
       and ${hasTextSql("so.so_date")}
       and not ${isYesSql("so.so_cancelled")}
+      and not ${returnHistory}
       and ${hasTextSql(startDate)}
       and (not ${returnHistory} or ${hasTextSql(submissionText)})
       and ${(!unpaidOnly || `not ${hasTextSql(paymentText)}`)}
@@ -6126,6 +6291,7 @@ function paymentCumulativeDelaySql(milestoneKey: string, thresholdPlaceholder: s
     ${isYesSql("so.advance_payment")}
     and lower(coalesce(so.advance_payment_detail ->> 'includeInPaymentTiming', 'true')) <> 'false'
     and not ${isYesSql("so.so_cancelled")}
+    and not ${advanceReturn}
     and ${hasTextSql(advanceSubmissionText)}
     and (${advanceEnd}) >= (${advanceSubmission})
     and ((${advanceEnd}) - (${advanceSubmission})) > ${thresholdPlaceholder}::integer
@@ -6136,6 +6302,7 @@ function paymentCumulativeDelaySql(milestoneKey: string, thresholdPlaceholder: s
     from jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) as supplementary_bill(bill)
     where not ${isYesSql("so.so_cancelled")}
       and lower(coalesce(supplementary_bill.bill ->> 'includeInPaymentTiming', 'true')) <> 'false'
+      and not ${billReturnHistorySql("supplementary_bill.bill -> 'billReturnCycles'")}
       and ${hasTextSql("supplementary_bill.bill ->> 'billSentForPaymentDate'")}
       and not ${hasTextSql("supplementary_bill.bill ->> 'paymentDate'")}
       and ${(() => {
@@ -8000,37 +8167,51 @@ function workflowNotStartedSql() {
     "scrutiny_response_date",
     "scrutiny_completion_date",
     "imms_date",
-    "high_value_meeting_date",
-    "high_value_minutes_date",
-    "ad_sent_date",
-    "pre_tcec_date",
-    "pre_tcec_minutes_date",
-    "ad_vetting_date",
-    "rqa_sent_date",
-    "rqa_approval_date",
-    "ifa_sent_date",
-    "ifa_final_date",
     "cfa_sent_date",
     "cfa_date",
-    "gem_undertaking_date",
-    "rfp_vetting_initiation_date",
-    "rfp_vetting_approval_date",
-    "pre_bid_meeting_date",
-    "bid_date",
-    "bid_opening_date",
-    "refloat_pre_bid_meeting_date",
-    "refloat_bidding_date",
-    "refloat_bid_opening_date",
-    "post_tcec_date",
-    "post_tcec_minutes_date",
-    "cnc_date",
-    "cnc_approval_date",
   ];
   const noFileDates = dateFields.map((column) => `not ${hasTextSql(`f.${column}`)}`).join(" and ");
+  const applicabilityGates = [
+    { applies: isYesSql("f.high_value"), dates: ["high_value_meeting_date", "high_value_minutes_date"] },
+    { applies: isYesSql("f.ad"), dates: ["ad_sent_date", "ad_vetting_date"] },
+    { applies: isYesSql("f.tcec"), dates: ["pre_tcec_date", "pre_tcec_minutes_date", "post_tcec_date", "post_tcec_minutes_date", "cnc_date", "cnc_approval_date"] },
+    { applies: isYesSql("f.rqa"), dates: ["rqa_sent_date", "rqa_approval_date"] },
+    { applies: isYesSql("f.ifa"), dates: ["ifa_sent_date", "ifa_final_date"] },
+    { applies: isYesSql("f.gem"), dates: ["gem_undertaking_date"] },
+    { applies: isYesSql("f.rfp_vetting"), dates: ["rfp_vetting_initiation_date", "rfp_vetting_approval_date"] },
+    {
+      applies: `(${biddingApplicableSql()} and ${isYesSql("f.pre_bid_meeting")})`,
+      dates: ["pre_bid_meeting_date"],
+    },
+    { applies: biddingApplicableSql(), dates: ["bid_date", "bid_opening_date"] },
+    {
+      applies: `(${biddingApplicableSql()} and ${isYesSql("f.refloat")})`,
+      dates: ["refloat_bidding_date", "refloat_bid_opening_date"],
+    },
+    {
+      applies: `(${biddingApplicableSql()} and ${isYesSql("f.refloat")} and ${isYesSql("f.refloat_pre_bid_meeting")})`,
+      dates: ["refloat_pre_bid_meeting_date"],
+    },
+    {
+      applies: `(${isYesSql("f.refloat")} and ${isYesSql("f.tcec")})`,
+      dates: ["refloat_post_tcec_date", "refloat_post_tcec_minutes_date"],
+    },
+    {
+      applies: `(${biddingApplicableSql()} and ${isYesSql("f.refloat")} and ${isYesSql("f.tcec")} and ${isYesSql("f.gem")})`,
+      dates: ["refloat_gem_undertaking_date"],
+    },
+  ];
+  const noInapplicableWorkflowDates = applicabilityGates
+    .map(
+      ({ applies, dates }) =>
+        `not (${applies} and (${dates.map((column) => hasTextSql(`f.${column}`)).join(" or ")}))`,
+    )
+    .join(" and ");
   return `not ${isCancelledFileSql()}
     and not ${hasTextSql("f.current_milestone")}
     and not exists (select 1 from file_completed_milestones completed where completed.file_id = f.id)
     and ${noFileDates}
+    and ${noInapplicableWorkflowDates}
     and not exists (
       select 1
       from supply_orders so_workflow
@@ -8041,8 +8222,7 @@ function workflowNotStartedSql() {
           or ${hasTextSql("so_workflow.dp_date")}
           or ${hasTextSql("so_workflow.material_receipt_date")}
           or ${hasTextSql("so_workflow.job_completion_date")}
-          or ${hasTextSql("so_workflow.ir_preparation_date")}
-          or ${hasTextSql("so_workflow.ir_receipt_date")}
+          or (${deliveryInspectionApplicableSql()} and (${hasTextSql("so_workflow.ir_preparation_date")} or ${hasTextSql("so_workflow.ir_receipt_date")}))
           or ${hasTextSql("so_workflow.bill_preparation_date")}
           or ${hasTextSql("so_workflow.bill_sent_for_payment_date")}
           or ${hasTextSql("so_workflow.payment_date")}
@@ -8290,41 +8470,129 @@ export function dashboardFilterSql(
     return biddingDelayStatusSql(breakupKey, thresholdPlaceholder);
   }
   if (filter === "analyticsMilestoneClearing:bidding") {
-    const start = `case
-      when ${isYesSql("f.gem")} then f.gem_undertaking_date
-      else f.cfa_date
+    const gemUndertakingApplies = `(${isYesSql("f.gem")}
+      and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison')`;
+    const tcecRefloat = `(${isYesSql("f.tcec")} and ${isYesSql("f.refloat")})`;
+    const tcecStart = `case
+      when ${tcecRefloat} then f.post_tcec_minutes_date
+      else greatest(
+        f.cfa_date,
+        case when ${gemUndertakingApplies} then f.gem_undertaking_date else f.cfa_date end,
+        case when ${isYesSql("f.rfp_vetting")} then f.rfp_vetting_approval_date else f.cfa_date end
+      )
     end`;
-    const end = `case
+    const tcecEnd = `case
       when ${isYesSql("f.tcec")} and ${isYesSql("f.refloat")} then f.refloat_post_tcec_date
       when ${isYesSql("f.tcec")} then f.post_tcec_date
-      when ${isYesSql("f.refloat")} then f.refloat_bid_opening_date
-      else f.bid_opening_date
+      else f.bid_date
     end`;
-    return `${biddingApplicableSql()}
+    const tcec = `${biddingApplicableSql()}
+      and ${isYesSql("f.tcec")}
       and ${isYesSql("f.bidding_stage_over")}
+      and (
+        (
+          ${isYesSql("f.refloat")}
+          and ${hasTextSql("f.post_tcec_minutes_date")}
+        )
+        or (
+          not ${isYesSql("f.refloat")}
+          and ${hasTextSql("f.cfa_date")}
+          and (not ${gemUndertakingApplies} or ${hasTextSql("f.gem_undertaking_date")})
+          and (not ${isYesSql("f.rfp_vetting")} or ${hasTextSql("f.rfp_vetting_approval_date")})
+        )
+      )
+      and ${hasTextSql(tcecStart)}
+      and ${hasTextSql(tcecEnd)}
+      and (${tcecEnd}) >= (${tcecStart})
+      and ${hasTextSql("f.received_date")}
+      and (${tcecEnd}) >= f.received_date`;
+    const normalNonTcec = `${biddingApplicableSql()}
+      and not ${isYesSql("f.tcec")}
       and ${hasTextSql("f.cfa_date")}
-      and (not ${isYesSql("f.gem")} or ${hasTextSql("f.gem_undertaking_date")})
+      and ${hasTextSql("f.bid_date")}
+      and f.bid_date >= f.cfa_date
+      and ${hasTextSql("f.received_date")}
+      and f.bid_date >= f.received_date`;
+    const refloatNonTcec = `${biddingApplicableSql()}
+      and not ${isYesSql("f.tcec")}
+      and ${isYesSql("f.refloat")}
+      and ${isYesSql("f.bidding_stage_over")}
+      and ${hasTextSql("f.refloat_recommendation_date")}
+      and ${hasTextSql("f.refloat_bidding_date")}
+      and f.refloat_bidding_date >= f.refloat_recommendation_date
+      and ${hasTextSql("f.received_date")}
+      and f.refloat_bidding_date >= f.received_date`;
+    return `((${tcec}) or (${normalNonTcec}) or (${refloatNonTcec}))`;
+  }
+  if (filter === "analyticsMilestoneClearing:gemUndertaking") {
+    const gemUndertakingApplies = `(${isYesSql("f.gem")}
+      and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison')`;
+    const normalStart = "f.cfa_date";
+    const normalEnd = "f.gem_undertaking_date";
+    const refloatStart = "f.refloat_recommendation_date";
+    const refloatEnd = "f.refloat_gem_undertaking_date";
+    const normal = `${gemUndertakingApplies}
+      and ${hasTextSql(normalStart)}
+      and ${hasTextSql(normalEnd)}
+      and (${normalEnd}) >= (${normalStart})
+      and ${hasTextSql("f.received_date")}
+      and (${normalEnd}) >= f.received_date`;
+    const refloat = `${gemUndertakingApplies}
+      and not ${isYesSql("f.tcec")}
+      and ${isYesSql("f.refloat")}
+      and ${hasTextSql(refloatStart)}
+      and ${hasTextSql(refloatEnd)}
+      and (${refloatEnd}) >= (${refloatStart})
+      and ${hasTextSql("f.received_date")}
+      and (${refloatEnd}) >= f.received_date`;
+    return `((${normal}) or (${refloat}))`;
+  }
+  if (filter === "analyticsMilestoneClearing:rfpVetting") {
+    const start = `case
+      when ${isYesSql("f.gem")}
+        and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison'
+        and ${hasTextSql("f.cfa_date")}
+        then f.gem_undertaking_date
+      else f.cfa_date
+    end`;
+    const end = "f.rfp_vetting_approval_date";
+    return `${isYesSql("f.rfp_vetting")}
       and ${hasTextSql(start)}
       and ${hasTextSql(end)}
-      and (${end}) >= (${start})`;
+      and ${hasTextSql("f.received_date")}
+      and (${end}) >= (${start})
+      and (${end}) >= f.received_date`;
   }
   if (filter === "analyticsMilestoneClearing:nonTcecTechnicalEvaluation") {
-    const bidOpeningDate = `case
-      when ${isYesSql("f.refloat")} and ${hasTextSql("f.refloat_bid_opening_date")}
-        then f.refloat_bid_opening_date
-      else f.bid_opening_date
-    end`;
-    return `not ${isYesSql("f.tcec")}
+    const firstCycleStart = dateCastSql("f.bid_opening_date");
+    const firstCycleEnd = `(case
+      when ${isYesSql("f.refloat")} then ${dateCastSql("f.refloat_recommendation_date")}
+      else (select min(${dateCastSql("so_end.financial_sanction_date")})
+        from supply_orders so_end
+        where so_end.file_id = f.id)
+    end)`;
+    const secondCycleStart = dateCastSql("f.refloat_bid_opening_date");
+    const secondCycleEnd = `(select min(${dateCastSql("so_end.financial_sanction_date")})
+      from supply_orders so_end
+      where so_end.file_id = f.id)`;
+    const firstCycle = `not ${isYesSql("f.tcec")}
       and ${biddingApplicableSql()}
       and ${isYesSql("f.bidding_stage_over")}
-      and ${hasTextSql(bidOpeningDate)}
-      and exists (
-        select 1
-        from supply_orders so
-        where so.file_id = f.id
-          and ${hasTextSql("so.financial_sanction_date")}
-          and so.financial_sanction_date >= (${bidOpeningDate})
-      )`;
+      and ${hasTextSql(firstCycleStart)}
+      and ${hasTextSql(firstCycleEnd)}
+      and (${firstCycleEnd}) >= (${firstCycleStart})
+      and ${hasTextSql("f.received_date")}
+      and (${firstCycleEnd}) >= ${dateCastSql("f.received_date")}`;
+    const secondCycle = `not ${isYesSql("f.tcec")}
+      and ${biddingApplicableSql()}
+      and ${isYesSql("f.refloat")}
+      and ${isYesSql("f.refloat_bidding_stage_over")}
+      and ${hasTextSql(secondCycleStart)}
+      and ${hasTextSql(secondCycleEnd)}
+      and (${secondCycleEnd}) >= (${secondCycleStart})
+      and ${hasTextSql("f.received_date")}
+      and (${secondCycleEnd}) >= ${dateCastSql("f.received_date")}`;
+    return `((${firstCycle}) or (${secondCycle}))`;
   }
   if (filter === "analyticsMilestoneClearing:supplyOrder") {
     const tcecSupplyOrder = dashboardMilestoneFilterSql("milestoneCleared:supplyOrder") ?? "false";
@@ -8557,11 +8825,19 @@ export function dashboardFilterSql(
       )`;
   }
   if (filter === "gemUndertaking:completed") {
+    const refloatTcec = `(${isYesSql("f.refloat")} and ${isYesSql("f.tcec")})`;
     return `${isYesSql("f.gem")}
       and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison'
-      and ${hasTextSql("f.cfa_date")}
-      and ${hasTextSql("f.gem_undertaking_date")}
-      and f.gem_undertaking_date >= f.cfa_date`;
+      and (
+        (not ${isYesSql("f.refloat")}
+          and ${hasTextSql("f.cfa_date")}
+          and ${hasTextSql("f.gem_undertaking_date")}
+          and f.gem_undertaking_date >= f.cfa_date)
+        or (${refloatTcec}
+          and ${hasTextSql("f.post_tcec_date")}
+          and ${hasTextSql("f.refloat_gem_undertaking_date")}
+          and f.refloat_gem_undertaking_date >= f.post_tcec_date)
+      )`;
   }
   const dashboardMilestoneSql = dashboardMilestoneFilterSql(filter);
   if (dashboardMilestoneSql) return dashboardMilestoneSql;
@@ -10810,23 +11086,27 @@ async function replaceSupplyOrders(
   rows: Record<string, unknown>[],
 ) {
   const previousOrders = await client.query<{
+    id: string;
     sort_order: number;
     so_no: string | null;
     gem_so_no: string | null;
     no_further_action: string | null;
     no_further_action_date: Date | string | null;
   }>(
-    `select sort_order, so_no, gem_so_no, no_further_action, no_further_action_date
+    `select id, sort_order, so_no, gem_so_no, no_further_action, no_further_action_date
      from supply_orders where file_id = $1 order by sort_order`,
     [fileId],
   );
   await client.query("delete from supply_orders where file_id = $1", [fileId]);
   let sortOrder = 0;
+  const matchedOrderIds = new Set<string>();
   for (const row of rows.filter(hasFilledValue)) {
-    const columns = ["file_id", "sort_order", "include_in_payment_timing"];
-    const values: unknown[] = [fileId, sortOrder++, row.includeInPaymentTiming !== false];
-    const placeholders = ["$1", "$2", "$3"];
+    const columns = ["id", "file_id", "sort_order", "include_in_payment_timing"];
+    const values: unknown[] = [null, fileId, sortOrder++, row.includeInPaymentTiming !== false];
+    const placeholders = ["coalesce($1::uuid, gen_random_uuid())", "$2", "$3", "$4"];
     const previous = previousOrders.rows.find((item) => {
+      if (matchedOrderIds.has(item.id)) return false;
+      if (toDbText(row.id) === item.id) return true;
       const soNo = toDbText(row.soNo);
       const gemSoNo = toDbText(row.gemSoNo);
       if (soNo || gemSoNo) {
@@ -10834,6 +11114,8 @@ async function replaceSupplyOrders(
       }
       return item.sort_order === sortOrder - 1 && !item.so_no && !item.gem_so_no;
     });
+    if (previous) matchedOrderIds.add(previous.id);
+    values[0] = previous?.id ?? null;
     const noFurtherActionDate =
       toDbText(row.noFurtherAction)?.toLowerCase() === "yes"
         ? previous?.no_further_action?.toLowerCase() === "yes" && previous.no_further_action_date
@@ -11172,6 +11454,14 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   cncDate: fileExportField("CNC Date", "cncDate"),
   cncApprovalDate: fileExportField("CNC Approval Date", "cncApprovalDate"),
   gemUndertakingDate: fileExportField("GeM Undertaking Date", "gemUndertakingDate"),
+  refloatGemUndertakingDate: fileExportField(
+    "Refloat GeM Undertaking",
+    "refloatGemUndertakingDate",
+  ),
+  refloatRecommendationDate: fileExportField(
+    "Refloat Recommendation",
+    "refloatRecommendationDate",
+  ),
   gemBiddingMode: fileExportField("GeM Bidding Mode", "gemBiddingMode"),
   psb: fileExportField("PSB Applicable", "psb"),
   bg: fileExportField("BG Applicable", "bg"),
@@ -11198,6 +11488,7 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   refloatPostTcecCommitteeNo: fileExportField("Refloat Post-TCEC Committee No.", "refloatPostTcecCommitteeNo"),
   rst: fileExportField("RST", "rst"),
   biddingStageOver: fileExportField("Bidding Stage Over", "biddingStageOver"),
+  refloatBiddingStageOver: fileExportField("Refloat Bidding Stage Over", "refloatBiddingStageOver"),
   soNo: orderExportField("S.O. No.", "soNo"),
   gemSoNo: orderExportField("GeM S.O. No.", "gemSoNo"),
   soDate: orderExportField("S.O. Date", "soDate"),
@@ -11210,7 +11501,7 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   bqBasis: orderExportField("BQ Basis", "bqBasis"),
   soValueCapital: orderExportField("S.O. Capital Value", "soValueCapital", true),
   soValueRevenue: orderExportField("S.O. Revenue Value", "soValueRevenue", true),
-  dpDate: orderExportField("Original D.P.", "dpDate"),
+  dpDate: orderExportField("S.O. D.P. / Last Stage Effective D.P.", "dpDate"),
   deliveryPeriodStartDate: orderExportField("Delivery Period Start Date", "deliveryPeriodStartDate"),
   dpExtension: orderExportField("D.P. Extension", "dpExtension"),
   dpExtensionCount: orderExportField("D.P. Extension Count", "dpExtensionCount", true),
@@ -11314,13 +11605,69 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   supplementaryBillRemarks: supplementaryExportField("Supplementary Bill Remarks", "remarks"),
 };
 
+const quickEntryExportDateFields = new Set([
+  "fileDate", "receivedDate", "fileClosureDate", "demandCancelledDate",
+  "scrutinyDate", "scrutinyResponseDate", "scrutinyCompletionDate", "immsDate",
+  "highValueMeetingDate", "highValueMinutesDate", "adSentDate", "adVettingDate",
+  "preTcecDate", "preTcecMinutesDate", "rqaSentDate", "rqaApprovalDate",
+  "ifaSentDate", "ifaFinalDate", "cfaSentDate", "cfaDate", "cncDate",
+  "cncApprovalDate", "gemUndertakingDate", "refloatGemUndertakingDate", "refloatRecommendationDate", "rfpVettingInitiationDate",
+  "rfpVettingApprovalDate", "preBidMeetingDate", "bidDate", "bidOpeningDate",
+  "postTcecDate", "postTcecMinutesDate", "refloatPreBidMeetingDate",
+  "refloatBiddingDate", "refloatBidOpeningDate", "refloatPostTcecDate",
+  "refloatPostTcecMinutesDate", "soDate", "dpDate", "deliveryPeriodStartDate",
+  "revisedDp", "materialReceiptDate", "actualJobCompletionDate", "jobCompletionDate",
+  "irPreparationDate", "irReceiptDate", "billPreparationDate", "billSentForPaymentDate",
+  "paymentDate", "soCancelledDate", "shortclosureDate", "noFurtherActionDate",
+  "psbBgReceivedDate", "psbBgValidityDate", "psbBgReturnDate", "pwbBgReceivedDate",
+  "pwbBgValidityDate", "pwbBgReturnDate", "combinedBgReceivedDate",
+  "combinedBgValidityDate", "combinedBgReturnDate", "warrantyPeriodDate",
+  "stageDpDate", "stageRevisedDp", "stageDeliveryPeriodStartDate",
+  "stageMaterialReceiptDate", "stageActualJobCompletionDate", "stageJobCompletionDate",
+  "stageIrPreparationDate", "stageIrReceiptDate", "stageBillPreparationDate",
+  "stageBillSentForPaymentDate", "stagePaymentDate", "advanceExpectedPaymentDate",
+  "advanceBillPreparationDate", "advanceBillSentForPaymentDate", "advancePaymentDate",
+  "supplementaryBillSentForPaymentDate",
+  "supplementaryBillPaymentDate",
+]);
+
 type QuickEntryExportColumn = {
   header: string;
   field?: QuickEntryExportField;
   itemIndex?: number;
+  date?: boolean;
+  numeric?: boolean;
+  aggregate?: "soAmountCapital" | "soAmountRevenue" | "paidSoFar" | "latestStageDate" | "currency";
   statusIndex?: number;
-  statusPart?: "text" | "date";
+  statusPart?: "text" | "dateTime";
 };
+
+const quickEntryStageDateFields: Record<string, string> = {
+  stageMaterialReceiptDate: "materialReceiptDate",
+  stageActualJobCompletionDate: "actualJobCompletionDate",
+  stageJobCompletionDate: "jobCompletionDate",
+  stageIrPreparationDate: "irPreparationDate",
+  stageIrReceiptDate: "irReceiptDate",
+};
+const quickEntryOrderToStageDateFields: Record<string, string> = {
+  materialReceiptDate: "materialReceiptDate",
+  actualJobCompletionDate: "actualJobCompletionDate",
+  jobCompletionDate: "jobCompletionDate",
+  irPreparationDate: "irPreparationDate",
+  irReceiptDate: "irReceiptDate",
+};
+const quickEntryAmountKeys = new Set([
+  "soValueCapital", "soValueRevenue", "stageAmountCapital", "stageAmountRevenue",
+]);
+const quickEntryActualPaymentKeys = new Set([
+  "actualPaymentCapital", "actualPaymentRevenue", "stageActualPaymentCapital",
+  "stageActualPaymentRevenue", "advanceActualPaymentCapital", "advanceActualPaymentRevenue",
+  "supplementaryBillActualPaymentCapital", "supplementaryBillActualPaymentRevenue",
+]);
+const quickEntryReturnHistoryFieldKeys = new Set([
+  "billReturnHistory", "stageBillReturnHistory", "advanceReturnHistory",
+  "supplementaryBillReturnHistory",
+]);
 
 function dateFallsInRange(value: string | undefined, range: { start: string; end: string }) {
   const date = value?.slice(0, 10) ?? "";
@@ -11347,7 +11694,7 @@ function formatQuickEntryReturnHistory(value: unknown) {
 function formatQuickEntryStatusDate(value: Date | string) {
   const date = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("en-IN", {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
     day: "2-digit",
     month: "short",
@@ -11355,8 +11702,11 @@ function formatQuickEntryStatusDate(value: Date | string) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: true,
-  }).format(date);
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:${part("second")}`;
 }
 
 function getQuickEntryReturnHistory(order: SupplyOrderDetail) {
@@ -11382,6 +11732,7 @@ function getQuickEntryExportFieldValue(
   if (field.source === "order") {
     if (key === "billReturnHistory") return order ? getQuickEntryReturnHistory(order) : "";
     if (field.field === "soNo") return order?.soNo || order?.gemSoNo;
+    if (key === "dpDate" && order) return getQuickEntryExportDpDate(order);
     return order ? (order as unknown as Record<string, unknown>)[field.field ?? ""] : undefined;
   }
   if (field.source === "stage") {
@@ -11437,6 +11788,7 @@ filesRouter.post(
     }
     const scopeMode = body.scopeMode === "so" ? "so" : body.scopeMode === "fy" ? "fy" : undefined;
     if (!scopeMode) throw new HttpError(400, "Select FY Based or S.O. Based export scope.");
+    const viewMode = body.viewMode === "expanded" ? "expanded" : "collapsed";
     const financialYear = normalizeFinancialYearLabel(body.financialYear);
     const dateRange = getFinancialYearDateRange(financialYear);
     if (!dateRange) throw new HttpError(400, "Select a valid financial year.");
@@ -11446,12 +11798,26 @@ filesRouter.post(
           .map((value) => value.trim().toLowerCase())
           .filter(Boolean))]
       : [];
+    const selectedFileTypeLabels = Array.isArray(body.fileTypes)
+      ? [...new Set(body.fileTypes
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean))]
+      : [];
+    const selectedDivisionId = typeof body.divisionId === "string" ? body.divisionId.trim() : "";
+    if (selectedDivisionId && !canAccessDivision(user, selectedDivisionId)) {
+      throw new HttpError(403, "You cannot export files from this division.");
+    }
     if (scopeMode === "so" && !fields.includes("soDate")) fields.push("soDate");
 
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
     const conditions = [scope.sql, categoryScope.sql].filter(Boolean);
     const values = scope.values;
+    if (selectedDivisionId) {
+      values.push(selectedDivisionId);
+      conditions.push(`f.division_id = $${values.length}::uuid`);
+    }
     const files = await loadFiles(
       conditions.length ? `where ${conditions.join(" and ")}` : "",
       values,
@@ -11483,34 +11849,73 @@ filesRouter.post(
       return leftDate.localeCompare(rightDate) || left.file.createdAt.localeCompare(right.file.createdAt) || left.file.id.localeCompare(right.file.id);
     });
 
+    const stagePaymentFieldKeys = new Set([
+      "stageBillPreparationDate", "stageBillNo", "stageBillSentForPaymentDate",
+      "stagePaymentDate", "stagePaymentMode", "stageActualPaymentCapital",
+      "stageActualPaymentRevenue", "stageBillReturnHistory",
+    ]);
     const includesOrderData = fields.some((key) => {
       const field = quickEntryExportFields[key];
+      if (key === "stageDeliveryLabel") return [];
       return field.source !== "file" && !["fileClosed", "fileRemarks", "fileMarkers"].includes(key);
     });
-    const maxStageCount = records.reduce(
-      (maxFiles, { orders }) =>
-        orders.reduce((maxOrders, order) => Math.max(maxOrders, order.stageDeliveries?.length ?? 0), maxFiles),
-      0,
-    );
-    const maxSupplementaryCount = records.reduce(
-      (maxFiles, { orders }) =>
-        orders.reduce((maxOrders, order) => Math.max(maxOrders, order.supplementaryBills?.length ?? 0), maxFiles),
-      0,
-    );
-    const columns: QuickEntryExportColumn[] = fields.flatMap((key) => {
+    const hasAmountFields = fields.some((key) => quickEntryAmountKeys.has(key));
+    const hasPaymentAmountFields = fields.some((key) => quickEntryActualPaymentKeys.has(key));
+    const hasReturnHistoryFields = fields.some((key) => quickEntryReturnHistoryFieldKeys.has(key));
+    const amountComponentsAdded = new Set<string>();
+    const columns: QuickEntryExportColumn[] = fields.flatMap<QuickEntryExportColumn>((key) => {
       const field = quickEntryExportFields[key];
+      if (quickEntryReturnHistoryFieldKeys.has(key)) return [];
+      if (quickEntryAmountKeys.has(key)) {
+        const component = key.endsWith("Capital") ? "capital" : "revenue";
+        if (amountComponentsAdded.has(component)) return [];
+        amountComponentsAdded.add(component);
+        return [{
+          header: `S.O./Stage ${component === "capital" ? "Capital" : "Revenue"} Amount`,
+          field,
+          aggregate: component === "capital" ? "soAmountCapital" as const : "soAmountRevenue" as const,
+          numeric: true,
+        }];
+      }
       if (field.source === "stage") {
-        return Array.from({ length: Math.max(1, maxStageCount) }, (_, itemIndex) => ({
-          header: `${field.label} (Stage ${itemIndex + 1})`, field, itemIndex,
-        }));
+        if (viewMode === "expanded") {
+          return [{ header: field.label, field, date: quickEntryExportDateFields.has(key) }];
+        }
+        if (stagePaymentFieldKeys.has(key) || key === "stageDeliveryLabel") {
+          return [{ header: field.label, field, date: quickEntryExportDateFields.has(key) }];
+        }
+        const stageDateField = quickEntryStageDateFields[key];
+        return stageDateField
+          ? [{ header: field.label.replace(/^Stage /, "Latest stage "), field, aggregate: "latestStageDate", date: true }]
+          : [];
       }
       if (field.source === "supplementary") {
-        return Array.from({ length: Math.max(1, maxSupplementaryCount) }, (_, itemIndex) => ({
-          header: `${field.label} (${itemIndex + 1})`, field, itemIndex,
-        }));
+        return [{ header: field.label, field, date: quickEntryExportDateFields.has(key) }];
       }
-      return [{ header: field.label, field }];
+      const collapsedStageDateLabel = viewMode === "collapsed" && key in quickEntryOrderToStageDateFields
+        ? `${field.label} (latest stage when staged)`
+        : field.label;
+      return [{ header: collapsedStageDateLabel, field, date: quickEntryExportDateFields.has(key) }];
     });
+    if (viewMode === "collapsed" && hasPaymentAmountFields) {
+      columns.push({ header: "Total Paid So Far", aggregate: "paidSoFar", numeric: true });
+    }
+    if ((hasAmountFields || (viewMode === "collapsed" && hasPaymentAmountFields)) && !fields.includes("currency")) {
+      columns.push({
+        header: "Currency",
+        field: quickEntryExportFields.currency,
+        aggregate: "currency",
+      });
+    }
+    if (hasReturnHistoryFields) {
+      columns.push(
+        { header: "Bill Event Type" },
+        { header: "Bill Event Date", date: true },
+        { header: "Return Cycle" },
+        { header: "Return Reason" },
+        { header: "Return Remarks" },
+      );
+    }
 
     await ensureFileStatusSchema();
     const fileIds = records.map(({ file }) => file.id);
@@ -11537,46 +11942,396 @@ filesRouter.post(
     );
     for (let index = 0; index < maxStatusCount; index += 1) {
       columns.push({ header: `File Status ${index + 1}`, statusIndex: index, statusPart: "text" });
-      columns.push({ header: `Status ${index + 1} Date & Time`, statusIndex: index, statusPart: "date" });
+      columns.push({ header: `Status ${index + 1} Date & Time`, statusIndex: index, statusPart: "dateTime" });
     }
 
-    const outputRecords = scopeMode === "so"
-      ? records.flatMap(({ file, orders }) =>
-          orders.map((order) => ({ file, order }))
-        ).sort((left, right) =>
-          (left.order.soDate ?? "").localeCompare(right.order.soDate ?? "") ||
-          (left.file.receivedDate ?? "").localeCompare(right.file.receivedDate ?? "") ||
-          left.file.id.localeCompare(right.file.id) ||
-          (left.order.soNo ?? left.order.gemSoNo ?? "").localeCompare(right.order.soNo ?? right.order.gemSoNo ?? ""),
-        )
-      : records.flatMap(({ file, orders: matchingOrders }) => {
-          const rowOrders = includesOrderData
-            ? matchingOrders.length ? matchingOrders : [undefined]
-            : [undefined];
-          return rowOrders.map((order) => ({ file, order }));
+    type QuickEntryOutputRecord = {
+      file: FileRecord;
+      order?: SupplyOrderDetail;
+      orderIndex?: number;
+      stageIndex?: number;
+      rowType: "File summary" | "S.O. summary" | "Stage" | "S.O. payment" | "Stage payment" | "Advance" | "Supplementary bill" | "Bill event";
+      supplementaryBill?: SupplementaryBillDetail;
+      supplementaryItemIndex?: number;
+      billKind?: "regular" | "stage" | "advance" | "supplementary";
+      billIndex?: number;
+      billId?: string;
+      billEventType?: string;
+      billEventDate?: string;
+      returnCycleIndex?: number;
+      returnReason?: string;
+      returnRemarks?: string;
+    };
+    const orderPaymentFieldKeys = new Set([
+      "billPreparationDate", "billNo", "billAmountCapital", "billAmountRevenue",
+      "billSentForPaymentDate", "paymentDate", "paymentMode", "actualPaymentCapital",
+      "actualPaymentRevenue", "billReturnHistory",
+    ]);
+    const advanceFieldKeys = new Set(fields.filter((key) => quickEntryExportFields[key].source === "advance"));
+    const hasStagePaymentFields = fields.some((key) => stagePaymentFieldKeys.has(key));
+    const hasOrderPaymentFields = fields.some((key) => orderPaymentFieldKeys.has(key));
+    const hasRegularReturnHistory = fields.includes("billReturnHistory");
+    const hasStageReturnHistory = fields.includes("stageBillReturnHistory");
+    const hasAdvanceReturnHistory = fields.includes("advanceReturnHistory");
+    const hasSupplementaryReturnHistory = fields.includes("supplementaryBillReturnHistory");
+    const hasSupplementaryFields = fields.some(
+      (key) => quickEntryExportFields[key].source === "supplementary",
+    );
+    const hasAnyValue = (values: unknown[]) => values.some((value) =>
+      Array.isArray(value)
+        ? value.length > 0
+        : String(value ?? "").trim().length > 0,
+    );
+    const makeOrderRows = (
+      file: FileRecord,
+      order: SupplyOrderDetail | undefined,
+      orderIndex?: number,
+    ): QuickEntryOutputRecord[] => {
+      if (!order) return [];
+      const stages = order.stageDeliveries ?? [];
+      const supplementaryBills = order.supplementaryBills ?? [];
+      const isStaged = order.stageDelivery?.trim().toLowerCase() === "yes";
+      const stagePaymentIndexes = isStaged && order.stagePayment?.trim().toLowerCase() === "yes" && hasStagePaymentFields && !hasStageReturnHistory
+        ? stages.flatMap((stage, stageIndex) => hasAnyValue([
+            stage.billPreparationDate, stage.billNo, stage.billSentForPaymentDate,
+            stage.paymentDate, stage.paymentMode, stage.actualPaymentCapital,
+            stage.actualPaymentRevenue, stage.billReturnCycles,
+          ]) ? [stageIndex] : [])
+        : [];
+      const advance = order.advancePaymentDetail;
+      const includeAdvance = order.advancePayment?.trim().toLowerCase() === "yes" &&
+        advanceFieldKeys.size > 0 && !hasAdvanceReturnHistory && Boolean(advance) &&
+        hasAnyValue(Object.entries(advance ?? {})
+          .filter(([key]) => key !== "id" && key !== "includeInPaymentTiming")
+          .map(([, value]) => value));
+      const includeOrderPayment = hasOrderPaymentFields && !hasRegularReturnHistory &&
+        !(isStaged && order.stagePayment?.trim().toLowerCase() === "yes") &&
+        hasAnyValue([
+          order.billPreparationDate, order.billNo, order.billAmountCapital,
+          order.billAmountRevenue, order.billSentForPaymentDate, order.paymentDate,
+          order.paymentMode, order.actualPaymentCapital, order.actualPaymentRevenue,
+          order.billReturnCycles,
+        ]);
+      const supplementaryIndexes = hasSupplementaryFields && !hasSupplementaryReturnHistory
+        ? supplementaryBills.flatMap((bill, index) => hasAnyValue([
+            bill.billNo, bill.billAmountCapital, bill.billAmountRevenue,
+            bill.billSentForPaymentDate, bill.paymentDate, bill.paymentMode,
+            bill.actualPaymentCapital, bill.actualPaymentRevenue, bill.billReturnCycles, bill.remarks,
+          ]) ? [index] : [])
+        : [];
+      const plannedRows = getQuickEntryExportRowPlan(
+        viewMode,
+        isStaged,
+        stages,
+        {
+          includeOrderPayment,
+          stagePaymentIndexes,
+          includeAdvance,
+          supplementarySentDates: supplementaryIndexes.map((index) => supplementaryBills[index]?.billSentForPaymentDate ?? ""),
+        },
+      ).map((row) => ({
+        file,
+        order,
+        orderIndex,
+        rowType: row.rowType,
+        stageIndex: row.stageIndex,
+        supplementaryItemIndex: row.supplementaryItemIndex === undefined
+          ? undefined
+          : supplementaryIndexes[row.supplementaryItemIndex],
+        supplementaryBill: row.supplementaryItemIndex === undefined
+          ? undefined
+          : supplementaryBills[supplementaryIndexes[row.supplementaryItemIndex]],
+      }));
+      const billEventRows: QuickEntryOutputRecord[] = [];
+      const orderId = order.id || `${file.id}:SO-${orderIndex ?? 0}`;
+      const appendEvents = (
+        billKind: NonNullable<QuickEntryOutputRecord["billKind"]>,
+        billId: string,
+        sentDate: string | undefined,
+        cycles: BillReturnCycle[] | undefined,
+        paymentDate: string | undefined,
+        hasBillData: boolean,
+        stageIndex?: number,
+        supplementaryItemIndex?: number,
+        supplementaryBill?: SupplementaryBillDetail,
+      ) => {
+        const events = getQuickEntryBillLifecycleEvents(sentDate, cycles, paymentDate);
+        const items: Array<{
+          eventType: string;
+          eventDate: string;
+          cycleIndex?: number;
+          reason?: string;
+          remarks?: string;
+        }> = events.length
+          ? events
+          : hasBillData ? [{ eventType: "Bill details", eventDate: "" }] : [];
+        for (const event of items) {
+          billEventRows.push({
+            file, order, orderIndex, rowType: "Bill event", billKind, billId,
+            stageIndex, supplementaryItemIndex, supplementaryBill,
+            billEventType: event.eventType,
+            billEventDate: event.eventDate,
+            returnCycleIndex: event.cycleIndex,
+            returnReason: event.reason,
+            returnRemarks: event.remarks,
+          });
+        }
+      };
+      if (hasRegularReturnHistory && !(isStaged && order.stagePayment?.trim().toLowerCase() === "yes")) {
+        appendEvents("regular", `${orderId}:REGULAR-BILL`, order.billSentForPaymentDate,
+          order.billReturnCycles, order.paymentDate, hasAnyValue([
+            order.billNo, order.billAmountCapital, order.billAmountRevenue, order.paymentDate,
+          ]));
+      }
+      if (hasStageReturnHistory && isStaged && order.stagePayment?.trim().toLowerCase() === "yes") {
+        stages.forEach((stage, stageIndex) => appendEvents(
+          "stage", `${orderId}:STAGE-${stageIndex + 1}-BILL`, stage.billSentForPaymentDate,
+          stage.billReturnCycles, stage.paymentDate, hasAnyValue([
+            stage.billNo, stage.billSentForPaymentDate, stage.paymentDate,
+          ]), stageIndex,
+        ));
+      }
+      if (hasAdvanceReturnHistory && order.advancePayment?.trim().toLowerCase() === "yes" && advance) {
+        appendEvents("advance", `${orderId}:ADVANCE-BILL`, advance.billSentForPaymentDate,
+          advance.billReturnCycles, advance.paymentDate, hasAnyValue([
+            advance.billNo, advance.stageAmountCapital, advance.stageAmountRevenue, advance.paymentDate,
+          ]), isStaged && stages.length ? 0 : undefined);
+      }
+      if (hasSupplementaryReturnHistory) {
+        supplementaryBills.forEach((bill, index) => {
+          if (!hasAnyValue([
+            bill.billNo, bill.billAmountCapital, bill.billAmountRevenue,
+            bill.billSentForPaymentDate, bill.paymentDate, bill.billReturnCycles,
+          ])) return;
+          appendEvents("supplementary", bill.id || `${orderId}:SUPP-${index + 1}`,
+            bill.billSentForPaymentDate, bill.billReturnCycles, bill.paymentDate,
+            hasAnyValue([bill.billNo, bill.billAmountCapital, bill.billAmountRevenue, bill.paymentDate]),
+            undefined, index, bill);
         });
-    const rows = outputRecords.map(({ file, order }) => {
+      }
+      return [...plannedRows, ...billEventRows];
+    };
+    columns.unshift(
+      { header: "Export Row Type" },
+      { header: "File ID" },
+      { header: "S.O. ID" },
+      { header: "Stage Label" },
+      ...(hasReturnHistoryFields ? [{ header: "Bill ID" }] : []),
+      ...(hasSupplementaryFields ? [{ header: "Supplementary Bill ID" }] : []),
+    );
+    const outputRecords = scopeMode === "so"
+      ? records.flatMap(({ file, orders }) => [
+          { file, rowType: "File summary" as const },
+          ...[...orders]
+            .sort((left, right) => (left.soDate ?? "").localeCompare(right.soDate ?? ""))
+            .flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)),
+        ])
+      : records.flatMap(({ file, orders: matchingOrders }) => {
+          const rowOrders = includesOrderData ? matchingOrders : [];
+          return [
+            { file, rowType: "File summary" as const },
+            ...rowOrders.flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)),
+          ];
+        });
+    const rows: string[][] = outputRecords.map(({
+      file,
+      order,
+      orderIndex,
+      stageIndex,
+      rowType,
+      supplementaryBill,
+      supplementaryItemIndex,
+      billKind,
+      billId,
+      billEventType,
+      billEventDate,
+      returnCycleIndex,
+      returnReason,
+      returnRemarks,
+    }) => {
       const statuses = statusByFile.get(file.id) ?? [];
       return columns.map((column) => {
+        if (column.header === "Export Row Type") return rowType;
+        if (column.header === "File ID") return file.id;
+        if (column.header === "S.O. ID") {
+          return order?.id ?? "";
+        }
+        if (column.header === "Stage Label") {
+          if (stageIndex !== undefined) return `Stage ${stageIndex + 1}`;
+          return rowType === "Supplementary bill" ? "Unassigned" : "";
+        }
+        if (column.header === "Bill ID") {
+          return rowType === "Bill event" ? billId ?? "" : "";
+        }
+        if (column.header === "Supplementary Bill ID") {
+          return rowType === "Supplementary bill"
+            ? supplementaryBill?.id || `SB-${(supplementaryItemIndex ?? 0) + 1}`
+            : "";
+        }
+        if (column.header === "Bill Event Type") return rowType === "Bill event" ? billEventType ?? "" : "";
+        if (column.header === "Bill Event Date") return rowType === "Bill event" ? billEventDate ?? "" : "";
+        if (column.header === "Return Cycle") {
+          return rowType === "Bill event" && returnCycleIndex !== undefined
+            ? String(returnCycleIndex + 1)
+            : "";
+        }
+        if (column.header === "Return Reason") return rowType === "Bill event" ? returnReason ?? "" : "";
+        if (column.header === "Return Remarks") return rowType === "Bill event" ? returnRemarks ?? "" : "";
         if (column.statusIndex !== undefined) {
+          if (rowType !== "File summary") return "";
           const status = statuses[column.statusIndex];
           if (!status) return "";
-          return column.statusPart === "date"
+          return column.statusPart === "dateTime"
             ? formatQuickEntryStatusDate(status.createdAt)
             : status.text;
         }
+        if (column.aggregate === "soAmountCapital" || column.aggregate === "soAmountRevenue") {
+          if (!order) return "";
+          const component = column.aggregate === "soAmountCapital" ? "capital" : "revenue";
+          if (rowType === "Stage" && stageIndex !== undefined) {
+            const stage = order.stageDeliveries?.[stageIndex];
+            if (!stage) return "";
+            return formatQuickEntryExportValue(
+              getQuickEntryExportSoAmountComponent(order, component, stage),
+            );
+          }
+          if (rowType !== "S.O. summary") return "";
+          return formatQuickEntryExportValue(getQuickEntryExportSoAmountComponent(order, component));
+        }
+        if (column.aggregate === "paidSoFar") {
+          if (rowType !== "S.O. summary") return "";
+          return order ? formatQuickEntryExportValue(getQuickEntryExportPaidSoFar(order)) : "";
+        }
+        if (column.aggregate === "currency") {
+          return formatQuickEntryExportValue(file.currency);
+        }
         if (!column.field) return "";
-        const key = fields.find((fieldKey) => quickEntryExportFields[fieldKey] === column.field) ?? "";
-        const value = getQuickEntryExportFieldValue(
-          key,
-          column.field,
-          file,
-          order,
-          column.itemIndex,
-        );
+        const key = fields.find((fieldKey) => quickEntryExportFields[fieldKey] === column.field) ??
+          (column.field.field === "stageDeliveryLabel" ? "stageDeliveryLabel" : "");
+        const stage = stageIndex === undefined ? undefined : order?.stageDeliveries?.[stageIndex];
+        if (!isQuickEntryExportFieldApplicable(key, {
+          inspectionApplicable: isDeliveryInspectionApplicableByGroup(file),
+          biddingApplicable: isBiddingApplicableForFile(file),
+          file: file as unknown as Record<string, unknown>,
+          order: order as unknown as Record<string, unknown> | undefined,
+        })) return "";
+        const fileIdentityKeys = new Set([
+          "uniqueCode", "controlNo", "fileNo", "year", "receivedDate", "division",
+          "indentor", "demandDescription", "fileType", "currency",
+        ]);
+        const orderIdentityKeys = new Set(["soNo", "gemSoNo", "soDate", "firm"]);
+        if (rowType === "Bill event") {
+          const eventType = billEventType ?? "";
+          if (column.field.source === "order") {
+            if (billKind !== "regular") return "";
+            if (orderIdentityKeys.has(column.field.field ?? "") || key === "billNo") {
+              // Identifiers repeat to keep each event row traceable.
+            } else if (["billPreparationDate", "billAmountCapital", "billAmountRevenue", "billSentForPaymentDate"].includes(key)) {
+              if (eventType !== "Bill sent" && eventType !== "Bill details") return "";
+            } else if (["paymentDate", "paymentMode", "actualPaymentCapital", "actualPaymentRevenue"].includes(key)) {
+              if (eventType !== "Paid" && eventType !== "Bill details") return "";
+            } else return "";
+          } else if (column.field.source === "stage") {
+            if (billKind !== "stage" || !stage) return "";
+            if (["stageBillNo"].includes(key)) {
+              // Identifiers repeat to keep each event row traceable.
+            } else if (["stageBillPreparationDate", "stageBillSentForPaymentDate"].includes(key)) {
+              if (eventType !== "Bill sent" && eventType !== "Bill details") return "";
+            } else if (["stagePaymentDate", "stagePaymentMode", "stageActualPaymentCapital", "stageActualPaymentRevenue"].includes(key)) {
+              if (eventType !== "Paid" && eventType !== "Bill details") return "";
+            } else return "";
+          } else if (column.field.source === "advance") {
+            if (billKind !== "advance") return "";
+            if (key === "advanceBillNo") {
+              // Identifiers repeat to keep each event row traceable.
+            } else if (["advanceBillPreparationDate", "advanceBillSentForPaymentDate", "advanceAllocationCapital", "advanceAllocationRevenue"].includes(key)) {
+              if (eventType !== "Bill sent" && eventType !== "Bill details") return "";
+            } else if (["advancePaymentDate", "advancePaymentMode", "advanceActualPaymentCapital", "advanceActualPaymentRevenue"].includes(key)) {
+              if (eventType !== "Paid" && eventType !== "Bill details") return "";
+            } else return "";
+          } else if (column.field.source === "supplementary") {
+            if (billKind !== "supplementary") return "";
+            if (key === "supplementaryBillNo" || key === "supplementaryBillRemarks") {
+              // Identifiers and notes repeat to keep each event row traceable.
+            } else if (["supplementaryBillAmountCapital", "supplementaryBillAmountRevenue", "supplementaryBillSentForPaymentDate"].includes(key)) {
+              if (eventType !== "Bill sent" && eventType !== "Bill details") return "";
+            } else if (["supplementaryBillPaymentDate", "supplementaryBillPaymentMode", "supplementaryBillActualPaymentCapital", "supplementaryBillActualPaymentRevenue"].includes(key)) {
+              if (eventType !== "Paid" && eventType !== "Bill details") return "";
+            } else return "";
+          }
+        }
+        if (column.field.source === "file" && rowType !== "File summary" &&
+          !fileIdentityKeys.has(column.field.field ?? "")) return "";
+        if (column.field.source === "order") {
+          if (rowType === "S.O. summary" && orderPaymentFieldKeys.has(key)) return "";
+          if (rowType === "S.O. payment" && !orderPaymentFieldKeys.has(key)) return "";
+          if (!new Set(["S.O. summary", "S.O. payment", "Bill event"]).has(rowType) &&
+            !orderIdentityKeys.has(column.field.field ?? "")) return "";
+        }
+        if (column.field.source === "stage") {
+          if (rowType === "Stage" && stagePaymentFieldKeys.has(key)) return "";
+          if (rowType === "Stage payment" && !stagePaymentFieldKeys.has(key)) return "";
+          if (rowType === "S.O. summary" && column.aggregate === "latestStageDate") {
+            // Collapsed view carries the latest dated stage value on the S.O. summary row.
+          } else if (!new Set(["Stage", "Stage payment"]).has(rowType)) return "";
+        }
+        if (column.field.source === "advance" && rowType !== "Advance") return "";
+        if (column.field.source === "supplementary" && rowType !== "Supplementary bill") return "";
+        let value: unknown;
+        if (column.aggregate === "latestStageDate" && order) {
+          const dateKey = column.field.field ?? "";
+          const stages = order.stageDelivery?.trim().toLowerCase() === "yes" ? order.stageDeliveries ?? [] : [];
+          const dates = (stages as Array<Record<string, unknown>>)
+            .map((item) => (item as unknown as Record<string, unknown>)[dateKey])
+            .filter((item): item is string => typeof item === "string" && Boolean(item));
+          value = dates.sort().at(-1) || (order as unknown as Record<string, unknown>)[dateKey];
+        } else if (column.field.source === "stage") {
+          value = stage ? (stage as unknown as Record<string, unknown>)[column.field.field ?? ""] : undefined;
+        } else if (column.field.source === "order" && key === "dpDate") {
+          value = stage ? stage.revisedDp || stage.dpDate || "" : order ? getQuickEntryExportDpDate(order) : "";
+        } else if (column.field.source === "order" && key in quickEntryOrderToStageDateFields) {
+          const dateKey = quickEntryOrderToStageDateFields[key];
+          if (viewMode === "expanded" && stage) {
+            value = (stage as unknown as Record<string, unknown>)[dateKey];
+          } else if (viewMode === "collapsed" && order?.stageDelivery?.trim().toLowerCase() === "yes" && order.stageDeliveries?.length) {
+            const dates = (order.stageDeliveries as Array<Record<string, unknown>>)
+              .map((item) => (item as unknown as Record<string, unknown>)[dateKey])
+              .filter((item): item is string => typeof item === "string" && Boolean(item));
+            value = dates.sort().at(-1) || (order as unknown as Record<string, unknown>)[dateKey];
+          } else {
+            value = getQuickEntryExportFieldValue(key, column.field, file, order, column.itemIndex);
+          }
+        } else {
+          const itemIndex = column.field.source === "supplementary"
+            ? supplementaryItemIndex
+            : column.itemIndex;
+          value = getQuickEntryExportFieldValue(key, column.field, file, order, itemIndex);
+        }
         return formatQuickEntryExportValue(value);
       });
     });
+    const exportedAt = new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date());
+    const scopeDetails = [
+      ["Export mode", scopeMode === "fy" ? "FY Based" : "S.O. Based"],
+      ["Selected financial year", financialYear],
+      ["Date basis", scopeMode === "fy" ? "File received date" : "S.O. date"],
+      ["File types", selectedFileTypeLabels.length ? selectedFileTypeLabels.join(", ") : "All file types"],
+      ["Division", selectedDivisionId ? Array.from(new Set(records.map(({ file }) => file.division).filter(Boolean))).join(", ") || selectedDivisionId : "All divisions"],
+      ["View", viewMode === "expanded" ? "Expanded (one row per stage; unassigned supplementary bills get separate rows)" : "Collapsed (one row per S.O.)"],
+      ["Exported at (IST)", exportedAt],
+      ["Files represented", String(records.length)],
+      ["S.O.s in export scope", String(records.reduce((total, record) => total + record.orders.length, 0))],
+      ["Rows exported", String(rows.length)],
+    ];
 
     const requestedName =
       typeof body.fileName === "string" ? body.fileName : "Quick_Entry_Export.xlsx";
@@ -11587,14 +12342,40 @@ filesRouter.post(
     const document = {
       title:
         typeof body.title === "string" ? body.title.slice(0, 160) : "Quick Entry Export",
-      description: `${scopeMode === "fy" ? `Files received in FY ${financialYear}` : `S.O.s dated in FY ${financialYear}, including files received in earlier years`}. Status history follows oldest to newest. ${scopeMode === "fy" ? `Files exported: ${records.length}.` : `Files represented: ${records.length}; S.O. rows: ${rows.length}.`}`,
+      description: `${scopeMode === "fy" ? `Files received in FY ${financialYear}` : `S.O.s dated in FY ${financialYear}, including files received in earlier years`}. ${viewMode === "expanded" ? "Expanded view exports one row per stage, with separate rows for supplementary bills that cannot be associated with a stage." : "Collapsed view exports one row per S.O."} Status history follows oldest to newest. Files represented: ${records.length}; rows exported: ${rows.length}.`,
       tables: [
         {
           headers: columns.map((column) => column.header),
           rows,
           numericColumns: columns.flatMap((column, index) =>
-            column.field?.numeric ? [index] : [],
+            column.numeric || column.field?.numeric ? [index] : [],
           ),
+          dateColumns: columns.flatMap((column, index) =>
+            column.date ? [index] : [],
+          ),
+          dateTimeColumns: columns.flatMap((column, index) =>
+            column.statusPart === "dateTime" ? [index] : [],
+          ),
+        },
+      ],
+      sheets: [
+        {
+          name: "Scope",
+          tables: [
+            {
+              title: "Export scope",
+              headers: ["Export detail", "Value"],
+              rows: scopeDetails,
+              columnWidths: [28, 54],
+            },
+            {
+              title: "Data rows by sheet (headers excluded)",
+              headers: ["Worksheet", "Data rows"],
+              rows: [["Report", String(rows.length)]],
+              numericColumns: [1],
+              columnWidths: [36, 16],
+            },
+          ],
         },
       ],
     };

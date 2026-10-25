@@ -146,6 +146,8 @@ export async function downloadQuickEntryExcelExport(payload: {
   fileName: string;
   fields: string[];
   fileTypes?: string[];
+  divisionId?: string;
+  viewMode?: "collapsed" | "expanded";
   scopeMode: "fy" | "so";
   financialYear: string;
 }) {
