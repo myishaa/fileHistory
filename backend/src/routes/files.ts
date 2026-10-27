@@ -47,6 +47,10 @@ import {
 } from "../utils/db-values.js";
 import { clearDashboardReportCaches } from "../utils/cache.js";
 import {
+  ensureFinancialYearArchiveSchema,
+  getSearchableFinancialYearSql,
+} from "../utils/financial-year-archive.js";
+import {
   getQuickEntryBillLifecycleEvents,
   getQuickEntryExportDpDate,
   getQuickEntryExportPaidSoFar,
@@ -1952,6 +1956,7 @@ function readAnalyticsNameList(value: unknown) {
 function readSearchParams(query: Record<string, unknown>): FileSearchParams {
   return {
     selectedYear: normalizeFinancialYearLabel(readQueryString(query.selectedYear)),
+    includeArchivedYears: readQueryBoolean(query.includeArchivedYears),
     milestoneClearingScope: readQueryBoolean(query.milestoneClearingScope),
     yearFilter: readQueryString(query.yearFilter),
     fileYear: readQueryString(query.fileYear),
@@ -2158,11 +2163,16 @@ function bidOpeningOverdueSql(today = "current_date") {
   return `${biddingApplicableSql()} and ${isNoSql("f.bid_opened")} and ${openingDate} is not null and ${openingDate} < ${today}`;
 }
 
+function refloatBiddingStageCompleteSql() {
+  return `((${isYesSql("f.tcec")} and ${isYesSql("f.bidding_stage_over")})
+    or (not ${isYesSql("f.tcec")} and ${isYesSql("f.refloat_bidding_stage_over")}))`;
+}
+
 function refloatBiddingInProgressSql() {
   return `${biddingApplicableSql()}
     and ${isYesSql("f.refloat")}
     and ${hasTextSql("f.refloat_bidding_date")}
-    and not ${isYesSql("f.bidding_stage_over")}`;
+    and not (${refloatBiddingStageCompleteSql()})`;
 }
 
 function refloatBidLiveSql() {
@@ -2218,6 +2228,10 @@ function activeFilesSql() {
   return `(not ${fileClosedSql()}
     and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
     and not ${allSupplyOrdersCancelledSql()})`;
+}
+
+function searchableFinancialYearSql() {
+  return getSearchableFinancialYearSql(activeFilesSql())!;
 }
 
 function activePlusCurrentFyClosedSql(values: unknown[], financialYear: string | undefined) {
@@ -4312,6 +4326,16 @@ function financialSanctionCompletedSql() {
   )}`;
 }
 
+// CNC Summary follows the dashboard's file-level rule: a file is financially
+// sanctioned only when one of its non-cancelled S.O.s has a sanction date.
+// Keep this separate from financialSanctionCompletedSql(), whose additional
+// file-cancellation gate is required by other workflow filters.
+function cncFinancialSanctionSignedSql() {
+  return supplyOrderExists(
+    `not ${isYesSql("so.so_cancelled")} and ${financialSanctionCompletedOrderSql("so")}`,
+  );
+}
+
 function financialSanctionPreviousStageSql() {
   return `not ${isCancelledFileSql()}
     and not (${financialSanctionCompletedSql()})
@@ -4537,7 +4561,7 @@ function cncSummaryFilterSql(filter: string, values: unknown[]) {
   const datePlaceholder = addSqlValue(values, cncDate);
   const conditions = [`f.cnc_date = ${datePlaceholder}::date`];
   const approved = hasTextSql("f.cnc_approval_date");
-  const fsSigned = financialSanctionCompletedSql();
+  const fsSigned = cncFinancialSanctionSignedSql();
   const soPlaced = supplyOrderPlacedSql();
   if (metric === "name" || metric === "reviewed") return conditions.join(" and ");
   if (metric === "approved") conditions.push(approved);
@@ -4561,7 +4585,7 @@ function cncSummaryFyFilterSql(filter: string, values: unknown[]) {
   const conditions = [hasTextSql("f.cnc_date")];
   if (fyCondition) conditions.push(fyCondition);
   const approved = hasTextSql("f.cnc_approval_date");
-  const fsSigned = financialSanctionCompletedSql();
+  const fsSigned = cncFinancialSanctionSignedSql();
   const soPlaced = supplyOrderPlacedSql();
   if (metric === "name" || metric === "reviewed") return conditions.join(" and ");
   if (metric === "approved") conditions.push(approved);
@@ -5044,6 +5068,7 @@ function statusAppliesSql(milestone: (typeof statusSummaryMilestones)[number]) {
 }
 
 function statusCompleteSql(milestone: (typeof statusSummaryMilestones)[number]) {
+  if (milestone.key === "refloatBidding") return refloatBiddingStageCompleteSql();
   if ("yesComplete" in milestone && milestone.yesComplete) {
     return isYesSql(milestone.currentColumn);
   }
@@ -5341,25 +5366,10 @@ function milestoneStageStartSql(
 }
 
 function tcecSupplyOrderDelayStartSql(soDate: string) {
-  const supplyOrderIndex = statusSummaryMilestones.findIndex((milestone) => milestone.key === "supplyOrder");
-  const cutoff = `coalesce(${soDate}, current_date)`;
-  if (supplyOrderIndex < 0) return "null::date";
-
-  const completedDates = statusSummaryMilestones
-    .slice(0, supplyOrderIndex)
-    .filter((milestone) => milestone.key !== "financialSanction")
-    .map((milestone) => {
-      const date = milestoneDateExpression(milestone);
-      return `(case when ${statusAppliesSql(milestone)}
-        and ${milestoneCompleteSql(milestone)}
-        and (${date}) <= ${cutoff}
-        then (${date}) else null::date end)`;
-    });
-  const receivedDate = dateCastSql("f.received_date");
-  return `greatest(${[
-    `case when ${receivedDate} <= ${cutoff} then ${receivedDate} else null::date end`,
-    ...completedDates,
-  ].join(",\n    ")})`;
+  void soDate;
+  // Keep SQL Search aligned with Reports and the TypeScript matcher: TCEC
+  // Supply Order ageing starts at CNC Approval and has no fallback.
+  return dateCastSql("f.cnc_approval_date");
 }
 
 const orderDelayMilestones = [
@@ -5706,41 +5716,6 @@ function orderDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string)
   return clauses.length ? `(${clauses.join(" or ")})` : "false";
 }
 
-function expectedTcecSupplyOrderStartSql() {
-  const supplyOrderIndex = statusSummaryMilestones.findIndex(
-    (milestone) => milestone.key === "supplyOrder",
-  );
-  const previousMilestones =
-    supplyOrderIndex < 0
-      ? []
-      : statusSummaryMilestones
-          .slice(0, supplyOrderIndex)
-          .filter((milestone) => milestone.key !== "financialSanction");
-  const completedMilestoneDates = previousMilestones.map((milestone) => {
-    const date = milestoneDateExpression(milestone);
-    return `(case
-      when ${statusAppliesSql(milestone)}
-        and ${milestoneCompleteSql(milestone)}
-        and (${date}) is not null
-        and (${date}) <= current_date
-      then (${date})
-    end)`;
-  });
-  const receivedDate = `(case when f.received_date <= current_date then f.received_date end)`;
-  return `greatest(${[receivedDate, ...completedMilestoneDates].join(", ")})`;
-}
-
-function expectedTcecSupplyOrderDelaySql(thresholdPlaceholder: string) {
-  const startDate = expectedTcecSupplyOrderStartSql();
-  return `not ${isCancelledFileSql()}
-    and not ${isYesSql("f.demand_cancelled")}
-    and ${isYesSql("f.tcec")}
-    and ${hasTextSql("f.cnc_approval_date")}
-    and coalesce(f.no_of_so, 0) > ${supplyOrderCountSql()}
-    and (${startDate}) is not null
-    and (current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`;
-}
-
 function returnedBillDelayFilterSql(milestoneKey: string, thresholdPlaceholder: string) {
   if (milestoneKey !== "all" && milestoneKey !== "billReturnedForCorrection") return "false";
   const openReturnDateSql = (cyclesExpression: string) =>
@@ -6019,10 +5994,6 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
         and (current_date - ${startDate}::date) > ${thresholdPlaceholder}::integer)`;
     });
   const orderClause = orderDelayFilterSql(milestoneKey, thresholdPlaceholder);
-  const expectedSupplyOrderClause =
-    milestoneKey === "all" || milestoneKey === "supplyOrder"
-      ? expectedTcecSupplyOrderDelaySql(thresholdPlaceholder)
-      : "false";
   const returnedBillClause = returnedBillDelayFilterSql(milestoneKey, thresholdPlaceholder);
   const supplementaryBillReturnedClause = supplementaryBillReturnedDelayFilterSql(
     milestoneKey,
@@ -6041,8 +6012,8 @@ function delayStatusFilterSql(filter: string, values: unknown[]) {
     thresholdPlaceholder,
   );
   return clauses.length
-    ? `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or (${clauses.join(" or ")}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`
-    : `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or ${orderClause} or (${expectedSupplyOrderClause}) or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`;
+    ? `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or (${clauses.join(" or ")}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`
+    : `((${workflowNotStartedClause}) or (${gemUndertakingClause}) or (${biddingClause}) or (${refloatBiddingClause}) or (${financialSanctionFileClause}) or (${nonTcecTechnicalEvaluationClause}) or ${orderClause} or ${returnedBillClause} or ${supplementaryBillReturnedClause} or ${paymentPreSubmissionClause} or ${paymentPostSubmissionClause} or (${paymentCumulativeClause}))`;
 }
 
 function paymentTimingJsonDateSql(value: string) {
@@ -8157,6 +8128,10 @@ function isMilestoneClearingDashboardFilter(filter: string) {
   return filter.startsWith("analyticsMilestoneClearing:");
 }
 
+function isCfaMilestoneClearingDashboardFilter(filter: string) {
+  return filter === "milestoneCleared:cfa";
+}
+
 function shouldAllowDemandCancelledDashboardFilter(filter: string) {
   return filter === "miscDemandCancelled" || isFileIdsDashboardFilter(filter);
 }
@@ -8368,13 +8343,23 @@ export function appendSearchGlobalYearScope(
   currentFinancialYear: string | undefined,
   searchParams: FileSearchParams,
 ) {
+  if (!searchParams.includeArchivedYears) {
+    conditions.push(searchableFinancialYearSql());
+  }
   const dashboardFilters = [searchParams.dashboardFilter, ...(searchParams.extraDashboardFilters ?? [])]
     .map((filter) => filter?.trim())
     .filter((filter): filter is string => Boolean(filter));
   const isMilestoneClearingDrilldown =
     searchParams.milestoneClearingScope ||
-    dashboardFilters.some(isMilestoneClearingDashboardFilter);
+    dashboardFilters.some(
+      (filter) =>
+        isMilestoneClearingDashboardFilter(filter) ||
+        isCfaMilestoneClearingDashboardFilter(filter),
+    );
   if (selectedYear === allActiveFilesYear && isMilestoneClearingDrilldown) {
+    // Milestone Clearing rankings intentionally include completed and
+    // cancelled-history samples. Keep the drilldown on that same historical
+    // scope while still excluding files that have completed Payment.
     conditions.push(`not exists (
       select 1 from file_completed_milestones completed_payment
       where completed_payment.file_id = f.id
@@ -8529,7 +8514,10 @@ export function dashboardFilterSql(
       and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison')`;
     const normalStart = "f.cfa_date";
     const normalEnd = "f.gem_undertaking_date";
-    const refloatStart = "f.refloat_recommendation_date";
+    const refloatStart = `case
+      when ${isYesSql("f.tcec")} then f.post_tcec_date
+      else f.refloat_recommendation_date
+    end`;
     const refloatEnd = "f.refloat_gem_undertaking_date";
     const normal = `${gemUndertakingApplies}
       and ${hasTextSql(normalStart)}
@@ -8538,7 +8526,6 @@ export function dashboardFilterSql(
       and ${hasTextSql("f.received_date")}
       and (${normalEnd}) >= f.received_date`;
     const refloat = `${gemUndertakingApplies}
-      and not ${isYesSql("f.tcec")}
       and ${isYesSql("f.refloat")}
       and ${hasTextSql(refloatStart)}
       and ${hasTextSql(refloatEnd)}
@@ -8825,18 +8812,20 @@ export function dashboardFilterSql(
       )`;
   }
   if (filter === "gemUndertaking:completed") {
-    const refloatTcec = `(${isYesSql("f.refloat")} and ${isYesSql("f.tcec")})`;
+    const refloatStart = `case
+      when ${isYesSql("f.tcec")} then f.post_tcec_date
+      else f.refloat_recommendation_date
+    end`;
     return `${isYesSql("f.gem")}
       and lower(trim(coalesce(f.gem_bidding_mode, ''))) <> 'comparison'
       and (
-        (not ${isYesSql("f.refloat")}
-          and ${hasTextSql("f.cfa_date")}
+        (${hasTextSql("f.cfa_date")}
           and ${hasTextSql("f.gem_undertaking_date")}
           and f.gem_undertaking_date >= f.cfa_date)
-        or (${refloatTcec}
-          and ${hasTextSql("f.post_tcec_date")}
+        or (${isYesSql("f.refloat")}
+          and ${hasTextSql(refloatStart)}
           and ${hasTextSql("f.refloat_gem_undertaking_date")}
-          and f.refloat_gem_undertaking_date >= f.post_tcec_date)
+          and f.refloat_gem_undertaking_date >= (${refloatStart}))
       )`;
   }
   const dashboardMilestoneSql = dashboardMilestoneFilterSql(filter);
@@ -9434,7 +9423,7 @@ export function dashboardFilterSql(
     if (normalized === "financialsanction") return financialSanctionCompletedSql();
     if (normalized === "payment") return paymentCompletedSql();
     if (normalized === "refloatbidding") {
-      return `not ${isCancelledFileSql()} and ${isYesSql("f.refloat")} and ${isYesSql("f.bidding_stage_over")}`;
+      return `not ${isCancelledFileSql()} and ${isYesSql("f.refloat")} and ${refloatBiddingStageCompleteSql()}`;
     }
     if (normalized === "refloatposttcec") {
       return `not ${isCancelledFileSql()} and ${isYesSql("f.refloat")} and ${isYesSql("f.tcec")} and ${hasTextSql("f.refloat_post_tcec_minutes_date")}`;
@@ -11348,6 +11337,7 @@ async function replaceNestedFileData(
 filesRouter.get(
   "/",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const conditions: string[] = [];
     const values: unknown[] = [];
@@ -11358,6 +11348,9 @@ filesRouter.get(
       values.push(...scope.values);
     }
     if (categoryScope.sql) conditions.push(categoryScope.sql);
+
+    const includeArchivedYears = readQueryBoolean(request.query.includeArchivedYears);
+    if (!includeArchivedYears) conditions.push(searchableFinancialYearSql());
 
     if (request.query.year === allFilesYear) {
       // No status/year condition.
@@ -12391,6 +12384,7 @@ filesRouter.post(
 filesRouter.get(
   "/search",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -12431,6 +12425,7 @@ filesRouter.get(
 filesRouter.post(
   "/export/search",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const body = requireObjectBody(request.body);
     const format = body.format === "pdf" ? "pdf" : "excel";

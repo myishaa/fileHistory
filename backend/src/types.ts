@@ -67,6 +67,7 @@ export type AppSettings = {
   selectedYear: string;
   setupYear: string;
   financialYears: string[];
+  financialYearStatuses?: FinancialYearStatus[];
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
@@ -103,6 +104,11 @@ export type AppSettings = {
   bgReturnOffsetDays?: number;
   delayStatusDefaultDays?: number;
   sharedQuickAccess?: SharedQuickAccessSettings;
+};
+
+export type FinancialYearStatus = {
+  label: string;
+  archived: boolean;
 };
 
 export type QuickEntryExcelPreset = {

@@ -7,6 +7,9 @@ const password = process.env.AUDIT_PASSWORD ?? "dashboard_audit123";
 const maxClicks = Number(process.env.AUDIT_MAX_BROWSER_CLICKS ?? 600);
 const tracePath = process.env.AUDIT_BROWSER_TRACE ?? "test-results/audit-clicker-landings-trace.zip";
 const startReportMode = process.env.AUDIT_BROWSER_START_MODE ?? "";
+const endReportMode = process.env.AUDIT_BROWSER_END_MODE ?? "";
+
+const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 
 const dashboardTabs = [
   ["status", "Status-1"],
@@ -20,27 +23,33 @@ const dashboardTabs = [
 ];
 
 const reportModes = [
-  "mmgSummary", "demandProcessingAnalysis", "firmDatabase", "unifiedFinanceReview", "merData",
-  "merComparison", "cashOutGoPlan", "preSoExpectedCashOutgo", "soPaymentMatrix",
-  "paymentCompletedMatrix", "pendingReturnedBills", "returnedBillsResubmitted", "returnedBillsPaid",
-  "supplementaryBillsSubmitted", "supplementaryBillsPaid", "supplementaryPendingReturnedBills",
-  "supplementaryReturnedBillsResubmitted", "supplementaryReturnedBillsPaid", "monthlyFileInflow",
-  "monthWiseSupplyOrder", "monthWiseDeliverySchedule", "monthWiseCompletedDeliveries",
-  "monthWiseBgExpiry", "preBidMeetings", "bgReceiptDelay", "warrantyBgMismatch", "delayStatus",
-  "pendingLiabilityAgeing",
+  "mmgSummary", "demandProcessingAnalysis", "firmDatabase", "merData", "merComparison",
+  "cashOutGoPlan", "preSoExpectedCashOutgo", "soPaymentMatrix", "paymentCompletedMatrix",
+  "itemsDeliveredBillsPending", "itemsDeliveredBillsPrepared", "billsSubmitted",
+  "expectedCashOutgoFy", "spentTillDateFy", "billsPaidInMonth", "pendingReturnedBills",
+  "returnedBillsResubmitted", "returnedBillsPaid", "supplementaryBillsSubmitted",
+  "supplementaryBillsPaid", "supplementaryPendingReturnedBills",
+  "supplementaryReturnedBillsResubmitted", "supplementaryReturnedBillsPaid", "cashOutgoForMonth",
+  "expectedExpenditureTillMonth", "currentMonthLiability", "monthlyFileInflow", "monthWiseSupplyOrder",
+  "monthWiseDeliverySchedule", "monthWiseBgExpiry", "bgReceiptDelay", "warrantyBgMismatch", "delayStatus",
 ];
 
 const reportLabels = {
   mmgSummary: "MMG Summary",
   demandProcessingAnalysis: "Demand processing analysis",
   firmDatabase: "Firm Performance",
-  unifiedFinanceReview: "Unified Finance Reports",
   merData: "MER Data",
   merComparison: "MER vs Recorded Payments",
   cashOutGoPlan: "Cash Out Go Plan",
   preSoExpectedCashOutgo: "Pre-S.O. based expected cash outgo",
   soPaymentMatrix: "Month-wise Payment due Matrix",
   paymentCompletedMatrix: "Month-wise Payment completed Matrix",
+  itemsDeliveredBillsPending: "Delivery / D.P. Done, Bill Preparation Pending",
+  itemsDeliveredBillsPrepared: "Delivery / D.P. Done, Bill Prepared",
+  billsSubmitted: "Bills Submitted, Payment Pending",
+  expectedCashOutgoFy: "Expected Cash Outgo by D.P.",
+  spentTillDateFy: "Actual Cash Outgo as on Date",
+  billsPaidInMonth: "Bills Paid in Selected Month",
   pendingReturnedBills: "Pending returned bills",
   returnedBillsResubmitted: "Returned bills resubmitted and unpaid",
   returnedBillsPaid: "Returned bills paid",
@@ -49,16 +58,16 @@ const reportLabels = {
   supplementaryPendingReturnedBills: "Pending returned supplementary bills",
   supplementaryReturnedBillsResubmitted: "Returned supplementary bills resubmitted",
   supplementaryReturnedBillsPaid: "Returned supplementary bills paid",
+  cashOutgoForMonth: "Expected cash outgo exclusively for selected month",
+  expectedExpenditureTillMonth: "Expected Expenditure Up to Selected Month",
+  currentMonthLiability: "Cumulative Liability Up to Month",
   monthlyFileInflow: "Monthly file inflow",
   monthWiseSupplyOrder: "Month-wise Supply Order",
   monthWiseDeliverySchedule: "Month-wise Delivery / Contract Period Schedule",
-  monthWiseCompletedDeliveries: "Month-wise completed deliveries / Job Completion",
-  monthWiseBgExpiry: "Month-wise BG expiry",
-  preBidMeetings: "Pre-Bid Meetings",
+  monthWiseBgExpiry: "BG Expiry",
   bgReceiptDelay: "BG receipt delay",
   warrantyBgMismatch: "Warranty / BG mismatch",
   delayStatus: "Delay Status",
-  pendingLiabilityAgeing: "Pending Liabilities",
 };
 
 const dashboardClickSelector = [
@@ -81,6 +90,28 @@ const reportClickSelector = [
   "table tbody button.text-primary",
   "table tfoot td button.rounded-md.px-2.py-1.font-semibold.text-primary",
 ].join(",");
+
+function expectedDashboardSelectedYear(tab, settings, initialSelectedYear, previousExpectedYear) {
+  // Status tabs deliberately switch the global scope to the operational
+  // dashboard scope: active files plus files closed in the current FY. The
+  // settings endpoint may still expose the user's previous global choice
+  // (often All Active Files), so using that value for the landing assertion
+  // creates a false global-filter warning.
+  if (["status", "liveStatus", "status3", "status4"].includes(tab)) {
+    return activePlusCurrentFyClosedYear;
+  }
+
+  // Snapshot, FY Snapshot, and the default Analytics panel reset the global
+  // scope to the current financial year when they mount.
+  if (["snapshot", "finance1", "analytics"].includes(tab)) {
+    return String(settings.financialYear ?? initialSelectedYear ?? "");
+  }
+
+  // Finance preserves the session's selected global year. When the complete
+  // dashboard sequence is audited, this is the scope established by the
+  // preceding tab; for a standalone finance run, use the initial setting.
+  return previousExpectedYear ?? initialSelectedYear;
+}
 
 async function login() {
   const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
@@ -362,6 +393,7 @@ async function main() {
   let checked = 0;
   let capped = false;
   const pageCoverage = [];
+  let previousExpectedDashboardYear;
 
   try {
     for (const [tab, label] of startReportMode ? [] : dashboardTabs) {
@@ -371,23 +403,50 @@ async function main() {
       const selector = dashboardClickSelector;
       await page.locator(selector).first().waitFor({ timeout: 10000 }).catch(() => undefined);
       const clickers = await collectClickers(page, selector);
-      pageCoverage.push({ kind: "dashboard", label, clickTargets: clickers.length });
+      const expectedDashboardYear = expectedDashboardSelectedYear(
+        tab,
+        settings,
+        selectedYear,
+        previousExpectedDashboardYear,
+      );
+      previousExpectedDashboardYear = expectedDashboardYear;
+      pageCoverage.push({
+        kind: "dashboard",
+        label,
+        clickTargets: clickers.length,
+        expectedSelectedYear: expectedDashboardYear,
+      });
       for (let index = 0; index < clickers.length; index += 1) {
         if (checked >= maxClicks) { capped = true; break; }
         const item = clickers[index];
         if (!item) continue;
-        await landingCheck(page, selector, item, { kind: "dashboard", label, verifyFileOpen: index === 0 }, selectedYear, issues, notes);
+        await landingCheck(
+          page,
+          selector,
+          item,
+          { kind: "dashboard", label, verifyFileOpen: index === 0 },
+          expectedDashboardYear,
+          issues,
+          notes,
+        );
         checked += 1;
         await returnToSource(page, url, selector);
       }
-      process.stderr.write(`Browser audit: ${label}, ${clickers.length} actionable targets checked (total ${checked}).\n`);
+      process.stderr.write(
+        `Browser audit: ${label}, ${clickers.length} actionable targets checked (total ${checked}, expected global scope ${expectedDashboardYear}).\n`,
+      );
       if (capped) break;
     }
 
     if (!capped) {
       const startIndex = startReportMode ? reportModes.indexOf(startReportMode) : 0;
       if (startIndex < 0) throw new Error(`Unknown AUDIT_BROWSER_START_MODE: ${startReportMode}`);
-      for (const mode of reportModes.slice(startIndex)) {
+      const endIndex = endReportMode ? reportModes.indexOf(endReportMode) : reportModes.length - 1;
+      if (endIndex < 0) throw new Error(`Unknown AUDIT_BROWSER_END_MODE: ${endReportMode}`);
+      if (endIndex < startIndex) {
+        throw new Error(`AUDIT_BROWSER_END_MODE must not precede AUDIT_BROWSER_START_MODE`);
+      }
+      for (const mode of reportModes.slice(startIndex, endIndex + 1)) {
         const url = `${FRONTEND_URL}/reports?mode=${encodeURIComponent(mode)}`;
         await page.goto(url, { waitUntil: "domcontentloaded" });
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);

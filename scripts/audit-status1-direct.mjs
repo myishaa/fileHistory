@@ -1,9 +1,9 @@
-// Run with backend/node_modules/.bin/tsx so Status-3 uses the current TypeScript search matcher.
-import { pool } from "../backend/dist/db/pool.js";
-import { loadFiles } from "../backend/dist/routes/files.js";
-import { buildDashboardSummary } from "../backend/dist/utils/dashboard-summary.js";
+// Run with backend/node_modules/.bin/tsx so Status-3 uses the current TypeScript implementation.
+import { pool } from "../backend/src/db/pool.ts";
+import { loadFiles } from "../backend/src/routes/files.ts";
+import { buildDashboardSummary } from "../backend/src/utils/dashboard-summary.ts";
 import { searchFiles } from "../backend/src/utils/file-search.ts";
-import { isBiddingApplicableForFile } from "../backend/dist/utils/file-type-groups.js";
+import { isBiddingApplicableForFile } from "../backend/src/utils/file-type-groups.ts";
 
 const selectedYear = process.env.AUDIT_SELECTED_YEAR ?? "__all_active_files__";
 
@@ -123,7 +123,9 @@ function collectStatus1Counters(summary) {
       add(counters, "Payment / Advance Pending", row.advancePending, "advancePending");
       add(counters, "Payment / Due", row.paymentDue, "paymentDueOnly");
       add(counters, "Payment / In process", row.paymentInProcess, "paymentInProcess");
-      add(counters, "Payment / Submitted unpaid", row.paymentSubmitted, "paymentSubmitted");
+      // The Status-1 clicker intentionally excludes bills with return history;
+      // keep this audit mapping aligned with the UI handler.
+      add(counters, "Payment / Submitted unpaid", row.paymentSubmitted, "paymentSubmittedNoReturn");
     }
     if (["psb", "pwb", "psbPwb"].includes(key)) {
       add(counters, `${title} / Pending`, row.pending, `milestonePending:${key}`);

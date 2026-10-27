@@ -59,6 +59,7 @@ psql "$DATABASE_URL" -f database/086_delay_status_default_days.sql
 psql "$DATABASE_URL" -f database/087_refloat_gem_undertaking_date.sql
 psql "$DATABASE_URL" -f database/088_refloat_recommendation_date.sql
 psql "$DATABASE_URL" -f database/089_refloat_bidding_stage_over.sql
+psql "$DATABASE_URL" -f database/090_financial_year_archive.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -145,3 +146,25 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `file_completed_milestones`: completed milestone names per file.
 
 The schema is designed so the current frontend can later receive data in the same shape as `FileRecord`, while the backend stores repeated data like firms, remarks, and supply orders in proper child tables.
+
+## Isolated performance QA database
+
+Large performance cohorts must not be seeded into the application database. Create a separate PostgreSQL database whose name starts with `recordkeeper_qa_perf`, then initialize it with the same migrations:
+
+```sh
+export QA_DATABASE_URL=postgresql://myishasiddiqui@localhost:5432/recordkeeper_qa_perf
+npm run qa:perf:db
+QA_DATABASE_URL="$QA_DATABASE_URL" npm run qa:perf:seed
+```
+
+Run the backend against that database on a separate port and benchmark it with `scripts/benchmark-performance.mjs`. The benchmark script archives years in the QA database and reports timings for the 10,000-, 8,000-, 6,000-, 4,000-, and 2,000-file searchable cohorts. Clean the cohort only in the QA database:
+
+```sh
+QA_DATABASE_URL="$QA_DATABASE_URL" npm run qa:perf:cleanup
+```
+
+To remove the isolated database completely after the benchmark, use the guarded drop action (it only accepts names beginning with `recordkeeper_qa_perf`):
+
+```sh
+QA_DATABASE_URL="$QA_DATABASE_URL" QA_PERF_DB_ACTION=drop npm run qa:perf:db
+```

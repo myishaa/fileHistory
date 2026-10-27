@@ -160,6 +160,7 @@ import {
   isAllActiveFilesYear,
   isAllFilesYear,
   isCancelledFile,
+  normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import {
   calculateFirmRatingScore,
@@ -1303,6 +1304,7 @@ function ReportsPage({
   const [fileCategoryPreferenceSaving, setFileCategoryPreferenceSaving] = useState(false);
   const [fileCategoryPreferenceError, setFileCategoryPreferenceError] = useState("");
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
+  const [includeArchivedYears, setIncludeArchivedYears] = useState(false);
   const [fileYearLocked, setFileYearLocked] = useState(false);
   const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
   const [fileInitiationToDate, setFileInitiationToDate] = useState("");
@@ -1761,6 +1763,19 @@ function ReportsPage({
     effectiveSelectedFileYear === "all" || availableFileYearOptions.includes(effectiveSelectedFileYear)
       ? effectiveSelectedFileYear
       : defaultFileYear;
+  const archivedFinancialYearLabels = useMemo(
+    () =>
+      new Set(
+        (settings.financialYearStatuses ?? [])
+          .filter((status) => status.archived)
+          .map((status) => normalizeFinancialYearLabel(status.label)),
+      ),
+    [settings.financialYearStatuses],
+  );
+  const selectedArchivedYearByScope =
+    archivedFinancialYearLabels.has(normalizeFinancialYearLabel(settings.selectedYear)) ||
+    (activeFileYear !== "all" && archivedFinancialYearLabels.has(normalizeFinancialYearLabel(activeFileYear)));
+  const effectiveIncludeArchivedYears = includeArchivedYears || selectedArchivedYearByScope;
   useEffect(() => {
     const syncLock = () => setFilterCombinationLock(readFilterCombinationLock(activeUser?.id));
     syncLock();
@@ -2030,6 +2045,7 @@ function ReportsPage({
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayStatusMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
+    if (effectiveIncludeArchivedYears) params.set("includeArchivedYears", "true");
     if (!fileYearFilterDisabled) {
       if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
       Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
@@ -2065,6 +2081,7 @@ function ReportsPage({
     activeFileCategoriesParam,
     settings.selectedYear,
     effectiveFinancialYear,
+    effectiveIncludeArchivedYears,
   ]);
 
   useEffect(() => {
@@ -2125,9 +2142,9 @@ function ReportsPage({
     setMmgLoading(true);
     setMmgError(undefined);
     const allFilesRequest = needsMmgPreviousFiles
-      ? fetchFilesForYear("")
+      ? fetchFilesForYear("", effectiveIncludeArchivedYears)
       : Promise.resolve({ files: [] as FileRecord[] });
-    Promise.all([fetchFilesForYear(settings.selectedYear), allFilesRequest])
+    Promise.all([fetchFilesForYear(settings.selectedYear, effectiveIncludeArchivedYears), allFilesRequest])
       .then(([current, allFiles]) => {
         if (!active) return;
         setMmgFiles(current.files);
@@ -2144,7 +2161,13 @@ function ReportsPage({
     return () => {
       active = false;
     };
-  }, [needsMmgFiles, needsMmgPreviousFiles, reportMode, settings.selectedYear]);
+  }, [
+    effectiveIncludeArchivedYears,
+    needsMmgFiles,
+    needsMmgPreviousFiles,
+    reportMode,
+    settings.selectedYear,
+  ]);
 
   useEffect(() => {
     if (reportMode !== "mmgSummary") {
@@ -3573,6 +3596,7 @@ function ReportsPage({
           expectedCashOutgoOffsetDays,
           dateContext,
         ),
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3602,6 +3626,7 @@ function ReportsPage({
           expectedCashOutgoOffsetDays,
           dateContext,
         ),
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3618,6 +3643,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3632,6 +3658,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: getDelayStatusDashboardFilter(delayStatusThresholdDays, milestoneKey),
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3674,6 +3701,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3701,6 +3729,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3729,6 +3758,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${encodeURIComponent(fileId)}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         selectedYear: ALL_ACTIVE_FILES_YEAR,
@@ -3800,6 +3830,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${fileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3817,6 +3848,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${row.fileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3833,6 +3865,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -3896,6 +3929,7 @@ function ReportsPage({
       search: {
         dashboardFilter:
           row.dashboardFilter ?? `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         selectedYear: settings.selectedYear,
         fileCategories: activeFileCategoriesParam,
@@ -3929,6 +3963,7 @@ function ReportsPage({
       to: "/search",
       search: {
         dashboardFilter: `fileIds:${uniqueFileIds.map(encodeURIComponent).join(",")}`,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
@@ -4132,6 +4167,37 @@ function ReportsPage({
                 onToDateChange={(toDate) => updateFileInitiationDateRange({ toDate })}
                 onClear={clearFileInitiationDateRange}
               />
+              <label className="flex min-h-9 items-center gap-2 self-end rounded-md border border-input bg-background px-2.5 py-2 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  data-testid="reports-include-archived-years"
+                  checked={effectiveIncludeArchivedYears}
+                  disabled={selectedArchivedYearByScope}
+                  onChange={(event) => setIncludeArchivedYears(event.target.checked)}
+                  className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <span className="whitespace-nowrap">Include archived years</span>
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Include archived years help"
+                        className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <Info className="size-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="top"
+                      align="start"
+                      className="max-w-[min(28rem,calc(100vw-2rem))] border border-border bg-background p-2 text-xs leading-relaxed text-foreground shadow-lg"
+                    >
+                      Archived-origin inactive files are excluded by default. Active carry-forward files remain included. Turn this on to include archived historical files; selecting an archived FY enables it automatically.
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </label>
               <FileCategoryFilter
                 selectedCategories={selectedFileCategories}
                 options={visibleFileCategoryOptions}

@@ -3979,10 +3979,13 @@ function getMilestoneClearingDurationRows(
           file.gemUndertakingDate,
         );
         if (normalRow) rows.push(normalRow);
-        if (!isYes(file.tcec) && isYes(file.refloat)) {
+        if (isYes(file.refloat)) {
+          const refloatStart = isYes(file.tcec)
+            ? file.postTcecDate
+            : file.refloatRecommendationDate;
           const refloatRow = getMilestoneClearingDurationRow(
             file,
-            file.refloatRecommendationDate,
+            refloatStart,
             file.refloatGemUndertakingDate,
           );
           if (refloatRow) rows.push(refloatRow);

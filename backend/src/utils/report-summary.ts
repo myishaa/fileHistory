@@ -2521,9 +2521,7 @@ function getCurrentOrderMilestoneDelayRows(
       orderLevelMilestone
         ? milestone.key === "financialSanction"
           ? expectedSupplyOrders(file).map((order, orderIndex) => ({ order, orderIndex }))
-          : milestone.key === "supplyOrder"
-            ? expectedSupplyOrders(file).map((order, orderIndex) => ({ order, orderIndex }))
-            : rawSupplyOrders(file).map((order, orderIndex) => ({ order, orderIndex }))
+          : rawSupplyOrders(file).map((order, orderIndex) => ({ order, orderIndex }))
         : ["billPreparation", "billSentForPayment", "payment"].includes(milestone.key)
             ? normalizedFilePaymentEntries(file).filter(({ advancePayment }) => !advancePayment)
           : normalizedFileSupplyOrderEntries(file);

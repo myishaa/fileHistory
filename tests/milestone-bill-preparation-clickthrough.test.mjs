@@ -18,8 +18,9 @@ test("carry-forward Search honors Active, All Files, and selected-FY global scop
     "2026-27",
     carryForwardParams,
   );
-  assert.equal(activeConditions.length, 1);
-  assert.match(activeConditions[0], /fileclosed/);
+  assert.equal(activeConditions.length, 2);
+  assert.match(activeConditions[0], /financial_years archived_search_year/);
+  assert.match(activeConditions[1], /fileclosed/);
 
   const allFilesConditions = [];
   appendSearchGlobalYearScope(
@@ -27,9 +28,20 @@ test("carry-forward Search honors Active, All Files, and selected-FY global scop
     [],
     "__all_files__",
     "2026-27",
-    carryForwardParams,
+    { ...carryForwardParams, includeArchivedYears: true },
   );
   assert.deepEqual(allFilesConditions, []);
+
+  const archivedExcludedConditions = [];
+  appendSearchGlobalYearScope(
+    archivedExcludedConditions,
+    [],
+    "__all_files__",
+    "2026-27",
+    carryForwardParams,
+  );
+  assert.equal(archivedExcludedConditions.length, 1);
+  assert.match(archivedExcludedConditions[0], /financial_years archived_search_year/);
 
   const selectedFyConditions = [];
   appendSearchGlobalYearScope(
@@ -39,8 +51,9 @@ test("carry-forward Search honors Active, All Files, and selected-FY global scop
     "2026-27",
     carryForwardParams,
   );
-  assert.equal(selectedFyConditions.length, 1);
-  assert.match(selectedFyConditions[0], /f\.year/);
+  assert.equal(selectedFyConditions.length, 2);
+  assert.match(selectedFyConditions[0], /financial_years archived_search_year/);
+  assert.match(selectedFyConditions[1], /f\.year/);
 });
 
 test("Bill preparation Search requires the ranking's valid start-to-completion interval", () => {

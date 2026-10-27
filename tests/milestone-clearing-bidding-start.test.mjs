@@ -116,13 +116,13 @@ test("Non-TCEC Refloat Bidding ranking contributes original and refloat samples"
   );
 });
 
-test("GeM Undertaking ranking SQL click-through includes normal and Non-TCEC Refloat samples", () => {
+test("GeM Undertaking ranking SQL click-through includes normal and refloat samples", () => {
   const sql = dashboardFilterSql("analyticsMilestoneClearing:gemUndertaking", []);
   assert.match(sql, /f\.cfa_date/);
   assert.match(sql, /f\.gem_undertaking_date/);
   assert.match(sql, /f\.refloat_recommendation_date/);
   assert.match(sql, /f\.refloat_gem_undertaking_date/);
-  assert.match(sql, /not lower\(coalesce\(f\.tcec/);
+  assert.match(sql, /when lower\(coalesce\(f\.tcec/);
   assert.match(sql, /\)\s+or\s+\(/);
 });
 

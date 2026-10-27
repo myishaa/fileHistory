@@ -110,6 +110,7 @@ export function TopBar() {
   const anomalyRequestId = useRef(0);
   const [ipAccessWarningCount, setIpAccessWarningCount] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const warningsContainerRef = useRef<HTMLDivElement>(null);
   const [filterGuideOpen, setFilterGuideOpen] = useState(false);
   const [filterLockDialogOpen, setFilterLockDialogOpen] = useState(false);
   const [savedFilterCombination, setSavedFilterCombination] = useState<FilterCombinationLock>();
@@ -133,6 +134,27 @@ export function TopBar() {
   const effectiveSelectedYear = isSpecificFinanceYearContext
     ? normalizeFinancialYearLabel(settings.selectedYear) || settings.financialYear
     : settings.selectedYear;
+
+  useEffect(() => {
+    if (!warningsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setWarningsOpen(false);
+    };
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !warningsContainerRef.current?.contains(target)) {
+        setWarningsOpen(false);
+      }
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+    };
+  }, [warningsOpen]);
   const globalFilterHelp = getGlobalFilterHelp(effectiveSelectedYear, settings.financialYear);
   const filterGuideSections = getSectionFilterGuide(settings.financialYear);
   const recommendedFilterLabel = getRecommendedFilterLabel(
@@ -583,7 +605,7 @@ export function TopBar() {
   };
 
   return (
-    <header className="sticky top-0 z-10 border-b border-border bg-card/95 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b border-border bg-card/95 backdrop-blur">
       <div className="min-h-14 px-4 lg:px-6 pt-2.5 pb-6 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2.5 mr-2">
           <div className="size-8 rounded-md border border-border bg-secondary grid place-items-center">
@@ -618,7 +640,7 @@ export function TopBar() {
         </nav>
 
         <div className="flex w-full min-w-0 flex-wrap items-start gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap sm:items-center sm:gap-3">
-          <div className="relative">
+          <div ref={warningsContainerRef} className="relative">
             <button
               type="button"
               onClick={() => {
@@ -640,7 +662,7 @@ export function TopBar() {
               ) : null}
             </button>
             {warningsOpen ? (
-              <div className="absolute right-0 top-10 z-30 w-72 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-lg">
+              <div className="absolute right-0 top-10 z-50 max-h-[min(32rem,calc(100dvh-4rem))] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-lg">
                 <div className="border-b border-border px-2 pb-2 text-xs font-semibold uppercase text-muted-foreground">
                   Warnings
                 </div>

@@ -910,6 +910,7 @@ async function downloadDashboardStatusFiles({
   fileYear,
   fileInitiationDateRange,
   fileCategories,
+  includeArchivedYears,
   format,
   title,
 }: {
@@ -919,6 +920,7 @@ async function downloadDashboardStatusFiles({
   fileYear?: string;
   fileInitiationDateRange?: FileInitiationDateRange;
   fileCategories?: string;
+  includeArchivedYears?: boolean;
   format: "excel" | "pdf";
   title: string;
 }) {
@@ -929,6 +931,7 @@ async function downloadDashboardStatusFiles({
     query: {
       dashboardFilter,
       selectedYear,
+      ...(includeArchivedYears ? { includeArchivedYears: "true" } : {}),
       ...(fileYear && fileYear !== "all" ? { fileYear } : {}),
       ...getFileInitiationDateSearchParams(fileInitiationDateRange),
       ...(fileCategories ? { fileCategories } : {}),
@@ -1551,6 +1554,7 @@ export function Dashboard() {
     }
     return settings.financialYear || "all";
   });
+  const [includeArchivedYears, setIncludeArchivedYears] = useState(false);
   const [financeFileYear, setFinanceFileYear] = useState(() => {
     if (typeof window !== "undefined") {
       try {
@@ -1833,6 +1837,19 @@ export function Dashboard() {
       : pageFileYear === "all" || availableFileYearOptions.includes(pageFileYear)
         ? pageFileYear
         : defaultFileYear;
+  const archivedFinancialYearLabels = useMemo(
+    () =>
+      new Set(
+        (settings.financialYearStatuses ?? [])
+          .filter((status) => status.archived)
+          .map((status) => normalizeFinancialYearLabel(status.label)),
+      ),
+    [settings.financialYearStatuses],
+  );
+  const selectedArchivedYearByScope =
+    archivedFinancialYearLabels.has(normalizeFinancialYearLabel(settings.selectedYear)) ||
+    (activeFileYear !== "all" && archivedFinancialYearLabels.has(normalizeFinancialYearLabel(activeFileYear)));
+  const effectiveIncludeArchivedYears = includeArchivedYears || selectedArchivedYearByScope;
   useEffect(() => {
     const syncLock = () => setFilterCombinationLock(readFilterCombinationLock(activeUser?.id));
     syncLock();
@@ -2190,7 +2207,7 @@ export function Dashboard() {
     setIndentorFirmFilesLoading(true);
     setIndentorFirmFilesError("");
     setIndentorFirmFiles([]);
-    fetchFilesForYear(settings.selectedYear ?? "")
+    fetchFilesForYear(settings.selectedYear ?? "", effectiveIncludeArchivedYears)
       .then(({ files: scopedFiles }) => {
         if (active) setIndentorFirmFiles(scopedFiles);
       })
@@ -2206,7 +2223,7 @@ export function Dashboard() {
     return () => {
       active = false;
     };
-  }, [activeAnalyticsPanel, activeDashboardTab, settings.selectedYear]);
+  }, [activeAnalyticsPanel, activeDashboardTab, effectiveIncludeArchivedYears, settings.selectedYear]);
   const indentorFirmScopedFiles = useMemo(() => {
     const divisionRows = activeDivision === "all"
       ? indentorFirmFiles
@@ -2243,6 +2260,7 @@ export function Dashboard() {
     params.set("version", dashboardSummaryQueryVersion);
     params.set("division", activeDivision);
     params.set("selectedYear", isNoticeBoardFyActivity ? settings.financialYear : settings.selectedYear);
+    if (effectiveIncludeArchivedYears) params.set("includeArchivedYears", "true");
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     if (activeDashboardTab !== "finance1") {
       Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
@@ -2273,6 +2291,7 @@ export function Dashboard() {
     finance1RefreshDay,
     finance1InitiationRange,
     selectedLiveMilestones,
+    effectiveIncludeArchivedYears,
     settings.selectedYear,
     settings.financialYear,
   ]);
@@ -2377,6 +2396,7 @@ export function Dashboard() {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (effectiveIncludeArchivedYears) params.set("includeArchivedYears", "true");
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     if (activeFileCategoriesParam) params.set("fileCategories", activeFileCategoriesParam);
@@ -2391,12 +2411,14 @@ export function Dashboard() {
     analyticsDelayMilestoneKey,
     fileInitiationDateQueryParams,
     activeFileCategoriesParam,
+    effectiveIncludeArchivedYears,
     settings.selectedYear,
   ]);
   const suspectedAnomalyQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
     params.set("selectedYear", settings.selectedYear);
+    if (effectiveIncludeArchivedYears) params.set("includeArchivedYears", "true");
     if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
     Object.entries(fileInitiationDateQueryParams).forEach(([key, value]) => params.set(key, value));
     if (activeFileCategoriesParam) params.set("fileCategories", activeFileCategoriesParam);
@@ -2406,6 +2428,7 @@ export function Dashboard() {
     activeFileYear,
     fileInitiationDateQueryParams,
     activeFileCategoriesParam,
+    effectiveIncludeArchivedYears,
     settings.selectedYear,
   ]);
   const displayedSuspectedAnomalyRows =
@@ -2469,7 +2492,7 @@ export function Dashboard() {
     let cancelled = false;
     setStatus4FilesLoading(true);
     setStatus4FilesError(undefined);
-    fetchFilesForYear(settings.selectedYear)
+    fetchFilesForYear(settings.selectedYear, effectiveIncludeArchivedYears)
       .then((payload) => {
         if (!cancelled) setStatus4SourceFiles(payload.files);
       })
@@ -2485,7 +2508,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [activeDashboardTab, settings.selectedYear]);
+  }, [activeDashboardTab, effectiveIncludeArchivedYears, settings.selectedYear]);
 
   useEffect(() => {
     if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "delayStatus") return;
@@ -2608,7 +2631,7 @@ export function Dashboard() {
     let cancelled = false;
     setMilestoneClearingFilesLoading(true);
     setMilestoneClearingFilesError(undefined);
-    fetchFilesForYear(settings.selectedYear)
+    fetchFilesForYear(settings.selectedYear, effectiveIncludeArchivedYears)
       .then((payload) => {
         if (!cancelled) setMilestoneClearingSourceFiles(payload.files);
       })
@@ -2626,7 +2649,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [activeAnalyticsPanel, activeDashboardTab, settings.selectedYear]);
+  }, [activeAnalyticsPanel, activeDashboardTab, effectiveIncludeArchivedYears, settings.selectedYear]);
 
   const needsLocalDashboardFallback = !dashboardSummary;
   const localModeCounts = needsLocalDashboardFallback
@@ -5475,7 +5498,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         "Scope: Cancelled files are excluded. Cancelled S.O.s, demand-cancelled files, and no-further-action payment cases are excluded from applicable S.O. and payment delay rows.",
         "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Other file-level milestones start from the latest applicable earlier completed predecessor and remain open through today.",
         "Bidding: Normal bidding starts from CFA Approval Date and ends when Bid Date is recorded. For a Non-TCEC Refloat, after Refloat recommendation and Bidding Stage Over = Yes, the common Bidding delay restarts from Refloat recommendation and ends when Refloat bidding date is recorded.",
-        "GeM Undertaking: For normal applicable GeM files other than GeM Comparison, starts at CFA Approval Date and ends at GeM Undertaking Date. For a Non-TCEC Refloat + GeM, the common status starts at Refloat recommendation and ends at Refloat GeM undertaking. If the required start date is blank, no fallback, zero-day value, or average sample is created.",
+        "GeM Undertaking: Every applicable GeM file other than GeM Comparison can complete the normal cycle from CFA Approval Date to GeM Undertaking Date, including files marked Refloat. A refloat file can also have a separate cycle: TCEC uses Post-TCEC Date to Refloat GeM undertaking, while Non-TCEC uses Refloat recommendation to Refloat GeM undertaking. Missing required dates create no sample; the two cycles remain independent.",
         "Non-TCEC Technical Evaluation: The recorded Bid closing date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid closing to the first Financial Sanction. If Refloat = Yes before Refloat bid closing is recorded, it runs from Bid closing to Refloat recommendation. After Refloat bid closing, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat bid closing to Financial Sanction.",
         "Order workflow: Financial Sanction, Supply Order, PSB, PWB, PSB+PWB, Delivery, Job Completion, IR, Bill preparation, Bill sent for payment, and open bill returns use their own applicable S.O. or stage dates.",
         "Job Completion and payment are independent delay items. An overdue payment does not suppress Job Completion, and a pending Job Completion does not create or replace a payment delay.",
@@ -5895,6 +5918,7 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         dashboardFilter,
         selectedYear: settings.selectedYear,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         division: activeDivision === "all" ? undefined : activeDivision,
@@ -5920,6 +5944,7 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         dashboardFilter: `snapshotFileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         selectedYear: "__all_files__",
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: "all",
         division: activeDivision === "all" ? undefined : activeDivision,
         focusSection: focus.focusSection,
@@ -5978,6 +6003,7 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         dashboardFilter: `snapshotFileIds:${fileIds.map(encodeURIComponent).join(",")}`,
         selectedYear: "__all_files__",
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: "all",
         division: activeDivision === "all" ? undefined : activeDivision,
         ...focus,
@@ -6009,6 +6035,7 @@ const analyticsPanels: AnalyticsPanel[] = [
       search: {
         dashboardFilter,
         selectedYear: settings.selectedYear,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         division,
@@ -6032,6 +6059,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         selectedYear: settings.selectedYear,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         focusSection: focusTarget ? "Supply order and payment" : undefined,
@@ -6050,6 +6078,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         selectedYear: settings.selectedYear,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         analyticsType: analyticsTransferType,
@@ -6080,6 +6109,7 @@ const analyticsPanels: AnalyticsPanel[] = [
           ? JSON.stringify(target.extraDashboardFilters)
           : undefined,
         milestoneClearingScope: target.milestoneClearingScope || undefined,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         division:
           target.division ??
           (activeDivision === "all" ? undefined : activeDivision),
@@ -6121,6 +6151,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         division: activeDivision === "all" ? undefined : activeDivision,
         fileCategories: activeFileCategoriesParam,
         selectedYear: settings.selectedYear,
+        includeArchivedYears: effectiveIncludeArchivedYears ? true : undefined,
         fileYear: activeFileYear === "all" ? undefined : activeFileYear,
         ...fileInitiationDateQueryParams,
         drillPath: serializeDrillPath([
@@ -6316,6 +6347,7 @@ const analyticsPanels: AnalyticsPanel[] = [
         fileYear: activeFileYear,
         fileInitiationDateRange: activeFileInitiationDateRange,
         fileCategories: activeFileCategoriesParam,
+        includeArchivedYears: effectiveIncludeArchivedYears,
         format: statusActionMode === "excel" ? "excel" : "pdf",
         title,
       });
@@ -6477,6 +6509,37 @@ const analyticsPanels: AnalyticsPanel[] = [
                 onClear={clearFileInitiationDateRange}
               />
             )}
+            <label className="flex min-h-9 items-center gap-2 self-end rounded-md border border-input bg-background px-2.5 py-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                data-testid="dashboard-include-archived-years"
+                checked={effectiveIncludeArchivedYears}
+                disabled={selectedArchivedYearByScope}
+                onChange={(event) => setIncludeArchivedYears(event.target.checked)}
+                className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              <span className="whitespace-nowrap">Include archived years</span>
+              <TooltipProvider delayDuration={150}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Include archived years help"
+                      className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <Info className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    align="start"
+                    className="max-w-[min(28rem,calc(100vw-2rem))] border border-border bg-background p-2 text-xs leading-relaxed text-foreground shadow-lg"
+                  >
+                    Archived-origin inactive files are excluded by default. Active carry-forward files remain included. Turn this on to include archived historical files; selecting an archived FY enables it automatically.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </label>
           </div>
           <label
             className={filterLabelClass(
@@ -10817,42 +10880,36 @@ function SummaryMetric({
                 <div className="text-lg font-semibold tracking-tight">{item.value}</div>
               </>
             );
-            const wrapSubMetricHelp = (element: ReactElement) =>
-              item.help ? (
-                <TooltipProvider key={subMetricKey} delayDuration={150}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>{element}</TooltipTrigger>
-                    <TooltipContent
-                      side="top"
-                      align="center"
-                      className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
-                    >
-                      <HelperBulletList items={item.help} />
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                element
-              );
-
             const searchFilter = item.searchFilter;
-            if (searchFilter && onSubMetricClick) {
-              return wrapSubMetricHelp(
-                <button
-                  key={subMetricKey}
-                  type="button"
-                  onClick={() => onSubMetricClick(searchFilter)}
-                  className="rounded-md border border-border bg-card px-2 py-2 text-left hover:bg-accent"
-                >
-                  {subContent}
-                </button>
-              );
-            }
-
-            return wrapSubMetricHelp(
-              <div key={subMetricKey} className="rounded-md border border-border bg-card px-2 py-2">
+            const subMetricElement = searchFilter && onSubMetricClick ? (
+              <button
+                type="button"
+                onClick={() => onSubMetricClick(searchFilter)}
+                className="rounded-md border border-border bg-card px-2 py-2 text-left hover:bg-accent"
+              >
+                {subContent}
+              </button>
+            ) : (
+              <div className="rounded-md border border-border bg-card px-2 py-2">
                 {subContent}
               </div>
+            );
+
+            return item.help ? (
+              <TooltipProvider key={subMetricKey} delayDuration={150}>
+                <Tooltip>
+                  <TooltipTrigger asChild>{subMetricElement}</TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    align="center"
+                    className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+                  >
+                    <HelperBulletList items={item.help} />
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              <Fragment key={subMetricKey}>{subMetricElement}</Fragment>
             );
           })}
         </div>
@@ -13409,8 +13466,9 @@ function DashboardStatusSummaryValue({
     normalizeMilestoneName(milestone) === "payment" &&
     normalizeMilestoneName(stage) === "submittedandunpaid"
       ? [
-          "Bill sent for payment date exists and payment date is still blank.",
+          "Counts regular or stage payment items where the Bill Sent for Payment date exists and the payment date is still blank.",
           "Bills with return history are listed under Returned Bills instead.",
+          "Cancelled S.O.s and No Further Action items are excluded.",
           "This counts payment items, not unique files.",
         ]
       : undefined;
@@ -14489,10 +14547,10 @@ const supplementaryBillMetricHelp = {
     "Counts bill records, not files.",
   ],
   normalPending: [
-    "Counts submitted supplementary bills with no payment date and no return history.",
-    "This is one of the three non-overlapping parts of Supplementary Pending.",
+    "Counts supplementary bill records with a Bill Sent for Payment date, no payment date, and no return history.",
+    "This is the normal/no-return part of Supplementary Pending; returned bills appear under Return pending or Resubmitted and unpaid.",
     "No Further Action and cancelled S.O.s are excluded.",
-    "Counts bill records, not files.",
+    "Counts supplementary bill records, not unique files.",
   ],
   resubmittedPending: [
     "Counts submitted supplementary bills with no payment date whose latest return cycle has a resubmitted date.",
@@ -16785,7 +16843,7 @@ function getMilestoneClearingPanelHelper(context: MilestoneClearingHelperContext
     "Filters: Current filters narrow the files included; they do not change the date rules. File-level stages generally start at the latest earlier applicable completion.",
     "Sampling: From Supply Order onward, each qualifying S.O., delivery stage, bill, return cycle, or payment case is one sample. Stagewise payments are separate; one common staged payment counts once.",
     "Special cases: Scrutiny uses Received Date → Scrutiny Completion Date. Bidding contributes one sample per completed cycle; a Non-TCEC Refloat can contribute two. When GeM = Yes and GeM Bidding Mode = Comparison, no GeM Undertaking or Bidding sample is created.",
-    "GeM Undertaking: This single milestone combines the normal CFA Approval Date → GeM Undertaking Date sample with a separate Non-TCEC Refloat sample from Refloat recommendation → Refloat GeM undertaking. A file can therefore contribute two samples while remaining one distinct file.",
+    "GeM Undertaking: This single milestone combines the normal CFA Approval Date → GeM Undertaking Date sample with a separate refloat sample. TCEC refloat uses Post-TCEC Date → Refloat GeM undertaking; Non-TCEC refloat uses Refloat recommendation → Refloat GeM undertaking. A file can therefore contribute two samples while remaining one distinct file; Search opens the file once.",
     "Bidding: The single milestone can contain separate completed samples. Normal Non-TCEC and the original cycle of a Non-TCEC Refloat use CFA Approval Date → Bid Date; the Refloat cycle uses Refloat recommendation → Refloat bidding date after the original Bidding Stage Over = Yes prerequisite. Bid-opening dates are not used as the completion endpoint for these Non-TCEC samples.",
     "Non-TCEC Technical Evaluation: A non-refloat file contributes one completed sample (Bid closing → first Financial Sanction). A Refloat file can contribute two completed samples: first cycle Bid closing → Refloat recommendation, then Refloat bid closing → first Financial Sanction. The first cycle requires Bidding Stage Over = Yes; the second requires Refloat Bidding Stage Over = Yes.",
     "Post-TCEC counting: Original Post-TCEC and Refloat Post-TCEC are independent completed stages. If both are recorded for one file, each contributes one sample to its own milestone.",
@@ -17272,7 +17330,7 @@ function getMilestoneClearingHelper(name: string, path: MilestoneClearingPath) {
     financialsanction:
       "CNC Approval Date → that S.O.'s Financial Sanction Date.\nTCEC only. Each recorded S.O. with a Financial Sanction date is one sample.",
     gemundertaking:
-      "Applicable GeM files other than Comparison contribute the normal CFA Approval Date → GeM Undertaking Date sample. A Non-TCEC Refloat can add a separate Refloat recommendation → Refloat GeM undertaking sample under this same milestone. A file may therefore contribute two samples, while Files remains a distinct-file count. Missing dates or an invalid interval contribute no sample.",
+      "Applicable GeM files other than Comparison contribute the normal CFA Approval Date → GeM Undertaking Date sample, even when Refloat = Yes. A refloat can add a separate sample under this same milestone: TCEC uses Post-TCEC Date → Refloat GeM undertaking; Non-TCEC uses Refloat recommendation → Refloat GeM undertaking. A file may therefore contribute two samples, while Files remains a distinct-file count and Search opens it once. Missing dates or an invalid interval contribute no sample.",
     rfpvetting:
       "GeM Undertaking Date when GeM applies (not Comparison); otherwise CFA Approval Date → RFP Vetting Approval Date.\nRFP Vetting = Yes. If GeM applies but its undertaking date is missing, no duration sample is counted. Cumulative days remain File Received Date → RFP Vetting Approval Date.",
     supplyorder:
@@ -18659,7 +18717,10 @@ function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget |
       target: "immsDate",
     },
     ifa: { filter: "milestoneCleared:ifa", section: "Approval block", target: "ifaFinalDate" },
-    cfa: { filter: "milestoneCleared:cfa", section: "Approval block", target: "cfaDate" },
+    // Status-1 must honor the selected active-file scope. Milestone Clearing
+    // uses milestoneCleared:cfa separately because its historical drilldown
+    // intentionally includes completed/cancelled-history samples.
+    cfa: { filter: "cfaCompleted", section: "Approval block", target: "cfaDate" },
     posttcec: {
       filter: "milestoneCleared:postTcec",
       section: "TCEC block",
@@ -20645,7 +20706,17 @@ function PaymentMetricGrid({
   metrics: StatusMetric[];
   tone: ReturnType<typeof getMilestoneTone>;
 }) {
-  const metricByLabel = new Map(metrics.map((metric) => [metric.label.toLowerCase(), metric]));
+  // The Payment milestone also supplies Supplementary Bill metrics to the
+  // adjacent supplementary card. Both have a "Submitted and unpaid" label,
+  // so a last-write-wins map would incorrectly replace the regular Payment
+  // metric in this card with the supplementary one. Keep the first metric,
+  // which is the regular Payment entry; supplementary metrics are rendered by
+  // SupplementaryBillFlowNode below.
+  const metricByLabel = new Map<string, StatusMetric>();
+  metrics.forEach((metric) => {
+    const key = metric.label.toLowerCase();
+    if (!metricByLabel.has(key)) metricByLabel.set(key, metric);
+  });
   const findMetric = (label: string) => metricByLabel.get(label.toLowerCase()) ?? { label, count: 0 };
   const relabelMetric = (fromLabel: string, toLabel: string) => {
     const metric = findMetric(fromLabel);
@@ -21137,8 +21208,9 @@ function getStatusMetricHelp(milestoneKey: string, label: string): string | stri
     }
     if (normalizedLabel === "submitted" || normalizedLabel === "submittedandunpaid") {
       return [
-        "Bill sent for payment date exists and payment date is still blank.",
+        "Counts regular or stage payment items where the Bill Sent for Payment date exists and the payment date is still blank.",
         "Bills with return history appear under Return pending or Resubmitted and unpaid instead.",
+        "Cancelled S.O.s and No Further Action items are excluded.",
         "This counts payment items, not unique files.",
       ];
     }
@@ -24348,10 +24420,13 @@ function getMilestoneClearingDurationRows(
           file.gemUndertakingDate,
         );
         if (normalRow) rows.push(normalRow);
-        if (!isYes(file.tcec) && isYes(file.refloat)) {
+        if (isYes(file.refloat)) {
+          const refloatStart = isYes(file.tcec)
+            ? file.postTcecDate
+            : file.refloatRecommendationDate;
           const refloatRow = getMilestoneClearingDurationRow(
             file,
-            file.refloatRecommendationDate,
+            refloatStart,
             file.refloatGemUndertakingDate,
           );
           if (refloatRow) rows.push(refloatRow);
@@ -28642,6 +28717,14 @@ function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
     ["totalpending", "allpaymentpending"].includes(normalizeMilestoneName(stage))
   ) {
     return "analyticsPaymentPending";
+  }
+  if (
+    normalizeMilestoneName(milestone) === "payment" &&
+    normalizeMilestoneName(stage) === "submittedandunpaid"
+  ) {
+    // Keep the Payment clicker aligned with Status-1. Returned bills have
+    // their own counters and must not be duplicated here.
+    return "paymentSubmittedNoReturn";
   }
   if (milestone === "Miscellaneous") {
     const miscFilters: Record<string, string> = {

@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import type {
   AppSettings,
+  FinancialYearStatus,
   AppTheme,
   AppThemeTint,
   FirmRatingConfig,
@@ -21,6 +22,7 @@ import {
 } from "../utils/cache.js";
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
 import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
+import { ensureFinancialYearArchiveSchema } from "../utils/financial-year-archive.js";
 import {
   addTrustedIp,
   archiveIpAttempt,
@@ -170,6 +172,28 @@ function normalizeYearLabel(value: unknown, field = "financialYear") {
     throw new HttpError(400, `${field} must be a valid financial year like 2026-27.`);
   }
   return label;
+}
+
+function readFinancialYearStatuses(value: unknown): FinancialYearStatus[] {
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "financialYearStatuses must be an array.");
+  }
+  const seen = new Set<string>();
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, `Financial year status ${index + 1} must be an object.`);
+    }
+    const candidate = item as Record<string, unknown>;
+    const label = normalizeYearLabel(candidate.label, `financialYearStatuses[${index}].label`);
+    if (seen.has(label)) {
+      throw new HttpError(400, `Financial year ${label} appears more than once.`);
+    }
+    seen.add(label);
+    if (typeof candidate.archived !== "boolean") {
+      throw new HttpError(400, `financialYearStatuses[${index}].archived must be true or false.`);
+    }
+    return { label, archived: candidate.archived };
+  });
 }
 
 function readAddEditRibbonFields(value: unknown) {
@@ -362,6 +386,18 @@ async function loadFinancialYears() {
       "select label from financial_years order by label desc",
     );
     return result.rows.map((row) => row.label).filter((label) => normalizeFinancialYearKey(label));
+  });
+}
+
+async function loadFinancialYearStatuses(): Promise<FinancialYearStatus[]> {
+  return getCached("lookup:financial-years:statuses", cacheTtl.lookupMs, async () => {
+    await ensureFinancialYearArchiveSchema();
+    const result = await pool.query<{ label: string; is_archived: boolean }>(
+      "select label, is_archived from financial_years order by label desc",
+    );
+    return result.rows
+      .filter((row) => normalizeFinancialYearKey(row.label) !== undefined)
+      .map((row) => ({ label: row.label, archived: row.is_archived === true }));
   });
 }
 
@@ -563,6 +599,7 @@ async function loadUserReportPreferences(userId: string, reportKey: string) {
 
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
   const financialYears = await loadFinancialYears();
+  const financialYearStatuses = await loadFinancialYearStatuses();
   const setupYear =
     row.setup_year &&
     row.setup_year !== allFilesYear &&
@@ -601,6 +638,9 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     selectedYear: row.selected_year,
     setupYear,
     financialYears: mergedFinancialYears,
+    financialYearStatuses: mergedFinancialYears.map(
+      (label) => financialYearStatuses.find((status) => status.label === label) ?? { label, archived: false },
+    ),
     yearSelectionLocked: row.year_selection_locked,
     theme: uiPreferences?.theme ?? row.theme,
     themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
@@ -733,6 +773,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
   const key = `settings:app:${user?.id ?? "anonymous"}:${user?.role ?? "none"}`;
   return getCached(key, cacheTtl.settingsMs, async () => {
     await ensurePreSoSettingsSchema();
+    await ensureFinancialYearArchiveSchema();
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
               global_chart_color_order, global_chart_colors_enforced, deletion_password,
@@ -1303,6 +1344,42 @@ settingsRouter.post(
   }),
 );
 
+settingsRouter.patch(
+  "/financial-years/:label/archive",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin" && user.role !== "sub_admin") {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
+    const label = requireParam(request.params.label, "label").trim();
+    if (!label || !isFinancialYearLabel(label)) {
+      throw new HttpError(400, "label must be a valid financial year like 2026-27.");
+    }
+    const body = requireObjectBody(request.body);
+    if (typeof body.archived !== "boolean") {
+      throw new HttpError(400, "archived must be true or false.");
+    }
+    const settings = await getSettings(user);
+    if (!settings.financialYears.includes(label)) {
+      throw new HttpError(404, "Financial year not found.");
+    }
+    if (body.archived && label === settings.financialYear) {
+      throw new HttpError(400, "Current financial year cannot be archived.");
+    }
+    const result = await pool.query(
+      `update financial_years
+       set is_archived = $1,
+           archived_at = case when $1 then now() else null end,
+           archived_by = case when $1 then $2::uuid else null end
+       where label = $3`,
+      [body.archived, user.id, label],
+    );
+    if (!result.rowCount) throw new HttpError(404, "Financial year not found.");
+    clearSettingsCache();
+    response.json({ settings: await getSettings(user) });
+  }),
+);
+
 settingsRouter.get(
   "/report-preferences/:reportKey",
   asyncHandler(async (request, response) => {
@@ -1487,6 +1564,10 @@ settingsRouter.patch(
       bodyFields.length > 0 &&
       bodyFields.every((field) => field === "gemBiddingModes") &&
       (user.role === "admin" || user.role === "sub_admin");
+    const canUpdateFinancialYearStatuses =
+      bodyFields.length > 0 &&
+      bodyFields.every((field) => field === "financialYearStatuses") &&
+      (user.role === "admin" || user.role === "sub_admin");
     const changesChartPreference = "chartColorOrder" in body || "chartBarColor" in body;
     if (changesChartPreference && (await getSettings(user)).globalChartColorsEnforced) {
       throw new HttpError(409, "Chart colours are currently set by an administrator for all users.");
@@ -1500,7 +1581,8 @@ settingsRouter.patch(
       user.role !== "admin" &&
       !canUpdateUserPreference &&
       !canUpdatePreSoDefaults &&
-      !canUpdateGemBiddingModes
+      !canUpdateGemBiddingModes &&
+      !canUpdateFinancialYearStatuses
     )
       throw new HttpError(403, "Admin access required.");
     const fields: string[] = [];
@@ -1538,6 +1620,43 @@ settingsRouter.patch(
       }
       await ensureFinancialYear(setupYear);
       addField("setup_year", setupYear);
+    }
+    if ("financialYearStatuses" in body) {
+      if (user.role !== "admin" && user.role !== "sub_admin") {
+        throw new HttpError(403, "Admin or Sub-admin access required.");
+      }
+      const statuses = readFinancialYearStatuses(body.financialYearStatuses);
+      const settings = await getSettings(user);
+      const knownYears = new Set(settings.financialYears);
+      for (const status of statuses) {
+        if (!knownYears.has(status.label)) {
+          throw new HttpError(400, `Financial year ${status.label} does not exist.`);
+        }
+        if (status.archived && status.label === settings.financialYear) {
+          throw new HttpError(400, "Current financial year cannot be archived.");
+        }
+      }
+      await ensureFinancialYearArchiveSchema();
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        for (const status of statuses) {
+          await client.query(
+            `update financial_years
+             set is_archived = $1,
+                 archived_at = case when $1 then now() else null end,
+                 archived_by = case when $1 then $2::uuid else null end
+             where label = $3`,
+            [status.archived, user.id, status.label],
+          );
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     }
     if ("yearSelectionLocked" in body)
       addField("year_selection_locked", body.yearSelectionLocked === true);
@@ -1779,6 +1898,7 @@ settingsRouter.patch(
 
     if (
       !fields.length &&
+      !("financialYearStatuses" in body) &&
       !("tcecCommittees" in body) &&
       !("valueThresholdLevels" in body) &&
       !("firmTypes" in body) &&
@@ -1857,7 +1977,9 @@ settingsRouter.get(
   "/financial-years/:label/usage-count",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    if (user.role !== "admin" && user.role !== "sub_admin") {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
     const label = requireParam(request.params.label, "label").trim();
     if (!label) throw new HttpError(400, "label is required.");
     const fileResult = await pool.query<{ count: string }>(

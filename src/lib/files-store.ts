@@ -619,6 +619,7 @@ export type AppSettings = {
   selectedYear: string;
   setupYear: string;
   financialYears: string[];
+  financialYearStatuses?: FinancialYearStatus[];
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
@@ -657,6 +658,11 @@ export type AppSettings = {
   sharedQuickAccess: SharedQuickAccessSettings;
 };
 
+export type FinancialYearStatus = {
+  label: string;
+  archived: boolean;
+};
+
 function currentYear() {
   const startYear = new Date().getFullYear();
   return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
@@ -667,6 +673,7 @@ const defaultSettings: AppSettings = {
   selectedYear: "__active_plus_current_fy_closed__",
   setupYear: currentYear(),
   financialYears: [currentYear()],
+  financialYearStatuses: [{ label: currentYear(), archived: false }],
   yearSelectionLocked: false,
   theme: "light",
   themeTint: "plain",
@@ -736,7 +743,10 @@ function emit() {
   listeners.forEach((l) => l());
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
+// Vite supplies `import.meta.env` in the browser.  The report-module audit
+// also imports this store directly under `tsx`, where the object is absent.
+// Keep the same development fallback in both runtimes.
+const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
   "",
 );
@@ -900,12 +910,26 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
         .filter((year): year is string => Boolean(year)),
     ),
   );
+  const knownYears = new Set(financialYears);
+  const financialYearStatuses = Array.from(
+    new Map(
+      (settings.financialYearStatuses ?? [])
+        .filter((status) => status && knownYears.has(status.label))
+        .map((status) => [status.label, { label: status.label, archived: status.archived === true }]),
+    ).values(),
+  );
+  for (const label of financialYears) {
+    if (!financialYearStatuses.some((status) => status.label === label)) {
+      financialYearStatuses.push({ label, archived: false });
+    }
+  }
   return {
     ...settings,
     financialYear,
     selectedYear,
     setupYear,
     financialYears,
+    financialYearStatuses,
   };
 }
 
@@ -1139,6 +1163,14 @@ export const store = {
     runMutation(() =>
       request(`/api/settings/financial-years/${encodeURIComponent(label)}`, {
         method: "DELETE",
+      }),
+    );
+  },
+  archiveFinancialYear(label: string, archived: boolean) {
+    return runMutation(() =>
+      request(`/api/settings/financial-years/${encodeURIComponent(label)}/archive`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived }),
       }),
     );
   },
@@ -1868,9 +1900,10 @@ export function fetchFileIdentifierSuggestions(query: string, includeDemandDescr
   );
 }
 
-export function fetchFilesForYear(year: string) {
+export function fetchFilesForYear(year: string, includeArchivedYears = false) {
   const params = new URLSearchParams();
   if (year) params.set("year", year);
+  if (includeArchivedYears) params.set("includeArchivedYears", "true");
   return request<{ files: FileRecord[] }>(
     `/api/files${params.toString() ? `?${params.toString()}` : ""}`,
   );

@@ -56,6 +56,7 @@ export type FileSearchParams = {
   anomalyFileIds?: string[];
   anomalyFileIdsReady?: boolean;
   selectedYear?: string;
+  includeArchivedYears?: boolean;
   milestoneClearingScope?: boolean;
   yearFilter?: string;
   fileYear?: string;
@@ -3571,33 +3572,10 @@ function getEarliestOpenSupplementaryBillReturnDate(bill: SupplementaryBillDetai
 }
 
 function getTcecSupplyOrderDelayStartDate(file: FileRecord, order: SupplyOrderDetail) {
-  const supplyOrderIndex = milestoneDefinitions.findIndex((milestone) => milestone.key === "supplyOrder");
-  const cutoff =
-    parseLocalDateTime(order.soDate ?? "") ??
-    parseLocalDateTime(formatLocalDate(new Date()));
-  if (supplyOrderIndex < 0 || cutoff === undefined) return undefined;
-
-  const candidates = [file.receivedDate];
-  milestoneDefinitions.slice(0, supplyOrderIndex).forEach((milestone) => {
-    if (milestone.key === "financialSanction") return;
-    if (!isMilestoneApplicable(file, milestone) || !isMilestoneComplete(file, milestone)) return;
-    const date = milestone.key === "bidding"
-      ? isYes(file.refloat)
-        ? file.refloatBidOpeningDate || file.refloatBiddingDate
-        : file.bidOpeningDate || file.bidDate
-      : milestone.key === "refloatBidding"
-        ? file.refloatBidOpeningDate || file.refloatBiddingDate
-        : getFieldDateValue(file, milestone.current);
-    const time = parseLocalDateTime(date ?? "");
-    if (date && time !== undefined && time <= cutoff) candidates.push(date);
-  });
-
-  return latestDateValue(
-    candidates.filter((date) => {
-      const time = parseLocalDateTime(date ?? "");
-      return time !== undefined && time <= cutoff;
-    }),
-  );
+  void order;
+  // TCEC Supply Order ageing starts at CNC Approval. There is no fallback to
+  // Demand Received or another predecessor when CNC Approval is blank/future.
+  return file.cncApprovalDate;
 }
 
 function getSupplyOrderStageStartDate(file: FileRecord) {
@@ -5778,7 +5756,10 @@ function supplyOrderMilestoneRows(file: FileRecord, normalizedMilestone: string)
     normalizedMilestone === "bankguarantee" ||
     isBgMilestoneKey(normalizedMilestone)
   ) {
-    return expectedSupplyOrders(file);
+    // These milestones require a saved S.O. row.  Expected rows are valid for
+    // Financial Sanction, but must not create Search matches for Supply Order
+    // or BG tracking before an S.O. has actually been saved.
+    return rawSupplyOrders(file);
   }
   if (isPaymentMilestone(normalizedMilestone)) {
     return filePaymentOrders(file);

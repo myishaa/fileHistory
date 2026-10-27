@@ -97,7 +97,7 @@ test("Delay Status keeps refloat delays in their own bin and ages from refloat d
   assert.equal(recentSummary.delayRows.length, 0);
 });
 
-test("Refloat tender-live delay starts after the original bid opening, not CFA or GeM dates", () => {
+test("Non-TCEC refloat tender-live delay starts after Refloat recommendation", () => {
   const dateDaysAgo = (days) => {
     const date = new Date();
     date.setDate(date.getDate() - days);
@@ -114,10 +114,11 @@ test("Refloat tender-live delay starts after the original bid opening, not CFA o
     gemUndertakingDate: "",
     refloat: "Yes",
     bidOpeningDate: dateDaysAgo(20),
+    refloatRecommendationDate: dateDaysAgo(15),
     refloatBiddingDate: "",
     refloatBidOpeningDate: "",
     bidOpened: "No",
-    biddingStageOver: "No",
+    biddingStageOver: "Yes",
   };
   const summary = buildReportsSummary({
     files: [file],
@@ -128,8 +129,8 @@ test("Refloat tender-live delay starts after the original bid opening, not CFA o
 
   assert.equal(summary.delayRows.length, 1);
   assert.equal(summary.delayRows[0].biddingBreakupKey, "tenderLivePending");
-  assert.equal(summary.delayRows[0].stageStartDate, file.bidOpeningDate);
-  assert.equal(summary.delayRows[0].daysInStage, 20);
+  assert.equal(summary.delayRows[0].stageStartDate, file.refloatRecommendationDate);
+  assert.equal(summary.delayRows[0].daysInStage, 15);
 });
 
 test("TCEC Refloat tender-live delay starts at Post-TCEC minutes", () => {

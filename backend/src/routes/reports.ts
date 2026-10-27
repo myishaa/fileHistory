@@ -40,6 +40,10 @@ import {
 import { cacheTtl, clearDashboardReportCaches, getCached } from "../utils/cache.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 import {
+  ensureFinancialYearArchiveSchema,
+  getSearchableFinancialYearSql,
+} from "../utils/financial-year-archive.js";
+import {
   areRequiredAdvanceGuaranteesReceived,
   filePaymentEntries,
   filePaymentOrders,
@@ -2269,6 +2273,7 @@ function getReportWhereSql({
   currentFinancialYear,
   division,
   fileCategories,
+  includeArchivedYears = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -2280,10 +2285,16 @@ function getReportWhereSql({
   currentFinancialYear?: string;
   division: string;
   fileCategories?: FileCategoryKey[];
+  includeArchivedYears?: boolean;
 }) {
   const values = [...scopeValues];
   const conditions: string[] = [];
   if (scopeSql) conditions.push(scopeSql);
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
   const selectedYearCondition =
     selectedYearMode === "candidate"
       ? getSelectedYearCandidateCondition(selectedYear, values, currentFinancialYear)
@@ -6493,6 +6504,7 @@ async function buildReportsSummarySql({
 reportsRouter.get(
   "/summary",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -6504,6 +6516,7 @@ reportsRouter.get(
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const division = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
     const delayDays = readNonNegativeInteger(
       request.query.delayDays,
       settings.delayStatusDefaultDays ?? 5,
@@ -6531,6 +6544,7 @@ reportsRouter.get(
       currentFinancialYear: settings.financialYear,
       division,
       fileCategories,
+      includeArchivedYears,
     });
     const reportLoadWhere = getReportWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -6543,11 +6557,12 @@ reportsRouter.get(
       currentFinancialYear: settings.financialYear,
       division,
       fileCategories,
+      includeArchivedYears,
     });
     const useSqlScopedFileLoad = process.env.REPORTS_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.REPORTS_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:summary:${JSON.stringify({
-      version: 9,
+      version: 10,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -6566,6 +6581,7 @@ reportsRouter.get(
       bgReturnOffsetDays: settings.bgReturnOffsetDays ?? 60,
       sqlScopedFileLoad: useSqlScopedFileLoad,
       compareFileScope,
+      includeArchivedYears,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.reportsSummaryMs, async () => {
       const combinedScopeSql = [scope.sql, categoryScope.sql].filter(Boolean).join(" and ");

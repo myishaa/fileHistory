@@ -175,7 +175,9 @@ test("Analytics firm, Indentor–Firm, and co-bidding Search results honor the s
     const sourcePair = (coBiddingSource.body as {
       firms: Array<{ key: string; count: number }>;
     }).firms.find((firm) => firm.key === partnerKey);
-    expect(sourcePair?.count).toBe(2);
+    // Co-bidding is based on recorded bidder participation.  An active file
+    // still counts even when its S.O. has zero value or no assigned supplier.
+    expect(sourcePair?.count).toBe(3);
 
     const coBiddingQuery = new URLSearchParams({
       dashboardFilter: `analyticsCoBidding:${encodeURIComponent(mainBidder)}:no%3A${encodeURIComponent(partnerBidderNumber)}`,
@@ -185,7 +187,7 @@ test("Analytics firm, Indentor–Firm, and co-bidding Search results honor the s
     });
     const coBidding = await search(coBiddingQuery);
     expect(coBidding.ok, JSON.stringify(coBidding.body)).toBe(true);
-    expect(ids(coBidding)).toEqual([first.fileId, second.fileId].sort());
+    expect(ids(coBidding)).toEqual([first.fileId, second.fileId, zeroValue.fileId].sort());
   } finally {
     if (fileIds.length) await pool.query("delete from files where id = any($1::uuid[])", [fileIds]);
     await deleteSession(token);

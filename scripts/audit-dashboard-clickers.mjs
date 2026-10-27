@@ -392,7 +392,13 @@ function collectStatusCounters(summary) {
       add(counters, "Status-1", `${title} / Reviewed`, row.reviewed, `milestoneReviewed:${key}`);
       add(counters, "Status-1", `${title} / Pending`, row.pending, `milestonePending:${key}`);
       add(counters, "Status-1", `${title} / Total`, row.total, `milestoneTotal:${key}`);
-      add(counters, "Status-1", `${title} / Completed`, row.cleared, `milestoneCleared:${key}`);
+      add(
+        counters,
+        "Status-1",
+        `${title} / Completed`,
+        row.cleared,
+        key === "cfa" ? "cfaCompleted" : `milestoneCleared:${key}`,
+      );
       continue;
     }
     if (["highValue", "tcec", "ifa", "postTcec", "cnc"].includes(key)) {

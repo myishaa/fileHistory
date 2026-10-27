@@ -38,6 +38,10 @@ import {
 } from "../utils/auth.js";
 import { cacheTtl, clearDashboardReportCaches, getCached } from "../utils/cache.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
+import {
+  ensureFinancialYearArchiveSchema,
+  getSearchableFinancialYearSql,
+} from "../utils/financial-year-archive.js";
 
 export const dashboardRouter = Router();
 
@@ -729,6 +733,89 @@ export function getSuspectedAnomalyRows(
           "Filled",
         );
       }
+      if (hasFilledString(file.refloatRecommendationDate) && isNo(file.refloat)) {
+        addIssue(
+          "Refloat",
+          "Refloat recommendation date is filled while Refloat is No",
+          "Refloat",
+          "Yes",
+          "Refloat recommendation date",
+          file.refloatRecommendationDate!,
+        );
+      }
+      if (hasFilledString(file.refloatRecommendationDate) && isYes(file.tcec)) {
+        addIssue(
+          "Refloat",
+          "Refloat recommendation date is filled for a TCEC file",
+          "TCEC",
+          "No for this field",
+          "Refloat recommendation date",
+          file.refloatRecommendationDate!,
+        );
+      }
+      if (isYes(file.refloat) && isNo(file.tcec)) {
+        const refloatCycleEvidence = [
+          file.refloatPreBidMeetingDate,
+          file.refloatBiddingDate,
+          file.refloatBidOpeningDate,
+          file.refloatGemUndertakingDate,
+        ].some(hasFilledString);
+        if (refloatCycleEvidence && !hasFilledString(file.refloatRecommendationDate)) {
+          addIssue(
+            "Refloat",
+            "Refloat cycle activity exists but Refloat recommendation date is blank",
+            "Refloat recommendation date",
+            "Filled before refloat activity",
+            "Refloat cycle activity",
+            "Filled",
+          );
+        }
+        if (
+          hasFilledString(file.refloatRecommendationDate) &&
+          !hasFilledString(file.bidOpeningDate)
+        ) {
+          addIssue(
+            "Refloat",
+            "Refloat recommendation exists but original bid closing date is blank",
+            "Original bid closing date",
+            "Filled before Refloating recommendation",
+            "Refloat recommendation date",
+            file.refloatRecommendationDate!,
+          );
+        }
+        addPair(
+          "Refloat",
+          "Original bid closing date should not be after Refloating recommendation date",
+          "Original bid closing date",
+          file.bidOpeningDate,
+          "Refloat recommendation date",
+          file.refloatRecommendationDate,
+        );
+        addPair(
+          "Refloat",
+          "Refloating recommendation date should not be after refloat bidding date",
+          "Refloat recommendation date",
+          file.refloatRecommendationDate,
+          "Refloat bidding date",
+          file.refloatBiddingDate,
+        );
+        addPair(
+          "Refloat",
+          "Refloating recommendation date should not be after refloat bid closing date",
+          "Refloat recommendation date",
+          file.refloatRecommendationDate,
+          "Refloat bid closing date",
+          file.refloatBidOpeningDate,
+        );
+        addPair(
+          "Refloat",
+          "Refloating recommendation date should not be after refloat GeM undertaking date",
+          "Refloat recommendation date",
+          file.refloatRecommendationDate,
+          "Refloat GeM undertaking date",
+          file.refloatGemUndertakingDate,
+        );
+      }
       if (isYes(file.tenderLive) && !hasFilledString(file.bidDate)) {
         addIssue(
           "Bidding",
@@ -1335,6 +1422,22 @@ export function getSuspectedAnomalyRows(
       "CNC approval date",
       file.cncApprovalDate,
     );
+    if (isYes(file.tcec)) {
+      const cncPredecessorDate = isYes(file.refloat)
+        ? file.refloatPostTcecMinutesDate
+        : file.postTcecMinutesDate;
+      const cncPredecessorLabel = isYes(file.refloat)
+        ? "Refloat Post-TCEC minutes date"
+        : "Post-TCEC minutes date";
+      addPair(
+        "CNC",
+        `${cncPredecessorLabel} should not be after CNC approval date`,
+        cncPredecessorLabel,
+        cncPredecessorDate,
+        "CNC approval date",
+        file.cncApprovalDate,
+      );
+    }
     if (
       isNo(file.highValue) &&
       (hasFilledString(file.highValueMeetingDate) || hasFilledString(file.highValueMinutesDate))
@@ -1650,6 +1753,27 @@ export function getSuspectedAnomalyRows(
           "Filled before later workflow",
           "Later workflow",
           getLaterOrderWorkflowEvidence(rawOrder),
+          rawContext,
+        );
+      }
+
+      if (isYes(file.tcec)) {
+        addPair(
+          "Financial Sanction",
+          "Financial Sanction date should not be before CNC approval date",
+          "CNC approval date",
+          file.cncApprovalDate,
+          "Financial Sanction date",
+          rawOrder.financialSanctionDate,
+          rawContext,
+        );
+        addPair(
+          "Supply Order",
+          "S.O. date should not be before CNC approval date",
+          "CNC approval date",
+          file.cncApprovalDate,
+          "S.O. date",
+          rawOrder.soDate,
           rawContext,
         );
       }
@@ -2584,7 +2708,7 @@ export function getSuspectedAnomalyRows(
       );
       addPair(
         "Supply Order",
-        "Financial Sanction date should not be after S.O. date",
+        "S.O. date should not be before Financial Sanction date",
         "Financial Sanction date",
         order.financialSanctionDate,
         "S.O. date",
@@ -5333,6 +5457,10 @@ function readString(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
+function readBoolean(value: unknown) {
+  return value === true || value === "true";
+}
+
 function readDateString(value: unknown) {
   const text = readString(value);
   return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined;
@@ -5621,6 +5749,7 @@ function getDashboardFileWhereSql({
   currentFinancialYear,
   activeDivision,
   fileCategories,
+  includeArchivedYears = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -5631,10 +5760,17 @@ function getDashboardFileWhereSql({
   currentFinancialYear?: string;
   activeDivision: string;
   fileCategories?: FileCategoryKey[];
+  includeArchivedYears?: boolean;
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
+
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
 
   const selectedYearCondition = getSelectedYearCondition(
     selectedYear,
@@ -5679,6 +5815,7 @@ function getDashboardMilestoneClearingFileWhereSql({
   currentFinancialYear,
   activeDivision,
   fileCategories,
+  includeArchivedYears = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -5689,10 +5826,17 @@ function getDashboardMilestoneClearingFileWhereSql({
   currentFinancialYear?: string;
   activeDivision: string;
   fileCategories?: FileCategoryKey[];
+  includeArchivedYears?: boolean;
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
+
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
 
   const selectedYearCondition = getMilestoneClearingSelectedYearCondition(
     selectedYear,
@@ -7891,13 +8035,15 @@ async function loadAnalyticsSqlSlice({
     if (definition.name === "GeM Undertaking") {
       const normalStart = "f.cfa_date";
       const normalEnd = "f.gem_undertaking_date";
-      const refloatStart = "f.refloat_recommendation_date";
+      const refloatStart = `case
+        when ${isYesExpression("f.tcec")} then f.post_tcec_date
+        else f.refloat_recommendation_date
+      end`;
       const refloatEnd = "f.refloat_gem_undertaking_date";
       return milestoneCycleAggregate(index, definition.name, [
         milestoneCycleSelect(normalStart, normalEnd, [gemUndertakingApplies]),
         milestoneCycleSelect(refloatStart, refloatEnd, [
           gemUndertakingApplies,
-          `not ${isYesExpression("f.tcec")}`,
           isYesExpression("f.refloat"),
         ]),
       ]);
@@ -11754,6 +11900,7 @@ dashboardRouter.post(
 dashboardRouter.get(
   "/suspected-anomalies",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -11765,6 +11912,7 @@ dashboardRouter.get(
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -11776,6 +11924,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     await ensureAnomalyGovernanceSchema();
     const [filesResult, acceptanceResult, customRules] = await Promise.all([
@@ -11865,6 +12014,7 @@ dashboardRouter.get(
 dashboardRouter.get(
   "/monthwise-delivery-schedule",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -11883,6 +12033,7 @@ dashboardRouter.get(
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -11894,6 +12045,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
 
     response.json({
@@ -11908,6 +12060,7 @@ dashboardRouter.get(
 dashboardRouter.get(
   "/co-bidding-firms",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -11926,6 +12079,7 @@ dashboardRouter.get(
     const requestedDivision = readString(request.query.division) ?? "all";
     const activeDivision = requestedDivision;
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -11936,6 +12090,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     const mainFirm = readString(request.query.mainFirm)?.trim() ?? "";
     const partnerKey = readString(request.query.partnerKey)?.trim() ?? "";
@@ -12069,6 +12224,7 @@ dashboardRouter.get(
 dashboardRouter.get(
   "/summary",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
@@ -12092,6 +12248,7 @@ dashboardRouter.get(
     ]);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12103,6 +12260,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     const milestoneClearingFileWhere = getDashboardMilestoneClearingFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12114,6 +12272,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     const financeFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12125,6 +12284,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     const firmHistoryFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12136,6 +12296,7 @@ dashboardRouter.get(
       currentFinancialYear: settings.financialYear,
       activeDivision,
       fileCategories,
+      includeArchivedYears,
     });
     const dashboardDivisions =
       activeDivision === "all"
@@ -12165,7 +12326,7 @@ dashboardRouter.get(
     const liveMilestones = readList(request.query.liveMilestones);
     const finance1AsOfDate = getFinanceSnapshotDate();
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 20,
+      version: 21,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -12183,6 +12344,7 @@ dashboardRouter.get(
       finance1InitiationFrom,
       finance1InitiationTo,
       finance1AsOfDate,
+      includeArchivedYears,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
       const [

@@ -580,6 +580,13 @@ const workspaceYearHelpers = {
     "When locked, new files can be added only to current FY.",
     "Unlocked keeps next-FY demands available during an approved transition period.",
   ],
+  archive: [
+    "Archives the selected FY for normal Search without deleting any files or records.",
+    "Inactive files whose origin is this FY are excluded from normal Search; active carry-forward files remain searchable.",
+    "Use Include archived years in Search when historical archived records are required.",
+    "Archive or restore changes remain pending until you click Save changes.",
+    "The current FY cannot be archived. Admins and Sub-admins can archive or restore a FY.",
+  ],
 } satisfies Record<string, string[]>;
 
 const deletionPasswordHelper = [
@@ -2275,6 +2282,10 @@ function WorkspaceSettings() {
     !yearUsageError &&
     financialYears.length > 1;
   const canEditWorkspaceGlobals = activeUser?.role === "admin";
+  const canManageYearArchive = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
+  const selectedYearArchived = settings.financialYearStatuses?.some(
+    (status) => status.label === workspaceYear && status.archived,
+  ) ?? false;
   const addFinancialYear = () => {
     const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
@@ -2343,7 +2354,7 @@ function WorkspaceSettings() {
                 placeholder="Select financial year"
                 deferChangeUntilSelect
                 allowCustomValue={false}
-                disabled={!canEditWorkspaceGlobals}
+                disabled={!canEditWorkspaceGlobals && !canManageYearArchive}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
@@ -2417,6 +2428,28 @@ function WorkspaceSettings() {
                 )}
               </button>
               <SettingsHelper items={workspaceYearHelpers.lockSelection} label="Year lock help" />
+
+              <HelpedControl helper={workspaceYearHelpers.archive} label="Archive financial year help">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextArchived = !selectedYearArchived;
+                    const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
+                      status.label === workspaceYear ? { ...status, archived: nextArchived } : status,
+                    );
+                    updateSettings({ financialYearStatuses: nextStatuses });
+                  }}
+                  disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
+                  className={
+                    "h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border text-sm font-medium disabled:opacity-50 " +
+                    (selectedYearArchived
+                      ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                      : "border-border bg-background hover:bg-accent")
+                  }
+                >
+                  {selectedYearArchived ? "Restore FY" : "Archive FY"}
+                </button>
+              </HelpedControl>
 
               <HelpedControl
                 helper={settingsControlHelpers.workspaceDelete}

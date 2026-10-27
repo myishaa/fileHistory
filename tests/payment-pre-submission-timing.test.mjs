@@ -421,10 +421,10 @@ test("cumulative Delay Status uses trigger-to-today and caps returned bills at f
 
   assert.deepEqual(
     summary.delayRows.map((row) => row.fileId).sort(),
-    ["cumulative-returned-long", "cumulative-submitted", "cumulative-unsubmitted"],
+    ["cumulative-submitted", "cumulative-unsubmitted"],
   );
-  assert.equal(summary.delaySummary.byMilestone[0].count, 3);
-  assert.equal(summary.delaySummary.byMilestone[0].fileCount, 3);
+  assert.equal(summary.delaySummary.byMilestone[0].count, 2);
+  assert.equal(summary.delaySummary.byMilestone[0].fileCount, 2);
 });
 
 test("cumulative ranking includes paid cases only and excludes returned regular, advance and supplementary bills", () => {

@@ -332,7 +332,6 @@ const favoriteCatalog: AccessItem[] = [
     ["BG receipt delay", "bgReceiptDelay"],
     ["Warranty / BG mismatch", "warrantyBgMismatch"],
     ["Delay Status", "delayStatus"],
-    ["Pending Liabilities", "pendingLiabilityAgeing"],
   ].map(([label, mode]) => ({
     id: `report-${mode}`,
     label,
@@ -532,7 +531,6 @@ const screenshotSourceIds = [
   "bgExpiry",
   "report-bgReceiptDelay",
   "report-warrantyBgMismatch",
-  "report-pendingLiabilityAgeing",
   "report-soPaymentMatrix",
   "report-paymentCompletedMatrix",
   "report-cashOutGoPlan",
@@ -929,12 +927,10 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
   );
 }
 
-function NoticeBoardEditor({ admin }: { admin: boolean }) {
+function NoticeBoardEditor() {
   const user = useActiveUser();
   const settings = useSettings();
   const userId = user?.id ?? "anonymous";
-  const sharedIds = new Set(settings.sharedQuickAccess.noticeBoardItems);
-  const shared = boardCatalog.filter((item) => sharedIds.has(item.id));
   const [personalInterval, setPersonalInterval] = useState(() =>
     readInterval(storageKeys.personalInterval(userId)),
   );
@@ -971,27 +967,6 @@ function NoticeBoardEditor({ admin }: { admin: boolean }) {
     },
     [userId],
   );
-  const updateItems = (next: BoardItem[]) => {
-    setSaveError("");
-    void saveSharedQuickAccess({ noticeBoardItems: next.map((item) => item.id) }).catch((error: unknown) =>
-      setSaveError(
-        error instanceof Error ? error.message : "Shared Notice Board items could not be saved.",
-      ),
-    );
-  };
-  const addItems = (items: PickerItem[]) => {
-    const nextItems = items
-      .map((item) => boardCatalog.find((candidate) => candidate.id === item.id))
-      .filter((item): item is BoardItem => Boolean(item));
-    updateItems(
-      nextItems.reduce((all, item) => addUnique(all, item), shared),
-    );
-  };
-  const returnItems = (ids: string[]) => {
-    updateItems(
-      shared.filter((item) => !ids.includes(item.id)),
-    );
-  };
   const setInterval = (value: number) => {
     const next = Math.min(120, Math.max(5, value || 15));
     setPersonalInterval(next);
@@ -1029,18 +1004,6 @@ function NoticeBoardEditor({ admin }: { admin: boolean }) {
   };
   return (
     <div className="space-y-6">
-      {admin ? (
-        <div className="space-y-2">
-          <QuickAccessScope personal={false} />
-          <OptionPicker
-            title="Administrator board items"
-            catalog={boardCatalog}
-            assigned={shared}
-            onAssign={addItems}
-            onReturn={returnItems}
-          />
-        </div>
-      ) : null}
       <div className="flex flex-wrap gap-6 border-t border-border pt-4">
         <div className="w-full"><QuickAccessScope personal /></div>
         <label className="text-xs font-medium">
@@ -1125,7 +1088,7 @@ export function QuickAccessSettings({ section }: { section: "favorites" | "notic
   return section === "favorites" ? (
     <FavoriteEditor admin={admin} />
   ) : (
-    <NoticeBoardEditor admin={admin} />
+    <NoticeBoardEditor />
   );
 }
 

@@ -62,7 +62,7 @@ function nonTcecTechnicalEvaluationRows(file, delayMilestone = "nonTcecTechnical
   });
 }
 
-test("Non-TCEC Technical Evaluation Delay starts after Bidding Stage Over and counts pending S.O.s from Bid Opening", () => {
+test("Non-TCEC Technical Evaluation Delay starts after Bidding Stage Over and reports one file-level row from Bid Opening", () => {
   const bidOpeningDate = daysAgo(12);
   const file = {
     id: "non-tcec-te-delay-two-orders",
@@ -73,7 +73,7 @@ test("Non-TCEC Technical Evaluation Delay starts after Bidding Stage Over and co
     supplyOrders: [
       { soNo: "SO-1", soCancelled: "No", financialSanctionDate: "" },
       { soNo: "SO-2", soCancelled: "No", financialSanctionDate: "" },
-      { soNo: "SO-3", soCancelled: "No", financialSanctionDate: daysAgo(2) },
+      { soNo: "SO-3", soCancelled: "No", financialSanctionDate: "" },
       { soNo: "SO-4", soCancelled: "Yes", financialSanctionDate: "" },
     ],
   };
@@ -81,15 +81,12 @@ test("Non-TCEC Technical Evaluation Delay starts after Bidding Stage Over and co
   const summary = nonTcecTechnicalEvaluationRows(file);
   const rows = summary.delayRows.filter((row) => row.milestoneKey === "nonTcecTechnicalEvaluation");
 
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows.map((row) => row.stageStartDate), [bidOpeningDate, bidOpeningDate]);
-  assert.deepEqual(rows.map((row) => row.focusTarget), [
-    "financialsanction:pending:0",
-    "financialsanction:pending:1",
-  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].stageStartDate, bidOpeningDate);
+  assert.equal(rows[0].focusTarget, "financialSanction");
   assert.deepEqual(
     summary.delaySummary.byMilestone.find((row) => row.key === "nonTcecTechnicalEvaluation"),
-    { key: "nonTcecTechnicalEvaluation", label: "Non-TCEC Technical Evaluation", count: 2, fileCount: 1 },
+    { key: "nonTcecTechnicalEvaluation", label: "Non-TCEC Technical Evaluation", count: 1, fileCount: 1 },
   );
   assert.deepEqual(
     searchFiles([file], {
@@ -223,7 +220,7 @@ test("Post-TCEC Delay Status SQL requires TCEC and completed Bidding Stage Over"
   assert.doesNotMatch(sql, /f\.bid_date/);
 });
 
-test("Bidding Delay summary and Search keep RFP and non-RFP rows separate", () => {
+test("Bidding Delay supports RFP and non-RFP filters under the common Bidding row", () => {
   const cfaDate = daysAgo(40);
   const files = [
     {
@@ -311,18 +308,18 @@ test("Bidding Delay summary and Search keep RFP and non-RFP rows separate", () =
       }))
       .sort((a, b) => a.fileId.localeCompare(b.fileId)),
     [
-      { fileId: "non-rfp-bidding", milestoneKey: "biddingNonRfp", milestone: "Bidding (RFP Vetting = No)", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
-      { fileId: "rfp-approval-pending", milestoneKey: "biddingRfp", milestone: "Bidding (RFP Vetting = Yes)", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
-      { fileId: "rfp-bidding", milestoneKey: "biddingRfp", milestone: "Bidding (RFP Vetting = Yes)", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
+      { fileId: "non-rfp-bidding", milestoneKey: "bidding", milestone: "Bidding", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
+      { fileId: "rfp-approval-pending", milestoneKey: "bidding", milestone: "Bidding", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
+      { fileId: "rfp-bidding", milestoneKey: "bidding", milestone: "Bidding", cumulativeDelayDays: null, stageStartDate: cfaDate, biddingBreakupKey: "tenderLivePending" },
     ],
   );
   assert.equal(
-    summaryFor("all").delaySummary.byMilestone.find((row) => row.key === "biddingNonRfp")?.count,
-    1,
+    summaryFor("all").delaySummary.byMilestone.find((row) => row.key === "bidding")?.count,
+    3,
   );
   assert.equal(
     summaryFor("all").delaySummary.byMilestone.find((row) => row.key === "biddingRfp")?.count,
-    2,
+    undefined,
   );
 
   for (const [key, expectedId] of [
@@ -532,7 +529,7 @@ test("Financial Sanction Search includes a TCEC expected S.O. slot with no saved
   assert.deepEqual(matches.map((item) => item.id), [file.id]);
 });
 
-test("TCEC Supply Order delay starts from the latest earlier file milestone, not S.O. sanction", () => {
+test("TCEC Supply Order delay starts at CNC Approval, not S.O. sanction", () => {
   const cncApprovalDate = daysAgo(20);
   const financialSanctionDate = daysAgo(12);
   const file = {
@@ -584,7 +581,7 @@ test("Non-TCEC Supply Order delay starts from that S.O.'s Financial Sanction dat
   );
 });
 
-test("TCEC Supply Order delay ignores future milestones and falls back to file receipt", () => {
+test("TCEC Supply Order delay does not use a future CNC approval as its start", () => {
   const receivedDate = daysAgo(30);
   const file = {
     id: "so-delay-tcec-cutoff",
@@ -598,11 +595,28 @@ test("TCEC Supply Order delay ignores future milestones and falls back to file r
   };
   const rows = supplyOrderDelayRows(file);
 
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].stageStartDate, receivedDate);
+  assert.equal(rows.length, 0);
   assert.deepEqual(
     searchFiles([file], { dashboardFilter: "delayStatus:5:supplyOrder" }).map((item) => item.id),
-    [file.id],
+    [],
+  );
+});
+
+test("TCEC Supply Order delay ignores an unsaved S.O. placeholder", () => {
+  const file = {
+    id: "so-delay-tcec-placeholder",
+    fileType: "Goods & Services",
+    tcec: "Yes",
+    biddingStageOver: "Yes",
+    cncApprovalDate: daysAgo(20),
+    noOfSo: "1",
+    supplyOrders: [],
+  };
+
+  assert.equal(supplyOrderDelayRows(file).length, 0);
+  assert.deepEqual(
+    searchFiles([file], { dashboardFilter: "delayStatus:5:supplyOrder" }).map((item) => item.id),
+    [],
   );
 });
 

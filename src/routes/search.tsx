@@ -117,6 +117,7 @@ export const Route = createFileRoute("/search")({
       division?: string;
       includeModes?: string;
       selectedYear?: string;
+      includeArchivedYears?: boolean;
       milestoneClearingScope?: boolean;
       fileYear?: string;
       fileInitiationFrom?: string;
@@ -148,6 +149,8 @@ export const Route = createFileRoute("/search")({
     if (typeof search.division === "string") validated.division = search.division;
     if (typeof search.includeModes === "string") validated.includeModes = search.includeModes;
     if (typeof search.selectedYear === "string") validated.selectedYear = search.selectedYear;
+    const includeArchivedYears = parseRouteBoolean(search.includeArchivedYears);
+    if (includeArchivedYears !== undefined) validated.includeArchivedYears = includeArchivedYears;
     const milestoneClearingScope = parseRouteBoolean(search.milestoneClearingScope);
     if (milestoneClearingScope !== undefined) {
       validated.milestoneClearingScope = milestoneClearingScope;
@@ -1708,6 +1711,7 @@ function SearchPage() {
   const gemBiddingModeOptions = getConfiguredGemBiddingModes(settings.gemBiddingModes);
   const navigate = useNavigate();
   const search = Route.useSearch();
+  const includeArchivedYears = search.includeArchivedYears === true;
   const defaultSearchExclusions = !(
     search.dashboardFilter || search.extraDashboardFilters || search.analyticsType ||
     search.analyticsNames || search.fileCategories
@@ -2493,6 +2497,7 @@ function SearchPage() {
     addFilterChip(label, value === "include" ? "Include" : "Exclude");
   };
   addFilterChipIf(activeFilterChips, Boolean(yearFilter), "Year", yearFilter);
+  addFilterChipIf(activeFilterChips, includeArchivedYears, "Archived years", "Included", "includeArchivedYears");
   addFilterChipIf(activeFilterChips, Boolean(demandReceivedFy), "Demand received FY", demandReceivedFy);
   addFilterChipIf(
     activeFilterChips,
@@ -2660,6 +2665,7 @@ function SearchPage() {
 
   const hasFilters =
     yearFilter ||
+    includeArchivedYears ||
     indentor ||
     divisionFilter ||
     valueThresholdFilter !== "all" ||
@@ -2961,6 +2967,7 @@ function SearchPage() {
     appendSearchParam(params, "freeText", freeText);
     appendSearchParam(params, "freeDate", freeDate);
     appendSearchParam(params, "selectedYear", search.selectedYear ?? settings.selectedYear);
+    appendSearchBool(params, "includeArchivedYears", includeArchivedYears);
     appendSearchBool(params, "milestoneClearingScope", search.milestoneClearingScope ?? false);
     appendSearchParam(params, "fileYear", search.fileYear);
     appendSearchParam(params, "fileInitiationFrom", search.fileInitiationFrom);
@@ -3112,6 +3119,7 @@ function SearchPage() {
     freeText,
     freeDate,
     search.selectedYear,
+    includeArchivedYears,
     settings.selectedYear,
     search.analyticsType,
     search.analyticsNames,
@@ -3502,6 +3510,7 @@ function SearchPage() {
     if (
       search.dashboardFilter ||
       search.extraDashboardFilters ||
+      search.includeArchivedYears ||
       search.division ||
       search.analyticsType ||
       search.analyticsNames ||
@@ -3519,6 +3528,7 @@ function SearchPage() {
         search: {
           dashboardFilter: undefined,
           extraDashboardFilters: undefined,
+          includeArchivedYears: undefined,
           division: undefined,
           analyticsType: undefined,
           analyticsNames: undefined,
@@ -3605,6 +3615,9 @@ function SearchPage() {
 
     switch (key) {
       case "Year": setYearFilter(""); break;
+      case "includeArchivedYears":
+        void navigate({ to: "/search", search: (previous) => ({ ...previous, includeArchivedYears: undefined }) });
+        break;
       case "Demand received FY": setDemandReceivedFy(""); setDemandReceivedMonth(""); break;
       case "Demand received month": setDemandReceivedMonth(""); break;
       case "Indentor": setIndentor(""); break;
@@ -4170,6 +4183,24 @@ function SearchPage() {
                             deferChangeUntilSelect
                             allowCustomValue={false}
                           />
+                          <div className="mt-2 space-y-1">
+                            <CheckFilter
+                              label="Include archived years"
+                              checked={includeArchivedYears}
+                              onChange={(checked) =>
+                                void navigate({
+                                  to: "/search",
+                                  search: (previous) => ({
+                                    ...previous,
+                                    includeArchivedYears: checked ? true : undefined,
+                                  }),
+                                })
+                              }
+                            />
+                            <p className="text-[11px] leading-relaxed text-muted-foreground">
+                              Archived-origin files are excluded by default. Active carry-forward files remain searchable; turn this on to include archived inactive files.
+                            </p>
+                          </div>
                         </FilterGroup>
                         <FilterGroup label="Indentor" helper={searchFilterHelpers.indentor}>
                           <SearchableDropdown
