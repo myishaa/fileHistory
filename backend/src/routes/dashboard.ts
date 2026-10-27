@@ -11927,8 +11927,37 @@ dashboardRouter.get(
       includeArchivedYears,
     });
     await ensureAnomalyGovernanceSchema();
-    const [filesResult, acceptanceResult, customRules] = await Promise.all([
-      loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
+    const anomalyCacheKey = `dashboard:suspected-anomalies:${JSON.stringify({
+      version: 2,
+      scope: getAuthScopeCacheKey(user),
+      selectedYear,
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      activeDivision,
+      fileCategories,
+      includeArchivedYears,
+      bgReturnOffsetDays: settings.bgReturnOffsetDays ?? 60,
+      milestones: settings.milestones,
+      whereSql: dashboardFileWhere.whereSql,
+      values: dashboardFileWhere.values,
+    })}`;
+    const [anomalyRows, acceptanceResult] = await Promise.all([
+      getCached(anomalyCacheKey, cacheTtl.dashboardSummaryMs, async () => {
+        const filesResult = await loadFiles(
+          dashboardFileWhere.whereSql,
+          dashboardFileWhere.values,
+        );
+        return getSuspectedAnomalyRows(
+          fileCategories
+            ? filesResult.filter((file) => matchesFileCategorySelection(file, fileCategories))
+            : filesResult,
+          { signatures: new Set(), universalRuleKeys: new Set() },
+          [],
+          settings.milestones,
+          settings.bgReturnOffsetDays ?? 60,
+        );
+      }),
       pool.query<{
         signature: string;
         rule_key: string | null;
@@ -11947,7 +11976,6 @@ dashboardRouter.get(
          from suspected_anomaly_acceptances
          where status in ('pending', 'approved_file', 'approved_universal', 'rejected', 'revoked')`,
       ),
-      Promise.resolve([] as CustomAnomalyRule[]),
     ]);
     const canViewAllAnomalyGovernance = hasAnomalyGovernanceReadAccess(user);
     const visibleStateRows = acceptanceResult.rows.filter(
@@ -11984,15 +12012,9 @@ dashboardRouter.get(
           .map((row) => row.rule_key!),
       ),
     };
-    const rows = getSuspectedAnomalyRows(
-      fileCategories
-        ? filesResult.filter((file) => matchesFileCategorySelection(file, fileCategories))
-        : filesResult,
-      suppressions,
-      customRules,
-      settings.milestones,
-      settings.bgReturnOffsetDays ?? 60,
-    ).map((row) => {
+    const rows = anomalyRows.filter((row) => {
+      return !suppressions.signatures.has(row.signature) && !suppressions.universalRuleKeys.has(row.ruleKey);
+    }).map((row) => {
       const acceptance = acceptanceBySignature.get(row.signature);
       if (!acceptance) return row;
       return {
@@ -12347,6 +12369,15 @@ dashboardRouter.get(
       includeArchivedYears,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
+      const sharedFileLoads = new Map<string, Promise<FileRecord[]>>();
+      const loadSharedFiles = (whereSql: string, values: unknown[]) => {
+        const loadKey = JSON.stringify({ whereSql, values });
+        const existing = sharedFileLoads.get(loadKey);
+        if (existing) return existing;
+        const promise = loadFiles(whereSql, values);
+        sharedFileLoads.set(loadKey, promise);
+        return promise;
+      };
       const [
         files,
         financeFiles,
@@ -12354,10 +12385,10 @@ dashboardRouter.get(
         milestoneClearingFiles,
         financeAllocationOverride,
       ] = await Promise.all([
-        loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
-        loadFiles(financeFileWhere.whereSql, financeFileWhere.values),
-        loadFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values),
-        loadFiles(milestoneClearingFileWhere.whereSql, milestoneClearingFileWhere.values),
+        loadSharedFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
+        loadSharedFiles(financeFileWhere.whereSql, financeFileWhere.values),
+        loadSharedFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values),
+        loadSharedFiles(milestoneClearingFileWhere.whereSql, milestoneClearingFileWhere.values),
         usesEntireDatabaseFinanceAllocation
           ? loadFinancialYears().then((financialYears) =>
               loadAllYearAllocationTotals({

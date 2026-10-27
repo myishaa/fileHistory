@@ -5914,6 +5914,7 @@ reportsRouter.put(
       client.release();
     }
 
+    clearDashboardReportCaches();
     response.json({ rows: await loadMerCashOutgoRows(validFinancialYear) });
   }),
 );
@@ -5940,34 +5941,51 @@ reportsRouter.get(
     const fileWhere = getCashOutGoPlanFileWhereSql(user, divisionId, fileCategories);
     const useSqlScopedLoad = process.env.CASH_OUT_GO_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.CASH_OUT_GO_FILE_SCOPE_COMPARE === "true";
-    const [planSettings, assumptions, allocation, merRows, sqlScopedFiles, legacyFiles] =
-      await Promise.all([
-        loadCashOutGoPlanSettings(scopeKey),
-        loadCashOutGoPlanAssumptions(scopeKey),
-        loadCashOutGoPlanAllocationForUser(financialYear, divisionId, user),
-        loadAllMerCashOutgoRows(),
-        useSqlScopedLoad || compareFileScope
-          ? loadFiles(fileWhere.whereSql, fileWhere.values)
-          : Promise.resolve(undefined),
-        !useSqlScopedLoad || compareFileScope
-          ? loadFiles("", [], false)
-          : Promise.resolve(undefined),
-      ]);
-    const applyFileScope = (sourceFiles: FileRecord[]) =>
-      sourceFiles.filter((file) => {
-        if (!canAccessFileCategory(user, file)) return false;
-        if (!canAccessDivision(user, file.divisionId)) return false;
-        if (divisionId !== "all" && file.divisionId !== divisionId) return false;
-        return !fileCategories || matchesFileCategorySelection(file, fileCategories);
-      });
-    const sqlScopedSelectedFiles = sqlScopedFiles ? applyFileScope(sqlScopedFiles) : undefined;
-    const legacySelectedFiles = legacyFiles ? applyFileScope(legacyFiles) : undefined;
-    if (compareFileScope && sqlScopedSelectedFiles && legacySelectedFiles) {
-      logFileScopeComparison("Cash Out Go Plan", legacySelectedFiles, sqlScopedSelectedFiles);
-    }
-    const files = useSqlScopedLoad ? (sqlScopedSelectedFiles ?? []) : (legacySelectedFiles ?? []);
-    response.json({
-      plan: buildCashOutGoPlan(
+    const cacheKey = `reports:cash-out-go-plan:${JSON.stringify({
+      version: 2,
+      scope: getAuthScopeCacheKey(user),
+      scopeKey,
+      financialYear,
+      currentFinancialYear: settings.financialYear,
+      includePreviousFySubmitted,
+      divisionId,
+      fileCategories,
+      useOrganizationWideMer,
+      useSqlScopedLoad,
+      compareFileScope,
+      whereSql: fileWhere.whereSql,
+      values: fileWhere.values,
+    })}`;
+    const plan = await getCached(cacheKey, cacheTtl.reportsSummaryMs, async () => {
+      const [planSettings, assumptions, allocation, merRows, sqlScopedFiles, legacyFiles] =
+        await Promise.all([
+          loadCashOutGoPlanSettings(scopeKey),
+          loadCashOutGoPlanAssumptions(scopeKey),
+          loadCashOutGoPlanAllocationForUser(financialYear, divisionId, user),
+          loadAllMerCashOutgoRows(),
+          useSqlScopedLoad || compareFileScope
+            ? loadFiles(fileWhere.whereSql, fileWhere.values)
+            : Promise.resolve(undefined),
+          !useSqlScopedLoad || compareFileScope
+            ? loadFiles("", [], false)
+            : Promise.resolve(undefined),
+        ]);
+      const applyFileScope = (sourceFiles: FileRecord[]) =>
+        sourceFiles.filter((file) => {
+          if (!canAccessFileCategory(user, file)) return false;
+          if (!canAccessDivision(user, file.divisionId)) return false;
+          if (divisionId !== "all" && file.divisionId !== divisionId) return false;
+          return !fileCategories || matchesFileCategorySelection(file, fileCategories);
+        });
+      const sqlScopedSelectedFiles = sqlScopedFiles ? applyFileScope(sqlScopedFiles) : undefined;
+      const legacySelectedFiles = legacyFiles ? applyFileScope(legacyFiles) : undefined;
+      if (compareFileScope && sqlScopedSelectedFiles && legacySelectedFiles) {
+        logFileScopeComparison("Cash Out Go Plan", legacySelectedFiles, sqlScopedSelectedFiles);
+      }
+      const files = useSqlScopedLoad
+        ? (sqlScopedSelectedFiles ?? [])
+        : (legacySelectedFiles ?? []);
+      return buildCashOutGoPlan(
         files,
         financialYear,
         settings.financialYear,
@@ -5977,8 +5995,9 @@ reportsRouter.get(
         includePreviousFySubmitted,
         allocation,
         useOrganizationWideMer,
-      ),
+      );
     });
+    response.json({ plan });
   }),
 );
 
@@ -6195,7 +6214,7 @@ reportsRouter.put(
         );
       }
       await client.query("commit");
-      if (advancePaymentDateUpdates.length) clearDashboardReportCaches();
+      clearDashboardReportCaches();
     } catch (error) {
       await client.query("rollback");
       throw error;

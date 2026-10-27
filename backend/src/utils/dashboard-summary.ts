@@ -555,16 +555,20 @@ export function buildDashboardSummary({
         (!finance1InitiationTo || date <= finance1InitiationTo),
     );
   };
+  const finance1ScopeFiles = dashboardFinanceFiles.filter(matchesFinance1InitiationRange);
+  const globalFinance1ScopeFiles = activeDashboardFiles.filter(matchesFinance1InitiationRange);
   const finance1Summary = getFinance1Summary(
-    dashboardFinanceFiles.filter(matchesFinance1InitiationRange),
+    finance1ScopeFiles,
     finance1FiscalYear,
     finance1AsOfDate,
   );
-  const globalFilterFinance1Summary = getFinance1Summary(
-    activeDashboardFiles.filter(matchesFinance1InitiationRange),
-    finance1FiscalYear,
-    finance1AsOfDate,
-  );
+  const globalFinance1ScopeIds = new Set(globalFinance1ScopeFiles.map((file) => file.id));
+  const finance1ScopesMatch =
+    finance1ScopeFiles.length === globalFinance1ScopeFiles.length &&
+    finance1ScopeFiles.every((file) => globalFinance1ScopeIds.has(file.id));
+  const globalFilterFinance1Summary = finance1ScopesMatch
+    ? finance1Summary
+    : getFinance1Summary(globalFinance1ScopeFiles, finance1FiscalYear, finance1AsOfDate);
   finance1Summary.intendedAtFyEnd = globalFilterFinance1Summary.intendedAtFyEnd;
   finance1Summary.bookedAtFyEnd = globalFilterFinance1Summary.bookedAtFyEnd;
   finance1Summary.committedAtFyEnd = globalFilterFinance1Summary.committedAtFyEnd;

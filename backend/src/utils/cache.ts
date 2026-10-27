@@ -46,5 +46,7 @@ export function clearLookupCaches() {
 
 export function clearDashboardReportCaches() {
   clearCachePrefix("dashboard:summary:");
+  clearCachePrefix("dashboard:suspected-anomalies:");
   clearCachePrefix("reports:summary:");
+  clearCachePrefix("reports:cash-out-go-plan:");
 }

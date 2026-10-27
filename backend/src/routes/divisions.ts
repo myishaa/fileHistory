@@ -7,7 +7,12 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
-import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
+import {
+  cacheTtl,
+  clearCachePrefix,
+  clearDashboardReportCaches,
+  getCached,
+} from "../utils/cache.js";
 import { fromDbDate, fromDbText, toDbNumber, toDbText } from "../utils/db-values.js";
 import {
   asyncHandler,
@@ -24,6 +29,7 @@ divisionsRouter.use((request, response, next) => {
     response.on("finish", () => {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         clearDivisionCache();
+        clearDashboardReportCaches();
       }
     });
   }
