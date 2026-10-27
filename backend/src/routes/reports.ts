@@ -14,6 +14,7 @@ import {
   buildReportsSummary,
   delayMilestoneOptions,
   getBgStatusSummaryAuditCounts,
+  type ReportsSummarySection,
 } from "../utils/report-summary.js";
 import {
   getFileCategorySqlCondition,
@@ -752,6 +753,26 @@ function readNumberList(value: unknown) {
   const source = readList(value);
   if (!source) return undefined;
   return normalizeBgReceiptDelayDays(source);
+}
+
+const reportSummarySectionKeys = new Set<ReportsSummarySection>([
+  "status",
+  "delay",
+  "cashOutgo",
+  "monthly",
+  "bg",
+]);
+
+function readReportsSummarySections(value: unknown): ReportsSummarySection[] | undefined {
+  const list = readList(value);
+  if (!list) return undefined;
+  return Array.from(
+    new Set(
+      list.filter((section): section is ReportsSummarySection =>
+        reportSummarySectionKeys.has(section as ReportsSummarySection),
+      ),
+    ),
+  ).sort();
 }
 
 let merCashOutgoSchemaReady: Promise<void> | undefined;
@@ -6522,6 +6543,7 @@ reportsRouter.get(
       settings.delayStatusDefaultDays ?? 5,
     );
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
+    const sections = readReportsSummarySections(request.query.sections);
     const expectedCashOutgoDays = readNonNegativeInteger(
       request.query.expectedCashOutgoDays,
       cashOutGoDefaults.defaultDpOffsetDays,
@@ -6562,7 +6584,7 @@ reportsRouter.get(
     const useSqlScopedFileLoad = process.env.REPORTS_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.REPORTS_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:summary:${JSON.stringify({
-      version: 10,
+      version: 11,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -6572,6 +6594,7 @@ reportsRouter.get(
       fileCategories,
       delayDays,
       delayMilestone,
+      sections,
       expectedCashOutgoDays,
       historicalFromDate,
       historicalToDate,
@@ -6674,9 +6697,10 @@ reportsRouter.get(
         cashOutgoPaymentCutoffDate,
         bgReceiptDelayDays,
         bgReturnOffsetDays: settings.bgReturnOffsetDays ?? 60,
+        sections,
       });
 
-      if (process.env.REPORTS_SQL_COMPARE === "true") {
+      if (process.env.REPORTS_SQL_COMPARE === "true" && !sections) {
         const sqlSummary = await buildReportsSummarySql({
           whereSql: reportWhere.whereSql,
           values: reportWhere.values,

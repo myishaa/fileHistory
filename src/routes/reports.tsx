@@ -1323,6 +1323,7 @@ function ReportsPage({
   const [firmDatabaseError, setFirmDatabaseError] = useState<string | undefined>();
   const [reportsLoading, setReportsLoading] = useState(false);
   const [hasLoadedReports, setHasLoadedReports] = useState(false);
+  const [reportsCalculationNonce, setReportsCalculationNonce] = useState(0);
   const [reportsError, setReportsError] = useState<string | undefined>();
   const hasLoadedReportsRef = useRef(false);
   const isPreSoExpectedCashOutgoReport = reportMode === "preSoExpectedCashOutgo";
@@ -2035,6 +2036,8 @@ function ReportsPage({
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
       ? settings.financialYear
       : settings.selectedYear || settings.financialYear;
+  const reportSummarySections = useMemo(() => getReportSummarySections(reportMode), [reportMode]);
+  const reportSummarySectionLabel = getReportSummarySectionLabel(reportSummarySections);
   const reportsQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("division", activeDivision);
@@ -2045,6 +2048,9 @@ function ReportsPage({
     params.set("expectedCashOutgoDays", String(expectedCashOutgoOffsetDays));
     params.set("delayMilestone", delayStatusMilestoneKey);
     params.set("selectedYear", settings.selectedYear);
+    if (reportSummarySections?.length) {
+      params.set("sections", reportSummarySections.join(","));
+    }
     if (effectiveIncludeArchivedYears) params.set("includeArchivedYears", "true");
     if (!fileYearFilterDisabled) {
       if (activeFileYear !== "all") params.set("fileYear", activeFileYear);
@@ -2082,12 +2088,24 @@ function ReportsPage({
     settings.selectedYear,
     effectiveFinancialYear,
     effectiveIncludeArchivedYears,
+    reportSummarySections,
   ]);
 
   useEffect(() => {
-    if (!expectedCashOutgoDaysReady) return;
+    if (!expectedCashOutgoDaysReady || !reportSummarySections?.length) {
+      setReportsSummary(undefined);
+      setReportsLoading(false);
+      setReportsError(undefined);
+      setHasLoadedReports(false);
+      hasLoadedReportsRef.current = false;
+      return;
+    }
     const controller = new AbortController();
-    const delay = hasLoadedReportsRef.current ? 180 : 0;
+    setReportsSummary(undefined);
+    const wasLoaded = hasLoadedReportsRef.current;
+    setHasLoadedReports(false);
+    hasLoadedReportsRef.current = false;
+    const delay = wasLoaded ? 180 : 0;
     const timeoutId = window.setTimeout(() => {
       setReportsLoading(true);
       setReportsError(undefined);
@@ -2111,7 +2129,7 @@ function ReportsPage({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [expectedCashOutgoDaysReady, reportsQuery]);
+  }, [expectedCashOutgoDaysReady, reportsCalculationNonce, reportSummarySections, reportsQuery]);
 
   useEffect(() => {
     if (!expectedCashOutgoDaysReady) return;
@@ -4261,6 +4279,23 @@ function ReportsPage({
             </div>
           ) : null}
 
+          {reportSummarySectionLabel ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">
+                This view calculates only the selected {reportSummarySectionLabel} section.
+              </span>
+              <button
+                type="button"
+                onClick={() => setReportsCalculationNonce((value) => value + 1)}
+                disabled={reportsLoading}
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-background px-2.5 py-1.5 font-semibold text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                {reportsLoading ? "Calculating…" : "Calculate / refresh"}
+              </button>
+            </div>
+          ) : null}
+
           {reportMode === "mmgSummary" ? (
             <MmgSummaryReport
               rows={mmgSummaryRows}
@@ -5164,6 +5199,52 @@ const reportModes = [
   { key: "warrantyBgMismatch", label: "Warranty / BG mismatch" },
   { key: "delayStatus", label: "Delay Status" },
 ] satisfies Array<{ key: ReportMode; label: string }>;
+
+type ReportSummarySection = "status" | "delay" | "cashOutgo" | "monthly" | "bg";
+
+function getReportSummarySections(mode: ReportMode): ReportSummarySection[] | undefined {
+  const cashOutgoModes = new Set<ReportMode>([
+    "itemsDeliveredBillsPending",
+    "itemsDeliveredBillsPrepared",
+    "billsSubmitted",
+    "expectedCashOutgoFy",
+    "spentTillDateFy",
+    "billsPaidInMonth",
+    "currentMonthLiability",
+    "cashOutgoForMonth",
+    "expectedExpenditureTillMonth",
+    "pendingReturnedBills",
+    "returnedBillsResubmitted",
+    "returnedBillsPaid",
+    "supplementaryBillsSubmitted",
+    "supplementaryBillsPaid",
+    "supplementaryPendingReturnedBills",
+    "supplementaryReturnedBillsResubmitted",
+    "supplementaryReturnedBillsPaid",
+  ]);
+  if (cashOutgoModes.has(mode)) return ["cashOutgo"];
+  if (mode === "delayStatus") return ["delay"];
+  if (mode === "bgReceiptDelay" || mode === "warrantyBgMismatch") return ["bg"];
+  if (mode === "monthWiseBgExpiry") return ["monthly", "status"];
+  if (
+    mode === "monthlyFileInflow" ||
+    mode === "monthWiseSupplyOrder" ||
+    mode === "monthWiseDeliverySchedule"
+  ) {
+    return ["monthly"];
+  }
+  return undefined;
+}
+
+function getReportSummarySectionLabel(sections: ReportSummarySection[] | undefined) {
+  if (!sections?.length) return undefined;
+  if (sections.includes("delay")) return "Delay Status";
+  if (sections.includes("status")) return "status and monthly report";
+  if (sections.includes("cashOutgo")) return "cash-outgo report";
+  if (sections.includes("monthly")) return "monthly report";
+  if (sections.includes("bg")) return "BG report";
+  return "report";
+}
 type ReportModeOption = (typeof reportModes)[number];
 type DrillPathItem = { label: string; href?: string };
 const supplementaryBillInclusionNotes = {

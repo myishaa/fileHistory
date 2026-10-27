@@ -62,6 +62,22 @@ function nonTcecTechnicalEvaluationRows(file, delayMilestone = "nonTcecTechnical
   });
 }
 
+test("Reports summary honors section selection", () => {
+  const summary = buildReportsSummary({
+    files: [{ id: "section-selection-file", demandCancelled: "No", completedMilestones: [] }],
+    division: "all",
+    delayDays: 5,
+    delayMilestone: "all",
+    sections: ["delay"],
+  });
+
+  assert.deepEqual(summary.statusSummaryGroups, []);
+  assert.deepEqual(summary.expectedCashOutgoDpRows, []);
+  assert.deepEqual(summary.monthlyFileInflow, []);
+  assert.deepEqual(summary.bgReceiptDelayRows, []);
+  assert.ok(Array.isArray(summary.delayMilestoneOptions));
+});
+
 test("Non-TCEC Technical Evaluation Delay starts after Bidding Stage Over and reports one file-level row from Bid Opening", () => {
   const bidOpeningDate = daysAgo(12);
   const file = {

@@ -16,14 +16,48 @@ type PaymentEntry = SupplyOrderEntry & {
   advancePayment?: boolean;
 };
 
+type FileDeliveryCache = {
+  sourceRows: SupplyOrderDetail[] | undefined;
+  noOfSo: string | undefined;
+  baseRows?: SupplyOrderDetail[];
+  effectiveRows?: SupplyOrderDetail[];
+  supplyOrderEntries?: SupplyOrderEntry[];
+  paymentEntries?: PaymentEntry[];
+};
+
+// File records are immutable for the lifetime of a backend request. Reusing the
+// derived rows prevents every report/status calculation from rebuilding the
+// same S.O. and stage graph. The source-array and no-of-S.O. checks keep the
+// cache safe for callers that replace a file's order collection between calls.
+const fileDeliveryCaches = new WeakMap<FileRecord, FileDeliveryCache>();
+
+function getFileDeliveryCache(file: FileRecord) {
+  const sourceRows = file.supplyOrders;
+  const noOfSo = file.noOfSo;
+  const existing = fileDeliveryCaches.get(file);
+  if (existing && existing.sourceRows === sourceRows && existing.noOfSo === noOfSo) {
+    return existing;
+  }
+  const next: FileDeliveryCache = { sourceRows, noOfSo };
+  fileDeliveryCaches.set(file, next);
+  return next;
+}
+
 function getBaseSupplyOrderRows(file: FileRecord) {
-  return file.supplyOrders?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
+  const cache = getFileDeliveryCache(file);
+  if (cache.baseRows) return cache.baseRows;
+  cache.baseRows = cache.sourceRows?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
+  return cache.baseRows;
 }
 
 function getEffectiveSupplyOrderRows(file: FileRecord) {
+  const cache = getFileDeliveryCache(file);
+  if (cache.effectiveRows) return cache.effectiveRows;
   const rows = getBaseSupplyOrderRows(file);
-  if (!hasExplicitSupplyOrderCount(file.noOfSo)) return rows;
-  return rows.slice(0, parseExpectedSupplyOrderCount(file.noOfSo));
+  cache.effectiveRows = hasExplicitSupplyOrderCount(file.noOfSo)
+    ? rows.slice(0, parseExpectedSupplyOrderCount(file.noOfSo))
+    : rows;
+  return cache.effectiveRows;
 }
 
 export function countSupplyOrderRows(file: FileRecord) {
@@ -66,9 +100,12 @@ export function hasUnpaidSupplyOrderPayment(order: SupplyOrderDetail) {
 }
 
 export function fileSupplyOrderEntries(file: FileRecord) {
-  return getEffectiveSupplyOrderRows(file).flatMap((order, orderIndex) =>
+  const cache = getFileDeliveryCache(file);
+  if (cache.supplyOrderEntries) return cache.supplyOrderEntries;
+  cache.supplyOrderEntries = getEffectiveSupplyOrderRows(file).flatMap((order, orderIndex) =>
     expandSupplyOrderStageEntries(order, orderIndex),
   );
+  return cache.supplyOrderEntries;
 }
 
 export function effectiveSupplyOrderEntries(files: FileRecord[]) {
@@ -87,8 +124,10 @@ export function filePaymentOrders(file: FileRecord) {
 }
 
 export function filePaymentEntries(file: FileRecord): PaymentEntry[] {
+  const cache = getFileDeliveryCache(file);
+  if (cache.paymentEntries) return cache.paymentEntries;
   const effectiveRows = getEffectiveSupplyOrderRows(file);
-  return effectiveRows.flatMap((order, orderIndex) => {
+  cache.paymentEntries = effectiveRows.flatMap((order, orderIndex) => {
     const paymentOrders =
       isYes(order.stageDelivery) && !isYes(order.stagePayment)
         ? [{ order, orderIndex }]
@@ -98,6 +137,7 @@ export function filePaymentEntries(file: FileRecord): PaymentEntry[] {
       ? [...paymentOrders, { order: advanceOrder, orderIndex, advancePayment: true }]
       : paymentOrders;
   });
+  return cache.paymentEntries;
 }
 
 export function isParentStagePaymentOrder(order: SupplyOrderDetail) {

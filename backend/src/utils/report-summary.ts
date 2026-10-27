@@ -360,6 +360,8 @@ const supplyOrderMilestoneNames = [
   "Payment",
 ];
 
+export type ReportsSummarySection = "status" | "delay" | "cashOutgo" | "monthly" | "bg";
+
 function isSupplyOrderDrivenMilestoneName(name: string) {
   return supplyOrderMilestoneNames.some(
     (milestone) => normalizeMilestoneName(milestone) === normalizeMilestoneName(name),
@@ -402,6 +404,7 @@ export function buildReportsSummary({
   cashOutgoPaymentCutoffDate,
   bgReceiptDelayDays = [10, 30, 60],
   bgReturnOffsetDays = 60,
+  sections,
 }: {
   files: FileRecord[];
   pendingBillingFiles?: FileRecord[];
@@ -416,7 +419,11 @@ export function buildReportsSummary({
   cashOutgoPaymentCutoffDate?: string;
   bgReceiptDelayDays?: number[];
   bgReturnOffsetDays?: number;
+  sections?: readonly ReportsSummarySection[];
 }) {
+  const requestedSections = sections ? new Set(sections) : undefined;
+  const wantsSection = (section: ReportsSummarySection) =>
+    !requestedSections || requestedSections.has(section);
   const divisionFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
   const reportFiles = divisionFiles.filter((file) => !isCancelledFile(file));
@@ -429,7 +436,9 @@ export function buildReportsSummary({
     (file) => !isCancelledFile(file),
   );
   const activeStatusFiles = reportFiles;
-  const delayRows = getDelayStatusRows(activeStatusFiles, delayDays, delayMilestone);
+  const delayRows = wantsSection("delay")
+    ? getDelayStatusRows(activeStatusFiles, delayDays, delayMilestone)
+    : [];
   const historicalRange =
     historicalFromDate && historicalToDate && historicalFromDate <= historicalToDate
       ? { fromDate: historicalFromDate, toDate: historicalToDate }
@@ -439,112 +448,141 @@ export function buildReportsSummary({
     expectedCashOutgoDays,
     activeDivision: division,
     reportFileCount: reportFiles.length,
-    statusSummaryGroups: getStatusSummaryTableGroups(
-      activeStatusFiles,
-      bgReturnOffsetDays,
-      nonDemandCancelledReportFiles,
-    ),
-    expectedCashOutgoDpRows: getExpectedCashOutgoByDpRows(
-      reportFiles,
-      expectedCashOutgoDays,
-      cashOutgoAsOfDate,
-    ),
-    expectedCashOutgoReceiptRows: getExpectedCashOutgoByReceiptRows(
-      reportFiles,
-      expectedCashOutgoDays,
-      cashOutgoAsOfDate,
-    ),
-    expectedCashOutgoReceiptPendingBillRows: getExpectedCashOutgoByReceiptPendingBillRows(
-      pendingBillingReportFiles,
-      expectedCashOutgoDays,
-      historicalRange,
-    ),
-    expectedCashOutgoBillPreparationRows: getExpectedCashOutgoByBillPreparationRows(
-      pendingBillingReportFiles,
-      historicalRange,
-      cashOutgoAsOfDate,
-    ),
-    billSentForPaymentRows: getBillSentForPaymentRows(
-      pendingBillingReportFiles,
-      historicalRange,
-      cashOutgoAsOfDate,
-    ),
-    actualCashOutgoRows: getActualCashOutgoRows(
-      reportFiles,
-      historicalRange,
-      cashOutgoPaymentCutoffDate,
-    ),
-    supplementaryBillSentForPaymentRows: getSupplementaryBillSentForPaymentRows(
-      pendingBillingReportFiles,
-      historicalRange,
-      cashOutgoAsOfDate,
-    ),
-    supplementaryActualCashOutgoRows: getSupplementaryActualCashOutgoRows(
-      reportFiles,
-      historicalRange,
-      cashOutgoPaymentCutoffDate,
-    ),
-    pendingReturnedBillRows: getReturnedBillCashOutgoRows(
-      pendingBillingReportFiles,
-      "pendingReturnedBills",
-      historicalRange,
-    ),
-    returnedBillResubmittedRows: getReturnedBillCashOutgoRows(
-      pendingBillingReportFiles,
-      "returnedBillsResubmitted",
-      historicalRange,
-    ),
-    returnedBillPaidRows: getReturnedBillCashOutgoRows(
-      reportFiles,
-      "returnedBillsPaid",
-      historicalRange,
-      cashOutgoPaymentCutoffDate,
-    ),
-    supplementaryPendingReturnedBillRows: getSupplementaryReturnedBillCashOutgoRows(
-      pendingBillingReportFiles,
-      "supplementaryPendingReturnedBills",
-      historicalRange,
-    ),
-    supplementaryReturnedBillResubmittedRows: getSupplementaryReturnedBillCashOutgoRows(
-      pendingBillingReportFiles,
-      "supplementaryReturnedBillsResubmitted",
-      historicalRange,
-    ),
-    supplementaryReturnedBillPaidRows: getSupplementaryReturnedBillCashOutgoRows(
-      reportFiles,
-      "supplementaryReturnedBillsPaid",
-      historicalRange,
-      cashOutgoPaymentCutoffDate,
-    ),
-    monthlyFileInflow: getMonthlyFileInflow(nonDemandCancelledReportFiles, selectedYear),
-    monthWiseSupplyOrder: getMonthWiseSupplyOrder(nonDemandCancelledReportFiles, selectedYear),
-    dailyFileInflow: getDailyFileInflow(nonDemandCancelledReportFiles, selectedYear),
-    dailySupplyOrder: getDailySupplyOrder(nonDemandCancelledReportFiles, selectedYear),
-    dailyDeliverySchedule: getDailyDeliverySchedule(nonDemandCancelledReportFiles, selectedYear),
-    dailyBgExpiry: getDailyBgExpiry(nonDemandCancelledReportFiles, selectedYear),
-    dailyPaymentDue: getDailyPaymentDue(
-      nonDemandCancelledReportFiles,
-      selectedYear,
-      expectedCashOutgoDays,
-    ),
-    dailyPaymentCompleted: getDailyPaymentCompleted(nonDemandCancelledReportFiles, selectedYear),
-    dailyCompletedDeliveries: getDailyCompletedDeliveries(nonDemandCancelledReportFiles, selectedYear),
-    monthWiseDeliverySchedule: getMonthWiseDeliverySchedule(
-      nonDemandCancelledReportFiles,
-      selectedYear,
-    ),
-    monthWiseCompletedDeliveries: getMonthWiseCompletedDeliveries(
-      nonDemandCancelledReportFiles,
-      selectedYear,
-    ),
-    monthWiseBgExpiry: getMonthWiseBgExpiry(divisionFiles, selectedYear),
-    preBidMeetingRows: getPreBidMeetingRows(divisionFiles, selectedYear),
-    preBidMeetingDailyRows: getPreBidMeetingDailyRows(divisionFiles, selectedYear),
-    bgReceiptDelayRows: getBgReceiptDelayRows(nonDemandCancelledReportFiles, bgReceiptDelayDays),
-    warrantyBgMismatchRows: getWarrantyBgMismatchRows(
-      nonDemandCancelledReportFiles,
-      bgReturnOffsetDays,
-    ),
+    statusSummaryGroups: wantsSection("status")
+      ? getStatusSummaryTableGroups(
+          activeStatusFiles,
+          bgReturnOffsetDays,
+          nonDemandCancelledReportFiles,
+        )
+      : [],
+    expectedCashOutgoDpRows: wantsSection("cashOutgo")
+      ? getExpectedCashOutgoByDpRows(reportFiles, expectedCashOutgoDays, cashOutgoAsOfDate)
+      : [],
+    expectedCashOutgoReceiptRows: wantsSection("cashOutgo")
+      ? getExpectedCashOutgoByReceiptRows(reportFiles, expectedCashOutgoDays, cashOutgoAsOfDate)
+      : [],
+    expectedCashOutgoReceiptPendingBillRows: wantsSection("cashOutgo")
+      ? getExpectedCashOutgoByReceiptPendingBillRows(
+          pendingBillingReportFiles,
+          expectedCashOutgoDays,
+          historicalRange,
+        )
+      : [],
+    expectedCashOutgoBillPreparationRows: wantsSection("cashOutgo")
+      ? getExpectedCashOutgoByBillPreparationRows(
+          pendingBillingReportFiles,
+          historicalRange,
+          cashOutgoAsOfDate,
+        )
+      : [],
+    billSentForPaymentRows: wantsSection("cashOutgo")
+      ? getBillSentForPaymentRows(pendingBillingReportFiles, historicalRange, cashOutgoAsOfDate)
+      : [],
+    actualCashOutgoRows: wantsSection("cashOutgo")
+      ? getActualCashOutgoRows(reportFiles, historicalRange, cashOutgoPaymentCutoffDate)
+      : [],
+    supplementaryBillSentForPaymentRows: wantsSection("cashOutgo")
+      ? getSupplementaryBillSentForPaymentRows(
+          pendingBillingReportFiles,
+          historicalRange,
+          cashOutgoAsOfDate,
+        )
+      : [],
+    supplementaryActualCashOutgoRows: wantsSection("cashOutgo")
+      ? getSupplementaryActualCashOutgoRows(
+          reportFiles,
+          historicalRange,
+          cashOutgoPaymentCutoffDate,
+        )
+      : [],
+    pendingReturnedBillRows: wantsSection("cashOutgo")
+      ? getReturnedBillCashOutgoRows(pendingBillingReportFiles, "pendingReturnedBills", historicalRange)
+      : [],
+    returnedBillResubmittedRows: wantsSection("cashOutgo")
+      ? getReturnedBillCashOutgoRows(
+          pendingBillingReportFiles,
+          "returnedBillsResubmitted",
+          historicalRange,
+        )
+      : [],
+    returnedBillPaidRows: wantsSection("cashOutgo")
+      ? getReturnedBillCashOutgoRows(
+          reportFiles,
+          "returnedBillsPaid",
+          historicalRange,
+          cashOutgoPaymentCutoffDate,
+        )
+      : [],
+    supplementaryPendingReturnedBillRows: wantsSection("cashOutgo")
+      ? getSupplementaryReturnedBillCashOutgoRows(
+          pendingBillingReportFiles,
+          "supplementaryPendingReturnedBills",
+          historicalRange,
+        )
+      : [],
+    supplementaryReturnedBillResubmittedRows: wantsSection("cashOutgo")
+      ? getSupplementaryReturnedBillCashOutgoRows(
+          pendingBillingReportFiles,
+          "supplementaryReturnedBillsResubmitted",
+          historicalRange,
+        )
+      : [],
+    supplementaryReturnedBillPaidRows: wantsSection("cashOutgo")
+      ? getSupplementaryReturnedBillCashOutgoRows(
+          reportFiles,
+          "supplementaryReturnedBillsPaid",
+          historicalRange,
+          cashOutgoPaymentCutoffDate,
+        )
+      : [],
+    monthlyFileInflow: wantsSection("monthly")
+      ? getMonthlyFileInflow(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    monthWiseSupplyOrder: wantsSection("monthly")
+      ? getMonthWiseSupplyOrder(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailyFileInflow: wantsSection("monthly")
+      ? getDailyFileInflow(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailySupplyOrder: wantsSection("monthly")
+      ? getDailySupplyOrder(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailyDeliverySchedule: wantsSection("monthly")
+      ? getDailyDeliverySchedule(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailyBgExpiry: wantsSection("monthly")
+      ? getDailyBgExpiry(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailyPaymentDue: wantsSection("monthly")
+      ? getDailyPaymentDue(nonDemandCancelledReportFiles, selectedYear, expectedCashOutgoDays)
+      : [],
+    dailyPaymentCompleted: wantsSection("monthly")
+      ? getDailyPaymentCompleted(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    dailyCompletedDeliveries: wantsSection("monthly")
+      ? getDailyCompletedDeliveries(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    monthWiseDeliverySchedule: wantsSection("monthly")
+      ? getMonthWiseDeliverySchedule(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    monthWiseCompletedDeliveries: wantsSection("monthly")
+      ? getMonthWiseCompletedDeliveries(nonDemandCancelledReportFiles, selectedYear)
+      : [],
+    monthWiseBgExpiry: wantsSection("monthly")
+      ? getMonthWiseBgExpiry(divisionFiles, selectedYear)
+      : [],
+    preBidMeetingRows: wantsSection("monthly")
+      ? getPreBidMeetingRows(divisionFiles, selectedYear)
+      : [],
+    preBidMeetingDailyRows: wantsSection("monthly")
+      ? getPreBidMeetingDailyRows(divisionFiles, selectedYear)
+      : [],
+    bgReceiptDelayRows: wantsSection("bg")
+      ? getBgReceiptDelayRows(nonDemandCancelledReportFiles, bgReceiptDelayDays)
+      : [],
+    warrantyBgMismatchRows: wantsSection("bg")
+      ? getWarrantyBgMismatchRows(nonDemandCancelledReportFiles, bgReturnOffsetDays)
+      : [],
     delayRows,
     delaySummary: getDelayStatusSummary(delayRows, delayMilestone),
     delayMilestoneOptions,
