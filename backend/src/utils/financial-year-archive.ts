@@ -21,15 +21,23 @@ export function ensureFinancialYearArchiveSchema() {
 
 /**
  * Returns the normal searchable-file predicate for a query that uses the
- * `files` table as `f`. Archived origin-year files remain visible when they
- * are still active carry-forward records. Historical views can bypass the
- * predicate explicitly with `includeArchivedYears`.
+ * `files` table as `f`. By default, active carry-forward files whose origin
+ * year is archived remain visible while inactive archived-origin files stay
+ * out of normal views. When the option is turned off, all files from archived
+ * origin years are excluded. Explicit historical/all-files scopes bypass this
+ * predicate at the caller.
  */
 export function getSearchableFinancialYearSql(
   activeFilesSql: string,
-  includeArchivedYears = false,
+  includeActiveArchivedYears = true,
 ) {
-  if (includeArchivedYears) return undefined;
+  if (!includeActiveArchivedYears) {
+    return `not exists (
+    select 1 from financial_years archived_search_year
+    where archived_search_year.label = f.year
+      and archived_search_year.is_archived = true
+  )`;
+  }
   return `(not exists (
     select 1 from financial_years archived_search_year
     where archived_search_year.label = f.year

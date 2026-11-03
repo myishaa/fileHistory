@@ -60,6 +60,10 @@ psql "$DATABASE_URL" -f database/087_refloat_gem_undertaking_date.sql
 psql "$DATABASE_URL" -f database/088_refloat_recommendation_date.sql
 psql "$DATABASE_URL" -f database/089_refloat_bidding_stage_over.sql
 psql "$DATABASE_URL" -f database/090_financial_year_archive.sql
+psql "$DATABASE_URL" -f database/091_file_message_recipients.sql
+psql "$DATABASE_URL" -f database/092_backup_schedule.sql
+psql "$DATABASE_URL" -f database/093_backup_run_log.sql
+psql "$DATABASE_URL" -f database/094_protected_backup_restore_authorization.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -134,6 +138,9 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `app_users`: temporary app users and future login users.
 - `user_divisions`: division access for non-admin users.
 - `app_settings`: workspace settings used by the frontend and backend.
+- `backup_schedule_settings`: administrator-controlled server-side full recovery backup schedule and run status.
+- `backup_run_log`: persistent success/failure history for local, full-recovery, and scheduled backups.
+- `protected_backup_settings`: hashed restore-authorization password for protected backup restores.
 - `financial_years`: saved financial years shown in year dropdowns.
 - `file_firms`: invited and bidder firm rows.
 - `supply_orders`: multiple supply order rows for a file.

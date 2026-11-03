@@ -20,6 +20,7 @@
     "qa:perf:db": "node scripts/prepare-qa-performance-db.mjs",
     "qa:perf:seed": "node scripts/benchmark-qa-dataset.mjs seed",
     "qa:perf:cleanup": "node scripts/benchmark-qa-dataset.mjs cleanup",
+    "backup:disaster": "bash scripts/backup-recordkeeper-disaster-recovery.sh",
     "qa:tooling": "npm --prefix backend run build && backend/node_modules/.bin/tsx scripts/audit-dashboard-clickers.mjs && backend/node_modules/.bin/tsx scripts/audit-filter-scope-matrix.mjs && backend/node_modules/.bin/tsx scripts/audit-search-ts-sql-parity.mjs && backend/node_modules/.bin/tsx scripts/audit-status1-direct.mjs && backend/node_modules/.bin/tsx scripts/audit-frontend-report-modules.ts",
     "lint": "eslint .",
     "format": "prettier --write ."

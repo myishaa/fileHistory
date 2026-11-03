@@ -12,7 +12,7 @@ test("actual and received completion dates are separate selectable S.O. fields",
   const received = demandProcessingDateFields.find((field) => field.id === "order.jobCompletionDate");
   const deliveryGroup = getDemandProcessingFieldGroups().find((group) => group.title === "Delivery / IR");
 
-  assert.equal(actual?.label, "Actual Job Completion Date");
+  assert.equal(actual?.label, "Work Completion Date");
   assert.equal(received?.label, "Job Completion Received Date");
   assert.ok(deliveryGroup?.fields.some((field) => field.id === actual?.id));
 });

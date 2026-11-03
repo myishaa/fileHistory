@@ -5,7 +5,7 @@ export function getCompactTableTextWidth(key: string, label = "") {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
-  if (normalized.includes("description")) return 36;
+  if (normalized.includes("description")) return 44;
   if (
     normalized.includes("bidder firm") ||
     normalized.includes("invited firm") ||

@@ -155,7 +155,7 @@ function MmgLivePage() {
 function LiveShell({ title, children }: { title: string; children: string }) {
   return (
     <main className="grid min-h-screen place-items-center bg-background px-4 text-foreground">
-      <div className="rounded-md border border-border bg-card p-5 text-center shadow-[var(--shadow-card)]">
+      <div className="section-accent-border rounded-md border border-border bg-card p-5 text-center shadow-[var(--shadow-card)]">
         <h1 className="text-lg font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{children}</p>
       </div>
@@ -173,7 +173,7 @@ function LivePanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+    <section className="section-accent-border rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
         {icon}
         {title}

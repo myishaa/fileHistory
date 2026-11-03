@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import {
   advancePaymentEntries,
+  countSupplyOrderRows,
   countExpectedSupplyOrderRows,
   effectivePaymentEntries as normalizedPaymentEntries,
   effectiveSupplyOrderEntries as normalizedSupplyOrderEntries,
@@ -471,6 +472,7 @@ export function buildDashboardSummary({
   finance1AsOfDate,
   finance1InitiationFrom,
   finance1InitiationTo,
+  includeAnalytics = true,
 }: {
   files: FileRecord[];
   firmHistoryFiles?: FileRecord[];
@@ -487,6 +489,7 @@ export function buildDashboardSummary({
   finance1AsOfDate?: string;
   finance1InitiationFrom?: string;
   finance1InitiationTo?: string;
+  includeAnalytics?: boolean;
 }) {
   const activeDivision = division?.trim() || "all";
   const dashboardFiles =
@@ -523,8 +526,9 @@ export function buildDashboardSummary({
   const dashboardProcessMilestoneClearingFiles = dashboardMilestoneClearingFiles.filter(
     (file) => !isYes(file.demandCancelled),
   );
+  const analyticsFiles = includeAnalytics ? dashboardProcessFiles : [];
   const analyticsSummary = getAnalyticsSummary(
-    dashboardProcessFiles,
+    analyticsFiles,
     dashboardDivisions,
     settings.valueThresholdLevels,
     settings.selectedYear,
@@ -591,6 +595,10 @@ export function buildDashboardSummary({
     activeDivision,
     valueThresholdLevels: settings.valueThresholdLevels,
     dashboardFileCount: dashboardProcessFiles.length,
+    dashboardSupplyOrderCount: dashboardProcessFiles.reduce(
+      (total, file) => total + countSupplyOrderRows(file),
+      0,
+    ),
     dashboardDivisions,
     modeCounts: getModeCounts(processHistoryDashboardFiles, settings.modes),
     gemBiddingModeCounts: getGemBiddingModeCounts(
@@ -615,14 +623,28 @@ export function buildDashboardSummary({
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
     analytics: {
       ...analyticsSummary,
-      divisionTurnaroundRanking: getDivisionTurnaroundRanking(processHistoryDashboardFiles),
-      milestoneClearingRanking: getMilestoneClearingRanking(dashboardProcessMilestoneClearingFiles),
-      biddingModeMix: getBiddingModeMix(processHistoryDashboardFiles),
-      topFirmSupplyOrders: getTopFirmSupplyOrders(dashboardProcessFirmHistoryFiles),
-      firmAnalysis: getFirmAnalysisRows(dashboardProcessFirmHistoryFiles),
-      monthWiseSupplyOrder: getMonthWiseSupplyOrder(dashboardProcessFiles),
-      tcecStatus: getTcecStatusSummary(dashboardProcessFiles, settings.selectedYear),
-      cncSummary: getCncSummary(dashboardProcessFiles, settings.selectedYear),
+      divisionTurnaroundRanking: getDivisionTurnaroundRanking(
+        includeAnalytics ? processHistoryDashboardFiles : [],
+      ),
+      milestoneClearingRanking: getMilestoneClearingRanking(
+        includeAnalytics ? dashboardProcessMilestoneClearingFiles : [],
+      ),
+      biddingModeMix: getBiddingModeMix(includeAnalytics ? processHistoryDashboardFiles : []),
+      topFirmSupplyOrders: getTopFirmSupplyOrders(
+        includeAnalytics ? dashboardProcessFirmHistoryFiles : [],
+      ),
+      firmAnalysis: getFirmAnalysisRows(includeAnalytics ? dashboardProcessFirmHistoryFiles : []),
+      monthWiseSupplyOrder: getMonthWiseSupplyOrder(
+        includeAnalytics ? dashboardProcessFiles : [],
+      ),
+      tcecStatus: getTcecStatusSummary(
+        includeAnalytics ? dashboardProcessFiles : [],
+        settings.selectedYear,
+      ),
+      cncSummary: getCncSummary(
+        includeAnalytics ? dashboardProcessFiles : [],
+        settings.selectedYear,
+      ),
     },
     financeTotals,
     financeFirmTypeDistributions: {
@@ -2244,7 +2266,7 @@ function getMilestoneFlow(files: FileRecord[], bgReturnOffsetDays = 60) {
       const paymentInProcess = countPaymentInProcessOrders(files);
       const paymentSubmitted = countPaymentSubmittedOrders(files);
       const allPaymentPending = files.reduce(
-        (sum, file) => sum + getPaymentPendingRowCount(file),
+        (sum, file) => sum + getPaymentPendingRowSummary(file).count,
         0,
       );
       const advancePaid = countAdvancePaymentPaidOrders(files);
@@ -4698,21 +4720,44 @@ function getDivisionRiskRanking(files: FileRecord[]) {
 }
 
 function getDivisionPaymentPendingRanking(files: FileRecord[]) {
-  const counts = new Map<string, number>();
+  const totals = new Map<
+    string,
+    { count: number; capitalCount: number; revenueCount: number; capital: number; revenue: number }
+  >();
   const fileIds = new Map<string, Set<string>>();
   files.forEach((file) => {
-    const pendingCount = getPaymentPendingRowCount(file);
-    if (!pendingCount) return;
+    const pending = getPaymentPendingRowSummary(file);
+    if (!pending.count) return;
     const name = getAnalyticsName(file.division, "Unassigned");
-    counts.set(name, (counts.get(name) ?? 0) + pendingCount);
+    const current = totals.get(name) ?? {
+      count: 0,
+      capitalCount: 0,
+      revenueCount: 0,
+      capital: 0,
+      revenue: 0,
+    };
+    totals.set(name, {
+      count: current.count + pending.count,
+      capitalCount: current.capitalCount + (pending.capitalCount ?? 0),
+      revenueCount: current.revenueCount + (pending.revenueCount ?? 0),
+      capital: current.capital + pending.capital,
+      revenue: current.revenue + pending.revenue,
+    });
     const ids = fileIds.get(name) ?? new Set<string>();
     ids.add(file.id);
     fileIds.set(name, ids);
   });
-  return mapEntriesToSortedRows(counts, "count").map((row) => ({
-    ...row,
-    fileIds: [...(fileIds.get(row.name) ?? [])].sort().join(","),
-  }));
+  return [...totals.entries()]
+    .map(([name, value]) => ({
+      name,
+      count: value.count,
+      capitalCount: value.capitalCount,
+      revenueCount: value.revenueCount,
+      capital: Math.round(value.capital),
+      revenue: Math.round(value.revenue),
+      fileIds: [...(fileIds.get(name) ?? [])].sort().join(","),
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 function getRiskRowCount(file: FileRecord) {
@@ -4728,9 +4773,9 @@ function getRiskRowCount(file: FileRecord) {
   return (isYes(file.demandCancelled) ? 1 : 0) + deliveryRiskCount + orderRiskCount;
 }
 
-function getPaymentPendingRowCount(file: FileRecord) {
-  if (isYes(file.demandCancelled)) return 0;
-  const liabilityPendingCount = getFinancePaymentLiabilityEntries([file]).filter(
+function getPaymentPendingRowSummary(file: FileRecord) {
+  if (isYes(file.demandCancelled)) return { count: 0, capital: 0, revenue: 0 };
+  const liabilities = getFinancePaymentLiabilityEntries([file]).filter(
     (entry) =>
       entry.pending &&
       !isYes(entry.order.noFurtherAction) &&
@@ -4739,14 +4784,42 @@ function getPaymentPendingRowCount(file: FileRecord) {
         hasFilledString(entry.order.billSentForPaymentDate) ||
         hasBillReturnHistory(entry.order) ||
         hasPaymentDueCompletion(entry.file, entry.order)),
-  ).length;
-  const advancePendingCount = advancePaymentEntries([file]).filter(
+  );
+  const advances = advancePaymentEntries([file]).filter(
     ({ file: entryFile, order }) =>
       isAdvancePaymentPending(order) &&
       isPaymentOrderActive(entryFile, order) &&
       !isYes(order.noFurtherAction),
-  ).length;
-  return liabilityPendingCount + advancePendingCount;
+  );
+  return {
+    count: liabilities.length + advances.length,
+    capitalCount:
+      liabilities.filter((entry) => entry.capital > 0).length +
+      advances.filter(
+        ({ file: entryFile, order }) =>
+          getAdvanceFinanceAllocationCapital(entryFile, order) > 0,
+      ).length,
+    revenueCount:
+      liabilities.filter((entry) => entry.revenue > 0).length +
+      advances.filter(
+        ({ file: entryFile, order }) =>
+          getAdvanceFinanceAllocationRevenue(entryFile, order) > 0,
+      ).length,
+    capital:
+      liabilities.reduce((sum, entry) => sum + entry.capital, 0) +
+      advances.reduce(
+        (sum, { file: entryFile, order }) =>
+          sum + getAdvanceFinanceAllocationCapital(entryFile, order),
+        0,
+      ),
+    revenue:
+      liabilities.reduce((sum, entry) => sum + entry.revenue, 0) +
+      advances.reduce(
+        (sum, { file: entryFile, order }) =>
+          sum + getAdvanceFinanceAllocationRevenue(entryFile, order),
+        0,
+      ),
+  };
 }
 
 const milestoneClearingDefinitions = [

@@ -9,6 +9,7 @@ type ExportTable = {
 
 type ExportDocument = {
   title: string;
+  primarySheetName?: string;
   subtitle?: string;
   description?: string;
   tables: ExportTable[];

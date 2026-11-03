@@ -1,10 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, PLAYWRIGHT_API_BASE_URL } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";
 import type { FileRecord, SupplyOrderDetail } from "../../backend/src/types.js";
 
-const API_BASE_URL = process.env.PLAYWRIGHT_API_BASE_URL ?? "http://127.0.0.1:3000";
+const API_BASE_URL = PLAYWRIGHT_API_BASE_URL;
 const QA_USERNAME = "qa_playwright";
 const QA_PASSWORD = "qa_playwright123";
 const QA_PREFIX = "QA-PLAYWRIGHT-STATUS";

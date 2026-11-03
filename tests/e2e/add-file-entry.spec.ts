@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";

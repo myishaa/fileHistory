@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, PLAYWRIGHT_API_BASE_URL } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";
@@ -7,7 +7,7 @@ const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const uniqueCode = `QA-FS-EXPECTED-SO-${suffix}`;
 const username = `qa_fs_expected_so_${suffix.replace(/[^a-z0-9]/gi, "")}`;
 const divisionName = "QA Financial Sanction";
-const baseUrl = `http://localhost:${Number(process.env.PLAYWRIGHT_BACKEND_PORT ?? 3000)}`;
+const baseUrl = PLAYWRIGHT_API_BASE_URL;
 
 test("Financial Sanction Reports count and Search click-through include an expected TCEC S.O. with no row", async () => {
   await pool.query("insert into divisions (name) values ($1) on conflict (name) do nothing", [
@@ -65,7 +65,9 @@ test("Financial Sanction Reports count and Search click-through include an expec
     });
     const summary = await api(`/api/reports/summary?${summaryQuery}`, "GET");
     expect(summary.ok, JSON.stringify(summary.body)).toBe(true);
-    const delayRows = (summary.body as { delayRows: Array<{ fileId: string }> }).delayRows;
+    const delayRows = (summary.body as {
+      summary: { delayRows: Array<{ fileId: string }> };
+    }).summary.delayRows;
     expect(delayRows.some((row) => row.fileId === fileId)).toBe(true);
 
     const searchQuery = new URLSearchParams({

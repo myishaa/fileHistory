@@ -1,7 +1,10 @@
 import { store } from "@/lib/files-store";
 
 export function promptDeletionPassword(action: string) {
-  return showPasswordPrompt(`Enter deletion password to ${action}:`, "Deletion password required");
+  return showPasswordPrompt(
+    `Enter your personal deletion password to ${action}:`,
+    "Personal deletion password required",
+  );
 }
 
 export function promptPassword(message: string) {

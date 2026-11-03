@@ -327,3 +327,143 @@ Use this checklist during an actual deletion incident:
 9. Preserve damaged dump until investigation is complete.
 ```
 
+## 13. Full Disaster-Recovery Archive
+
+The protected backup in Settings is an encrypted, portable application-data
+backup. For a complete server recovery, also run the repository script
+`scripts/backup-recordkeeper-disaster-recovery.sh` on the database/application
+server:
+
+```bash
+DATABASE_URL="postgresql://.../recordkeeper" \
+BACKUP_DIR="/opt/recordkeeper/backups" \
+EXTERNAL_STORAGE_DIR="/opt/recordkeeper/uploads" \
+bash scripts/backup-recordkeeper-disaster-recovery.sh
+```
+
+The script creates one protected archive containing:
+
+- a `pg_dump` custom-format database dump, including schema, data, indexes,
+  constraints, and sequences;
+- a `pg_dumpall --globals-only` file containing PostgreSQL roles and global
+  settings;
+- an optional compressed external-storage archive; and
+- a manifest and SHA-256 checksums.
+
+Use a `.pgpass` file or another secure PostgreSQL authentication mechanism;
+do not commit passwords or application secrets to the repository. Keep the
+archive outside the application server as well as on it. Restore PostgreSQL
+globals first, restore the database dump into a schema-compatible database,
+then restore external storage and deployment secrets from their separately
+protected locations.
+
+The application restore now validates the complete table/column schema for
+new backups, runs inside one transaction, and resets every identity/serial
+sequence after inserting backed-up IDs. A schema mismatch is rejected before
+existing data is truncated.
+
+Restoring a local `.rbk` backup requires two separate credentials: the password
+used to encrypt that backup file, and a restore-authorization password
+configured in Settings. The authorization password is stored only as a hash
+and is not included in the local application backup. The restore authorization
+must be verified before the application enables file selection, and it changes
+only when an Administrator explicitly saves a replacement.
+
+The disposable QA destructive-settings audit also performs an export → restore
+→ export round trip. The second export is intentional: it verifies that the
+`protected_backup_log` identity sequence and every other restored sequence are
+ready for the next write.
+
+## 14. Settings: Full Recovery Package
+
+An Administrator can download an encrypted full recovery package from
+**Settings → Protected backup**. The download is an `.rkdr` file, named with
+its creation timestamp, and is intended to be saved on a separate local
+computer or secure storage. It contains:
+
+- the encrypted application `.rbk` backup;
+- a PostgreSQL custom-format database dump (`pg_dump`);
+- PostgreSQL roles/globals (`pg_dumpall --globals-only`);
+- a compressed archive of `EXTERNAL_STORAGE_DIR`, when configured;
+- an explicitly configured deployment configuration file; and
+- an explicitly configured deployment-secrets file, only when the
+  administrator deliberately opts it in.
+
+The package also includes a manifest, SHA-256 checksums, and a recovery README.
+Environment variables and server secrets are **not** scraped automatically
+into a browser download. If `RECORDKEEPER_BACKUP_SECRETS_FILE` is not
+configured, the package records that secrets were intentionally excluded;
+transfer them separately through the organisation's secure secret-management
+process.
+
+Optional server configuration:
+
+```bash
+EXTERNAL_STORAGE_DIR=/opt/recordkeeper/uploads
+RECORDKEEPER_BACKUP_CONFIG_FILE=/etc/recordkeeper/deployment.env
+RECORDKEEPER_BACKUP_SECRETS_FILE=/etc/recordkeeper/deployment.secrets
+PG_DUMP_PATH=/usr/bin/pg_dump
+PG_DUMPALL_PATH=/usr/bin/pg_dumpall
+TAR_PATH=/usr/bin/tar
+```
+
+The Server Administrator can unpack an `.rkdr` package with the repository
+helper. Keep the password out of shell history where possible:
+
+```bash
+RECOVERY_BACKUP_PASSWORD='use-the-backup-password' \
+  node scripts/unpack-recordkeeper-disaster-recovery.mjs \
+  recordkeeper-disaster-2026-10-31T12-00-00-000Z.rkdr \
+  /secure/recovery/recordkeeper-2026-10-31
+```
+
+After extraction, restore PostgreSQL globals first, restore the database dump
+into a schema-compatible database, restore external files and deployment
+configuration/secrets, then start the matching application version and verify
+login, search, reports, and Add/Edit. The `.rbk` file is retained for
+application-level recovery and auditability; it is not a replacement for the
+PostgreSQL dump when rebuilding a server.
+
+## 15. Settings: Scheduled Server Backups
+
+Administrators can enable and schedule encrypted full recovery packages from
+**Settings → Protected backup → Scheduled server backups**. The On/Off switch
+is stored in PostgreSQL and the backend performs the work on the server; a
+browser does not need to remain open.
+
+Configure the server-side password and the default destination in the backend
+environment before enabling the switch:
+
+```bash
+RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD='use-a-long-server-side-password'
+RECORDKEEPER_BACKUP_SCHEDULE_DIR=/opt/recordkeeper/backups
+RECORDKEEPER_BACKUP_TIMEZONE=Asia/Kolkata
+```
+
+After changing these environment variables, restart the backend. In Settings,
+choose daily or weekly frequency, time, destination directory, and the number
+of packages to retain, then select **Save schedule** and turn the switch On.
+The server password is never sent to or stored in the browser. The scheduled
+package uses that password for AES-256-GCM encryption and includes the same
+full recovery components as a manual `.rkdr` export, including explicitly
+configured external files and deployment secrets.
+
+The **Run backup now** button uses the saved server schedule configuration.
+When the switch is Off, scheduled runs do not occur. A failed run is recorded
+in Settings, and retention cleanup keeps the newest configured number of
+scheduled `.rkdr` packages in the destination directory.
+
+## 16. Backup health indicators
+
+Settings → Protected backup keeps a persistent run record for local backups,
+manual full-recovery packages, and scheduled server packages. Each tab shows
+the latest run time and a status button: green for success, red for an issue,
+amber while a run is in progress, and neutral **Not yet run** when no run has
+been recorded. Selecting a status button shows the recorded error or package
+details.
+
+The Secret files indicator is green only when the configured secret-file path
+was readable and the latest full-recovery package recorded that the file was
+included. It is red when the path is not configured/readable or inclusion
+failed, and it also identifies the package and inclusion time when successful.
+

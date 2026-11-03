@@ -1,12 +1,14 @@
 import { ChevronDown, Info, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { HelperContent } from "@/components/helper-content";
+import { createPortal } from "react-dom";
 import {
   type ChangeEvent,
   type FocusEvent,
   type KeyboardEvent,
   type Ref,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +28,7 @@ type SearchableDropdownProps = {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  containerClassName?: string;
   "data-testid"?: string;
   inputRef?: Ref<HTMLInputElement>;
   autoFocus?: boolean;
@@ -34,6 +37,7 @@ type SearchableDropdownProps = {
   allowCustomValue?: boolean;
   clearValue?: string;
   clearLabel?: string;
+  onClear?: () => void;
   showClearOption?: boolean;
   preserveOptionOrder?: boolean;
   onEnter?: () => void;
@@ -49,6 +53,7 @@ export function SearchableDropdown({
   placeholder,
   disabled = false,
   className,
+  containerClassName,
   "data-testid": testId,
   inputRef,
   autoFocus = false,
@@ -57,17 +62,26 @@ export function SearchableDropdown({
   allowCustomValue = true,
   clearValue,
   clearLabel = "Clear selection",
+  onClear,
   showClearOption = false,
   preserveOptionOrder = false,
   onEnter,
   optionHelpClassName = "w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]",
 }: SearchableDropdownProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const internalInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(false);
   const [activeOptionIndex, setActiveOptionIndex] = useState(-1);
+  const [menuPosition, setMenuPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    maxHeight: number;
+    openAbove: boolean;
+  } | null>(null);
 
   const allOptions = useMemo(() => {
     const compareOptions = (left: string, right: string) =>
@@ -103,10 +117,39 @@ export function SearchableDropdown({
   useEffect(() => {
     if (!open) return;
     function closeOnOutsidePointer(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (
+        !rootRef.current?.contains(event.target as Node) &&
+        !menuRef.current?.contains(event.target as Node)
+      ) setOpen(false);
     }
     document.addEventListener("mousedown", closeOnOutsidePointer);
     return () => document.removeEventListener("mousedown", closeOnOutsidePointer);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function updateMenuPosition() {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const spaceBelow = window.innerHeight - rect.bottom - 8;
+      const openAbove = spaceBelow < 120 && rect.top > spaceBelow;
+      const availableHeight = openAbove ? rect.top - 8 : spaceBelow;
+      const width = Math.min(Math.max(rect.width, 160), window.innerWidth - 16);
+      setMenuPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        top: openAbove ? rect.top - 4 : rect.bottom + 4,
+        width,
+        maxHeight: Math.max(80, Math.min(224, availableHeight)),
+        openAbove,
+      });
+    }
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -222,6 +265,7 @@ export function SearchableDropdown({
 
   function clearSelection() {
     onChange(resolvedClearValue);
+    onClear?.();
     setQuery("");
     onSearchChange?.("");
     setEditing(false);
@@ -232,7 +276,7 @@ export function SearchableDropdown({
   const canClear = Boolean(query.trim() || (value.trim() && value !== resolvedClearValue));
 
   return (
-    <div ref={rootRef} className="relative w-full min-w-48 max-w-md">
+    <div ref={rootRef} className={`relative w-full min-w-40 ${containerClassName ?? "max-w-md"}`}>
       <input
         ref={setInputRef}
         value={
@@ -299,8 +343,18 @@ export function SearchableDropdown({
           <X className="size-4" />
         </button>
       ) : null}
-      {open && !disabled ? (
-        <div className="absolute z-50 mt-1 max-h-56 w-full min-w-48 overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+      {open && !disabled && menuPosition ? createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-50 overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+          style={{
+            left: menuPosition.left,
+            top: menuPosition.top,
+            width: menuPosition.width,
+            maxHeight: menuPosition.maxHeight,
+            transform: menuPosition.openAbove ? "translateY(-100%)" : undefined,
+          }}
+        >
           {!typeAheadOnly && showClearOption && (
             <button
               type="button"
@@ -384,7 +438,8 @@ export function SearchableDropdown({
                 : "No matching option"}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

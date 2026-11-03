@@ -7,6 +7,7 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import {
   asyncHandler,
   HttpError,
@@ -114,25 +115,6 @@ function mapIndentor(row: IndentorRow): Indentor {
 
 function canManageIndentors(user: AuthUser) {
   return user.role === "admin" || user.role === "sub_admin";
-}
-
-async function verifyDeletionPassword(value: unknown) {
-  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ ok: boolean; configured: boolean }>(
-    `select
-       deletion_password <> '' as configured,
-       deletion_password <> '' and deletion_password = $1 as ok
-     from app_settings
-     where id = true`,
-    [value],
-  );
-  if (!result.rows[0]?.configured) {
-    throw new HttpError(
-      400,
-      "Set a deletion password in admin settings before deleting indentors.",
-    );
-  }
-  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
 }
 
 function isUniqueViolation(error: unknown) {
@@ -684,7 +666,7 @@ indentorsRouter.delete(
     const user = requireAuth(request as AuthRequest);
     if (!canManageIndentors(user)) throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const existing = await getIndentor(id, true);
     if (!existing?.archivedAt) throw new HttpError(404, "Archived indentor was not found.");

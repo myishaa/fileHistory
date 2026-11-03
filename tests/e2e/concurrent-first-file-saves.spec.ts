@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, PLAYWRIGHT_API_BASE_URL } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";
@@ -7,7 +7,7 @@ const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const uniqueCodes = [1, 2].map((index) => `QA-CONCURRENT-FIRST-SAVE-${suffix}-${index}`);
 const username = `qa_concurrent_save_${suffix.replace(/[^a-z0-9]/gi, "")}`;
 const divisionName = "QA Concurrent Save";
-const baseUrl = `http://localhost:${Number(process.env.PLAYWRIGHT_BACKEND_PORT ?? 3000)}`;
+const baseUrl = PLAYWRIGHT_API_BASE_URL;
 
 test("concurrent first file saves do not run schema DDL inside transactions", async () => {
   const columns = await pool.query<{ table_name: string; column_name: string }>(

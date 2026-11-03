@@ -3,6 +3,12 @@ import test from "node:test";
 import { searchFiles } from "../backend/src/utils/file-search.ts";
 import { buildReportsSummary } from "../backend/src/utils/report-summary.ts";
 
+function dateDaysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+}
+
 test("Delay Status emits one row per open returned-bill S.O. case", () => {
   const returnedOrders = Array.from({ length: 8 }, (_, index) => ({
     soDate: "2026-01-01",
@@ -47,11 +53,6 @@ test("Delay Status emits one row per open returned-bill S.O. case", () => {
 });
 
 test("Delay Status keeps refloat delays in their own bin and ages from refloat dates", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const file = {
     id: "refloat-bidding-delay",
     fileType: "Goods & Services",
@@ -98,11 +99,6 @@ test("Delay Status keeps refloat delays in their own bin and ages from refloat d
 });
 
 test("Non-TCEC refloat tender-live delay starts after Refloat recommendation", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const file = {
     id: "refloat-tender-live-after-original-opening",
     fileType: "Goods & Services",
@@ -134,11 +130,6 @@ test("Non-TCEC refloat tender-live delay starts after Refloat recommendation", (
 });
 
 test("TCEC Refloat tender-live delay starts at Post-TCEC minutes", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const file = {
     id: "tcec-refloat-tender-live-after-post-tcec",
     fileType: "Goods & Services",
@@ -182,11 +173,6 @@ test("TCEC Refloat tender-live delay starts at Post-TCEC minutes", () => {
 });
 
 test("Bidding delay ignores RFP dates when RFP Vetting is not applicable", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const file = {
     id: "bidding-delay-inapplicable-rfp-date",
     fileType: "Goods & Services",
@@ -219,11 +205,6 @@ test("Bidding delay ignores RFP dates when RFP Vetting is not applicable", () =>
 });
 
 test("IR Delay Status requires an applicable IR workflow in summary and Search", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const file = {
     id: "ir-delay-applicability",
     fileType: "Goods & Services",
@@ -264,11 +245,6 @@ test("IR Delay Status requires an applicable IR workflow in summary and Search",
 });
 
 test("Workflow Not Started ignores dates from disabled optional workflows", () => {
-  const dateDaysAgo = (days) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
-    return date.toISOString().slice(0, 10);
-  };
   const recentDate = dateDaysAgo(2);
   const file = {
     id: "workflow-not-started-stale-optional-dates",

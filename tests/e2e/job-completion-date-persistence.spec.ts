@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, PLAYWRIGHT_API_BASE_URL } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";
@@ -6,7 +6,7 @@ import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js"
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const uniqueCode = `QA-JOB-COMPLETION-${suffix}`;
 const divisionName = "QA Job Completion";
-const baseUrl = `http://localhost:${Number(process.env.PLAYWRIGHT_BACKEND_PORT ?? 3000)}`;
+const baseUrl = PLAYWRIGHT_API_BASE_URL;
 
 test("create and update persist received and actual job-completion dates", async () => {
   const columnCheck = await pool.query<{ exists: boolean }>(

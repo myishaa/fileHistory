@@ -43,6 +43,31 @@ function normalizeName(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+/**
+ * Milestone Clearing payloads currently serialize contributor IDs as a comma
+ * separated string, but keeping this normalization tolerant of arrays/objects
+ * prevents the audit from silently falling back to a label-based predicate if
+ * the API shape changes.  IDs are the authoritative drilldown contract for a
+ * ranking sample; the display label is not.
+ */
+function normalizeMilestoneFileIds(value) {
+  const values = Array.isArray(value) ? value : String(value ?? "").split(",");
+  return values
+    .map((entry) => {
+      if (entry && typeof entry === "object") {
+        return String(entry.id ?? entry.fileId ?? "").trim();
+      }
+      return String(entry ?? "").trim();
+    })
+    .filter(Boolean);
+}
+
+// Milestone Clearing rows are completed duration samples. A file may
+// contribute more than one sample (for example, a normal and a refloat
+// cycle), so a display label cannot be converted safely into a generic Search
+// predicate. The row's saved fileIds, fileCount, and sampleSize are the
+// authoritative audit/drilldown contract.
+
 function monthKey(row) {
   return String(row.monthKey ?? row.name ?? "");
 }
@@ -69,29 +94,6 @@ function sampleRows(rows) {
   if (!maxClickerRows || maxClickerRows < 0) return list;
   return list.slice(0, maxClickerRows);
 }
-
-const milestoneClearingFilters = {
-  Scrutiny: "milestoneCleared:scrutiny",
-  "High Value": "milestoneCleared:highValue",
-  "Pre-TCEC": "milestoneCleared:tcec",
-  AD: "milestoneCleared:ad",
-  "R&QA": "milestoneCleared:rqa",
-  Controlling: "milestoneCleared:control",
-  IFA: "milestoneCleared:ifa",
-  CFA: "milestoneCleared:cfa",
-  "GeM Undertaking": "gemUndertaking:completed",
-  Bidding: "analyticsMilestoneClearing:bidding",
-  "Non-TCEC Technical Evaluation": "analyticsMilestoneClearing:nonTcecTechnicalEvaluation",
-  "Post-TCEC": "milestoneCleared:postTcec",
-  CNC: "milestoneCleared:cnc",
-  "Supply Order": "analyticsMilestoneClearing:supplyOrder",
-  "IR Preparation": "milestoneCleared:irPreparation",
-  "IR Receipt": "milestoneCleared:irReceipt",
-  "Bill preparation": "analyticsMilestoneClearing:billPreparation",
-  "Bill sent for payment": "manualMilestoneCompleted:Bill sent for payment",
-  Delivery: "deliveryCompleted",
-  Payment: "analyticsMilestoneClearing:payment",
-};
 
 function compareMaps(issues, area, expected, actual) {
   const keys = new Set([...expected.keys(), ...actual.keys()]);
@@ -148,6 +150,12 @@ function searchPath(pass, target) {
   if (target.analyticsType) params.set("analyticsType", target.analyticsType);
   if (target.analyticsNames?.length) params.set("analyticsNames", JSON.stringify(target.analyticsNames));
   if (target.includeModes?.length) params.set("includeModes", target.includeModes.join(","));
+  // Milestone Clearing drilldowns intentionally broaden the normal Search
+  // eligibility rules to match the ranking's completed sample set.  Keep the
+  // audit request identical to the UI route; otherwise closed/cancelled
+  // contributors can be rejected even though the exact fileIds landing is
+  // correct.
+  if (target.milestoneClearingScope) params.set("milestoneClearingScope", "true");
   const division = target.division ?? pass.division;
   if (division && division !== "all") params.set("divisionFilter", division);
   if (pass.fileCategories !== undefined) params.set("fileCategories", pass.fileCategories);
@@ -251,7 +259,27 @@ function checkMilestoneClearingRows(issues, passName, rows) {
   for (const row of rows ?? []) {
     const sampleSize = n(row.sampleSize);
     const fileCount = n(row.fileCount ?? row.sampleSize);
-    const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+    const rawIds = normalizeMilestoneFileIds(row.fileIds);
+    const ids = Array.from(new Set(rawIds));
+    if (rawIds.length !== ids.length) {
+      issues.push({
+        pass: passName,
+        area: "milestoneClearingRanking",
+        milestone: row.name,
+        issue: "saved fileIds contain duplicates",
+        duplicateCount: rawIds.length - ids.length,
+      });
+    }
+    if (sampleSize > 0 && !ids.length) {
+      issues.push({
+        pass: passName,
+        area: "milestoneClearingRanking",
+        milestone: row.name,
+        issue: "completed samples have no saved fileIds",
+        sampleSize,
+        fileCount,
+      });
+    }
     if (fileCount !== ids.length) {
       issues.push({ pass: passName, area: "milestoneClearingRanking", milestone: row.name, issue: "fileCount does not equal unique fileIds count", fileCount, fileIds: ids.length });
     }
@@ -346,12 +374,7 @@ async function checkAnalyticsClickers(token, issues, pass, summary) {
     addTask(() => checkSearchCount(token, issues, pass, "Bidding mode mix", row.name, row.count, { dashboardFilter: `mode:${String(row.name).toUpperCase()}` }));
   }
   for (const row of sampleRows(analytics.milestoneClearingRanking)) {
-    const ids = String(row.fileIds ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-    const dashboardFilter = milestoneClearingFilters[row.name];
-    if (!dashboardFilter) {
-      issues.push({ pass: pass.name, area: "Milestone clearing ranking", label: row.name, issue: "no criteria filter mapping" });
-      continue;
-    }
+    const ids = Array.from(new Set(normalizeMilestoneFileIds(row.fileIds)));
     addTask(() => checkCriteriaFileSet(
       token,
       issues,
@@ -359,7 +382,13 @@ async function checkAnalyticsClickers(token, issues, pass, summary) {
       "Milestone clearing ranking",
       row.name,
       ids,
-      { dashboardFilter },
+      // The UI navigates with the exact contributor ids carried by the
+      // ranking row. Generic milestone filters are intentionally broader
+      // for some mixed normal/refloat milestones and are not equivalent.
+      {
+        dashboardFilter: `fileIds:${ids.map(encodeURIComponent).join(",")}`,
+        milestoneClearingScope: true,
+      },
     ));
   }
   for (const row of sampleRows(analytics.monthWiseSupplyOrder)) {
@@ -392,7 +421,12 @@ async function checkDelayStatus(token, issues, pass) {
     const delay = payload.summary?.delaySummary ?? {};
     const rows = delay.byMilestone ?? [];
     const rowTotal = rows.reduce((sum, row) => sum + n(row.count), 0);
-    if (rows.length && n(delay.averageDays) <= 0) {
+    // The API returns the configured milestone rows even when every count is
+    // zero (for example, an empty future initiation range).  A zero average is
+    // only anomalous when there is at least one counted case; checking
+    // `rows.length` alone turns an intentionally empty result into a false
+    // failure.
+    if (rowTotal > 0 && n(delay.averageDays) <= 0) {
       issues.push({ pass: pass.name, area: "Delay Status", days, issue: "rows exist but averageDays is zero" });
     }
     if (n(delay.longestDays) < n(delay.averageDays)) {

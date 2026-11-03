@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { downloadQuickEntryExcelExport } from "@/lib/export-download";
-import { useAccessibleDivisions, useActiveUser, useSettings, useStoreStatus, store } from "@/lib/files-store";
+import {
+  useAccessibleDivisions,
+  useActiveUser,
+  useSettings,
+  useStoreStatus,
+  store,
+} from "@/lib/files-store";
 import { Textarea } from "@/components/ui/textarea";
 import {
   quickEntryExcelFieldGroups,
@@ -9,6 +15,7 @@ import {
   readLegacyQuickEntryExcelPresets,
   type QuickEntryExcelPreset,
 } from "@/lib/quick-entry-excel";
+import { tableFieldPresetGroups } from "@/lib/table-field-presets";
 
 const multiValueFieldKeys = new Set([
   "completedMilestones",
@@ -18,8 +25,12 @@ const multiValueFieldKeys = new Set([
   "advanceCompletedMilestones",
 ]);
 const reviewRiskFieldKeys = new Set([
-  "psbBgAmount", "pwbBgAmount", "combinedBgAmount",
-  "billReturnHistory", "stageBillReturnHistory", "advanceReturnHistory",
+  "psbBgAmount",
+  "pwbBgAmount",
+  "combinedBgAmount",
+  "billReturnHistory",
+  "stageBillReturnHistory",
+  "advanceReturnHistory",
   "supplementaryBillReturnHistory",
 ]);
 
@@ -39,6 +50,11 @@ export function QuickEntryExcelExportList() {
     () => Array.from(new Set(settings.fileTypes.map((value) => value.trim()).filter(Boolean))),
     [settings.fileTypes],
   );
+  const fullDatabaseFields = useMemo(() => {
+    const keys = tableFieldPresetGroups.flatMap((group) => group.fields.map((field) => field.key));
+    return [...new Set(keys.map((key) => key === "imms" ? "controlNo" : key))]
+      .filter((key) => quickEntryExcelFieldLabels.has(key));
+  }, []);
   useEffect(() => {
     const closeOnOutsideClick = (event: PointerEvent) => {
       const dropdown = fileTypeDropdownRef.current;
@@ -65,11 +81,12 @@ export function QuickEntryExcelExportList() {
     const fields = preset.fields.filter((field) => quickEntryExcelFieldLabels.has(field));
     if (!fields.length) return;
     const timestamp = getLocalExportTimestamp();
-    const safeBaseName = preset.name
-      .trim()
-      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
-      .replace(/\s+/g, "_")
-      .replace(/[. ]+$/g, "") || "Quick_Entry_Export";
+    const safeBaseName =
+      preset.name
+        .trim()
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+        .replace(/\s+/g, "_")
+        .replace(/[. ]+$/g, "") || "Quick_Entry_Export";
 
     setExportingId(preset.id);
     try {
@@ -88,123 +105,206 @@ export function QuickEntryExcelExportList() {
     }
   };
 
+  const exportFullDatabase = async () => {
+    if (exportingId || !fullDatabaseFields.length) return;
+    const timestamp = getLocalExportTimestamp();
+    setExportingId("full-database");
+    try {
+      await downloadQuickEntryExcelExport({
+        title: "Full Database Backup",
+        fileName: `Full_Database_Backup_${timestamp}.xlsx`,
+        fields: fullDatabaseFields,
+        fileTypes: selectedFileTypes,
+        divisionId: selectedDivision === "all" ? undefined : selectedDivision,
+        viewMode: expandedView ? "expanded" : "collapsed",
+        scopeMode: "fy",
+        financialYear: defaultYear,
+        fullDatabase: true,
+      });
+    } finally {
+      setExportingId("");
+    }
+  };
+
   return (
-    <div
-      role="tabpanel"
-      className="min-h-[22rem] p-5"
-    >
-      <div className="mb-4 flex justify-end">
-        <span className="text-xs text-muted-foreground">
-          Each export uses its saved FY / S.O. date scope
-        </span>
-      </div>
-      <div className="mt-4 flex flex-wrap items-end gap-3">
-        <label className="block min-w-48">
-          <span className="mb-1.5 block text-sm font-medium">Division</span>
-          <select
-            value={selectedDivision}
-            onChange={(event) => setSelectedDivision(event.target.value)}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-          >
-            <option value="all">All divisions</option>
-            {divisions.map((division) => (
-              <option key={division.id} value={division.id}>{division.name}</option>
-            ))}
-          </select>
-        </label>
-        <details ref={fileTypeDropdownRef} className="group relative min-w-48">
-          <summary className="flex h-9 cursor-pointer list-none items-center justify-between gap-3 rounded-md border border-input bg-background px-3 text-sm [&::-webkit-details-marker]:hidden">
-            <span className="font-medium">File type</span>
-            <span className="truncate text-muted-foreground">
-              {!selectedFileTypes.length || selectedFileTypes.length === availableFileTypes.length
-                ? "All file types"
-                : `${selectedFileTypes.length} selected`}
+    <div role="tabpanel" className="p-3 sm:p-4">
+      <section className="overflow-hidden rounded-xl border border-border/80 bg-background shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 bg-secondary/45 px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-9 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/5 text-primary">
+              <FileSpreadsheet className="size-4" />
             </span>
-          </summary>
-          <div className="absolute left-0 top-full z-20 mt-1 max-h-64 w-full min-w-56 overflow-y-auto rounded-md border border-border bg-popover p-2 shadow-md">
-            <label className="flex items-center gap-2 border-b border-border px-2 py-2 text-sm font-medium">
-              <input
-                type="checkbox"
-                checked={!selectedFileTypes.length || selectedFileTypes.length === availableFileTypes.length}
-                onChange={() => setSelectedFileTypes(
-                  !selectedFileTypes.length || selectedFileTypes.length === availableFileTypes.length
-                    ? []
-                    : availableFileTypes,
-                )}
-                className="size-4 accent-primary"
-              />
-              All file types
-            </label>
-            {availableFileTypes.map((fileType) => (
-              <label key={fileType} className="flex items-center gap-2 px-2 py-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={!selectedFileTypes.length || selectedFileTypes.includes(fileType)}
-                  onChange={() => setSelectedFileTypes((current) => {
-                    const selected = current.length ? current : availableFileTypes;
-                    const next = selected.includes(fileType)
-                      ? selected.filter((item) => item !== fileType)
-                      : [...selected, fileType];
-                    return next.length === availableFileTypes.length ? [] : next;
-                  })}
-                  className="size-4 accent-primary"
-                />
-                {fileType}
-              </label>
-            ))}
+            <div>
+              <h2 className="text-sm font-semibold">Excel exports</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Download the configured file and S.O. reports.
+              </p>
+            </div>
           </div>
-        </details>
-        <div>
-          <span className="mb-1.5 block text-sm font-medium">View</span>
-          <div className="flex h-9 items-center gap-2">
-            <span className={`text-sm ${!expandedView ? "font-medium text-foreground" : "text-muted-foreground"}`}>Collapsed</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={expandedView}
-              aria-label="Expanded export view"
-              onClick={() => setExpandedView((value) => !value)}
-              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${expandedView ? "bg-primary" : "bg-muted-foreground/40"}`}
-            >
-              <span className={`inline-block size-4 rounded-full bg-background shadow-sm transition-transform ${expandedView ? "translate-x-4" : "translate-x-0.5"}`} />
-            </button>
-            <span className={`text-sm ${expandedView ? "font-medium text-foreground" : "text-muted-foreground"}`}>Expanded</span>
-          </div>
+          <span className="text-xs text-muted-foreground">
+            Each export uses its saved FY / S.O. date scope
+          </span>
         </div>
-      </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Division and file type narrow each export. Collapsed summarizes selected S.O./stage amounts and dated actual payments; selected stage dates show their latest recorded value. Other stage-only and supplementary details appear in Expanded, with one row per stage.
-      </p>
-      {presets.length ? (
-        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {presets.map((preset) => (
-            <div
-              key={preset.id}
-              className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-emerald-700/15 bg-background px-3 py-2"
-            >
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium">{preset.name}</div>
-                {preset.note ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{preset.note}</p> : null}
-                <div className="text-xs text-muted-foreground">
-                  {(preset.scopeMode ?? "fy") === "so" ? "S.O. Based" : "FY Based"} | {preset.financialYear || defaultYear} | {preset.fields.length} fields + status history
+        <div className="p-4">
+          <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[minmax(10rem,14rem)_minmax(0,1fr)]">
+            <label className="block min-w-0">
+              <span className="mb-1 block text-xs font-medium">Division</span>
+              <select
+                value={selectedDivision}
+                onChange={(event) => setSelectedDivision(event.target.value)}
+                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+              >
+                <option value="all">All divisions</option>
+                {divisions.map((division) => (
+                  <option key={division.id} value={division.id}>
+                    {division.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex flex-wrap items-end gap-3">
+              <details ref={fileTypeDropdownRef} className="group relative w-56 max-w-full">
+                <summary className="flex h-8 cursor-pointer list-none items-center justify-between gap-3 rounded-md border border-input bg-background px-2.5 text-xs [&::-webkit-details-marker]:hidden">
+                  <span className="font-medium">File type</span>
+                  <span className="truncate text-muted-foreground">
+                    {!selectedFileTypes.length ||
+                    selectedFileTypes.length === availableFileTypes.length
+                      ? "All file types"
+                      : `${selectedFileTypes.length} selected`}
+                  </span>
+                </summary>
+                <div className="absolute left-0 top-full z-20 mt-1 max-h-64 w-full min-w-56 overflow-y-auto rounded-md border border-border bg-popover p-2 shadow-md">
+                  <label className="flex items-center gap-2 border-b border-border px-2 py-1.5 text-xs font-medium">
+                    <input
+                      type="checkbox"
+                      checked={
+                        !selectedFileTypes.length ||
+                        selectedFileTypes.length === availableFileTypes.length
+                      }
+                      onChange={() =>
+                        setSelectedFileTypes(
+                          !selectedFileTypes.length ||
+                            selectedFileTypes.length === availableFileTypes.length
+                            ? []
+                            : availableFileTypes,
+                        )
+                      }
+                      className="size-4 accent-primary"
+                    />
+                    All file types
+                  </label>
+                  {availableFileTypes.map((fileType) => (
+                    <label key={fileType} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={!selectedFileTypes.length || selectedFileTypes.includes(fileType)}
+                        onChange={() =>
+                          setSelectedFileTypes((current) => {
+                            const selected = current.length ? current : availableFileTypes;
+                            const next = selected.includes(fileType)
+                              ? selected.filter((item) => item !== fileType)
+                              : [...selected, fileType];
+                            return next.length === availableFileTypes.length ? [] : next;
+                          })
+                        }
+                        className="size-4 accent-primary"
+                      />
+                      {fileType}
+                    </label>
+                  ))}
+                </div>
+              </details>
+              <div>
+                <span className="mb-1 block text-xs font-medium">View</span>
+                <div className="flex h-8 items-center gap-2 text-xs">
+                  <span
+                    className={`${!expandedView ? "font-medium text-foreground" : "text-muted-foreground"}`}
+                  >
+                    Collapsed
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={expandedView}
+                    aria-label="Expanded export view"
+                    onClick={() => setExpandedView((value) => !value)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${expandedView ? "bg-primary" : "bg-muted-foreground/40"}`}
+                  >
+                    <span
+                      className={`inline-block size-4 rounded-full bg-background shadow-sm transition-transform ${expandedView ? "translate-x-4" : "translate-x-0.5"}`}
+                    />
+                  </button>
+                  <span
+                    className={`${expandedView ? "font-medium text-foreground" : "text-muted-foreground"}`}
+                  >
+                    Expanded
+                  </span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => void exportPreset(preset)}
-                disabled={Boolean(exportingId)}
-                title={`Export ${preset.name} using its saved ${preset.scopeMode === "so" ? "S.O." : "FY"} date scope`}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Download className="size-3.5" />
-                {exportingId === preset.id ? "Exporting..." : "Export"}
-              </button>
             </div>
-          ))}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Division and file type narrow each export. Collapsed follows the Search Files S.O.
+            export with one row per S.O. Expanded follows the Stage export with one row per stage;
+            supplementary bills remain separate detail rows when selected.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2">
+            <div>
+              <div className="text-sm font-medium">Full database backup</div>
+              <div className="text-xs text-muted-foreground">
+                Exports all Search Files table fields, grouped into one worksheet per financial year.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void exportFullDatabase()}
+              disabled={Boolean(exportingId)}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-primary/30 px-2.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="size-3.5" />
+              {exportingId === "full-database" ? "Exporting..." : "Export backup"}
+            </button>
+          </div>
+          {presets.length ? (
+            <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {presets.map((preset) => (
+                <div
+                  key={preset.id}
+                  className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-emerald-700/15 bg-background px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{preset.name}</div>
+                    {preset.note ? (
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                        {preset.note}
+                      </p>
+                    ) : null}
+                    <div className="text-xs text-muted-foreground">
+                      {(preset.scopeMode ?? "fy") === "so" ? "S.O. Based" : "FY Based"} |{" "}
+                      {preset.financialYear || defaultYear} | {preset.fields.length} fields + status
+                      history
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void exportPreset(preset)}
+                    disabled={Boolean(exportingId)}
+                    title={`Export ${preset.name} using its saved ${preset.scopeMode === "so" ? "S.O." : "FY"} date scope`}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Download className="size-3.5" />
+                    {exportingId === preset.id ? "Exporting..." : "Export"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 rounded-md border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">
+              No export presets configured.
+            </p>
+          )}
         </div>
-      ) : (
-        <p className="mt-3 text-sm text-muted-foreground">No export presets configured.</p>
-      )}
+      </section>
     </div>
   );
 }
@@ -242,21 +342,32 @@ export function QuickEntryExcelSettings() {
       legacyImportStarted.current ||
       settings.quickEntryExcelPresetsLegacyImported ||
       presets.length
-    ) return;
+    )
+      return;
     const legacyPresets = readLegacyQuickEntryExcelPresets(userId);
     if (!legacyPresets.length) return;
     legacyImportStarted.current = true;
     setSaving(true);
-    store.saveSettings({
-      quickEntryExcelPresets: legacyPresets,
-      quickEntryExcelPresetsLegacyImported: true,
-    }).then(() => setError(""))
+    store
+      .saveSettings({
+        quickEntryExcelPresets: legacyPresets,
+        quickEntryExcelPresetsLegacyImported: true,
+      })
+      .then(() => setError(""))
       .catch((saveError) => {
         legacyImportStarted.current = false;
-        setError(saveError instanceof Error ? saveError.message : "Could not import saved exports.");
+        setError(
+          saveError instanceof Error ? saveError.message : "Could not import saved exports.",
+        );
       })
       .finally(() => setSaving(false));
-  }, [presets.length, settings.quickEntryExcelPresetsLegacyImported, storeStatus.loaded, user?.role, userId]);
+  }, [
+    presets.length,
+    settings.quickEntryExcelPresetsLegacyImported,
+    storeStatus.loaded,
+    user?.role,
+    userId,
+  ]);
 
   useEffect(() => {
     if (!editingId) setFinancialYear(defaultYear);
@@ -398,10 +509,12 @@ export function QuickEntryExcelSettings() {
             <fieldset>
               <legend className="mb-1.5 text-sm font-medium">Export scope</legend>
               <div className="inline-flex rounded-md border border-border bg-muted/30 p-1">
-                {([
-                  ["fy", "FY Based"],
-                  ["so", "S.O. Based"],
-                ] as const).map(([mode, label]) => (
+                {(
+                  [
+                    ["fy", "FY Based"],
+                    ["so", "S.O. Based"],
+                  ] as const
+                ).map(([mode, label]) => (
                   <button
                     key={mode}
                     type="button"
@@ -431,7 +544,9 @@ export function QuickEntryExcelSettings() {
                 className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
                 {settings.financialYears.map((year) => (
-                  <option key={year} value={year}>{year}</option>
+                  <option key={year} value={year}>
+                    {year}
+                  </option>
                 ))}
               </select>
             </label>
@@ -444,10 +559,13 @@ export function QuickEntryExcelSettings() {
           <div className="rounded-md border border-border bg-muted/20 p-3">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="text-sm font-medium">
-                Fields to include <span
+                Fields to include{" "}
+                <span
                   className="font-normal text-muted-foreground"
                   title="File Status history uses numbered columns and is always appended."
-                >(File Status history is always appended.)</span>
+                >
+                  (File Status history is always appended.)
+                </span>
               </div>
               <button
                 type="button"
@@ -472,20 +590,28 @@ export function QuickEntryExcelSettings() {
                       <label key={key} className="flex items-center gap-2 text-sm">
                         <input
                           type="checkbox"
-                          checked={selectedFields.includes(key) || (scopeMode === "so" && key === "soDate")}
+                          checked={
+                            selectedFields.includes(key) || (scopeMode === "so" && key === "soDate")
+                          }
                           disabled={scopeMode === "so" && key === "soDate"}
                           onChange={() => toggleField(key)}
                           className="size-4 accent-primary"
                         />
                         <span
-                          className={multiValueFieldKeys.has(key)
-                            ? "text-red-600"
-                            : reviewRiskFieldKeys.has(key) ? "text-blue-700" : undefined}
-                          title={multiValueFieldKeys.has(key)
-                            ? "Contains multiple values in one cell; review before including in the export."
-                            : reviewRiskFieldKeys.has(key)
-                              ? "Review this field for return-cycle row structure or aggregate duplication before including it."
-                              : undefined}
+                          className={
+                            multiValueFieldKeys.has(key)
+                              ? "text-red-600"
+                              : reviewRiskFieldKeys.has(key)
+                                ? "text-blue-700"
+                                : undefined
+                          }
+                          title={
+                            multiValueFieldKeys.has(key)
+                              ? "Contains multiple values in one cell; review before including in the export."
+                              : reviewRiskFieldKeys.has(key)
+                                ? "Review this field for return-cycle row structure or aggregate duplication before including it."
+                                : undefined
+                          }
                         >
                           {label}
                         </span>
@@ -496,7 +622,8 @@ export function QuickEntryExcelSettings() {
               ))}
             </div>
             <p className="mt-2 text-xs text-red-600">
-              Selecting these fields may disturb Excel layout because they can contain multiple values in one cell.
+              Selecting these fields may disturb Excel layout because they can contain multiple
+              values in one cell.
             </p>
             <p className="mt-1 text-xs text-blue-700">
               Select these fields carefully for Excel export.
@@ -539,7 +666,8 @@ export function QuickEntryExcelSettings() {
                 <div className="min-w-0">
                   <div className="break-words text-sm font-medium">{preset.name}</div>
                   <p className="mt-1 text-xs font-medium text-foreground">
-                    {(preset.scopeMode ?? "fy") === "so" ? "S.O. Based" : "FY Based"} · {preset.financialYear || defaultYear}
+                    {(preset.scopeMode ?? "fy") === "so" ? "S.O. Based" : "FY Based"} ·{" "}
+                    {preset.financialYear || defaultYear}
                   </p>
                   {editingNoteId === preset.id ? (
                     <div className="mt-2 space-y-2">
@@ -563,7 +691,10 @@ export function QuickEntryExcelSettings() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setEditingNoteId(""); setNoteDraft(""); }}
+                          onClick={() => {
+                            setEditingNoteId("");
+                            setNoteDraft("");
+                          }}
                           disabled={saving}
                           className="inline-flex h-8 items-center rounded-md border border-border px-2.5 text-xs font-medium hover:bg-accent"
                         >
@@ -574,11 +705,18 @@ export function QuickEntryExcelSettings() {
                   ) : (
                     <div className="mt-1 flex items-start justify-between gap-2">
                       {preset.note ? (
-                        <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{preset.note}</p>
-                      ) : <span className="text-xs text-muted-foreground">No note</span>}
+                        <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                          {preset.note}
+                        </p>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No note</span>
+                      )}
                       <button
                         type="button"
-                        onClick={() => { setEditingNoteId(preset.id); setNoteDraft(preset.note ?? ""); }}
+                        onClick={() => {
+                          setEditingNoteId(preset.id);
+                          setNoteDraft(preset.note ?? "");
+                        }}
                         className="shrink-0 text-xs font-medium text-primary hover:underline"
                       >
                         {preset.note ? "Edit note" : "Add note"}

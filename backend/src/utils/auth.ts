@@ -1,7 +1,12 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { pool } from "../db/pool.js";
-import type { AppUserRole, AuthUser, UniversalViewerCashOutgoEditScope } from "../types.js";
+import type {
+  AppUserRole,
+  AuthUser,
+  UniversalViewerCashOutgoEditScope,
+  UserCapabilities,
+} from "../types.js";
 import { cacheTtl, deleteCached, getCached } from "./cache.js";
 import {
   getFileCategorySqlCondition,
@@ -11,6 +16,7 @@ import {
 } from "./file-categories.js";
 import { HttpError } from "./http.js";
 import { ensureIpAccessControlSchema } from "./ip-access-control.js";
+import { getRoleCapabilities, hasCapability } from "./permissions.js";
 
 const sessionCookieName = "recordkeeper_session";
 const sessionDays = 7;
@@ -41,6 +47,8 @@ export function ensureUserPermissionSchema() {
     .query(
       `alter table app_users
          add column if not exists cash_outgo_edit_scope text not null default 'none';
+       alter table app_users
+         add column if not exists deletion_password_hash text not null default '';
        alter table app_users
          drop constraint if exists app_users_cash_outgo_edit_scope_check;
        alter table app_users
@@ -174,6 +182,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
       role: "viewer",
       divisionIds: [row.viewer_division_id],
       allowedFileCategories: undefined,
+      capabilities: getRoleCapabilities("viewer"),
     };
   }
 
@@ -192,6 +201,7 @@ async function loadAuthUserByHash(tokenHash: string): Promise<AuthUser | undefin
     allowedFileCategories,
     cashOutgoEditScope: row.cash_outgo_edit_scope ?? "none",
     emergencyIpBypass: Boolean(row.emergency_ip_bypass),
+    capabilities: getRoleCapabilities(row.role),
   };
 }
 
@@ -211,21 +221,68 @@ export function requireAuth(request: AuthRequest) {
 
 export function requireAdmin(request: AuthRequest) {
   const user = requireAuth(request);
-  if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+  if (!canManageUsers(user)) throw new HttpError(403, "Admin access required.");
   return user;
 }
 
 export function canUseAllDivisions(user: AuthUser) {
-  return user.role === "admin" || user.role === "sub_admin" || user.role === "universal_viewer";
+  // Only the top-level administrator has organisation-wide visibility.
+  // Universal Viewers are read-only MMG users, but their access is limited
+  // to the divisions explicitly assigned to their account.
+  return hasCapability(user, "canUseAllDivisions");
 }
 
 export function canMutateFiles(user: AuthUser) {
-  return user.role === "admin" || user.role === "sub_admin" || user.role === "editor";
+  return canEditFiles(user);
+}
+
+export function getUserCapabilities(user: AuthUser): UserCapabilities {
+  return getRoleCapabilities(user.role);
+}
+
+export function canManageUsers(user: AuthUser) {
+  return hasCapability(user, "canManageUsers");
+}
+
+export function canViewUsers(user: AuthUser) {
+  return hasCapability(user, "canViewUsers");
+}
+
+export function canEditFiles(user: AuthUser, divisionId?: string | null) {
+  return hasCapability(user, "canEditFiles") &&
+    (divisionId === undefined || canAccessDivision(user, divisionId));
+}
+
+export function canResolveMessages(user: AuthUser, divisionId?: string | null) {
+  return hasCapability(user, "canResolveMessages") &&
+    (divisionId === undefined || canAccessDivision(user, divisionId));
+}
+
+export function canArchiveFiles(user: AuthUser, divisionId?: string | null) {
+  return hasCapability(user, "canArchiveFiles") &&
+    (divisionId === undefined || canAccessDivision(user, divisionId));
+}
+
+export function canSendUrgentMessages(user: AuthUser) {
+  return hasCapability(user, "canSendUrgentMessages");
+}
+
+export function canSendFileMessages(user: AuthUser, divisionId?: string | null) {
+  return hasCapability(user, "canSendFileMessages") &&
+    (divisionId === undefined || canAccessDivision(user, divisionId));
+}
+
+export function canAcceptUniversalAnomalies(user: AuthUser) {
+  return hasCapability(user, "canAcceptUniversalAnomalies");
 }
 
 export function canAccessDivision(user: AuthUser, divisionId: string | null | undefined) {
-  if (!divisionId) return true;
+  // A missing division is an unassigned/organisation-level record. It is
+  // deliberately deny-by-default for restricted users rather than silently
+  // bypassing their division scope. Only roles with organisation-wide access
+  // may view or mutate unassigned records.
   if (canUseAllDivisions(user)) return true;
+  if (!divisionId) return false;
   return user.divisionIds.includes(divisionId);
 }
 

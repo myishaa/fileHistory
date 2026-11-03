@@ -29,6 +29,8 @@ import {
   type FileCategoryKey,
 } from "../utils/file-categories.js";
 import {
+  canAccessDivision,
+  canAcceptUniversalAnomalies,
   canUseAllDivisions,
   getAuthScopeCacheKey,
   getDivisionScopeCondition,
@@ -54,6 +56,71 @@ function hasAnomalyGovernanceReadAccess(user: { role: string }) {
   return hasAnomalyAdminAccess(user) || user.role === "universal_viewer";
 }
 
+async function loadDashboardSuspectedAnomalyRows({
+  user,
+  settings,
+  selectedYear,
+  fileYear,
+  fileInitiationFrom,
+  fileInitiationTo,
+  activeDivision,
+  fileCategories,
+  includeArchivedYears,
+}: {
+  user: ReturnType<typeof requireAuth>;
+  settings: AppSettings;
+  selectedYear: string;
+  fileYear?: string;
+  fileInitiationFrom?: string;
+  fileInitiationTo?: string;
+  activeDivision: string;
+  fileCategories?: FileCategoryKey[];
+  includeArchivedYears: boolean;
+}) {
+  const scope = getDivisionScopeCondition(user);
+  const categoryScope = getFileCategoryScopeCondition(user);
+  const dashboardFileWhere = getDashboardFileWhereSql({
+    scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+    scopeValues: scope.values,
+    selectedYear,
+    fileYear,
+    fileInitiationFrom,
+    fileInitiationTo,
+    currentFinancialYear: settings.financialYear,
+    activeDivision,
+    fileCategories,
+    includeArchivedYears,
+  });
+  const anomalyCacheKey = `dashboard:suspected-anomalies:${JSON.stringify({
+    version: 2,
+    scope: getAuthScopeCacheKey(user),
+    selectedYear,
+    fileYear,
+    fileInitiationFrom,
+    fileInitiationTo,
+    activeDivision,
+    fileCategories,
+    includeArchivedYears,
+    bgReturnOffsetDays: settings.bgReturnOffsetDays ?? 60,
+    milestones: settings.milestones,
+    whereSql: dashboardFileWhere.whereSql,
+    values: dashboardFileWhere.values,
+  })}`;
+  const filesResult = await getCached(anomalyCacheKey, cacheTtl.dashboardSummaryMs, async () => {
+    const loadedFiles = await loadFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values);
+    return getSuspectedAnomalyRows(
+      fileCategories
+        ? loadedFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : loadedFiles,
+      { signatures: new Set(), universalRuleKeys: new Set() },
+      [],
+      settings.milestones,
+      settings.bgReturnOffsetDays ?? 60,
+    );
+  });
+  return filesResult;
+}
+
 type DivisionRow = {
   id: string;
   name: string;
@@ -70,7 +137,6 @@ type SettingsRow = {
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
-  deletion_password: string;
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
@@ -350,7 +416,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     yearSelectionLocked: row.year_selection_locked,
     theme: row.theme,
     themeTint: row.theme_tint,
-    deletionPassword: row.deletion_password,
+    deletionPassword: "",
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
@@ -5291,7 +5357,7 @@ async function loadSettings() {
          add column if not exists gem_bidding_modes jsonb not null default '["Custom", "Catalogue", "Comparison"]'::jsonb`,
     );
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
               tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets,
               bg_return_offset_days, active_user_id
        from app_settings
@@ -5749,7 +5815,7 @@ function getDashboardFileWhereSql({
   currentFinancialYear,
   activeDivision,
   fileCategories,
-  includeArchivedYears = false,
+  includeArchivedYears = true,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -5766,11 +5832,13 @@ function getDashboardFileWhereSql({
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
 
-  const searchableYearCondition = getSearchableFinancialYearSql(
-    activeFilesExpression(),
-    includeArchivedYears,
-  );
-  if (searchableYearCondition) conditions.push(searchableYearCondition);
+  if (selectedYear !== allFilesYear) {
+    const searchableYearCondition = getSearchableFinancialYearSql(
+      activeFilesExpression(),
+      includeArchivedYears,
+    );
+    if (searchableYearCondition) conditions.push(searchableYearCondition);
+  }
 
   const selectedYearCondition = getSelectedYearCondition(
     selectedYear,
@@ -5815,7 +5883,7 @@ function getDashboardMilestoneClearingFileWhereSql({
   currentFinancialYear,
   activeDivision,
   fileCategories,
-  includeArchivedYears = false,
+  includeArchivedYears = true,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -5832,11 +5900,13 @@ function getDashboardMilestoneClearingFileWhereSql({
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
 
-  const searchableYearCondition = getSearchableFinancialYearSql(
-    activeFilesExpression(),
-    includeArchivedYears,
-  );
-  if (searchableYearCondition) conditions.push(searchableYearCondition);
+  if (selectedYear !== allFilesYear) {
+    const searchableYearCondition = getSearchableFinancialYearSql(
+      activeFilesExpression(),
+      includeArchivedYears,
+    );
+    if (searchableYearCondition) conditions.push(searchableYearCondition);
+  }
 
   const selectedYearCondition = getMilestoneClearingSelectedYearCondition(
     selectedYear,
@@ -5980,7 +6050,18 @@ type StatusCounts = {
   irCompleted: number;
 };
 
-type CountAnalyticsRow = { name: string; count: number; soCount?: number; fileIds?: string };
+type CountAnalyticsRow = {
+  name: string;
+  count: number;
+  soCount?: number;
+  capital_count?: number;
+  revenue_count?: number;
+  capitalCount?: number;
+  revenueCount?: number;
+  capital?: number;
+  revenue?: number;
+  fileIds?: string;
+};
 type MonthWiseSupplyOrderAnalyticsRow = CountAnalyticsRow & { monthKey: string };
 type MonthWiseDeliveryScheduleAnalyticsRow = {
   name: string;
@@ -8655,12 +8736,41 @@ async function loadAnalyticsSqlSlice({
       end
   end`;
 
+  const pendingMainAmount = (side: "capital" | "revenue") => {
+    const actual = `nullif(so.actual_payment_${side}::text, '')`;
+    const orderValue = `so.so_value_${side}`;
+    const billValue = `so.bill_amount_${side}`;
+    const stageActual = `nullif(stage_payment.stage ->> 'actualPayment${side === "capital" ? "Capital" : "Revenue"}', '')`;
+    const stageValue = `nullif(stage_payment.stage ->> 'stageAmount${side === "capital" ? "Capital" : "Revenue"}', '')`;
+    const advanceValue = `coalesce(nullif(so.advance_payment_detail ->> 'stageAmount${side === "capital" ? "Capital" : "Revenue"}', ''), nullif(so.advance_payment_detail ->> 'actualPayment${side === "capital" ? "Capital" : "Revenue"}', ''))`;
+    return `case
+      when stage_payment.stage is not null then
+        ${inrAmountExpression(`coalesce(${stageActual}, ${stageValue}, ${orderValue}::text)`)}
+      when ${isYesExpression("so.shortclosure")} then
+        ${inrAmountExpression(`coalesce(${actual}, ${billValue}::text)`)}
+      when ${actual} is not null then ${inrAmountExpression(actual)}
+      else greatest(0,
+        ${inrAmountExpression(orderValue)} -
+        case when ${isYesExpression("so.advance_payment")}
+          then ${inrAmountExpression(advanceValue)} else 0 end)
+    end`;
+  };
+  const pendingAdvanceAmount = (side: "capital" | "revenue") =>
+    inrAmountExpression(
+      `coalesce(nullif(so.advance_payment_detail ->> 'stageAmount${side === "capital" ? "Capital" : "Revenue"}', ''), nullif(so.advance_payment_detail ->> 'actualPayment${side === "capital" ? "Capital" : "Revenue"}', ''))`,
+    );
+  const pendingSupplementaryAmount = (side: "capital" | "revenue") =>
+    inrAmountExpression(
+      `coalesce(nullif(bill.bill ->> 'actualPayment${side === "capital" ? "Capital" : "Revenue"}', ''), nullif(bill.bill ->> 'billAmount${side === "capital" ? "Capital" : "Revenue"}', ''))`,
+    );
   const paymentPendingResult = await pool.query<CountAnalyticsRow>(
     `with effective_payment_rows as (
        select
          f.id as file_id,
          ${divisionNameSql} as name,
          'main'::text as payment_kind,
+         ${pendingMainAmount("capital")} as capital_amount,
+         ${pendingMainAmount("revenue")} as revenue_amount,
          coalesce(stage_payment.stage ->> 'currentMilestone', so.current_milestone) as current_milestone,
          f.file_type,
          f.file_type_group,
@@ -8690,6 +8800,8 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'advance'::text as payment_kind,
+         ${pendingAdvanceAmount("capital")} as capital_amount,
+         ${pendingAdvanceAmount("revenue")} as revenue_amount,
          so.advance_payment_detail ->> 'currentMilestone' as current_milestone,
          f.file_type,
          f.file_type_group,
@@ -8719,6 +8831,8 @@ async function loadAnalyticsSqlSlice({
          f.id as file_id,
          ${divisionNameSql} as name,
          'supplementary'::text as payment_kind,
+         ${pendingSupplementaryAmount("capital")} as capital_amount,
+         ${pendingSupplementaryAmount("revenue")} as revenue_amount,
          ''::text as current_milestone,
          f.file_type,
          f.file_type_group,
@@ -8743,6 +8857,10 @@ async function loadAnalyticsSqlSlice({
        ${appendDashboardWhereClause(whereSql, fileRankingConditions)}
 	     )
      select name, count(*)::integer as count,
+       count(*) filter (where coalesce(capital_amount, 0) > 0)::integer as capital_count,
+       count(*) filter (where coalesce(revenue_amount, 0) > 0)::integer as revenue_count,
+       round(sum(capital_amount)) as capital,
+       round(sum(revenue_amount)) as revenue,
        string_agg(distinct file_id::text, ',' order by file_id::text) as "fileIds"
      from effective_payment_rows
      where not ${isYesExpression("so_cancelled")}
@@ -9249,6 +9367,10 @@ async function loadAnalyticsSqlSlice({
     divisionPaymentPendingRanking: paymentPendingResult.rows.map((row) => ({
       name: row.name,
       count: Number(row.count ?? 0),
+      capitalCount: Number(row.capital_count ?? 0),
+      revenueCount: Number(row.revenue_count ?? 0),
+      capital: Number(row.capital ?? 0),
+      revenue: Number(row.revenue ?? 0),
       fileIds: row.fileIds ?? "",
     })),
   };
@@ -11657,12 +11779,35 @@ function storedAppUserId(user: ReturnType<typeof requireAuth>) {
   return user.id.startsWith("viewer:") ? null : user.id;
 }
 
+async function assertSubAdminAnomalyFileAccess(
+  user: ReturnType<typeof requireAuth>,
+  fileId: string | null | undefined,
+) {
+  if (user.role !== "sub_admin") return;
+  const normalizedFileId = fileId?.trim() ?? "";
+  if (!normalizedFileId) {
+    throw new HttpError(403, "Sub-admin anomaly actions require a file in an assigned division.");
+  }
+  const fileResult = await pool.query<{ division_id: string | null }>(
+    `select division_id
+       from files
+      where id::text = $1
+      limit 1`,
+    [normalizedFileId],
+  );
+  const divisionId = fileResult.rows[0]?.division_id ?? null;
+  if (!fileResult.rows[0] || !canAccessDivision(user, divisionId)) {
+    throw new HttpError(403, "This anomaly is outside your assigned divisions.");
+  }
+}
+
 dashboardRouter.get(
   "/suspected-anomalies/acceptances",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     await ensureAnomalyGovernanceSchema();
-    const canReadAll = hasAnomalyGovernanceReadAccess(user);
+    const canReadAll = user.role === "admin";
+    const hasDivisionScope = user.role === "sub_admin" || user.role === "universal_viewer";
     const userId = storedAppUserId(user);
     const result = await pool.query<{
       signature: string;
@@ -11690,17 +11835,23 @@ dashboardRouter.get(
        from suspected_anomaly_acceptances a
        left join files f on f.id::text = a.file_id
        where (
-         $1::boolean = true
-         and (a.status = 'pending' or a.admin_history_cleared_at is null)
+         (
+           $1::boolean = true
+           and (a.status = 'pending' or a.admin_history_cleared_at is null)
+         )
+         or (
+           $1::boolean = false
+           and $2::uuid is not null
+           and not ($2::uuid = any(a.history_hidden_by_user_ids))
+           and a.requested_by_user_id = $2
+         )
        )
-       or (
-         $1::boolean = false
-         and $2::uuid is not null
-         and not ($2::uuid = any(a.history_hidden_by_user_ids))
-         and a.requested_by_user_id = $2
+       and (
+         $3::boolean = false
+         or f.division_id = any($4::uuid[])
        )
        order by a.requested_at desc`,
-      [canReadAll, userId],
+      [canReadAll, userId, hasDivisionScope, user.divisionIds],
     );
     response.json({
       acceptances: result.rows.map((row) => ({
@@ -11746,12 +11897,22 @@ dashboardRouter.post(
       : [];
     if (!signatures.length) throw new HttpError(400, "Select at least one anomaly to clear.");
     await verifyCurrentUserPassword(user.id, password);
-    if (hasAnomalyAdminAccess(user)) {
+    if (user.role === "admin") {
       await pool.query(
         `delete from suspected_anomaly_acceptances
          where status in ('rejected', 'revoked')
            and signature = any($1::text[])`,
         [signatures],
+      );
+    } else if (user.role === "sub_admin") {
+      await pool.query(
+        `delete from suspected_anomaly_acceptances a
+          using files f
+         where a.file_id = f.id::text
+           and f.division_id = any($2::uuid[])
+           and a.status in ('rejected', 'revoked')
+           and a.signature = any($1::text[])`,
+        [signatures, user.divisionIds],
       );
     } else {
       await pool.query(
@@ -11779,6 +11940,7 @@ dashboardRouter.post(
     if (!signature) throw new HttpError(400, "Anomaly signature is required.");
     if (!reason) throw new HttpError(400, "Reason is required to accept an anomaly.");
     const parsedSignature = parseAnomalySignature(signature);
+    await assertSubAdminAnomalyFileAccess(user, parsedSignature.fileId);
     await pool.query(
       `insert into suspected_anomaly_acceptances
          (signature, reason, rule_key, file_id, status, scope, requested_by_user_id,
@@ -11839,7 +12001,25 @@ dashboardRouter.post(
     if (action === "reject" && !adminMessage) {
       throw new HttpError(400, "Admin message is required when rejecting an anomaly request.");
     }
+    if (action === "approve_universal" && !canAcceptUniversalAnomalies(user)) {
+      throw new HttpError(403, "Only administrators can approve anomalies universally.");
+    }
     const parsedSignature = parseAnomalySignature(signature);
+    const existingResult = await pool.query<{ scope: string; file_id: string | null }>(
+      `select scope, file_id
+         from suspected_anomaly_acceptances
+        where signature = $1
+        limit 1`,
+      [signature],
+    );
+    const existingAcceptance = existingResult.rows[0];
+    await assertSubAdminAnomalyFileAccess(
+      user,
+      parsedSignature.fileId || existingAcceptance?.file_id,
+    );
+    if (user.role === "sub_admin" && action === "revoke" && existingAcceptance?.scope === "universal") {
+      throw new HttpError(403, "Sub-admins cannot revoke universal anomaly approvals.");
+    }
     let result = await pool.query(
       `update suspected_anomaly_acceptances
        set status = $2::text,
@@ -11898,6 +12078,59 @@ dashboardRouter.post(
 );
 
 dashboardRouter.get(
+  "/suspected-anomalies/count",
+  asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
+    const user = requireAuth(request as AuthRequest);
+    const settings = await loadSettings();
+    const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
+    const activeDivision = readString(request.query.division) ?? "all";
+    const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
+    await ensureAnomalyGovernanceSchema();
+    const [anomalyRows, acceptanceResult] = await Promise.all([
+      loadDashboardSuspectedAnomalyRows({
+        user,
+        settings,
+        selectedYear,
+        fileYear,
+        fileInitiationFrom,
+        fileInitiationTo,
+        activeDivision,
+        fileCategories,
+        includeArchivedYears,
+      }),
+      pool.query<{ signature: string; rule_key: string | null; status: string }>(
+        `select signature, rule_key, status
+           from suspected_anomaly_acceptances
+          where status in ('approved_file', 'approved_universal')`,
+      ),
+    ]);
+    const suppressedSignatures = new Set(
+      acceptanceResult.rows
+        .filter((row) => row.status === "approved_file")
+        .map((row) => row.signature),
+    );
+    const suppressedRuleKeys = new Set(
+      acceptanceResult.rows
+        .filter((row) => row.status === "approved_universal" && row.rule_key)
+        .map((row) => row.rule_key as string),
+    );
+    const count = anomalyRows.filter(
+      (row) =>
+        !suppressedSignatures.has(row.signature) && !suppressedRuleKeys.has(row.ruleKey),
+    ).length;
+    response.json({ count });
+  }),
+);
+
+dashboardRouter.get(
   "/suspected-anomalies",
   asyncHandler(async (request, response) => {
     await ensureFinancialYearArchiveSchema();
@@ -11912,7 +12145,10 @@ dashboardRouter.get(
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12055,7 +12291,10 @@ dashboardRouter.get(
     const divisions = await loadDivisions(user, divisionYear);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12101,7 +12340,10 @@ dashboardRouter.get(
     const requestedDivision = readString(request.query.division) ?? "all";
     const activeDivision = requestedDivision;
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
       scopeValues: scope.values,
@@ -12270,7 +12512,12 @@ dashboardRouter.get(
     ]);
     const requestedDivision = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
+    const includeAnalytics =
+      request.query.includeAnalytics === undefined || readBoolean(request.query.includeAnalytics);
     const activeDivision = requestedDivision;
     const dashboardFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -12348,7 +12595,7 @@ dashboardRouter.get(
     const liveMilestones = readList(request.query.liveMilestones);
     const finance1AsOfDate = getFinanceSnapshotDate();
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 21,
+      version: 23,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -12367,14 +12614,16 @@ dashboardRouter.get(
       finance1InitiationTo,
       finance1AsOfDate,
       includeArchivedYears,
+      includeAnalytics,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
       const sharedFileLoads = new Map<string, Promise<FileRecord[]>>();
+      const includeArchivedFileRows = selectedYear === allFilesYear;
       const loadSharedFiles = (whereSql: string, values: unknown[]) => {
-        const loadKey = JSON.stringify({ whereSql, values });
+        const loadKey = JSON.stringify({ whereSql, values, includeArchivedFileRows });
         const existing = sharedFileLoads.get(loadKey);
         if (existing) return existing;
-        const promise = loadFiles(whereSql, values);
+        const promise = loadFiles(whereSql, values, includeArchivedFileRows);
         sharedFileLoads.set(loadKey, promise);
         return promise;
       };
@@ -12387,8 +12636,12 @@ dashboardRouter.get(
       ] = await Promise.all([
         loadSharedFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
         loadSharedFiles(financeFileWhere.whereSql, financeFileWhere.values),
-        loadSharedFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values),
-        loadSharedFiles(milestoneClearingFileWhere.whereSql, milestoneClearingFileWhere.values),
+        includeAnalytics
+          ? loadSharedFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values)
+          : Promise.resolve([] as FileRecord[]),
+        includeAnalytics
+          ? loadSharedFiles(milestoneClearingFileWhere.whereSql, milestoneClearingFileWhere.values)
+          : Promise.resolve([] as FileRecord[]),
         usesEntireDatabaseFinanceAllocation
           ? loadFinancialYears().then((financialYears) =>
               loadAllYearAllocationTotals({
@@ -12446,6 +12699,7 @@ dashboardRouter.get(
         finance1AsOfDate,
         finance1InitiationFrom,
         finance1InitiationTo,
+        includeAnalytics,
       });
 
       if (process.env.DASHBOARD_SQL_COMPARE === "true") {

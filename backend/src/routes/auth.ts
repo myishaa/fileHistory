@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import {
   clearSessionCookie,
+  canManageUsers,
   deleteSession,
   getSessionToken,
   loadAuthUser,
@@ -136,7 +137,7 @@ authRouter.post(
   "/verify-password",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    if (!canManageUsers(user)) throw new HttpError(403, "Admin access required.");
 
     const body = requireObjectBody(request.body);
     const password = requireString(body.password, "password");

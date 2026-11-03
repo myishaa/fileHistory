@@ -1,11 +1,21 @@
 import { Router } from "express";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
+import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
+import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import type {
   AppSettings,
+  AppFontFamily,
+  AppearancePreset,
   FinancialYearStatus,
   AppTheme,
   AppThemeTint,
+  TopRibbonColor,
+  TopRibbonTextColor,
   FirmRatingConfig,
   FileTypeGroupSetting,
   QuickEntryExcelPreset,
@@ -23,6 +33,11 @@ import {
 import { fromDbJsonArray, fromDbText, toDbText } from "../utils/db-values.js";
 import { normalizeFileTypeGroups } from "../utils/file-type-groups.js";
 import { ensureFinancialYearArchiveSchema } from "../utils/financial-year-archive.js";
+import {
+  deletionPasswordIsConfigured,
+  saveDeletionPassword,
+  verifyDeletionPassword,
+} from "../utils/deletion-password.js";
 import {
   addTrustedIp,
   archiveIpAttempt,
@@ -43,12 +58,544 @@ import {
 
 export const settingsRouter = Router();
 
+const protectedBackupFormat = "recordkeeper-protected-backup";
+const protectedBackupVersion = 1;
+const protectedBackupSchemaVersion = 2;
+const fullBackupFormat = "recordkeeper-full-recovery-backup";
+const fullBackupVersion = 1;
+
+type PublicTableSchema = {
+  tableName: string;
+  columns: string[];
+};
+
+type QueryRunner = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>;
+
+function quoteIdentifier(value: string) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
+    throw new HttpError(400, "Invalid backup table identifier.");
+  }
+  return `"${value}"`;
+}
+
+function encryptProtectedBackup(payload: unknown, password: string) {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(password, salt, 32);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return {
+    format: protectedBackupFormat,
+    version: protectedBackupVersion,
+    algorithm: "aes-256-gcm",
+    kdf: "scrypt",
+    salt: salt.toString("base64"),
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: encrypted.toString("base64"),
+  };
+}
+
+function decryptProtectedBackup(envelope: unknown, password: string) {
+  if (!envelope || typeof envelope !== "object") throw new HttpError(400, "Invalid backup file.");
+  const value = envelope as Record<string, unknown>;
+  if (value.format !== protectedBackupFormat || value.version !== protectedBackupVersion) {
+    throw new HttpError(400, "Unsupported or invalid backup version.");
+  }
+  const fields = ["salt", "iv", "tag", "data"];
+  if (fields.some((field) => typeof value[field] !== "string")) {
+    throw new HttpError(400, "Backup encryption metadata is incomplete.");
+  }
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      scryptSync(password, Buffer.from(value.salt as string, "base64"), 32),
+      Buffer.from(value.iv as string, "base64"),
+    );
+    decipher.setAuthTag(Buffer.from(value.tag as string, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(value.data as string, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+    return JSON.parse(plaintext) as Record<string, unknown>;
+  } catch {
+    throw new HttpError(400, "Backup password is incorrect or the file is damaged.");
+  }
+}
+
+type BackupUser = { id: string; username: string };
+
+async function buildProtectedBackupEnvelope(user: BackupUser, password: string) {
+  // Keep the audit table inside the same protected backup as every other
+  // application table. This also makes its identity sequence recoverable.
+  await ensureProtectedBackupSchema();
+  const schema = await readPublicTableSchema((sql) => pool.query(sql));
+
+  const tables: Record<string, { columns: string[]; rows: unknown[][] }> = {};
+  let rowCount = 0;
+  for (const { tableName } of schema) {
+    const columnsResult = await pool.query<{ column_name: string; data_type: string; udt_name: string }>(
+      `select column_name
+              , data_type
+              , udt_name
+       from information_schema.columns
+       where table_schema = 'public' and table_name = $1
+       order by ordinal_position`,
+      [tableName],
+    );
+    const columns = columnsResult.rows.map((row) => row.column_name);
+    const dateColumns = new Set(
+      columnsResult.rows
+        .filter((row) => row.data_type === "date")
+        .map((row) => row.column_name),
+    );
+    const selectList = columns
+      .map((column) =>
+        dateColumns.has(column)
+          ? `${quoteIdentifier(column)}::text as ${quoteIdentifier(column)}`
+          : quoteIdentifier(column),
+      )
+      .join(", ");
+    const rowsResult = await pool.query<Record<string, unknown>>(
+      `select ${selectList} from ${quoteIdentifier(tableName)}`,
+    );
+    const rows = rowsResult.rows.map((row) => columns.map((column) => row[column] ?? null));
+    tables[tableName] = { columns, rows };
+    rowCount += rows.length;
+  }
+  const createdAt = new Date().toISOString();
+  const envelope = encryptProtectedBackup({
+    format: protectedBackupFormat,
+    version: protectedBackupVersion,
+    schemaVersion: protectedBackupSchemaVersion,
+    schema: {
+      tables: schema.map((table) => ({ name: table.tableName, columns: table.columns })),
+      fingerprint: schemaFingerprint(schema),
+    },
+    createdAt,
+    createdBy: user.username,
+    tables,
+  }, password);
+  return { envelope, schema, rowCount, createdAt };
+}
+
+async function runBackupCommand(
+  command: string,
+  args: string[],
+  label: string,
+  stdoutPath?: string,
+) {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: process.env,
+      stdio: ["ignore", stdoutPath ? "pipe" : "ignore", "pipe"],
+    });
+    const stderr: Buffer[] = [];
+    let output: ReturnType<typeof createWriteStream> | undefined;
+    let outputFinished = !stdoutPath;
+    let exitCode: number | null = null;
+    let settled = false;
+    if (stdoutPath && child.stdout) {
+      output = createWriteStream(stdoutPath, { mode: 0o600 });
+      output.once("finish", () => {
+        outputFinished = true;
+        finish();
+      });
+      output.once("error", (error) => fail(error));
+      child.stdout.pipe(output);
+    }
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", (error) => fail(error));
+    child.once("close", (code) => {
+      exitCode = code;
+      finish();
+    });
+
+    function finish() {
+      if (settled || exitCode === null || !outputFinished) return;
+      if (exitCode === 0) {
+        settled = true;
+        resolve();
+      } else {
+        fail(new Error(`${label} failed${stderr.length ? `: ${Buffer.concat(stderr).toString("utf8").trim()}` : "."}`));
+      }
+    }
+    function fail(error: unknown) {
+      if (settled) return;
+      settled = true;
+      reject(new HttpError(503, error instanceof Error ? error.message : `${label} failed.`));
+    }
+  });
+}
+
+async function sha256File(filePath: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function encryptRecoveryArchive(
+  archivePath: string,
+  outputPath: string,
+  password: string,
+  metadata: Record<string, unknown>,
+) {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(password, salt, 32);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const header = Buffer.from(JSON.stringify({
+    format: fullBackupFormat,
+    version: fullBackupVersion,
+    algorithm: "aes-256-gcm",
+    kdf: "scrypt",
+    salt: salt.toString("base64"),
+    iv: iv.toString("base64"),
+    metadata,
+  }) + "\n", "utf8");
+  await fs.writeFile(outputPath, header, { mode: 0o600 });
+  await pipeline(
+    createReadStream(archivePath),
+    cipher,
+    createWriteStream(outputPath, { flags: "a", mode: 0o600 }),
+  );
+  await fs.appendFile(outputPath, cipher.getAuthTag());
+}
+
+async function readPublicTableSchema(query: QueryRunner): Promise<PublicTableSchema[]> {
+  const result = await query(`
+    select t.table_name, c.column_name
+    from information_schema.tables t
+    join information_schema.columns c
+      on c.table_schema = t.table_schema and c.table_name = t.table_name
+    where t.table_schema = 'public'
+      and t.table_type = 'BASE TABLE'
+      and t.table_name <> 'protected_backup_settings'
+    order by t.table_name, c.ordinal_position
+  `);
+  const schema = new Map<string, string[]>();
+  for (const row of result.rows) {
+    const tableName = String(row.table_name);
+    const columnName = String(row.column_name);
+    const columns = schema.get(tableName) ?? [];
+    columns.push(columnName);
+    schema.set(tableName, columns);
+  }
+  return [...schema.entries()].map(([tableName, columns]) => ({ tableName, columns }));
+}
+
+function schemaFingerprint(schema: PublicTableSchema[]) {
+  return createHash("sha256")
+    .update(schema.map((table) => `${table.tableName}:${table.columns.join(",")}`).join("\n"))
+    .digest("hex");
+}
+
+async function resetPublicSequences(client: PoolClient) {
+  const sequences = await client.query<{
+    schema_name: string;
+    sequence_name: string;
+    table_name: string;
+    column_name: string;
+  }>(`
+    select c.table_schema as schema_name,
+           pg_get_serial_sequence(format('%I.%I', c.table_schema, c.table_name), c.column_name) as sequence_name,
+           c.table_name,
+           c.column_name
+    from information_schema.columns c
+    where c.table_schema = 'public'
+      and pg_get_serial_sequence(format('%I.%I', c.table_schema, c.table_name), c.column_name) is not null
+    order by c.table_name, c.ordinal_position
+  `);
+  for (const sequence of sequences.rows) {
+    const tableName = `${quoteIdentifier(sequence.schema_name)}.${quoteIdentifier(sequence.table_name)}`;
+    const columnName = quoteIdentifier(sequence.column_name);
+    const sequenceName = sequence.sequence_name;
+    const maximum = await client.query<{ maximum: string | null }>(
+      `select max(${columnName})::text as maximum from ${tableName}`,
+    );
+    const value = maximum.rows[0]?.maximum;
+    await client.query(`select setval($1::regclass, $2::bigint, $3)`, [
+      sequenceName,
+      value ?? "1",
+      value !== null && value !== undefined,
+    ]);
+  }
+}
+
+async function ensureProtectedBackupSchema() {
+  await pool.query(`
+    create table if not exists protected_backup_log (
+      id bigserial primary key,
+      created_at timestamptz not null default now(),
+      created_by uuid references app_users(id) on delete set null,
+      table_count integer not null default 0,
+      row_count bigint not null default 0
+    )
+  `);
+}
+
+let protectedBackupAuthorizationSchemaReady: Promise<void> | undefined;
+
+function ensureProtectedBackupAuthorizationSchema() {
+  protectedBackupAuthorizationSchemaReady ??= pool
+    .query(`
+      create table if not exists protected_backup_settings (
+        id boolean primary key default true check (id),
+        restore_authorization_password_hash text not null default '',
+        updated_at timestamptz not null default now()
+      );
+      insert into protected_backup_settings (id)
+      values (true)
+      on conflict (id) do nothing;
+    `)
+    .then(() => undefined);
+  return protectedBackupAuthorizationSchemaReady;
+}
+
+const maxRestoreAuthorizationPasswordLength = 128;
+const minRestoreAuthorizationPasswordLength = 8;
+
+function readRestoreAuthorizationPassword(value: unknown, fieldName: string) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new HttpError(400, `${fieldName} is required.`);
+  }
+  if (value.length < minRestoreAuthorizationPasswordLength) {
+    throw new HttpError(
+      400,
+      `${fieldName} must be at least ${minRestoreAuthorizationPasswordLength} characters.`,
+    );
+  }
+  if (value.length > maxRestoreAuthorizationPasswordLength) {
+    throw new HttpError(
+      400,
+      `${fieldName} must be ${maxRestoreAuthorizationPasswordLength} characters or fewer.`,
+    );
+  }
+  return value;
+}
+
+async function saveRestoreAuthorizationPassword(passwordValue: unknown, confirmationValue: unknown) {
+  const password = readRestoreAuthorizationPassword(passwordValue, "Restore authorization password");
+  const confirmation = readRestoreAuthorizationPassword(
+    confirmationValue,
+    "Confirm restore authorization password",
+  );
+  if (password !== confirmation) {
+    throw new HttpError(400, "Restore authorization passwords do not match.");
+  }
+  await ensureProtectedBackupAuthorizationSchema();
+  await pool.query(
+    `update protected_backup_settings
+     set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
+     where id = true`,
+    [password],
+  );
+}
+
+async function restoreAuthorizationPasswordIsConfigured() {
+  await ensureProtectedBackupAuthorizationSchema();
+  const result = await pool.query<{ configured: boolean }>(
+    `select restore_authorization_password_hash <> '' as configured
+     from protected_backup_settings
+     where id = true`,
+  );
+  return result.rows[0]?.configured ?? false;
+}
+
+async function verifyRestoreAuthorizationPassword(passwordValue: unknown) {
+  const password = readRestoreAuthorizationPassword(
+    passwordValue,
+    "Restore authorization password",
+  );
+  await ensureProtectedBackupAuthorizationSchema();
+  const result = await pool.query<{ configured: boolean; valid: boolean }>(
+    `select
+       restore_authorization_password_hash <> '' as configured,
+       restore_authorization_password_hash <> ''
+         and restore_authorization_password_hash = crypt($1, restore_authorization_password_hash) as valid
+     from protected_backup_settings
+     where id = true`,
+    [password],
+  );
+  if (!result.rows[0]?.configured) {
+    throw new HttpError(
+      400,
+      "Set a restore authorization password in Protected Backup settings before restoring.",
+    );
+  }
+  if (!result.rows[0].valid) {
+    throw new HttpError(403, "Incorrect restore authorization password.");
+  }
+}
+
+type BackupRunType = "local" | "full_recovery" | "server_scheduled";
+type BackupRunStatus = "running" | "success" | "failed";
+
+type BackupRunRow = {
+  id: string;
+  backup_type: BackupRunType;
+  status: BackupRunStatus;
+  started_at: Date;
+  completed_at: Date | null;
+  file_name: string | null;
+  error_message: string | null;
+  table_count: number | null;
+  row_count: string | null;
+  external_storage_included: boolean;
+  deployment_config_included: boolean;
+  deployment_secrets_included: boolean;
+};
+
+let backupRunLogSchemaReady: Promise<void> | undefined;
+
+function ensureBackupRunLogSchema() {
+  backupRunLogSchemaReady ??= pool
+    .query(`
+      create table if not exists backup_run_log (
+        id bigserial primary key,
+        backup_type text not null check (backup_type in ('local', 'full_recovery', 'server_scheduled')),
+        status text not null check (status in ('running', 'success', 'failed')),
+        started_at timestamptz not null default now(),
+        completed_at timestamptz,
+        created_by uuid references app_users(id) on delete set null,
+        file_name text,
+        error_message text,
+        table_count integer,
+        row_count bigint,
+        external_storage_included boolean not null default false,
+        deployment_config_included boolean not null default false,
+        deployment_secrets_included boolean not null default false
+      );
+      create index if not exists backup_run_log_type_started_idx
+        on backup_run_log (backup_type, started_at desc)
+    `)
+    .then(() => undefined);
+  return backupRunLogSchemaReady;
+}
+
+async function beginBackupRun(backupType: BackupRunType, userId: string | null) {
+  await ensureBackupRunLogSchema();
+  const result = await pool.query<{ id: string }>(
+    `insert into backup_run_log (backup_type, status, created_by)
+     values ($1, 'running', $2)
+     returning id`,
+    [backupType, userId],
+  );
+  return result.rows[0].id;
+}
+
+async function finishBackupRun(
+  id: string,
+  status: BackupRunStatus,
+  details: {
+    fileName?: string | null;
+    errorMessage?: string | null;
+    tableCount?: number | null;
+    rowCount?: number | string | null;
+    externalStorageIncluded?: boolean;
+    deploymentConfigIncluded?: boolean;
+    deploymentSecretsIncluded?: boolean;
+  } = {},
+) {
+  await pool.query(
+    `update backup_run_log
+     set status = $2,
+         completed_at = now(),
+         file_name = $3,
+         error_message = $4,
+         table_count = $5,
+         row_count = $6,
+         external_storage_included = coalesce($7, external_storage_included),
+         deployment_config_included = coalesce($8, deployment_config_included),
+         deployment_secrets_included = coalesce($9, deployment_secrets_included)
+     where id = $1`,
+    [
+      id,
+      status,
+      details.fileName ?? null,
+      details.errorMessage?.slice(0, 2000) ?? null,
+      details.tableCount ?? null,
+      details.rowCount ?? null,
+      details.externalStorageIncluded ?? null,
+      details.deploymentConfigIncluded ?? null,
+      details.deploymentSecretsIncluded ?? null,
+    ],
+  );
+}
+
+async function inspectDeploymentSecrets() {
+  const filePath = process.env.RECORDKEEPER_BACKUP_SECRETS_FILE?.trim();
+  if (!filePath) {
+    return { configured: false, readable: false, error: "Secret file path is not configured." };
+  }
+  const fileStat = await fs.stat(filePath).catch(() => undefined);
+  if (!fileStat?.isFile()) {
+    return { configured: true, readable: false, error: "Configured secret file does not exist or is not a file." };
+  }
+  try {
+    await fs.access(filePath, fsConstants.R_OK);
+    return { configured: true, readable: true, error: null };
+  } catch {
+    return { configured: true, readable: false, error: "Configured secret file is not readable by the backend service." };
+  }
+}
+
 const themes = new Set<AppTheme>(["light", "dark"]);
 const themeTints = new Set<AppThemeTint>(["plain", "yellow", "green", "blue", "pink", "lavender"]);
+const topRibbonColors = new Set<TopRibbonColor>([
+  "navy",
+  "teal",
+  "charcoal",
+  "maroon",
+  "indigo",
+  "gold",
+  "warmGold",
+  "black",
+]);
+const topRibbonTextColors = new Set<TopRibbonTextColor>([
+  "white",
+  "softWhite",
+  "gold",
+  "black",
+  "brickRed",
+]);
+const appearancePresets = new Set<AppearancePreset>([
+  "ocean",
+  "forest",
+  "graphite",
+  "plum",
+  "arcticGlass",
+  "sageModern",
+  "sunsetEditorial",
+  "roseQuartz",
+  "midnightIndigo",
+]);
+const appFontFamilies = new Set<AppFontFamily>(["inter", "manrope", "sourceSans", "nunito"]);
 const defaultChartColorOrder = [
-  "#0f766e", "#2563eb", "#d97706", "#be123c", "#7c3aed", "#65a30d", "#0891b2", "#475569",
-  "#e11d48", "#ea580c", "#4f46e5", "#16a34a", "#9333ea", "#0284c7", "#a16207", "#0d9488",
-  "#c026d3", "#dc2626", "#84cc16", "#0369a1", "#b45309", "#7e22ce", "#15803d", "#be185d",
+  "#0f766e",
+  "#2563eb",
+  "#d97706",
+  "#be123c",
+  "#7c3aed",
+  "#65a30d",
+  "#0891b2",
+  "#475569",
+  "#e11d48",
+  "#ea580c",
+  "#4f46e5",
+  "#16a34a",
+  "#9333ea",
+  "#0284c7",
+  "#a16207",
+  "#0d9488",
+  "#c026d3",
+  "#dc2626",
+  "#84cc16",
+  "#0369a1",
+  "#b45309",
+  "#7e22ce",
+  "#15803d",
+  "#be185d",
   "#64748b",
 ];
 const chartBarColors = new Set(defaultChartColorOrder);
@@ -75,18 +622,6 @@ const allowedAddEditRibbonFields = new Set([
   "latestFirmName",
 ]);
 
-async function verifyDeletionPassword(value: unknown) {
-  const deletionPassword = toDbText(value) ?? "";
-  if (!deletionPassword) throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ deletion_password: string | null }>(
-    "select deletion_password from app_settings where id = true",
-  );
-  const expectedPassword = result.rows[0]?.deletion_password ?? "";
-  if (!expectedPassword || deletionPassword !== expectedPassword) {
-    throw new HttpError(403, "Invalid deletion password.");
-  }
-}
-
 type SettingsRow = {
   financial_year: string;
   selected_year: string;
@@ -96,7 +631,6 @@ type SettingsRow = {
   theme_tint: AppThemeTint;
   global_chart_color_order: unknown;
   global_chart_colors_enforced: boolean;
-  deletion_password: string;
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
@@ -127,6 +661,10 @@ type SettingsRow = {
 type UserUiPreferencesRow = {
   theme: AppTheme | null;
   theme_tint: AppThemeTint | null;
+  appearance_preset: AppearancePreset | null;
+  font_family: AppFontFamily | null;
+  top_ribbon_color: TopRibbonColor | null;
+  top_ribbon_text_color: TopRibbonTextColor | null;
   chart_bar_color: string | null;
   chart_color_order: unknown;
   add_edit_ribbon_fields: unknown;
@@ -225,9 +763,7 @@ function normalizeSharedQuickAccess(value: unknown): SharedQuickAccessSettings {
   const interval = Number(source.noticeBoardIntervalSeconds);
   const readTransitionDuration = (key: string, fallback: number) => {
     const duration = Number(source[key]);
-    return Number.isInteger(duration) && duration >= 100 && duration <= 30000
-      ? duration
-      : fallback;
+    return Number.isInteger(duration) && duration >= 100 && duration <= 30000 ? duration : fallback;
   };
   return {
     initialized: source.initialized === true,
@@ -239,7 +775,10 @@ function normalizeSharedQuickAccess(value: unknown): SharedQuickAccessSettings {
     noticeBoardSlideDurationMs: readTransitionDuration("noticeBoardSlideDurationMs", 1200),
     noticeBoardFadeOutDurationMs: readTransitionDuration("noticeBoardFadeOutDurationMs", 1400),
     noticeBoardFadeInDurationMs: readTransitionDuration("noticeBoardFadeInDurationMs", 900),
-    noticeBoardVerticalScrollDurationMs: readTransitionDuration("noticeBoardVerticalScrollDurationMs", 2800),
+    noticeBoardVerticalScrollDurationMs: readTransitionDuration(
+      "noticeBoardVerticalScrollDurationMs",
+      2800,
+    ),
   };
 }
 
@@ -264,7 +803,10 @@ function readSharedQuickAccess(value: unknown): SharedQuickAccessSettings {
     if (source[key] === undefined) continue;
     const duration = Number(source[key]);
     if (!Number.isInteger(duration) || duration < 100 || duration > 30000) {
-      throw new HttpError(400, "Notice Board transition durations must be between 0.1 and 30 seconds.");
+      throw new HttpError(
+        400,
+        "Notice Board transition durations must be between 0.1 and 30 seconds.",
+      );
     }
   }
   const normalized = normalizeSharedQuickAccess(source);
@@ -300,7 +842,8 @@ function readQuickEntryExcelPresets(value: unknown): QuickEntryExcelPreset[] {
     if (scopeMode !== "fy" && scopeMode !== "so") {
       throw new HttpError(400, `${name} has an invalid export scope.`);
     }
-    const financialYear = typeof source.financialYear === "string" ? source.financialYear.trim() : "";
+    const financialYear =
+      typeof source.financialYear === "string" ? source.financialYear.trim() : "";
     const note = typeof source.note === "string" ? source.note.trim() : "";
     if (note.length > 300) throw new HttpError(400, `${name} note cannot exceed 300 characters.`);
 
@@ -416,30 +959,34 @@ async function loadTcecCommittees(financialYear: string, fallback: unknown) {
 }
 
 async function loadValueThresholdLevels(): Promise<ValueThresholdLevel[]> {
-  return getCached(`lookup:value-thresholds:${globalValueThresholdYear}`, cacheTtl.lookupMs, async () => {
-    const result = await pool.query<{
-      id: string;
-      level_number: number;
-      label: string;
-      min_value: string | null;
-      max_value: string | null;
-      applies_to: ValueThresholdAppliesTo;
-    }>(
-      `select id, level_number, label, min_value, max_value, applies_to
+  return getCached(
+    `lookup:value-thresholds:${globalValueThresholdYear}`,
+    cacheTtl.lookupMs,
+    async () => {
+      const result = await pool.query<{
+        id: string;
+        level_number: number;
+        label: string;
+        min_value: string | null;
+        max_value: string | null;
+        applies_to: ValueThresholdAppliesTo;
+      }>(
+        `select id, level_number, label, min_value, max_value, applies_to
        from value_threshold_levels
        where financial_year = $1
        order by level_number asc`,
-      [globalValueThresholdYear],
-    );
-    return result.rows.map((row) => ({
-      id: row.id,
-      label: row.label,
-      levelNumber: row.level_number,
-      minValue: fromDbText(row.min_value) || undefined,
-      maxValue: fromDbText(row.max_value) || undefined,
-      appliesTo: row.applies_to,
-    }));
-  });
+        [globalValueThresholdYear],
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        label: row.label,
+        levelNumber: row.level_number,
+        minValue: fromDbText(row.min_value) || undefined,
+        maxValue: fromDbText(row.max_value) || undefined,
+        appliesTo: row.applies_to,
+      }));
+    },
+  );
 }
 
 async function ensureFinancialYear(label: string, client: PoolClient | typeof pool = pool) {
@@ -503,7 +1050,6 @@ async function copyYearSettings(sourceYear: string, targetYear: string, client: 
      on conflict do nothing`,
     [sourceYear, targetYear],
   );
-
 }
 
 async function loadUserTableFieldPresets(ownerKey: string) {
@@ -546,6 +1092,18 @@ async function ensureUserUiPreferencesTable() {
        theme_tint text check (
          theme_tint in ('plain', 'yellow', 'green', 'blue', 'pink', 'lavender')
        ),
+       appearance_preset text check (
+         appearance_preset in ('ocean', 'forest', 'graphite', 'plum')
+       ),
+       font_family text check (
+         font_family in ('inter', 'manrope', 'sourceSans', 'nunito')
+       ),
+       top_ribbon_color text check (
+         top_ribbon_color in ('navy', 'teal', 'charcoal', 'maroon', 'indigo', 'gold', 'warmGold', 'black')
+       ),
+       top_ribbon_text_color text check (
+         top_ribbon_text_color in ('white', 'softWhite', 'gold', 'black', 'brickRed')
+       ),
        chart_bar_color text,
        chart_color_order jsonb,
        add_edit_ribbon_fields jsonb,
@@ -555,19 +1113,68 @@ async function ensureUserUiPreferencesTable() {
   await pool.query(
     "alter table user_ui_preferences add column if not exists add_edit_ribbon_fields jsonb",
   );
-  await pool.query(
-    "alter table user_ui_preferences add column if not exists chart_bar_color text",
-  );
+  await pool.query("alter table user_ui_preferences add column if not exists chart_bar_color text");
   await pool.query(
     "alter table user_ui_preferences add column if not exists chart_color_order jsonb",
   );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists top_ribbon_color text",
+  );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists top_ribbon_text_color text",
+  );
+  await pool.query(
+    `do $$
+     declare constraint_definition text;
+     begin
+       select pg_get_constraintdef(c.oid)
+       into constraint_definition
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       where t.relname = 'user_ui_preferences'
+         and c.conname = 'user_ui_preferences_top_ribbon_color_check';
+       if constraint_definition is null then
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_top_ribbon_color_check
+           check (top_ribbon_color in ('navy', 'teal', 'charcoal', 'maroon', 'indigo', 'gold', 'warmGold', 'black'));
+       elsif position('warmGold' in constraint_definition) = 0 or position('black' in constraint_definition) = 0 then
+         alter table user_ui_preferences
+           drop constraint user_ui_preferences_top_ribbon_color_check;
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_top_ribbon_color_check
+           check (top_ribbon_color in ('navy', 'teal', 'charcoal', 'maroon', 'indigo', 'gold', 'warmGold', 'black'));
+       end if;
+
+       select pg_get_constraintdef(c.oid)
+       into constraint_definition
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       where t.relname = 'user_ui_preferences'
+         and c.conname = 'user_ui_preferences_top_ribbon_text_color_check';
+       if constraint_definition is null then
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_top_ribbon_text_color_check
+           check (top_ribbon_text_color in ('white', 'softWhite', 'gold', 'black', 'brickRed'));
+       elsif position('brickRed' in constraint_definition) = 0 then
+         alter table user_ui_preferences
+           drop constraint user_ui_preferences_top_ribbon_text_color_check;
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_top_ribbon_text_color_check
+           check (top_ribbon_text_color in ('white', 'softWhite', 'gold', 'black', 'brickRed'));
+       end if;
+     end $$;`,
+  );
+  await pool.query(
+    "alter table user_ui_preferences add column if not exists appearance_preset text",
+  );
+  await pool.query("alter table user_ui_preferences add column if not exists font_family text");
 }
 
 async function loadUserUiPreferences(userId: string) {
   await ensureUserUiPreferencesTable();
   return getCached(`settings:ui-preferences:${userId}`, cacheTtl.settingsMs, async () => {
     const result = await pool.query<UserUiPreferencesRow>(
-      "select theme, theme_tint, chart_bar_color, chart_color_order, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
+      "select theme, theme_tint, appearance_preset, font_family, top_ribbon_color, top_ribbon_text_color, chart_bar_color, chart_color_order, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
       [userId],
     );
     return result.rows[0];
@@ -595,6 +1202,63 @@ async function loadUserReportPreferences(userId: string, reportKey: string) {
     [userId, reportKey],
   );
   return result.rows[0]?.preferences ?? {};
+}
+
+const noticeBoardPersonalDefaults = {
+  intervalSeconds: 15,
+  transitionEffect: "slide" as const,
+  slideDurationMs: 1200,
+  fadeOutDurationMs: 1400,
+  fadeInDurationMs: 900,
+  verticalScrollDurationMs: 2800,
+};
+
+function normalizeNoticeBoardPersonalPreferences(value: unknown) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const readInteger = (key: string, fallback: number, min: number, max: number) => {
+    const candidate = Number(source[key]);
+    return Number.isInteger(candidate) ? Math.min(max, Math.max(min, candidate)) : fallback;
+  };
+  const effect = source.transitionEffect;
+  return {
+    intervalSeconds: readInteger(
+      "intervalSeconds",
+      noticeBoardPersonalDefaults.intervalSeconds,
+      5,
+      120,
+    ),
+    transitionEffect:
+      effect === "slide" || effect === "fade" || effect === "vertical-scroll" || effect === "none"
+        ? effect
+        : noticeBoardPersonalDefaults.transitionEffect,
+    slideDurationMs: readInteger(
+      "slideDurationMs",
+      noticeBoardPersonalDefaults.slideDurationMs,
+      100,
+      30000,
+    ),
+    fadeOutDurationMs: readInteger(
+      "fadeOutDurationMs",
+      noticeBoardPersonalDefaults.fadeOutDurationMs,
+      100,
+      30000,
+    ),
+    fadeInDurationMs: readInteger(
+      "fadeInDurationMs",
+      noticeBoardPersonalDefaults.fadeInDurationMs,
+      100,
+      30000,
+    ),
+    verticalScrollDurationMs: readInteger(
+      "verticalScrollDurationMs",
+      noticeBoardPersonalDefaults.verticalScrollDurationMs,
+      100,
+      30000,
+    ),
+  };
 }
 
 async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Promise<AppSettings> {
@@ -639,16 +1303,28 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     setupYear,
     financialYears: mergedFinancialYears,
     financialYearStatuses: mergedFinancialYears.map(
-      (label) => financialYearStatuses.find((status) => status.label === label) ?? { label, archived: false },
+      (label) =>
+        financialYearStatuses.find((status) => status.label === label) ?? {
+          label,
+          archived: false,
+        },
     ),
     yearSelectionLocked: row.year_selection_locked,
     theme: uiPreferences?.theme ?? row.theme,
     themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
-    chartBarColor: (globalChartColorsEnforced ? globalChartColorOrder : personalChartColorOrder)[0] ?? defaultChartBarColor,
+    appearancePreset: uiPreferences?.appearance_preset ?? null,
+    fontFamily: uiPreferences?.font_family ?? null,
+    topRibbonColor: uiPreferences?.top_ribbon_color ?? null,
+    topRibbonTextColor: uiPreferences?.top_ribbon_text_color ?? null,
+    chartBarColor:
+      (globalChartColorsEnforced ? globalChartColorOrder : personalChartColorOrder)[0] ??
+      defaultChartBarColor,
     chartColorOrder: globalChartColorsEnforced ? globalChartColorOrder : personalChartColorOrder,
     globalChartColorOrder,
     globalChartColorsEnforced,
-    deletionPassword: row.deletion_password,
+    // Deletion passwords are account-specific credentials. Never return the
+    // legacy shared plaintext value through any Settings-derived payload.
+    deletionPassword: "",
     tcecCommittees: await loadTcecCommittees(setupYear, row.tcec_committees),
     firmTypes: fromDbJsonArray(row.firm_types).filter(
       (firmType): firmType is string => typeof firmType === "string",
@@ -750,7 +1426,9 @@ function readValueThresholdLevels(value: unknown) {
 
 async function replaceValueThresholdLevels(levels: unknown[]) {
   const normalized = readValueThresholdLevels(levels);
-  await pool.query("delete from value_threshold_levels where financial_year = $1", [globalValueThresholdYear]);
+  await pool.query("delete from value_threshold_levels where financial_year = $1", [
+    globalValueThresholdYear,
+  ]);
   for (const level of normalized) {
     await pool.query(
       `insert into value_threshold_levels (
@@ -776,7 +1454,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
     await ensureFinancialYearArchiveSchema();
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
-              global_chart_color_order, global_chart_colors_enforced, deletion_password,
+              global_chart_color_order, global_chart_colors_enforced,
               tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
@@ -839,6 +1517,46 @@ function readThemeTint(value: unknown) {
   return value as AppThemeTint;
 }
 
+function readTopRibbonColor(value: unknown) {
+  if (typeof value !== "string" || !topRibbonColors.has(value as TopRibbonColor)) {
+    throw new HttpError(400, "topRibbonColor is invalid.");
+  }
+  return value as TopRibbonColor;
+}
+
+function readOptionalTopRibbonColor(value: unknown) {
+  if (value === null || value === "") return null;
+  return readTopRibbonColor(value);
+}
+
+function readTopRibbonTextColor(value: unknown) {
+  if (typeof value !== "string" || !topRibbonTextColors.has(value as TopRibbonTextColor)) {
+    throw new HttpError(400, "topRibbonTextColor is invalid.");
+  }
+  return value as TopRibbonTextColor;
+}
+
+function readOptionalTopRibbonTextColor(value: unknown) {
+  if (value === null || value === "") return null;
+  return readTopRibbonTextColor(value);
+}
+
+function readAppearancePreset(value: unknown) {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !appearancePresets.has(value as AppearancePreset)) {
+    throw new HttpError(400, "appearancePreset is invalid.");
+  }
+  return value as AppearancePreset;
+}
+
+function readFontFamily(value: unknown) {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !appFontFamilies.has(value as AppFontFamily)) {
+    throw new HttpError(400, "fontFamily is invalid.");
+  }
+  return value as AppFontFamily;
+}
+
 function readChartBarColor(value: unknown) {
   if (typeof value !== "string" || !chartBarColors.has(value)) {
     throw new HttpError(400, "chartBarColor is not a supported palette color.");
@@ -848,7 +1566,9 @@ function readChartBarColor(value: unknown) {
 
 function normalizeChartColorOrder(value: unknown, legacyColor?: string | null) {
   const requested = Array.isArray(value)
-    ? value.filter((color): color is string => typeof color === "string" && chartBarColors.has(color))
+    ? value.filter(
+        (color): color is string => typeof color === "string" && chartBarColors.has(color),
+      )
     : [];
   const ordered = Array.from(new Set(requested));
   if (!ordered.length && legacyColor && chartBarColors.has(legacyColor)) ordered.push(legacyColor);
@@ -1139,7 +1859,9 @@ async function assertGemBiddingModesCanChange(nextModes: string[]) {
 
 async function assertSpecialFileMarkersCanChange(nextMarkers: Array<{ code: string }>) {
   const settings = await getSettings();
-  const currentCodes = normalizeSpecialFileMarkers(settings.specialFileMarkers).map((marker) => marker.code);
+  const currentCodes = normalizeSpecialFileMarkers(settings.specialFileMarkers).map(
+    (marker) => marker.code,
+  );
   const nextCodes = nextMarkers.map((marker) => marker.code);
   const removed = removedMasterValues(currentCodes, nextCodes);
   await assertRemovedValuesUnused(
@@ -1270,34 +1992,57 @@ async function replaceUserUiPreferences(
   preferences: {
     theme?: AppTheme;
     themeTint?: AppThemeTint;
+    appearancePreset?: AppearancePreset | null;
+    fontFamily?: AppFontFamily | null;
+    topRibbonColor?: TopRibbonColor | null;
+    topRibbonTextColor?: TopRibbonTextColor | null;
     chartBarColor?: string;
     chartColorOrder?: string[];
     addEditRibbonFields?: string[];
   },
 ) {
   await ensureUserUiPreferencesTable();
+  const columns = ["user_id"];
+  const placeholders = ["$1"];
+  const values: unknown[] = [userId];
+  const updates: string[] = [];
+  const add = (column: string, value: unknown, cast = "") => {
+    columns.push(column);
+    values.push(value);
+    const placeholder = `$${values.length}${cast}`;
+    placeholders.push(placeholder);
+    updates.push(`${column} = excluded.${column}`);
+  };
+
+  if ("theme" in preferences) add("theme", preferences.theme ?? null);
+  if ("themeTint" in preferences) add("theme_tint", preferences.themeTint ?? null);
+  if ("appearancePreset" in preferences)
+    add("appearance_preset", preferences.appearancePreset ?? null);
+  if ("fontFamily" in preferences) add("font_family", preferences.fontFamily ?? null);
+  if ("topRibbonColor" in preferences) add("top_ribbon_color", preferences.topRibbonColor ?? null);
+  if ("topRibbonTextColor" in preferences)
+    add("top_ribbon_text_color", preferences.topRibbonTextColor ?? null);
+  if ("chartBarColor" in preferences) add("chart_bar_color", preferences.chartBarColor ?? null);
+  if ("chartColorOrder" in preferences) {
+    add("chart_color_order", JSON.stringify(preferences.chartColorOrder ?? null), "::jsonb");
+    if (!("chartBarColor" in preferences)) {
+      add("chart_bar_color", preferences.chartColorOrder?.[0] ?? null);
+    }
+  }
+  if ("addEditRibbonFields" in preferences)
+    add(
+      "add_edit_ribbon_fields",
+      JSON.stringify(preferences.addEditRibbonFields ?? null),
+      "::jsonb",
+    );
+  if (!updates.length) return;
   await pool.query(
-    `insert into user_ui_preferences (user_id, theme, theme_tint, chart_bar_color, chart_color_order, add_edit_ribbon_fields)
-     values ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+    `insert into user_ui_preferences (${columns.join(", ")})
+     values (${placeholders.join(", ")})
      on conflict (user_id)
-     do update set
-       theme = coalesce(excluded.theme, user_ui_preferences.theme),
-       theme_tint = coalesce(excluded.theme_tint, user_ui_preferences.theme_tint),
-       chart_bar_color = coalesce(excluded.chart_bar_color, user_ui_preferences.chart_bar_color),
-       chart_color_order = coalesce(excluded.chart_color_order, user_ui_preferences.chart_color_order),
-       add_edit_ribbon_fields = coalesce(
-         excluded.add_edit_ribbon_fields,
-         user_ui_preferences.add_edit_ribbon_fields
-       ),
+     do update set ${updates.join(", ")},
        updated_at = now()`,
-    [
-      userId,
-      preferences.theme ?? null,
-      preferences.themeTint ?? null,
-      preferences.chartColorOrder?.[0] ?? preferences.chartBarColor ?? null,
-      preferences.chartColorOrder ? JSON.stringify(preferences.chartColorOrder) : null,
-      preferences.addEditRibbonFields ? JSON.stringify(preferences.addEditRibbonFields) : null,
-    ],
+    values,
   );
 }
 
@@ -1316,30 +2061,1008 @@ async function replaceUserReportPreferences(
   );
 }
 
+settingsRouter.post(
+  "/protected-backup/export",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    const password = requireString(body.password, "password");
+    if (password.length < 8) throw new HttpError(400, "Backup password must be at least 8 characters.");
+    const runId = await beginBackupRun("local", user.id);
+    try {
+      const { envelope, schema, rowCount, createdAt } = await buildProtectedBackupEnvelope(user, password);
+      const fileTimestamp = createdAt.replace(/[:.]/g, "-");
+      const fileName = `recordkeeper-backup-${fileTimestamp}.rbk`;
+      await pool.query(
+        `insert into protected_backup_log (created_by, table_count, row_count) values ($1, $2, $3)`,
+        [user.id, schema.length, rowCount],
+      );
+      await finishBackupRun(runId, "success", {
+        fileName,
+        tableCount: schema.length,
+        rowCount,
+      });
+      response.setHeader("Content-Type", "application/json");
+      response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      response.json(envelope);
+    } catch (error) {
+      await finishBackupRun(runId, "failed", {
+        errorMessage: error instanceof Error ? error.message : "Local backup failed.",
+      });
+      throw error;
+    }
+  }),
+);
+
+type FullRecoveryPackageResult = {
+  temporaryRoot: string;
+  archivePath: string;
+  fileName: string;
+  createdAt: string;
+  schemaTableCount: number;
+  applicationRowCount: number;
+  externalStorageIncluded: boolean;
+  deploymentConfigIncluded: boolean;
+  deploymentSecretsIncluded: boolean;
+};
+
+async function createFullRecoveryPackage(
+  user: BackupUser,
+  password: string,
+  destinationDirectory?: string,
+): Promise<FullRecoveryPackageResult> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new HttpError(503, "DATABASE_URL is not configured on the server.");
+
+  const createdAt = new Date().toISOString();
+  const stamp = createdAt.replace(/[:.]/g, "-");
+  const temporaryRoot = await fs.mkdtemp(join("/tmp", "recordkeeper-full-backup-"));
+  const packageRoot = join(temporaryRoot, `recordkeeper-disaster-${stamp}`);
+  const databaseDumpPath = join(packageRoot, "postgresql-database.dump");
+  const globalsPath = join(packageRoot, "postgresql-globals.sql");
+  const externalStoragePath = join(packageRoot, "external-storage.tar.gz");
+  const deploymentDir = join(packageRoot, "deployment");
+  const externalStorageDir = process.env.EXTERNAL_STORAGE_DIR?.trim();
+  const configPath = process.env.RECORDKEEPER_BACKUP_CONFIG_FILE?.trim();
+  const secretsPath = process.env.RECORDKEEPER_BACKUP_SECRETS_FILE?.trim();
+  let externalStorageIncluded = false;
+  let deploymentConfigIncluded = false;
+  let deploymentSecretsIncluded = false;
+
+  try {
+    await fs.mkdir(deploymentDir, { recursive: true, mode: 0o700 });
+    const { envelope, schema, rowCount } = await buildProtectedBackupEnvelope(user, password);
+    await fs.writeFile(join(packageRoot, "application-backup.rbk"), JSON.stringify(envelope), {
+      mode: 0o600,
+    });
+
+    await runBackupCommand(
+      process.env.PG_DUMP_PATH?.trim() || "pg_dump",
+      ["--format=custom", "--no-owner", "--file", databaseDumpPath, databaseUrl],
+      "PostgreSQL database dump",
+    );
+    await runBackupCommand(
+      process.env.PG_DUMPALL_PATH?.trim() || "pg_dumpall",
+      // pg_dumpall treats an unflagged connection string as a positional
+      // database argument on some PostgreSQL client versions.  Pass it via
+      // --dbname so both the standard and older client parsers accept it.
+      ["--globals-only", "--dbname", databaseUrl],
+      "PostgreSQL globals dump",
+      globalsPath,
+    );
+
+    if (externalStorageDir) {
+      const externalStat = await fs.stat(externalStorageDir).catch(() => undefined);
+      if (!externalStat?.isDirectory()) {
+        throw new HttpError(503, "EXTERNAL_STORAGE_DIR is configured but does not exist or is not a directory.");
+      }
+      await runBackupCommand(
+        process.env.TAR_PATH?.trim() || "tar",
+        ["-czf", externalStoragePath, "-C", dirname(externalStorageDir), basename(externalStorageDir)],
+        "External storage archive",
+      );
+      externalStorageIncluded = true;
+    } else {
+      await fs.writeFile(
+        join(packageRoot, "external-storage-not-configured.txt"),
+        "No EXTERNAL_STORAGE_DIR was configured on the server.\n",
+        { mode: 0o600 },
+      );
+    }
+
+    if (configPath) {
+      await fs.copyFile(configPath, join(deploymentDir, "deployment-config"));
+      deploymentConfigIncluded = true;
+    }
+    if (secretsPath) {
+      await fs.copyFile(secretsPath, join(deploymentDir, "deployment-secrets"));
+      deploymentSecretsIncluded = true;
+    } else {
+      await fs.writeFile(
+        join(deploymentDir, "secrets-not-included.txt"),
+        "Deployment secrets are intentionally not exported unless RECORDKEEPER_BACKUP_SECRETS_FILE is explicitly configured. Transfer secrets through the organisation's secure secret-management process.\n",
+        { mode: 0o600 },
+      );
+    }
+
+    const componentNames = (await fs.readdir(packageRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+    const checksums: Record<string, string> = {};
+    for (const componentName of componentNames) {
+      checksums[componentName] = await sha256File(join(packageRoot, componentName));
+    }
+    await fs.writeFile(
+      join(packageRoot, "manifest.json"),
+      JSON.stringify(
+        {
+          format: fullBackupFormat,
+          version: fullBackupVersion,
+          createdAt,
+          createdBy: user.username,
+          applicationBackup: "application-backup.rbk",
+          databaseDump: "postgresql-database.dump",
+          postgresGlobals: "postgresql-globals.sql",
+          externalStorage: externalStorageIncluded ? "external-storage.tar.gz" : null,
+          deploymentConfig: deploymentConfigIncluded ? "deployment/deployment-config" : null,
+          deploymentSecrets: deploymentSecretsIncluded ? "deployment/deployment-secrets" : null,
+          schemaTableCount: schema.length,
+          applicationRowCount: rowCount,
+          checksums,
+          restoreOrder: [
+            "PostgreSQL roles/globals",
+            "PostgreSQL database dump into a schema-compatible database",
+            "external storage/uploads",
+            "deployment configuration and secrets",
+            "application .rbk only when application-level recovery is required",
+          ],
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      join(packageRoot, "RECOVERY-README.txt"),
+      "This archive is encrypted with the password supplied in Settings.\n" +
+        "Keep it outside the application server and transfer it only through a secure channel.\n" +
+        "A server administrator must restore PostgreSQL globals first, then the database dump,\n" +
+        "external storage, and deployment configuration/secrets. Verify schema/migrations before restore.\n",
+      { mode: 0o600 },
+    );
+
+    const fileName = `recordkeeper-disaster-${stamp}.rkdr`;
+    const plainArchivePath = join(temporaryRoot, `recordkeeper-disaster-${stamp}.tar.gz`);
+    const encryptedArchivePath = join(temporaryRoot, fileName);
+    await runBackupCommand(
+      process.env.TAR_PATH?.trim() || "tar",
+      ["-czf", plainArchivePath, "-C", temporaryRoot, `recordkeeper-disaster-${stamp}`],
+      "Recovery package archive",
+    );
+    await encryptRecoveryArchive(plainArchivePath, encryptedArchivePath, password, {
+      createdAt,
+      externalStorageIncluded,
+      deploymentConfigIncluded,
+      deploymentSecretsIncluded,
+    });
+
+    let archivePath = encryptedArchivePath;
+    if (destinationDirectory) {
+      await fs.mkdir(destinationDirectory, { recursive: true, mode: 0o700 });
+      archivePath = join(destinationDirectory, fileName);
+      await fs.copyFile(encryptedArchivePath, archivePath);
+      await fs.rm(encryptedArchivePath, { force: true });
+      await fs.chmod(archivePath, 0o600);
+    }
+    return {
+      temporaryRoot,
+      archivePath,
+      fileName,
+      createdAt,
+      schemaTableCount: schema.length,
+      applicationRowCount: rowCount,
+      externalStorageIncluded,
+      deploymentConfigIncluded,
+      deploymentSecretsIncluded,
+    };
+  } catch (error) {
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+settingsRouter.post(
+  "/protected-backup/full-export",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    const password = requireString(body.password, "password");
+    if (password.length < 8) throw new HttpError(400, "Backup password must be at least 8 characters.");
+    const runId = await beginBackupRun("full_recovery", user.id);
+    let packageResult: FullRecoveryPackageResult | undefined;
+    try {
+      packageResult = await createFullRecoveryPackage(user, password);
+      await pool.query(
+        `insert into protected_backup_log (created_by, table_count, row_count) values ($1, $2, $3)`,
+        [user.id, packageResult.schemaTableCount, packageResult.applicationRowCount],
+      );
+      response.setHeader("Content-Type", "application/octet-stream");
+      response.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${packageResult.fileName}"`,
+      );
+      await pipeline(createReadStream(packageResult.archivePath), response);
+      await finishBackupRun(runId, "success", {
+        fileName: packageResult.fileName,
+        tableCount: packageResult.schemaTableCount,
+        rowCount: packageResult.applicationRowCount,
+        externalStorageIncluded: packageResult.externalStorageIncluded,
+        deploymentConfigIncluded: packageResult.deploymentConfigIncluded,
+        deploymentSecretsIncluded: packageResult.deploymentSecretsIncluded,
+      });
+    } catch (error) {
+      await finishBackupRun(runId, "failed", {
+        errorMessage: error instanceof Error ? error.message : "Full recovery backup failed.",
+        ...(packageResult
+          ? {
+              tableCount: packageResult.schemaTableCount,
+              rowCount: packageResult.applicationRowCount,
+              externalStorageIncluded: packageResult.externalStorageIncluded,
+              deploymentConfigIncluded: packageResult.deploymentConfigIncluded,
+              deploymentSecretsIncluded: packageResult.deploymentSecretsIncluded,
+            }
+          : {}),
+      });
+      throw error;
+    } finally {
+      if (packageResult) {
+        await fs.rm(packageResult.temporaryRoot, { recursive: true, force: true });
+      }
+    }
+  }),
+);
+
+type BackupScheduleFrequency = "daily" | "weekly";
+type BackupScheduleStatus = "idle" | "running" | "success" | "failed";
+
+type BackupScheduleRow = {
+  enabled: boolean;
+  frequency: BackupScheduleFrequency;
+  day_of_week: number;
+  time_of_day: string;
+  timezone: string;
+  destination_dir: string;
+  retention_count: number;
+  next_run_at: Date | null;
+  last_started_at: Date | null;
+  last_completed_at: Date | null;
+  last_status: BackupScheduleStatus;
+  last_error: string | null;
+  last_file_name: string | null;
+};
+
+let backupScheduleSchemaReady: Promise<void> | undefined;
+
+function getBackupScheduleTimeZone() {
+  const configured = process.env.RECORDKEEPER_BACKUP_TIMEZONE?.trim() || "Asia/Kolkata";
+  try {
+    new Intl.DateTimeFormat("en-IN", { timeZone: configured }).format();
+    return configured;
+  } catch {
+    return "Asia/Kolkata";
+  }
+}
+
+function ensureBackupScheduleSchema() {
+  backupScheduleSchemaReady ??= (async () => {
+    await pool.query(`
+      create table if not exists backup_schedule_settings (
+        id boolean primary key default true check (id),
+        enabled boolean not null default false,
+        frequency text not null default 'daily' check (frequency in ('daily', 'weekly')),
+        day_of_week smallint not null default 1 check (day_of_week between 0 and 6),
+        time_of_day text not null default '02:00' check (time_of_day ~ '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'),
+        timezone text not null default 'Asia/Kolkata',
+        destination_dir text not null default '',
+        retention_count integer not null default 7 check (retention_count between 1 and 90),
+        next_run_at timestamptz,
+        last_started_at timestamptz,
+        last_completed_at timestamptz,
+        last_status text not null default 'idle' check (last_status in ('idle', 'running', 'success', 'failed')),
+        last_error text,
+        last_file_name text,
+        updated_by uuid references app_users(id) on delete set null,
+        updated_at timestamptz not null default now()
+      )
+    `);
+    await pool.query(
+      `insert into backup_schedule_settings (id, timezone, destination_dir)
+       values (true, $1, $2)
+       on conflict (id) do nothing`,
+      [
+        getBackupScheduleTimeZone(),
+        process.env.RECORDKEEPER_BACKUP_SCHEDULE_DIR?.trim() || "",
+      ],
+    );
+  })();
+  return backupScheduleSchemaReady;
+}
+
+function getZonedDateParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone,
+    calendar: "gregory",
+    numberingSystem: "latn",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]),
+  );
+  return {
+    year: values.year,
+    month: values.month,
+    day: values.day,
+    hour: values.hour,
+    minute: values.minute,
+    second: values.second,
+  };
+}
+
+function zonedDateTimeToUtc(
+  parts: { year: number; month: number; day: number; hour: number; minute: number },
+  timeZone: string,
+) {
+  const desired = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
+  let guess = desired;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actualParts = getZonedDateParts(new Date(guess), timeZone);
+    const actual = Date.UTC(
+      actualParts.year,
+      actualParts.month - 1,
+      actualParts.day,
+      actualParts.hour,
+      actualParts.minute,
+      actualParts.second,
+      0,
+    );
+    const corrected = guess + (desired - actual);
+    if (corrected === guess) break;
+    guess = corrected;
+  }
+  return new Date(guess);
+}
+
+function nextBackupRunAt(
+  schedule: Pick<BackupScheduleRow, "frequency" | "day_of_week" | "time_of_day" | "timezone">,
+  now = new Date(),
+) {
+  const match = /^(\d{2}):(\d{2})$/.exec(schedule.time_of_day);
+  if (!match) throw new HttpError(500, "Backup schedule time is invalid.");
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const localNow = getZonedDateParts(now, schedule.timezone);
+  const localToday = Date.UTC(localNow.year, localNow.month - 1, localNow.day);
+  const todayWeekday = new Date(localToday).getUTCDay();
+  const firstOffset =
+    schedule.frequency === "weekly"
+      ? (schedule.day_of_week - todayWeekday + 7) % 7
+      : 0;
+  const increment = schedule.frequency === "weekly" ? 7 : 1;
+  for (let dayOffset = firstOffset; dayOffset <= firstOffset + increment; dayOffset += increment) {
+    const targetDate = new Date(localToday + dayOffset * 24 * 60 * 60 * 1000);
+    const candidate = zonedDateTimeToUtc(
+      {
+        year: targetDate.getUTCFullYear(),
+        month: targetDate.getUTCMonth() + 1,
+        day: targetDate.getUTCDate(),
+        hour,
+        minute,
+      },
+      schedule.timezone,
+    );
+    if (candidate.getTime() > now.getTime()) return candidate;
+  }
+  throw new HttpError(500, "Could not calculate the next backup run.");
+}
+
+function mapBackupSchedule(row: BackupScheduleRow) {
+  return {
+    enabled: row.enabled,
+    frequency: row.frequency,
+    dayOfWeek: row.day_of_week,
+    timeOfDay: row.time_of_day,
+    timezone: row.timezone,
+    destinationDir: row.destination_dir,
+    retentionCount: row.retention_count,
+    nextRunAt: row.next_run_at?.toISOString() ?? null,
+    lastStartedAt: row.last_started_at?.toISOString() ?? null,
+    lastCompletedAt: row.last_completed_at?.toISOString() ?? null,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    lastFileName: row.last_file_name,
+    schedulePasswordConfigured: Boolean(process.env.RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD?.trim()),
+    externalStorageConfigured: Boolean(process.env.EXTERNAL_STORAGE_DIR?.trim()),
+    deploymentConfigConfigured: Boolean(process.env.RECORDKEEPER_BACKUP_CONFIG_FILE?.trim()),
+    deploymentSecretsConfigured: Boolean(process.env.RECORDKEEPER_BACKUP_SECRETS_FILE?.trim()),
+  };
+}
+
+async function readBackupSchedule() {
+  await ensureBackupScheduleSchema();
+  const result = await pool.query<BackupScheduleRow>(
+    `select enabled, frequency, day_of_week, time_of_day, timezone, destination_dir,
+            retention_count, next_run_at, last_started_at, last_completed_at,
+            last_status, last_error, last_file_name
+     from backup_schedule_settings
+     where id = true`,
+  );
+  if (!result.rows[0]) throw new HttpError(404, "Backup schedule settings not found.");
+  return mapBackupSchedule(result.rows[0]);
+}
+
+type BackupHealthStatus = "success" | "failed" | "not_run" | "running";
+
+function serializeBackupRun(row: BackupRunRow | undefined) {
+  if (!row) {
+    return {
+      status: "not_run" as BackupHealthStatus,
+      lastBackupAt: null,
+      fileName: null,
+      error: null,
+      secretsIncluded: false,
+    };
+  }
+  return {
+    status: (row.status === "success" ? "success" : row.status) as BackupHealthStatus,
+    lastBackupAt: (row.completed_at ?? row.started_at).toISOString(),
+    fileName: row.file_name,
+    error: row.error_message,
+    secretsIncluded: row.deployment_secrets_included,
+  };
+}
+
+async function readBackupStatus() {
+  await ensureBackupRunLogSchema();
+  const result = await pool.query<BackupRunRow>(
+    `select distinct on (backup_type)
+            id, backup_type, status, started_at, completed_at, file_name, error_message,
+            table_count, row_count, external_storage_included,
+            deployment_config_included, deployment_secrets_included
+     from backup_run_log
+     order by backup_type, started_at desc`,
+  );
+  const latest = new Map(result.rows.map((row) => [row.backup_type, row]));
+  const latestFullRecoveryRuns = result.rows
+    .filter((row) => row.backup_type === "full_recovery" || row.backup_type === "server_scheduled")
+    .sort((left, right) => right.started_at.getTime() - left.started_at.getTime());
+  const latestFullRecovery = latestFullRecoveryRuns[0];
+  const secretInspection = await inspectDeploymentSecrets();
+  let secretStatus: BackupHealthStatus;
+  let secretError: string | null = null;
+  if (!secretInspection.configured) {
+    secretStatus = "failed";
+    secretError = secretInspection.error;
+  } else if (!latestFullRecovery) {
+    secretStatus = "not_run";
+    secretError = "No full recovery package has been completed yet.";
+  } else if (latestFullRecovery.status === "running") {
+    secretStatus = "running";
+    secretError = "The latest full recovery package is still being created.";
+  } else if (latestFullRecovery.status !== "success") {
+    secretStatus = "failed";
+    secretError = latestFullRecovery.error_message ?? "The latest full recovery package failed.";
+  } else if (!secretInspection.readable) {
+    secretStatus = "failed";
+    secretError = secretInspection.error;
+  } else if (!latestFullRecovery.deployment_secrets_included) {
+    secretStatus = "failed";
+    secretError = "The latest full recovery package did not include the configured secret file.";
+  } else {
+    secretStatus = "success";
+  }
+  const schedule = await readBackupSchedule();
+  const restoreAuthorizationConfigured = await restoreAuthorizationPasswordIsConfigured();
+  const scheduledRun = latest.get("server_scheduled");
+  const scheduleError = schedule.enabled && !schedule.schedulePasswordConfigured
+    ? "Server backup password is not configured."
+    : schedule.enabled && !schedule.destinationDir
+      ? "Server backup destination is not configured."
+      : null;
+  const serializedScheduledRun = serializeBackupRun(scheduledRun);
+  return {
+    local: serializeBackupRun(latest.get("local")),
+    fullRecovery: serializeBackupRun(latest.get("full_recovery")),
+    server: {
+      ...serializedScheduledRun,
+      status: scheduleError ? "failed" : serializedScheduledRun.status,
+      scheduleEnabled: schedule.enabled,
+      error: scheduleError ?? serializedScheduledRun.error,
+    },
+    secretFiles: {
+      status: secretStatus,
+      configured: secretInspection.configured,
+      readable: secretInspection.readable,
+      lastIncludedAt:
+        latestFullRecovery?.status === "success" && latestFullRecovery.deployment_secrets_included
+          ? (latestFullRecovery.completed_at ?? latestFullRecovery.started_at).toISOString()
+          : null,
+      lastIncludedFileName:
+        latestFullRecovery?.status === "success" && latestFullRecovery.deployment_secrets_included
+          ? latestFullRecovery.file_name
+          : null,
+      error: secretError,
+    },
+    restoreAuthorizationConfigured,
+    schedule,
+  };
+}
+
+async function pruneScheduledBackups(destinationDir: string, retentionCount: number) {
+  const entries = await fs.readdir(destinationDir, { withFileTypes: true });
+  const backups = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && /^recordkeeper-disaster-.*\.rkdr$/.test(entry.name))
+      .map(async (entry) => ({
+        name: entry.name,
+        modifiedAt: (await fs.stat(join(destinationDir, entry.name))).mtimeMs,
+      })),
+  );
+  backups.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  for (const backup of backups.slice(retentionCount)) {
+    await fs.rm(join(destinationDir, backup.name), { force: true });
+  }
+}
+
+let scheduledBackupRunning = false;
+
+async function executeScheduledBackup(force: boolean, requestedBy?: BackupUser) {
+  if (scheduledBackupRunning) return { started: false, reason: "already-running" };
+  scheduledBackupRunning = true;
+  const client = await pool.connect();
+  let lockAcquired = false;
+  try {
+    await ensureBackupScheduleSchema();
+    const lockResult = await client.query<{ locked: boolean }>(
+      "select pg_try_advisory_lock(hashtext('recordkeeper.backup.scheduler')) as locked",
+    );
+    lockAcquired = Boolean(lockResult.rows[0]?.locked);
+    if (!lockAcquired) return { started: false, reason: "another-server-instance" };
+
+    const scheduleResult = await client.query<BackupScheduleRow>(
+      `select enabled, frequency, day_of_week, time_of_day, timezone, destination_dir,
+              retention_count, next_run_at, last_started_at, last_completed_at,
+              last_status, last_error, last_file_name
+       from backup_schedule_settings
+       where id = true`,
+    );
+    const schedule = scheduleResult.rows[0];
+    if (!schedule) return { started: false, reason: "not-configured" };
+    const now = new Date();
+    if (!force && !schedule.enabled) return { started: false, reason: "disabled" };
+    if (!force && schedule.next_run_at && schedule.next_run_at.getTime() > now.getTime()) {
+      return { started: false, reason: "not-due" };
+    }
+    if (!force && !schedule.next_run_at) {
+      const nextRunAt = nextBackupRunAt(schedule, now);
+      await client.query(
+        "update backup_schedule_settings set next_run_at = $1, updated_at = now() where id = true",
+        [nextRunAt],
+      );
+      return { started: false, reason: "scheduled" };
+    }
+
+    const password = process.env.RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD?.trim();
+    if (!password || password.length < 8) {
+      throw new HttpError(503, "Configure RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD before running server backups.");
+    }
+    const destinationDir = schedule.destination_dir.trim();
+    if (!destinationDir || !isAbsolute(destinationDir)) {
+      throw new HttpError(503, "Configure an absolute backup destination directory in Settings.");
+    }
+
+    const runId = await beginBackupRun("server_scheduled", requestedBy?.id ?? null);
+    await client.query(
+      `update backup_schedule_settings
+       set last_status = 'running', last_started_at = now(), last_error = null, updated_at = now()
+       where id = true`,
+    );
+    try {
+      const packageResult = await createFullRecoveryPackage(
+        requestedBy ?? { id: "", username: "server-scheduler" },
+        password,
+        destinationDir,
+      );
+      try {
+        await client.query(
+          `insert into protected_backup_log (created_by, table_count, row_count) values ($1, $2, $3)`,
+          [requestedBy?.id || null, packageResult.schemaTableCount, packageResult.applicationRowCount],
+        );
+        await pruneScheduledBackups(destinationDir, schedule.retention_count);
+        await finishBackupRun(runId, "success", {
+          fileName: packageResult.fileName,
+          tableCount: packageResult.schemaTableCount,
+          rowCount: packageResult.applicationRowCount,
+          externalStorageIncluded: packageResult.externalStorageIncluded,
+          deploymentConfigIncluded: packageResult.deploymentConfigIncluded,
+          deploymentSecretsIncluded: packageResult.deploymentSecretsIncluded,
+        });
+      } finally {
+        await fs.rm(packageResult.temporaryRoot, { recursive: true, force: true });
+      }
+      const nextRunAt = schedule.enabled ? nextBackupRunAt(schedule, new Date()) : null;
+      await client.query(
+        `update backup_schedule_settings
+         set last_status = 'success', last_completed_at = now(), last_error = null,
+             last_file_name = $1, next_run_at = $2, updated_at = now()
+         where id = true`,
+        [packageResult.fileName, nextRunAt],
+      );
+      return { started: true, fileName: packageResult.fileName };
+    } catch (error) {
+      await finishBackupRun(runId, "failed", {
+        errorMessage: error instanceof Error ? error.message : "Scheduled backup failed.",
+      });
+      const nextRunAt = schedule.enabled ? nextBackupRunAt(schedule, new Date()) : null;
+      await client.query(
+        `update backup_schedule_settings
+         set last_status = 'failed', last_error = $1, next_run_at = $2, updated_at = now()
+         where id = true`,
+        [error instanceof Error ? error.message.slice(0, 1000) : "Backup failed.", nextRunAt],
+      );
+      throw error;
+    }
+  } finally {
+    if (lockAcquired) {
+      await client.query("select pg_advisory_unlock(hashtext('recordkeeper.backup.scheduler'))");
+    }
+    client.release();
+    scheduledBackupRunning = false;
+  }
+}
+
+settingsRouter.get(
+  "/protected-backup/schedule",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    response.json({ schedule: await readBackupSchedule() });
+  }),
+);
+
+settingsRouter.get(
+  "/protected-backup/status",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    response.json({ status: await readBackupStatus() });
+  }),
+);
+
+settingsRouter.get(
+  "/protected-backup/restore-authorization",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    response.json({ configured: await restoreAuthorizationPasswordIsConfigured() });
+  }),
+);
+
+settingsRouter.put(
+  "/protected-backup/restore-authorization",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await saveRestoreAuthorizationPassword(body.password, body.confirmation);
+    response.json({ configured: true });
+  }),
+);
+
+settingsRouter.post(
+  "/protected-backup/restore-authorization/verify",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await verifyRestoreAuthorizationPassword(body.password);
+    response.json({ authorized: true });
+  }),
+);
+
+settingsRouter.put(
+  "/protected-backup/schedule",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    if (typeof body.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false.");
+    if (body.frequency !== "daily" && body.frequency !== "weekly") {
+      throw new HttpError(400, "frequency must be daily or weekly.");
+    }
+    if (!Number.isInteger(body.dayOfWeek) || Number(body.dayOfWeek) < 0 || Number(body.dayOfWeek) > 6) {
+      throw new HttpError(400, "dayOfWeek must be between 0 and 6.");
+    }
+    if (typeof body.timeOfDay !== "string" || !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(body.timeOfDay)) {
+      throw new HttpError(400, "timeOfDay must use HH:MM format.");
+    }
+    if (typeof body.destinationDir !== "string" || (body.enabled && !body.destinationDir.trim())) {
+      throw new HttpError(400, "destinationDir is required when backups are enabled.");
+    }
+    const destinationDir = body.destinationDir.trim();
+    if (destinationDir && !isAbsolute(destinationDir)) {
+      throw new HttpError(400, "destinationDir must be an absolute server path.");
+    }
+    if (!Number.isInteger(body.retentionCount) || Number(body.retentionCount) < 1 || Number(body.retentionCount) > 90) {
+      throw new HttpError(400, "retentionCount must be between 1 and 90.");
+    }
+    if (body.enabled) {
+      const password = process.env.RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD?.trim();
+      if (!password || password.length < 8) {
+        throw new HttpError(400, "Configure RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD on the server before enabling scheduled backups.");
+      }
+    }
+    await ensureBackupScheduleSchema();
+    const timezone = getBackupScheduleTimeZone();
+    const nextRunAt = body.enabled
+      ? nextBackupRunAt(
+          {
+            frequency: body.frequency,
+            day_of_week: Number(body.dayOfWeek),
+            time_of_day: body.timeOfDay,
+            timezone,
+          },
+          new Date(),
+        )
+      : null;
+    await pool.query(
+      `update backup_schedule_settings
+       set enabled = $1, frequency = $2, day_of_week = $3, time_of_day = $4,
+           timezone = $5, destination_dir = $6, retention_count = $7,
+           next_run_at = $8, last_error = null, updated_by = $9, updated_at = now()
+       where id = true`,
+      [
+        body.enabled,
+        body.frequency,
+        Number(body.dayOfWeek),
+        body.timeOfDay,
+        timezone,
+        destinationDir,
+        Number(body.retentionCount),
+        nextRunAt,
+        user.id,
+      ],
+    );
+    response.json({ schedule: await readBackupSchedule() });
+  }),
+);
+
+settingsRouter.post(
+  "/protected-backup/schedule/run",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const result = await executeScheduledBackup(true, { id: user.id, username: user.username });
+    response.json({ result, schedule: await readBackupSchedule() });
+  }),
+);
+
+let backupSchedulerTimer: ReturnType<typeof setInterval> | undefined;
+
+export function startBackupScheduler() {
+  if (backupSchedulerTimer) return;
+  const intervalMs = Math.max(
+    15_000,
+    Number(process.env.RECORDKEEPER_BACKUP_SCHEDULER_INTERVAL_MS ?? 60_000) || 60_000,
+  );
+  backupSchedulerTimer = setInterval(() => {
+    void executeScheduledBackup(false).catch((error) => {
+      console.error("Scheduled backup failed:", error);
+    });
+  }, intervalMs);
+  void executeScheduledBackup(false).catch((error) => {
+    console.error("Scheduled backup check failed:", error);
+  });
+}
+
+settingsRouter.post(
+  "/protected-backup/restore",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    const backupFilePassword = requireString(body.backupFilePassword, "backupFilePassword");
+    const restoreAuthorizationPassword = requireString(
+      body.restoreAuthorizationPassword,
+      "restoreAuthorizationPassword",
+    );
+    await verifyRestoreAuthorizationPassword(restoreAuthorizationPassword);
+    const backup = decryptProtectedBackup(body.backup, backupFilePassword);
+    if (backup.format !== protectedBackupFormat || typeof backup.tables !== "object" || !backup.tables) {
+      throw new HttpError(400, "Backup contents are invalid.");
+    }
+    const tables = backup.tables as Record<string, unknown>;
+    const isCurrentBackup = backup.schemaVersion === protectedBackupSchemaVersion;
+    const backupSchema = isCurrentBackup && backup.schema && typeof backup.schema === "object"
+      ? backup.schema as { tables?: unknown; fingerprint?: unknown }
+      : undefined;
+    if (isCurrentBackup && (!backupSchema || !Array.isArray(backupSchema.tables))) {
+      throw new HttpError(400, "Backup schema metadata is missing or invalid.");
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const currentSchema = await readPublicTableSchema((sql) => client.query(sql));
+      const currentTableNames = new Set(currentSchema.map((table) => table.tableName));
+      const backupTableNames = Object.keys(tables);
+      if (isCurrentBackup) {
+        const declaredTables = (Array.isArray(backupSchema?.tables) ? backupSchema.tables : []).filter(
+          (table): table is { name: string; columns: string[] } =>
+            Boolean(table) &&
+            typeof table === "object" &&
+            typeof (table as { name?: unknown }).name === "string" &&
+            Array.isArray((table as { columns?: unknown }).columns) &&
+            (table as { columns: unknown[] }).columns.every((column) => typeof column === "string"),
+        );
+        const declaredTableNames = new Set(declaredTables.map((table) => table.name));
+        const missingTables = currentSchema
+          .map((table) => table.tableName)
+          .filter((tableName) => !declaredTableNames.has(tableName) || !Object.hasOwn(tables, tableName));
+        const unknownTables = backupTableNames.filter((tableName) => !currentTableNames.has(tableName));
+        if (missingTables.length || unknownTables.length) {
+          throw new HttpError(
+            400,
+            `Backup schema is incompatible. Missing tables: ${missingTables.join(", ") || "none"}; ` +
+              `unknown tables: ${unknownTables.join(", ") || "none"}.`,
+          );
+        }
+        const declaredFingerprint = typeof backupSchema?.fingerprint === "string"
+          ? backupSchema.fingerprint
+          : "";
+        if (declaredFingerprint && declaredFingerprint !== schemaFingerprint(
+          declaredTables.map((table) => ({ tableName: table.name, columns: table.columns })),
+        )) {
+          throw new HttpError(400, "Backup schema metadata is inconsistent.");
+        }
+      }
+      const currentSchemaByTable = new Map(currentSchema.map((table) => [table.tableName, table]));
+      const tableNames = backupTableNames.filter((name) => currentTableNames.has(name));
+      if (!tableNames.length) throw new HttpError(400, "Backup contains no restorable application tables.");
+      for (const tableName of tableNames) {
+        const table = tables[tableName];
+        if (!table || typeof table !== "object") {
+          throw new HttpError(400, `Backup table ${tableName} is invalid.`);
+        }
+        const value = table as { columns?: unknown; rows?: unknown };
+        if (!Array.isArray(value.columns) || !Array.isArray(value.rows)) {
+          throw new HttpError(400, `Backup table ${tableName} is incomplete.`);
+        }
+        const columns = value.columns;
+        if (!columns.length || columns.some((column) => typeof column !== "string" || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))) {
+          throw new HttpError(400, `Backup table ${tableName} has invalid columns.`);
+        }
+        if (value.rows.some((row) => !Array.isArray(row) || row.length !== columns.length)) {
+          throw new HttpError(400, `Backup table ${tableName} has invalid rows.`);
+        }
+        if (isCurrentBackup) {
+          const expectedColumns = currentSchemaByTable.get(tableName)?.columns ?? [];
+          const missingColumns = expectedColumns.filter((column) => !columns.includes(column));
+          const unknownColumns = columns.filter((column) => !expectedColumns.includes(column));
+          if (missingColumns.length || unknownColumns.length) {
+            throw new HttpError(
+              400,
+              `Backup table ${tableName} is incompatible. Missing columns: ${missingColumns.join(", ") || "none"}; ` +
+                `unknown columns: ${unknownColumns.join(", ") || "none"}.`,
+            );
+          }
+        }
+      }
+      await client.query(`truncate table ${tableNames.map(quoteIdentifier).join(", ")} restart identity cascade`);
+      await client.query("set local session_replication_role = replica");
+      let restoredRows = 0;
+      for (const tableName of tableNames) {
+        const table = tables[tableName];
+        if (!table || typeof table !== "object") continue;
+        const value = table as { columns?: unknown; rows?: unknown };
+        const columns = Array.isArray(value.columns)
+          ? value.columns.filter((column): column is string => typeof column === "string" && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))
+          : [];
+        const rows = Array.isArray(value.rows) ? value.rows.filter(Array.isArray) as unknown[][] : [];
+        if (!columns.length || !rows.length) continue;
+        const existingColumnsResult = await client.query<{ column_name: string; data_type: string; udt_name: string }>(
+          `select column_name, data_type, udt_name
+           from information_schema.columns
+           where table_schema = 'public' and table_name = $1`,
+          [tableName],
+        );
+        const existingColumns = new Set(existingColumnsResult.rows.map((row) => row.column_name));
+        const usableColumns = columns.filter((column) => existingColumns.has(column));
+        const columnTypes = new Map(
+          existingColumnsResult.rows.map((row) => [row.column_name, row.data_type === "USER-DEFINED" ? row.udt_name : row.data_type]),
+        );
+        if (!usableColumns.length) continue;
+        for (let offset = 0; offset < rows.length; offset += 200) {
+          const batch = rows.slice(offset, offset + 200);
+          const values: unknown[] = [];
+          const placeholders = batch.map((row, rowIndex) => `(${usableColumns.map((_, columnIndex) => {
+            const column = usableColumns[columnIndex];
+            const rawValue = row[columns.indexOf(column)] ?? null;
+            const valueType = columnTypes.get(column);
+            values.push(
+              rawValue !== null && (valueType === "json" || valueType === "jsonb") && typeof rawValue !== "string"
+                ? JSON.stringify(rawValue)
+                : rawValue,
+            );
+            return `$${values.length}`;
+          }).join(", ")})`).join(", ");
+          await client.query(
+            `insert into ${quoteIdentifier(tableName)} (${usableColumns.map(quoteIdentifier).join(", ")}) values ${placeholders}`,
+            values,
+          );
+          restoredRows += batch.length;
+        }
+      }
+      // Inserts preserve backed-up IDs, so advance every identity/serial
+      // sequence before the next normal write. Without this, the first new
+      // record after a restore can collide with an existing primary key.
+      await resetPublicSequences(client);
+      await client.query("commit");
+      clearSettingsCache();
+      clearDashboardReportCaches();
+      response.json({ restored: true, tables: tableNames.length, rows: restoredRows });
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
 settingsRouter.get(
   "/",
   asyncHandler(async (request, response) => {
-    const user = (request as AuthRequest).authUser;
+    const user = requireAuth(request as AuthRequest);
     const settings = await getSettings(user);
     response.json({
-      settings:
-        user?.role === "admin"
-          ? settings
-          : {
-              ...settings,
-              deletionPassword: "",
-              activeUserId: user?.id,
-            },
+      settings: {
+        ...settings,
+        deletionPassword: "",
+        deletionPasswordConfigured: await deletionPasswordIsConfigured(user.id),
+        activeUserId: user.id,
+      },
     });
+  }),
+);
+
+settingsRouter.put(
+  "/deletion-password",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const body = requireObjectBody(request.body);
+    await saveDeletionPassword(
+      user.id,
+      body.deletionPassword,
+      body.deletionPasswordConfirmation,
+    );
+    response.json({ configured: true });
   }),
 );
 
 settingsRouter.post(
   "/verify-deletion-password",
   asyncHandler(async (request, response) => {
-    requireAuth(request as AuthRequest);
+    const user = requireAuth(request as AuthRequest);
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     response.json({ valid: true });
   }),
 );
@@ -1348,8 +3071,8 @@ settingsRouter.patch(
   "/financial-years/:label/archive",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin" && user.role !== "sub_admin") {
-      throw new HttpError(403, "Admin or Sub-admin access required.");
+    if (user.role !== "admin") {
+      throw new HttpError(403, "Admin access required.");
     }
     const label = requireParam(request.params.label, "label").trim();
     if (!label || !isFinancialYearLabel(label)) {
@@ -1390,6 +3113,40 @@ settingsRouter.get(
       return;
     }
     const preferences = await loadUserReportPreferences(user.id, reportKey);
+    response.json({ preferences });
+  }),
+);
+
+settingsRouter.get(
+  "/notice-board-preferences",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!isStoredAppUser(user)) {
+      response.json({ preferences: noticeBoardPersonalDefaults, saved: false });
+      return;
+    }
+    const stored = await loadUserReportPreferences(user.id, "noticeBoard");
+    response.json({
+      preferences: normalizeNoticeBoardPersonalPreferences(stored),
+      saved: Boolean(
+        stored &&
+        typeof stored === "object" &&
+        !Array.isArray(stored) &&
+        Object.keys(stored).length,
+      ),
+    });
+  }),
+);
+
+settingsRouter.patch(
+  "/notice-board-preferences",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!isStoredAppUser(user))
+      throw new HttpError(403, "This account cannot save Notice Board preferences.");
+    const body = requireObjectBody(request.body);
+    const preferences = normalizeNoticeBoardPersonalPreferences(body);
+    await replaceUserReportPreferences(user.id, "noticeBoard", preferences);
     response.json({ preferences });
   }),
 );
@@ -1470,7 +3227,7 @@ settingsRouter.delete(
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const id = requireParam(request.params.id, "id");
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     await deleteArchivedIpAttempt(id);
     response.json({ ipAccess: await getIpAccessConfig(getRequestIp(request)) });
   }),
@@ -1530,14 +3287,60 @@ settingsRouter.patch(
     await ensurePreSoSettingsSchema();
     const body = requireObjectBody(request.body);
     const bodyFields = Object.keys(body);
+    // These values change shared application behaviour for every account. Keep
+    // them separate from personal display preferences so a non-admin cannot
+    // smuggle a global update through an otherwise valid preference request.
+    const adminOnlySettingsFields = new Set([
+      "financialYear",
+      "selectedYear",
+      "setupYear",
+      "financialYearStatuses",
+      "yearSelectionLocked",
+      "tcecCommittees",
+      "valueThresholdLevels",
+      "milestones",
+      "firmTypes",
+      "fileTypes",
+      "fileTypeGroups",
+      "modes",
+      "gemBiddingModes",
+      "mmgLiveEnabled",
+      "mmgLiveOptions",
+      "mmgSummaryFields",
+      "demandProcessingPresets",
+      "demandProcessingDayRanges",
+      "bgReceiptDelayDays",
+      "specialFileMarkers",
+      "firmUniqueNoLabel",
+      "firmRatingConfig",
+      "preSoDefaultSoOffsetDays",
+      "preSoDefaultPaymentOffsetDays",
+      "bgReturnOffsetDays",
+      "delayStatusDefaultDays",
+      "sharedQuickAccess",
+      "quickEntryExcelPresets",
+      "quickEntryExcelPresetsLegacyImported",
+      "globalChartColorOrder",
+      "globalChartColorsEnforced",
+      "activeUserId",
+    ]);
+    const attemptedAdminOnlyFields = bodyFields.filter((field) =>
+      adminOnlySettingsFields.has(field),
+    );
+    if (attemptedAdminOnlyFields.length > 0 && user.role !== "admin") {
+      throw new HttpError(403, "Admin access required for shared settings.");
+    }
     const userEditableFields = new Set([
       "theme",
       "themeTint",
+      "appearancePreset",
+      "fontFamily",
+      "topRibbonColor",
+      "topRibbonTextColor",
       "chartBarColor",
       "chartColorOrder",
       "tableFieldPresets",
       "liveStatusLockedFields",
-      "mmgSummaryFields",
       "addEditRibbonFields",
     ]);
     const canUpdateTableFieldPresets =
@@ -1548,8 +3351,7 @@ settingsRouter.patch(
       user.role === "division_user" ||
       user.role === "viewer" ||
       user.role === "universal_viewer";
-    const canUpdateMmgSummaryFields =
-      !("mmgSummaryFields" in body) || user.role === "admin" || user.role === "sub_admin";
+    const canUpdateMmgSummaryFields = !("mmgSummaryFields" in body) || user.role === "admin";
     const preSoDefaultFields = new Set([
       "preSoDefaultSoOffsetDays",
       "preSoDefaultPaymentOffsetDays",
@@ -1559,18 +3361,21 @@ settingsRouter.patch(
     const canUpdatePreSoDefaults =
       bodyFields.length > 0 &&
       bodyFields.every((field) => preSoDefaultFields.has(field)) &&
-      (user.role === "admin" || user.role === "sub_admin");
+      user.role === "admin";
     const canUpdateGemBiddingModes =
       bodyFields.length > 0 &&
       bodyFields.every((field) => field === "gemBiddingModes") &&
-      (user.role === "admin" || user.role === "sub_admin");
+      user.role === "admin";
     const canUpdateFinancialYearStatuses =
       bodyFields.length > 0 &&
       bodyFields.every((field) => field === "financialYearStatuses") &&
-      (user.role === "admin" || user.role === "sub_admin");
+      user.role === "admin";
     const changesChartPreference = "chartColorOrder" in body || "chartBarColor" in body;
     if (changesChartPreference && (await getSettings(user)).globalChartColorsEnforced) {
-      throw new HttpError(409, "Chart colours are currently set by an administrator for all users.");
+      throw new HttpError(
+        409,
+        "Chart colours are currently set by an administrator for all users.",
+      );
     }
     const canUpdateUserPreference =
       canUpdateTableFieldPresets &&
@@ -1622,8 +3427,8 @@ settingsRouter.patch(
       addField("setup_year", setupYear);
     }
     if ("financialYearStatuses" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin or Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       const statuses = readFinancialYearStatuses(body.financialYearStatuses);
       const settings = await getSettings(user);
@@ -1678,12 +3483,32 @@ settingsRouter.patch(
     }
     if (
       isStoredAppUser(user) &&
-      ("theme" in body || "themeTint" in body || "chartBarColor" in body || "chartColorOrder" in body || "addEditRibbonFields" in body)
+      ("theme" in body ||
+        "themeTint" in body ||
+        "appearancePreset" in body ||
+        "fontFamily" in body ||
+        "topRibbonColor" in body ||
+        "topRibbonTextColor" in body ||
+        "chartBarColor" in body ||
+        "chartColorOrder" in body ||
+        "addEditRibbonFields" in body)
     ) {
       await replaceUserUiPreferences(user.id, {
         ...("theme" in body ? { theme: readTheme(body.theme) } : {}),
         ...("themeTint" in body ? { themeTint: readThemeTint(body.themeTint) } : {}),
-        ...("chartBarColor" in body ? { chartBarColor: readChartBarColor(body.chartBarColor) } : {}),
+        ...("appearancePreset" in body
+          ? { appearancePreset: readAppearancePreset(body.appearancePreset) }
+          : {}),
+        ...("fontFamily" in body ? { fontFamily: readFontFamily(body.fontFamily) } : {}),
+        ...("topRibbonColor" in body
+          ? { topRibbonColor: readOptionalTopRibbonColor(body.topRibbonColor) }
+          : {}),
+        ...("topRibbonTextColor" in body
+          ? { topRibbonTextColor: readOptionalTopRibbonTextColor(body.topRibbonTextColor) }
+          : {}),
+        ...("chartBarColor" in body
+          ? { chartBarColor: readChartBarColor(body.chartBarColor) }
+          : {}),
         ...("chartBarColor" in body && !("chartColorOrder" in body)
           ? {
               chartColorOrder: [
@@ -1692,14 +3517,14 @@ settingsRouter.patch(
               ],
             }
           : {}),
-        ...("chartColorOrder" in body ? { chartColorOrder: readChartColorOrder(body.chartColorOrder) } : {}),
+        ...("chartColorOrder" in body
+          ? { chartColorOrder: readChartColorOrder(body.chartColorOrder) }
+          : {}),
         ...("addEditRibbonFields" in body
           ? { addEditRibbonFields: readAddEditRibbonFields(body.addEditRibbonFields) }
           : {}),
       });
     }
-    if ("deletionPassword" in body)
-      addField("deletion_password", toDbText(body.deletionPassword) ?? "");
     if ("tcecCommittees" in body) {
       const settings = await getSettings();
       const financialYear =
@@ -1708,13 +3533,12 @@ settingsRouter.patch(
           : settings.setupYear;
       const tcecCommittees = readStringArray(body.tcecCommittees, "tcecCommittees");
       await assertTcecCommitteesCanChange(financialYear, tcecCommittees);
-      await replaceTcecCommittees(
-        financialYear,
-        tcecCommittees,
-      );
+      await replaceTcecCommittees(financialYear, tcecCommittees);
     }
     if ("valueThresholdLevels" in body) {
-      await replaceValueThresholdLevels(readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"));
+      await replaceValueThresholdLevels(
+        readArrayValue(body.valueThresholdLevels, "valueThresholdLevels"),
+      );
     }
     if ("milestones" in body) {
       const milestones = readStringArray(body.milestones, "milestones");
@@ -1724,11 +3548,7 @@ settingsRouter.patch(
     if ("firmTypes" in body) {
       const firmTypes = readStringArray(body.firmTypes, "firmTypes");
       await assertFirmTypesCanChange(firmTypes);
-      addField(
-        "firm_types",
-        JSON.stringify(firmTypes),
-        "::jsonb",
-      );
+      addField("firm_types", JSON.stringify(firmTypes), "::jsonb");
     }
     if ("fileTypes" in body || "fileTypeGroups" in body) {
       const settings = await getSettings(user);
@@ -1749,8 +3569,8 @@ settingsRouter.patch(
       addField("modes", JSON.stringify(modes), "::jsonb");
     }
     if ("gemBiddingModes" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin/Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       const gemBiddingModes = normalizeGemBiddingModes(
         readStringArray(body.gemBiddingModes, "gemBiddingModes"),
@@ -1792,11 +3612,7 @@ settingsRouter.patch(
     if ("specialFileMarkers" in body) {
       const specialFileMarkers = readSpecialFileMarkers(body.specialFileMarkers);
       await assertSpecialFileMarkersCanChange(specialFileMarkers);
-      addField(
-        "special_file_markers",
-        JSON.stringify(specialFileMarkers),
-        "::jsonb",
-      );
+      addField("special_file_markers", JSON.stringify(specialFileMarkers), "::jsonb");
     }
     if ("firmUniqueNoLabel" in body)
       addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
@@ -1807,8 +3623,8 @@ settingsRouter.patch(
         "::jsonb",
       );
     if ("preSoDefaultSoOffsetDays" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin/Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       addField(
         "pre_so_default_so_offset_days",
@@ -1816,8 +3632,8 @@ settingsRouter.patch(
       );
     }
     if ("preSoDefaultPaymentOffsetDays" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin/Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       addField(
         "pre_so_default_payment_offset_days",
@@ -1828,8 +3644,8 @@ settingsRouter.patch(
       );
     }
     if ("bgReturnOffsetDays" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin/Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       addField(
         "bg_return_offset_days",
@@ -1837,8 +3653,8 @@ settingsRouter.patch(
       );
     }
     if ("delayStatusDefaultDays" in body) {
-      if (user.role !== "admin" && user.role !== "sub_admin") {
-        throw new HttpError(403, "Admin/Sub-admin access required.");
+      if (user.role !== "admin") {
+        throw new HttpError(403, "Admin access required.");
       }
       addField(
         "delay_status_default_days",
@@ -1863,7 +3679,10 @@ settingsRouter.patch(
       addField("quick_entry_excel_presets_legacy_imported", true);
     } else if ("quickEntryExcelPresetsLegacyImported" in body) {
       if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
-      addField("quick_entry_excel_presets_legacy_imported", body.quickEntryExcelPresetsLegacyImported === true);
+      addField(
+        "quick_entry_excel_presets_legacy_imported",
+        body.quickEntryExcelPresetsLegacyImported === true,
+      );
     }
     if ("tableFieldPresets" in body && user.role === "admin") {
       addField(
@@ -1910,6 +3729,10 @@ settingsRouter.patch(
       !("mmgSummaryFields" in body) &&
       !("theme" in body) &&
       !("themeTint" in body) &&
+      !("appearancePreset" in body) &&
+      !("fontFamily" in body) &&
+      !("topRibbonColor" in body) &&
+      !("topRibbonTextColor" in body) &&
       !("chartBarColor" in body) &&
       !("chartColorOrder" in body) &&
       !("addEditRibbonFields" in body) &&

@@ -261,7 +261,7 @@ function collectCashOutgo(checks, passName, summary, pass) {
     ["Delivery / D.P. Done, Bill Prepared", "billPreparation", summary.expectedCashOutgoBillPreparationRows],
     ["Bills Submitted, Payment Pending", "billSent", summary.billSentForPaymentRows],
     ["Expected Cash Outgo by D.P.", "expectedDp", summary.expectedCashOutgoDpRows],
-    ["Actual Cash Outgo as on Date", "actual", summary.actualCashOutgoRows],
+    ["Recorded Cash Outgo as on Date", "actual", summary.actualCashOutgoRows],
     ["Bills Paid in Selected Month", "actual", billsPaidInMonthRows],
     ["Supplementary bills submitted, payment pending", "supplementaryBillSent", summary.supplementaryBillSentForPaymentRows],
     ["Supplementary bills paid", "supplementaryActual", summary.supplementaryActualCashOutgoRows],

@@ -9,8 +9,9 @@ const filters = [
   "paymentInProcess", "advancePending", "advancePaid", "supplementaryBill:pending",
   "supplementaryBill:returned", "supplementaryBill:resubmitted",
   "milestonePending:supplyOrder", "manualMilestoneCurrent:Financial Sanction",
-  "preBidMeeting:completed", "liveBids", "status2DpPending", "status2DpExpired", "bgExpired:pwb",
-  "delayStatus:5:supplyOrder", "delayStatus:5:paymentPreSubmission",
+  "preBidMeeting:completed", "liveBids", "attribute:biddingStageOver:yes",
+  "attribute:refloatBiddingStageOver:yes", "status2DpPending", "status2DpExpired", "bgExpired:pwb",
+  "miscNoFurtherAction", "delayStatus:5:supplyOrder", "delayStatus:5:paymentPreSubmission",
 ];
 
 async function login() {

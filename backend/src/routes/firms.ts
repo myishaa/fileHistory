@@ -2,6 +2,7 @@ import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { AuthUser, MasterFirm } from "../types.js";
 import { canMutateFiles, requireAuth, type AuthRequest } from "../utils/auth.js";
+import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import { fromDbText, toDbText } from "../utils/db-values.js";
 import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../utils/http.js";
 
@@ -215,22 +216,6 @@ function canManageFirms(user: AuthUser) {
 
 function canDeleteFirms(user: AuthUser) {
   return user.role === "admin" || user.role === "sub_admin";
-}
-
-async function verifyDeletionPassword(value: unknown) {
-  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ ok: boolean; configured: boolean }>(
-    `select
-       deletion_password <> '' as configured,
-       deletion_password <> '' and deletion_password = $1 as ok
-     from app_settings
-     where id = true`,
-    [value],
-  );
-  if (!result.rows[0]?.configured) {
-    throw new HttpError(400, "Set a deletion password in admin settings before deleting firms.");
-  }
-  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
 }
 
 async function assertFirmUnusedBeforeArchive(firm: MasterFirm) {
@@ -517,7 +502,7 @@ firmsRouter.delete(
     const user = requireAuth(request as AuthRequest);
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const firm = await getFirm(id, true);
     if (!firm?.archivedAt) throw new HttpError(404, "Archived firm was not found.");

@@ -14,6 +14,7 @@ import { type CSSProperties, type FormEvent, useEffect, useState } from "react";
 import appCss from "../styles.css?url";
 import { chartColorVariables } from "@/lib/chart-colors";
 import { TopBar } from "@/components/top-bar";
+import { UrgentMessagePrompt } from "@/components/urgent-messages";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
 
@@ -90,6 +91,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
     links: [
       {
+        rel: "preconnect",
+        href: "https://fonts.googleapis.com",
+      },
+      {
+        rel: "preconnect",
+        href: "https://fonts.gstatic.com",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=Nunito+Sans:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap",
+      },
+      {
         rel: "stylesheet",
         href: appCss,
       },
@@ -122,8 +136,21 @@ function RootComponent() {
   const activeUser = useActiveUser();
   const storeStatus = useStoreStatus();
   const [filterScopeWarningActive, setFilterScopeWarningActive] = useState(false);
+  const [noticeBoardRotationActive, setNoticeBoardRotationActive] = useState(() =>
+    typeof document !== "undefined" &&
+    document.documentElement.dataset.noticeBoardRotation === "active",
+  );
   const themeClass = settings.theme === "dark" ? "dark" : "";
   const tintClass = `theme-tint-${settings.themeTint}`;
+  const fontClass = `app-font-${settings.fontFamily ?? "inter"}`;
+  const fontFamily =
+    {
+      inter: '"Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      manrope: '"Manrope", "Inter", ui-sans-serif, system-ui, sans-serif',
+      sourceSans: '"Source Sans 3", "Segoe UI", ui-sans-serif, system-ui, sans-serif',
+      nunito: '"Nunito Sans", "Inter", ui-sans-serif, system-ui, sans-serif',
+    }[settings.fontFamily ?? "inter"] ??
+    '"Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   const isPublicLivePage = pathname === "/mmg-live";
   const isNoticeBoardEmbed =
     typeof window !== "undefined" &&
@@ -142,11 +169,24 @@ function RootComponent() {
     return () => window.removeEventListener("recordkeeper:filter-warning-state", updateWarning);
   }, []);
 
+  useEffect(() => {
+    const updateRotationState = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setNoticeBoardRotationActive(
+        detail?.active === true ||
+          document.documentElement.dataset.noticeBoardRotation === "active",
+      );
+    };
+    window.addEventListener("recordkeeper:notice-board-rotation", updateRotationState);
+    return () =>
+      window.removeEventListener("recordkeeper:notice-board-rotation", updateRotationState);
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <div
         className={
-          `${themeClass} ${tintClass} min-h-screen w-full overflow-y-auto text-foreground ` +
+          `${themeClass} ${tintClass} ${fontClass} min-h-screen w-full overflow-x-clip overflow-y-auto overscroll-x-none text-foreground ` +
           (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
         }
         style={
@@ -154,6 +194,9 @@ function RootComponent() {
             "--chart-bar-color":
               settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
             ...chartColorVariables(settings.chartColorOrder),
+            "--font-sans": fontFamily,
+            "--font-display": fontFamily,
+            fontFamily,
           } as CSSProperties
         }
       >
@@ -185,6 +228,9 @@ function RootComponent() {
         ) : activeUser ? (
           <>
             {!isNoticeBoardEmbed ? <TopBar /> : null}
+            {!isNoticeBoardEmbed ? (
+              <UrgentMessagePrompt suppress={noticeBoardRotationActive} />
+            ) : null}
             {storeStatus.error ? (
               <div
                 role="alert"
@@ -286,10 +332,10 @@ function LoginScreen() {
     <main className="grid min-h-screen place-items-center bg-background px-4">
       <form
         onSubmit={submit}
-        className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-card)]"
+        className="w-full max-w-[476px] rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-card)]"
       >
         <div className="mb-5">
-          <h1 className="text-lg font-semibold">MMG (BU), Advanced Systems Laboratory</h1>
+          <h1 className="text-lg font-semibold sm:whitespace-nowrap">MMG (BU), Advanced Systems Laboratory</h1>
           <p className="mt-1 text-sm text-muted-foreground">Your IP address is {ipAddress}</p>
         </div>
         <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-border bg-secondary/30 p-1">

@@ -1,4 +1,4 @@
-import { isFileVisibleForYear } from "../src/lib/year-filter.ts";
+import { isFileVisibleForYear, isInactiveFile } from "../src/lib/year-filter.ts";
 import { getFileTypeCategoryKey, matchesFileCategorySelection } from "../backend/src/utils/file-categories.ts";
 
 const API_BASE_URL = process.env.BACKEND_URL ?? "http://localhost:3001";
@@ -71,6 +71,7 @@ function scopeParams(scope) {
     dashboardFilter: "totalFiles",
     page: "1",
     pageSize: String(pageSize),
+    includeActiveArchivedYears: "true",
   });
   if (scope.fileYear !== "all") params.set("fileYear", scope.fileYear);
   if (scope.division !== "all") params.set("divisionFilter", scope.division);
@@ -80,9 +81,27 @@ function scopeParams(scope) {
   return params;
 }
 
-function expectedForScope(sourceFiles, settings, scope) {
+function archivedYearLabels(settings) {
+  return new Set(
+    (settings.financialYearStatuses ?? [])
+      .filter((status) => status?.archived === true)
+      .map((status) => String(status.label ?? "").trim())
+      .filter(Boolean),
+  );
+}
+
+function isSearchableForScope(file, settings, scope, archivedYears) {
+  // Normal Search applies the archived-year predicate to every scope except
+  // the explicit all-files historical scope. Active carry-forward files from
+  // archived years remain searchable; inactive files from those years do not.
+  if (scope.globalYear === GLOBAL_ALL_FILES) return true;
+  return !(archivedYears.has(String(file.year ?? "").trim()) && isInactiveFile(file));
+}
+
+function expectedForScope(sourceFiles, settings, scope, archivedYears) {
   return sourceFiles.filter((file) => {
     if (!isFileVisibleForYear(file, scope.globalYear, settings.financialYear)) return false;
+    if (!isSearchableForScope(file, settings, scope, archivedYears)) return false;
     if (scope.fileYear !== "all" && file.year !== scope.fileYear) return false;
     if (scope.division !== "all" && file.division?.toLowerCase() !== scope.division.toLowerCase()) return false;
     if (scope.categories?.length && !matchesFileCategorySelection(file, scope.categories)) return false;
@@ -94,12 +113,13 @@ function expectedForScope(sourceFiles, settings, scope) {
 
 async function runChecks(checks, sourceFiles, settings, token) {
   const issues = [];
+  const archivedYears = archivedYearLabels(settings);
   let next = 0;
   const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
     while (next < checks.length) {
       const index = next++;
       const scope = checks[index];
-      const expectedIds = ids(expectedForScope(sourceFiles, settings, scope));
+      const expectedIds = ids(expectedForScope(sourceFiles, settings, scope, archivedYears));
       const path = `/api/files/search?${scopeParams(scope).toString()}`;
       try {
         const response = await api(path, token);

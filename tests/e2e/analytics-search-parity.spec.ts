@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, PLAYWRIGHT_API_BASE_URL } from "./fixtures";
 
 import { pool } from "../../backend/src/db/pool.js";
 import { deleteSession, saveUserSession } from "../../backend/src/utils/auth.js";
@@ -14,7 +14,7 @@ const mainBidderNumber = `${prefix}-MAIN`;
 const partnerBidder = `${prefix} Partner Bidder`;
 const partnerBidderNumber = `${prefix}-PARTNER`;
 const indentor = `${prefix} Indentor`;
-const baseUrl = `http://localhost:${Number(process.env.PLAYWRIGHT_BACKEND_PORT ?? 3000)}`;
+const baseUrl = PLAYWRIGHT_API_BASE_URL;
 
 test("Analytics firm, Indentor–Firm, and co-bidding Search results honor the selected scope", async () => {
   await pool.query("insert into divisions (name) values ($1) on conflict (name) do nothing", [

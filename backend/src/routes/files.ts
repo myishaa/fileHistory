@@ -13,6 +13,8 @@ import type {
 import {
   canAccessDivision,
   canAccessFileCategory,
+  canArchiveFiles,
+  canManageUsers,
   canMutateFiles,
   canUseAllDivisions,
   getDivisionScopeCondition,
@@ -20,6 +22,7 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import {
   getExportFileName,
   renderExcelDocument,
@@ -58,7 +61,13 @@ import {
   getQuickEntryExportRowPlan,
   isQuickEntryExportFieldApplicable,
 } from "../utils/quick-entry-export.js";
-import { asyncHandler, HttpError, requireObjectBody, requireParam } from "../utils/http.js";
+import {
+  asyncHandler,
+  HttpError,
+  requireObjectBody,
+  requireParam,
+  requireString,
+} from "../utils/http.js";
 import {
   contractFileTypeSql,
   isDeliveryInspectionApplicableByGroup,
@@ -385,7 +394,7 @@ type ExportColumn = {
   key: string;
   label: string;
 };
-type FileSearchExportLayout = "columnwise" | "rowwise";
+type FileSearchExportLayout = "columnwise" | "rowwise" | "sowise";
 type FileSearchExportTable = {
   headers: string[];
   rows: string[][];
@@ -470,6 +479,8 @@ const stagedSupplyOrderExportKeys = new Set<string>([
   "dpExtension",
   "dpExtensionCount",
   "ld",
+  "ldType",
+  "ldPercentage",
   "revisedDp",
   "stageDeliveryLabel",
   "stageAmountCapital",
@@ -486,6 +497,23 @@ const stagedSupplyOrderExportKeys = new Set<string>([
   "paymentMode",
   "actualPaymentCapital",
   "actualPaymentRevenue",
+]);
+const stageSpecificSupplyOrderExportKeys = new Set<string>([
+  ...stagedSupplyOrderExportKeys,
+  "jobCompletionDate",
+  "stageDelivery",
+  "stageDeliveryCount",
+  "stagePayment",
+]);
+const latestSoStageDateKeys = new Set([
+  "materialReceiptDate",
+  "actualJobCompletionDate",
+  "jobCompletionDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
+  "billSentForPaymentDate",
+  "paymentDate",
 ]);
 
 const advancePaymentDetailExportKeys = new Set<string>([
@@ -527,6 +555,15 @@ type FileChildren = {
   markers: Map<string, FileMarker[]>;
   completedMilestones: Map<string, string[]>;
   activeYears: Map<string, string[]>;
+};
+
+type LoadChildrenOptions = {
+  includeFirms?: boolean;
+  includeSupplyOrders?: boolean;
+  includeRemarks?: boolean;
+  includeMarkers?: boolean;
+  includeCompletedMilestones?: boolean;
+  includeActiveYears?: boolean;
 };
 
 function toDbValue(value: unknown, kind: ValueKind) {
@@ -888,7 +925,18 @@ function mapFile(row: FileRow, children: FileChildren): FileRecord {
   return file;
 }
 
-async function loadChildren(fileIds: string[]): Promise<FileChildren> {
+async function loadChildren(
+  fileIds: string[],
+  options: LoadChildrenOptions = {},
+): Promise<FileChildren> {
+  const {
+    includeFirms = true,
+    includeSupplyOrders = true,
+    includeRemarks = true,
+    includeMarkers = true,
+    includeCompletedMilestones = true,
+    includeActiveYears = true,
+  } = options;
   const children: FileChildren = {
     bqFirms: new Map(),
     invitedFirms: new Map(),
@@ -901,7 +949,8 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
   };
   if (!fileIds.length) return children;
 
-  const firmRows = await pool.query<{
+  if (includeFirms) {
+    const firmRows = await pool.query<{
     file_id: string;
     firm_type: "bq" | "invited" | "bidder";
     firm_name: string | null;
@@ -917,44 +966,48 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
      order by sort_order asc, id asc`,
     [fileIds],
   );
-  for (const row of firmRows.rows) {
-    const firm = {
-      firmName: fromDbText(row.firm_name),
-      city: fromDbText(row.city),
-      address: fromDbText(row.address),
-      emailId: fromDbText(row.email_id),
-      firmUniqueNo: fromDbText(row.firm_unique_no),
-      contactNo: fromDbText(row.contact_no),
-    };
-    const map =
-      row.firm_type === "bq"
-        ? children.bqFirms
-        : row.firm_type === "invited"
-          ? children.invitedFirms
-          : children.bidderFirms;
-    map.set(row.file_id, [...(map.get(row.file_id) ?? []), firm]);
+    for (const row of firmRows.rows) {
+      const firm = {
+        firmName: fromDbText(row.firm_name),
+        city: fromDbText(row.city),
+        address: fromDbText(row.address),
+        emailId: fromDbText(row.email_id),
+        firmUniqueNo: fromDbText(row.firm_unique_no),
+        contactNo: fromDbText(row.contact_no),
+      };
+      const map =
+        row.firm_type === "bq"
+          ? children.bqFirms
+          : row.firm_type === "invited"
+            ? children.invitedFirms
+            : children.bidderFirms;
+      map.set(row.file_id, [...(map.get(row.file_id) ?? []), firm]);
+    }
   }
 
-  const orderRows = await pool.query<Record<string, unknown> & { file_id: string }>(
+  if (includeSupplyOrders) {
+    const orderRows = await pool.query<Record<string, unknown> & { file_id: string }>(
     `select *
      from supply_orders
      where file_id = any($1::uuid[])
      order by sort_order asc, id asc`,
     [fileIds],
   );
-  for (const row of orderRows.rows) {
-    const order: SupplyOrderDetail = { id: String(row.id ?? "") };
-    order.includeInPaymentTiming = row.include_in_payment_timing !== false;
-    for (const [frontendKey, [column, kind]] of Object.entries(supplyOrderFields)) {
-      (order as Record<string, unknown>)[frontendKey] = fromDbValue(row[column], kind);
+    for (const row of orderRows.rows) {
+      const order: SupplyOrderDetail = { id: String(row.id ?? "") };
+      order.includeInPaymentTiming = row.include_in_payment_timing !== false;
+      for (const [frontendKey, [column, kind]] of Object.entries(supplyOrderFields)) {
+        (order as Record<string, unknown>)[frontendKey] = fromDbValue(row[column], kind);
+      }
+      children.supplyOrders.set(row.file_id, [
+        ...(children.supplyOrders.get(row.file_id) ?? []),
+        order,
+      ]);
     }
-    children.supplyOrders.set(row.file_id, [
-      ...(children.supplyOrders.get(row.file_id) ?? []),
-      order,
-    ]);
   }
 
-  const remarkRows = await pool.query<{
+  if (includeRemarks) {
+    const remarkRows = await pool.query<{
     id: string;
     file_id: string;
     section: string;
@@ -967,18 +1020,20 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
      order by created_at asc, id asc`,
     [fileIds],
   );
-  for (const row of remarkRows.rows) {
-    const remark = {
-      id: row.id,
-      section: row.section,
-      text: row.text,
-      createdAt:
-        row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-    };
-    children.remarks.set(row.file_id, [...(children.remarks.get(row.file_id) ?? []), remark]);
+    for (const row of remarkRows.rows) {
+      const remark = {
+        id: row.id,
+        section: row.section,
+        text: row.text,
+        createdAt:
+          row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      };
+      children.remarks.set(row.file_id, [...(children.remarks.get(row.file_id) ?? []), remark]);
+    }
   }
 
-  const markerRows = await pool.query<{
+  if (includeMarkers) {
+    const markerRows = await pool.query<{
     id: string;
     file_id: string;
     text: string;
@@ -990,42 +1045,47 @@ async function loadChildren(fileIds: string[]): Promise<FileChildren> {
      order by sort_order asc, created_at asc, id asc`,
     [fileIds],
   );
-  for (const row of markerRows.rows) {
-    const marker = {
-      id: row.id,
-      text: row.text,
-      createdAt:
-        row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-    };
-    children.markers.set(row.file_id, [...(children.markers.get(row.file_id) ?? []), marker]);
+    for (const row of markerRows.rows) {
+      const marker = {
+        id: row.id,
+        text: row.text,
+        createdAt:
+          row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      };
+      children.markers.set(row.file_id, [...(children.markers.get(row.file_id) ?? []), marker]);
+    }
   }
 
-  const milestoneRows = await pool.query<{ file_id: string; milestone: string }>(
+  if (includeCompletedMilestones) {
+    const milestoneRows = await pool.query<{ file_id: string; milestone: string }>(
     `select file_id, milestone
      from file_completed_milestones
      where file_id = any($1::uuid[])
      order by milestone asc`,
     [fileIds],
   );
-  for (const row of milestoneRows.rows) {
-    children.completedMilestones.set(row.file_id, [
-      ...(children.completedMilestones.get(row.file_id) ?? []),
-      row.milestone,
-    ]);
+    for (const row of milestoneRows.rows) {
+      children.completedMilestones.set(row.file_id, [
+        ...(children.completedMilestones.get(row.file_id) ?? []),
+        row.milestone,
+      ]);
+    }
   }
 
-  const activeYearRows = await pool.query<{ file_id: string; financial_year: string }>(
+  if (includeActiveYears) {
+    const activeYearRows = await pool.query<{ file_id: string; financial_year: string }>(
     `select file_id, financial_year
      from file_year_activity
      where file_id = any($1::uuid[]) and status = 'active'
      order by financial_year asc`,
     [fileIds],
   );
-  for (const row of activeYearRows.rows) {
-    children.activeYears.set(row.file_id, [
-      ...(children.activeYears.get(row.file_id) ?? []),
-      row.financial_year,
-    ]);
+    for (const row of activeYearRows.rows) {
+      children.activeYears.set(row.file_id, [
+        ...(children.activeYears.get(row.file_id) ?? []),
+        row.financial_year,
+      ]);
+    }
   }
 
   return children;
@@ -1058,7 +1118,275 @@ export async function loadFiles(whereSql = "", values: unknown[] = [], includeAr
   return result.rows.map((row) => mapFile(row, children));
 }
 
-async function loadSearchFiles(searchSql: SearchSql) {
+/**
+ * Loads the reduced child graph required by report row calculations. The
+ * normal file loader also fetches firms, remarks, markers, and active-year
+ * metadata, which are not needed by the Pre-S.O. and payment matrix reports.
+ */
+export async function loadReportFiles(
+  whereSql = "",
+  values: unknown[] = [],
+  includeArchived = false,
+  mode: "preSoExpectedCashOutgo" | "paymentCompletedMatrix" = "paymentCompletedMatrix",
+) {
+  const result = await pool.query<FileRow>(
+    `select f.*, d.name as division,
+            s.file_types as configured_file_types,
+            s.file_type_groups as configured_file_type_groups
+     from files f
+     left join divisions d on d.id = f.division_id
+     left join app_settings s on s.id = true
+     ${combineWhere(whereSql, includeArchived)}
+     order by f.created_at desc`,
+    values,
+  );
+  const children = await loadChildren(result.rows.map((row) => row.id), {
+    includeFirms: false,
+    includeSupplyOrders: true,
+    includeRemarks: false,
+    includeMarkers: false,
+    includeCompletedMilestones: true,
+    includeActiveYears: false,
+  });
+  return result.rows.map((row) => {
+    const file = mapFile(row, children);
+    return compactReportFile(file, mode);
+  });
+}
+
+const preSoCompactOrderKeys = [
+  "id",
+  "currentMilestone",
+  "financialSanctionDate",
+  "soNo",
+  "soDate",
+  "soCancelled",
+  "shortclosure",
+] as const;
+
+const preSoCompactAdvanceKeys = ["paymentDate"] as const;
+
+const paymentCompactOrderKeys = [
+  "id",
+  "includeInPaymentTiming",
+  "currentMilestone",
+  "completedMilestones",
+  "soNo",
+  "gemSoNo",
+  "soDate",
+  "soValueCapital",
+  "soValueRevenue",
+  "billAmountCapital",
+  "billAmountRevenue",
+  "firm",
+  "firmType",
+  "paymentDate",
+  "actualPaymentCapital",
+  "actualPaymentRevenue",
+  "soCancelled",
+  "shortclosure",
+  "noFurtherAction",
+  "stageDelivery",
+  "stageDeliveryCount",
+  "stagePayment",
+  "advancePayment",
+] as const;
+
+const paymentCompactStageKeys = [
+  "includeInPaymentTiming",
+  "stageAmountCapital",
+  "stageAmountRevenue",
+  "currentMilestone",
+  "completedMilestones",
+  "paymentDate",
+  "actualPaymentCapital",
+  "actualPaymentRevenue",
+] as const;
+
+const paymentCompactAdvanceKeys = [
+  "includeInPaymentTiming",
+  "stageAmountCapital",
+  "stageAmountRevenue",
+  "expectedPaymentDate",
+  "paymentDate",
+  "actualPaymentCapital",
+  "actualPaymentRevenue",
+] as const;
+
+const paymentCompactSupplementaryKeys = [
+  "id",
+  "billNo",
+  "billAmountCapital",
+  "billAmountRevenue",
+  "paymentDate",
+  "actualPaymentCapital",
+  "actualPaymentRevenue",
+] as const;
+
+const preSoCompactFileKeys = [
+  "id",
+  "divisionId",
+  "division",
+  "imms",
+  "date",
+  "year",
+  "uniqueCode",
+  "receivedDate",
+  "scrutinyDate",
+  "scrutinyResponseDate",
+  "scrutinyCompletionDate",
+  "immsDate",
+  "fileNo",
+  "indentor",
+  "demandDescription",
+  "valueCapital",
+  "valueRevenue",
+  "currency",
+  "exchangeRate",
+  "tcec",
+  "fileType",
+  "fileTypeGroup",
+  "mode",
+  "gem",
+  "highValue",
+  "ad",
+  "rqa",
+  "ifa",
+  "psb",
+  "bg",
+  "ir",
+  "rfpVetting",
+  "highValueMeetingDate",
+  "highValueMinutesDate",
+  "adSentDate",
+  "preTcecDate",
+  "preTcecMinutesDate",
+  "adVettingDate",
+  "rqaSentDate",
+  "rqaApprovalDate",
+  "ifaSentDate",
+  "ifaFinalDate",
+  "cfaSentDate",
+  "cfaDate",
+  "gemUndertakingDate",
+  "refloatGemUndertakingDate",
+  "refloatRecommendationDate",
+  "rfpVettingInitiationDate",
+  "rfpVettingApprovalDate",
+  "preBidMeeting",
+  "preBidMeetingDate",
+  "tenderLive",
+  "bidDate",
+  "bidOpeningDate",
+  "bidOpened",
+  "refloat",
+  "refloatPreBidMeeting",
+  "refloatPreBidMeetingDate",
+  "postTcecDate",
+  "postTcecMinutesDate",
+  "refloatBiddingDate",
+  "refloatBidOpeningDate",
+  "refloatPostTcecDate",
+  "refloatPostTcecMinutesDate",
+  "cncDate",
+  "cncApprovalDate",
+  "biddingStageOver",
+  "refloatBiddingStageOver",
+  "noOfSo",
+  "demandCancelled",
+  "demandCancelledDate",
+  "soCancelled",
+  "soCancelledDate",
+  "fileClosureDate",
+  "currentMilestone",
+] as const;
+
+const paymentCompactFileKeys = [
+  "id",
+  "divisionId",
+  "division",
+  "imms",
+  "receivedDate",
+  "uniqueCode",
+  "fileNo",
+  "indentor",
+  "demandDescription",
+  "valueCapital",
+  "valueRevenue",
+  "currency",
+  "exchangeRate",
+  "fileType",
+  "fileTypeGroup",
+  "mode",
+  "year",
+  "demandCancelled",
+  "soCancelled",
+] as const;
+
+function pickReportObjectFields(
+  source: Record<string, unknown>,
+  keys: readonly string[],
+) {
+  return Object.fromEntries(
+    keys
+      .filter((key) => source[key] !== undefined)
+      .map((key) => [key, source[key]]),
+  );
+}
+
+function compactReportOrder(
+  order: SupplyOrderDetail,
+  mode: "preSoExpectedCashOutgo" | "paymentCompletedMatrix",
+) {
+  const source = order as Record<string, unknown>;
+  if (mode === "preSoExpectedCashOutgo") {
+    const compact = pickReportObjectFields(source, preSoCompactOrderKeys) as Record<string, unknown>;
+    if (order.advancePaymentDetail) {
+      compact.advancePaymentDetail = pickReportObjectFields(
+        order.advancePaymentDetail as Record<string, unknown>,
+        preSoCompactAdvanceKeys,
+      );
+    }
+    return compact;
+  }
+  const compact = pickReportObjectFields(source, paymentCompactOrderKeys) as Record<string, unknown>;
+  if (Array.isArray(order.stageDeliveries)) {
+    compact.stageDeliveries = order.stageDeliveries.map((stage) =>
+      pickReportObjectFields(stage as Record<string, unknown>, paymentCompactStageKeys),
+    );
+  }
+  if (order.advancePaymentDetail) {
+    compact.advancePaymentDetail = pickReportObjectFields(
+      order.advancePaymentDetail as Record<string, unknown>,
+      paymentCompactAdvanceKeys,
+    );
+  }
+  if (Array.isArray(order.supplementaryBills)) {
+    compact.supplementaryBills = order.supplementaryBills.map((bill) =>
+      pickReportObjectFields(bill as Record<string, unknown>, paymentCompactSupplementaryKeys),
+    );
+  }
+  return compact;
+}
+
+function compactReportFile(
+  file: FileRecord,
+  mode: "preSoExpectedCashOutgo" | "paymentCompletedMatrix",
+) {
+  const scalarFields = pickReportObjectFields(
+    file as unknown as Record<string, unknown>,
+    mode === "preSoExpectedCashOutgo" ? preSoCompactFileKeys : paymentCompactFileKeys,
+  );
+  return {
+    ...scalarFields,
+    ...(mode === "preSoExpectedCashOutgo"
+      ? { completedMilestones: file.completedMilestones ?? [] }
+      : {}),
+    supplyOrders: (file.supplyOrders ?? []).map((order) => compactReportOrder(order, mode)),
+  } as unknown as FileRecord;
+}
+
+async function loadSearchFiles(searchSql: SearchSql, includeArchivedRows = false) {
   const resultValues = [...searchSql.values, searchSql.limit, searchSql.offset];
   const limitPlaceholder = `$${searchSql.values.length + 1}`;
   const offsetPlaceholder = `$${searchSql.values.length + 2}`;
@@ -1067,7 +1395,7 @@ async function loadSearchFiles(searchSql: SearchSql) {
       `select count(*)::text as total
        from files f
        left join divisions d on d.id = f.division_id
-       ${combineWhere(searchSql.whereSql, false)}`,
+       ${combineWhere(searchSql.whereSql, includeArchivedRows)}`,
       searchSql.values,
     ),
     pool.query<FileRow>(
@@ -1077,13 +1405,13 @@ async function loadSearchFiles(searchSql: SearchSql) {
        from files f
        left join divisions d on d.id = f.division_id
        left join app_settings s on s.id = true
-       ${combineWhere(searchSql.whereSql, false)}
+       ${combineWhere(searchSql.whereSql, includeArchivedRows)}
        ${searchSql.orderSql}
        limit ${limitPlaceholder}
        offset ${offsetPlaceholder}`,
       resultValues,
     ),
-    loadSearchSummaryTotals(searchSql),
+    loadSearchSummaryTotals(searchSql, includeArchivedRows),
   ]);
   const children = await loadChildren(result.rows.map((row) => row.id));
   return {
@@ -1093,8 +1421,11 @@ async function loadSearchFiles(searchSql: SearchSql) {
   };
 }
 
-async function loadSearchSummaryTotals(searchSql: SearchSql): Promise<SearchSummaryTotals> {
-  const whereSql = combineWhere(searchSql.whereSql, false);
+async function loadSearchSummaryTotals(
+  searchSql: SearchSql,
+  includeArchivedRows = false,
+): Promise<SearchSummaryTotals> {
+  const whereSql = combineWhere(searchSql.whereSql, includeArchivedRows);
   const [fileResult, supplyOrderResult, stageResult, advanceResult] = await Promise.all([
     pool.query<Record<string, string>>(
       `select
@@ -1334,6 +1665,7 @@ function buildFileSearchExportTable(
   layout: FileSearchExportLayout,
 ): FileSearchExportTable {
   if (layout === "rowwise") return buildRowwiseFileSearchExportTable(files, columns);
+  if (layout === "sowise") return buildSoWiseFileSearchExportTable(files, columns);
   const exportColumns = buildFileSearchExportColumns(files, columns);
   return {
     headers: ["S.No.", ...exportColumns.map((column) => column.label)],
@@ -1342,6 +1674,164 @@ function buildFileSearchExportTable(
       ...exportColumns.map((column) => column.getValue(file)),
     ]),
   };
+}
+
+function buildSoWiseFileSearchExportTable(
+  files: FileRecord[],
+  columns: ExportColumn[],
+): FileSearchExportTable {
+  const exportColumns = columns;
+  const fileColumns = exportColumns.filter((column) => !isSupplyOrderExportKey(column.key));
+  const supplyOrderColumns = exportColumns.filter((column) => isSupplyOrderExportKey(column.key));
+  const headers = [
+    "S.No.",
+    ...fileColumns.map((column) => column.label),
+    "S.O. S.No.",
+    ...supplyOrderColumns.map((column) => column.label),
+  ];
+  const rows: string[][] = [];
+  files.forEach((file, fileIndex) => {
+    const orders = getRawSupplyOrders(file);
+    const rowOrders = orders.length ? orders : [undefined];
+    rowOrders.forEach((order, orderIndex) => {
+      rows.push([
+        String(fileIndex + 1),
+        ...fileColumns.map((column) => getFileExportValue(file, column.key) || ""),
+        order ? String(orderIndex + 1) : "",
+        ...supplyOrderColumns.map((column) =>
+          order ? getSoWiseSupplyOrderExportValue(order, column.key) : "",
+        ),
+      ]);
+    });
+  });
+  return { headers, rows };
+}
+
+function soExportNumber(value: unknown) {
+  const parsed = Number(String(value ?? "").replace(/[,\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function aggregateStageYesNo(
+  stages: Array<Record<string, unknown>>,
+  key: string,
+  fallback: unknown,
+) {
+  const values = stages
+    .map((stage) => stage[key])
+    .filter((value) => String(value ?? "").trim() !== "");
+  if (!values.length) return String(fallback ?? "");
+  return values.some(isYesValue) ? "Yes" : "No";
+}
+
+function aggregateStageLdType(stages: Array<Record<string, unknown>>, fallback: unknown) {
+  const priority = new Map([
+    ["no", { rank: 0, label: "No" }],
+    ["partial", { rank: 1, label: "Partial" }],
+    ["full", { rank: 2, label: "Full" }],
+  ]);
+  const selected = stages
+    .map((stage) => priority.get(String(stage.ldType ?? "").trim().toLowerCase()))
+    .filter((value): value is { rank: number; label: string } => Boolean(value))
+    .sort((a, b) => b.rank - a.rank)[0];
+  return selected?.label ?? String(fallback ?? "");
+}
+
+function aggregateStageMaximum(
+  stages: Array<Record<string, unknown>>,
+  key: string,
+  fallback: unknown,
+) {
+  const values = stages
+    .map((stage) => String(stage[key] ?? "").replace(/[,\s]/g, "").trim())
+    .filter(Boolean)
+    .map((value) => Number(value))
+    .filter(Number.isFinite);
+  if (!values.length) return String(fallback ?? "");
+  return String(Math.max(...values));
+}
+
+function getSoWiseSupplyOrderExportValue(order: SupplyOrderDetail, key: string) {
+  if (key === "billReturnCycles") {
+    return formatBillReturnCyclesForExport(getOrderBillReturnCyclesForExport(order));
+  }
+  if (key.startsWith("supplementary")) {
+    const bills = order.supplementaryBills ?? [];
+    const latestBill = [...bills]
+      .sort((a, b) => supplementaryBillSortKey(a).localeCompare(supplementaryBillSortKey(b)))
+      .at(-1);
+    if (key === "supplementaryBillNo") return latestBill?.billNo ?? "";
+    if (key === "supplementaryBillAmountCapital") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.billAmountCapital), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillAmountRevenue") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.billAmountRevenue), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillSentForPaymentDate") return latestBill?.billSentForPaymentDate ?? "";
+    if (key === "supplementaryBillPaymentDate") return latestBill?.paymentDate ?? "";
+    if (key === "supplementaryBillPaymentMode") return latestBill?.paymentMode ?? "";
+    if (key === "supplementaryBillRemarks") return latestBill?.remarks ?? "";
+    if (key === "supplementaryBillActualPaymentCapital") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.actualPaymentCapital), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillActualPaymentRevenue") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.actualPaymentRevenue), 0);
+      return total ? String(total) : "";
+    }
+  }
+  if (!stageSpecificSupplyOrderExportKeys.has(key)) {
+    return getSupplyOrderExportValue(order, key);
+  }
+  const stages = order.stageDeliveries ?? [];
+  if (!stages.length) return getSupplyOrderExportValue(order, key);
+  const stageRecords = stages as Array<Record<string, unknown>>;
+  if (key === "dpExtension") {
+    return aggregateStageYesNo(stageRecords, "dpExtension", order.dpExtension);
+  }
+  if (key === "dpExtensionCount") {
+    return aggregateStageMaximum(stageRecords, "dpExtensionCount", order.dpExtensionCount);
+  }
+  if (key === "ld") {
+    return aggregateStageYesNo(stageRecords, "ld", order.ld);
+  }
+  if (key === "ldType") {
+    return aggregateStageLdType(stageRecords, order.ldType);
+  }
+  if (key === "ldPercentage") {
+    return aggregateStageMaximum(stageRecords, "ldPercentage", order.ldPercentage);
+  }
+  if (key === "dpDate") return String(order.dpDate ?? "");
+  if (key === "revisedDp") return String(stages.at(-1)?.revisedDp ?? "");
+  if (key === "stageDeliveryCount") return String(stages.length);
+  const stageCapital = stages.reduce((sum, stage) => sum + soExportNumber(stage.stageAmountCapital), 0);
+  const stageRevenue = stages.reduce((sum, stage) => sum + soExportNumber(stage.stageAmountRevenue), 0);
+  const paidCapital = stages.reduce((sum, stage) => sum + soExportNumber(stage.actualPaymentCapital), 0);
+  const paidRevenue = stages.reduce((sum, stage) => sum + soExportNumber(stage.actualPaymentRevenue), 0);
+  if (key === "stageAmountCapital") return stageCapital ? String(stageCapital) : "";
+  if (key === "stageAmountRevenue") return stageRevenue ? String(stageRevenue) : "";
+  if (key === "actualPaymentCapital") return paidCapital ? String(paidCapital) : "";
+  if (key === "actualPaymentRevenue") return paidRevenue ? String(paidRevenue) : "";
+  if (latestSoStageDateKeys.has(key)) {
+    return stages
+      .map((stage) => String((stage as Record<string, unknown>)[key] ?? "").trim())
+      .filter(Boolean)
+      .sort()
+      .at(-1) ?? "";
+  }
+  // Non-additive stage-by-stage details are intentionally omitted from the
+  // one-row-per-S.O. export. Use Stage export when those details are needed.
+  return "";
+}
+
+function supplementaryBillSortKey(bill: SupplementaryBillDetail) {
+  return [bill.paymentDate, bill.billSentForPaymentDate]
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? "";
 }
 
 function buildRowwiseFileSearchExportTable(
@@ -1353,6 +1843,7 @@ function buildRowwiseFileSearchExportTable(
   const headers = [
     "S.No.",
     ...fileColumns.map((column) => column.label),
+    "S.O. S.No.",
     ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: string[][] = [];
@@ -1363,9 +1854,8 @@ function buildRowwiseFileSearchExportTable(
     rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         String(fileIndex + 1),
-        ...fileColumns.map((column) =>
-          entryIndex === 0 ? getFileExportValue(file, column.key) || "Not set" : "",
-        ),
+        ...fileColumns.map((column) => getFileExportValue(file, column.key) || ""),
+        entry.orderIndex >= 0 ? String(entry.orderIndex + 1) : "",
         ...supplyOrderColumns.flatMap((column) =>
           getRowwiseSupplyOrderExportValues(file, column.key, entry),
         ),
@@ -1435,7 +1925,6 @@ type RowwiseFileSearchExportEntry = {
   supplementaryBillIndex: number;
   billReturnCycle?: BillReturnCycle;
   billReturnCycleIndex: number;
-  isPrimaryOrderRow?: boolean;
 };
 
 function getRowwiseFileSearchExportEntries(
@@ -1479,7 +1968,7 @@ function getRowwiseFileSearchExportEntries(
     }
 
     if (needsBillReturnRows) {
-      normalizeBillReturnCyclesForExport(order.billReturnCycles).forEach(
+      getOrderBillReturnCyclesForExport(order).forEach(
         (billReturnCycle, billReturnCycleIndex) => {
           entries.push({
             order,
@@ -1534,7 +2023,7 @@ function getRowwiseFileSearchExportEntries(
         billReturnCycleIndex: -1,
       });
     }
-    return entries.map((entry, index) => ({ ...entry, isPrimaryOrderRow: index === 0 }));
+    return entries;
   });
 }
 
@@ -1577,11 +2066,23 @@ function getRowwiseSupplyOrderExportValues(
   entry: RowwiseFileSearchExportEntry,
 ) {
   if (!entry.order) return getEmptyRowwiseSupplyOrderExportValues(key);
-  if (key === "billReturnCycles") return getBillReturnCycleExportValues(entry.billReturnCycle);
+  const isStageRow = Boolean(entry.stage);
+  const isSupplementaryRow = Boolean(entry.supplementaryBill);
+  const isReturnRow = Boolean(entry.billReturnCycle);
+  const isSupplementaryReturnRow = isSupplementaryRow && isReturnRow;
+
+  // Detail rows are intentionally independent: a stage row must not look like
+  // a supplementary-bill/return row, and vice versa. Shared S.O. fields are
+  // still repeated so every row remains identifiable in Excel.
+  if (key === "billReturnCycles") {
+    return !isSupplementaryReturnRow && isReturnRow
+      ? getBillReturnCycleExportValues(entry.billReturnCycle)
+      : getEmptyRowwiseSupplyOrderExportValues(key);
+  }
   if (key === "supplementaryBillReturnCycles") {
-    return getBillReturnCycleExportValues(
-      entry.supplementaryBill ? entry.billReturnCycle : undefined,
-    );
+    return isSupplementaryReturnRow
+      ? getBillReturnCycleExportValues(entry.billReturnCycle)
+      : getEmptyRowwiseSupplyOrderExportValues(key);
   }
   if (key === "supplementaryBills") {
     return getSupplementaryBillExportValues(entry.supplementaryBill);
@@ -1593,10 +2094,13 @@ function getRowwiseSupplyOrderExportValues(
         : "",
     ];
   }
-  if (entry.stage && shouldUseStageValueForFileSearchExport(entry.order, key)) {
+  if ((isSupplementaryRow || isReturnRow) && stageSpecificSupplyOrderExportKeys.has(key)) {
+    return [""];
+  }
+  if (isStageRow && shouldUseStageValueForFileSearchExport(entry.order, key)) {
+    if (key === "stageDeliveryLabel") return [String(entry.stageIndex + 1)];
     return [String((entry.stage as Record<string, unknown>)[key] ?? "")];
   }
-  if (!entry.isPrimaryOrderRow) return [""];
   return [getSupplyOrderExportValue(entry.order, key)];
 }
 
@@ -1669,6 +2173,7 @@ function isSupplementaryBillExportField(key: string) {
 function isSupplyOrderExportKey(key: string) {
   return (
     key in supplyOrderFields ||
+    stageSpecificSupplyOrderExportKeys.has(key) ||
     advancePaymentDetailExportKeys.has(key) ||
     supplementaryBillExportKeys.has(key)
   );
@@ -1686,6 +2191,7 @@ function getStageSupplyOrderExportValue(
   stageIndex: number,
 ) {
   const stage = getRawSupplyOrders(file)[orderIndex]?.stageDeliveries?.[stageIndex];
+  if (key === "stageDeliveryLabel") return stage ? String(stageIndex + 1) : "";
   return stage ? String((stage as Record<string, unknown>)[key] ?? "") : "";
 }
 
@@ -1694,7 +2200,9 @@ function getSupplyOrderExportValue(order: SupplyOrderDetail, key: string) {
   if (advanceValue !== undefined) return advanceValue;
   const supplementaryValue = getSupplementaryBillExportValue(order.supplementaryBills, key);
   if (supplementaryValue !== undefined) return supplementaryValue;
-  if (key === "billReturnCycles") return formatBillReturnCyclesForExport(order.billReturnCycles);
+  if (key === "billReturnCycles") {
+    return formatBillReturnCyclesForExport(getOrderBillReturnCyclesForExport(order));
+  }
   if (key === "supplementaryBills") {
     return formatSupplementaryBillsForExport(order.supplementaryBills);
   }
@@ -1760,6 +2268,14 @@ function normalizeBillReturnCyclesForExport(cycles: BillReturnCycle[] | undefine
       String(value ?? "").trim(),
     ),
   );
+}
+
+function getOrderBillReturnCyclesForExport(order: SupplyOrderDetail) {
+  return normalizeBillReturnCyclesForExport([
+    ...(order.billReturnCycles ?? []),
+    ...(order.stageDeliveries ?? []).flatMap((stage) => stage.billReturnCycles ?? []),
+    ...(order.advancePaymentDetail?.billReturnCycles ?? []),
+  ]);
 }
 
 function formatSupplementaryBillFieldForExport(
@@ -1862,11 +2378,13 @@ function readExportColumns(value: unknown): ExportColumn[] {
 }
 
 function readFileSearchExportLayout(value: unknown): FileSearchExportLayout {
-  return value === "rowwise" ? "rowwise" : "columnwise";
+  if (value === "rowwise" || value === "sowise") return value;
+  return "columnwise";
 }
 
 function formatFileSearchExportLayout(layout: FileSearchExportLayout) {
-  return layout === "rowwise" ? "Rowwise" : "Columnwise";
+  if (layout === "sowise") return "S.O. export";
+  return layout === "rowwise" ? "Stage export" : "Columnwise";
 }
 
 function readQueryString(value: unknown) {
@@ -1886,7 +2404,9 @@ function readQueryDate(value: unknown) {
 }
 
 function readQueryBoolean(value: unknown) {
-  return value === "true" || value === true;
+  if (value === "true" || value === true) return true;
+  if (value === "false" || value === false) return false;
+  return undefined;
 }
 
 function readIncludeExcludeFilter(
@@ -1956,7 +2476,10 @@ function readAnalyticsNameList(value: unknown) {
 function readSearchParams(query: Record<string, unknown>): FileSearchParams {
   return {
     selectedYear: normalizeFinancialYearLabel(readQueryString(query.selectedYear)),
-    includeArchivedYears: readQueryBoolean(query.includeArchivedYears),
+    includeActiveArchivedYears:
+      readQueryBoolean(query.includeActiveArchivedYears) ??
+      readQueryBoolean(query.includeArchivedYears) ??
+      true,
     milestoneClearingScope: readQueryBoolean(query.milestoneClearingScope),
     yearFilter: readQueryString(query.yearFilter),
     fileYear: readQueryString(query.fileYear),
@@ -2043,6 +2566,20 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     postTcecDateTo: readQueryString(query.postTcecDateTo),
     postTcecMinutesFrom: readQueryString(query.postTcecMinutesFrom),
     postTcecMinutesTo: readQueryString(query.postTcecMinutesTo),
+    refloatGemUndertakingDateFrom: readQueryString(query.refloatGemUndertakingDateFrom),
+    refloatGemUndertakingDateTo: readQueryString(query.refloatGemUndertakingDateTo),
+    refloatRecommendationDateFrom: readQueryString(query.refloatRecommendationDateFrom),
+    refloatRecommendationDateTo: readQueryString(query.refloatRecommendationDateTo),
+    refloatPreBidMeetingDateFrom: readQueryString(query.refloatPreBidMeetingDateFrom),
+    refloatPreBidMeetingDateTo: readQueryString(query.refloatPreBidMeetingDateTo),
+    refloatBiddingDateFrom: readQueryString(query.refloatBiddingDateFrom),
+    refloatBiddingDateTo: readQueryString(query.refloatBiddingDateTo),
+    refloatBidOpeningDateFrom: readQueryString(query.refloatBidOpeningDateFrom),
+    refloatBidOpeningDateTo: readQueryString(query.refloatBidOpeningDateTo),
+    refloatPostTcecDateFrom: readQueryString(query.refloatPostTcecDateFrom),
+    refloatPostTcecDateTo: readQueryString(query.refloatPostTcecDateTo),
+    refloatPostTcecMinutesFrom: readQueryString(query.refloatPostTcecMinutesFrom),
+    refloatPostTcecMinutesTo: readQueryString(query.refloatPostTcecMinutesTo),
     cncDateFrom: readQueryString(query.cncDateFrom),
     cncDateTo: readQueryString(query.cncDateTo),
     preBidDateFrom: readQueryString(query.preBidDateFrom),
@@ -2230,8 +2767,8 @@ function activeFilesSql() {
     and not ${allSupplyOrdersCancelledSql()})`;
 }
 
-function searchableFinancialYearSql() {
-  return getSearchableFinancialYearSql(activeFilesSql())!;
+function searchableFinancialYearSql(includeActiveArchivedYears = true) {
+  return getSearchableFinancialYearSql(activeFilesSql(), includeActiveArchivedYears);
 }
 
 function activePlusCurrentFyClosedSql(values: unknown[], financialYear: string | undefined) {
@@ -8041,7 +8578,9 @@ function isInactiveHistoryDashboardFilter(filter: string) {
     filter.startsWith("tcecStatus:") ||
     filter.startsWith("tcecStatusFy:") ||
     filter.startsWith("cncSummary:") ||
-    filter.startsWith("cncSummaryFy:")
+    filter.startsWith("cncSummaryFy:") ||
+    filter.startsWith("bidOpeningSchedule:") ||
+    filter.startsWith("bidOpeningScheduleFy:")
   );
 }
 
@@ -8343,8 +8882,8 @@ export function appendSearchGlobalYearScope(
   currentFinancialYear: string | undefined,
   searchParams: FileSearchParams,
 ) {
-  if (!searchParams.includeArchivedYears) {
-    conditions.push(searchableFinancialYearSql());
+  if (selectedYear !== allFilesYear) {
+    conditions.push(searchableFinancialYearSql(searchParams.includeActiveArchivedYears));
   }
   const dashboardFilters = [searchParams.dashboardFilter, ...(searchParams.extraDashboardFilters ?? [])]
     .map((filter) => filter?.trim())
@@ -8389,6 +8928,24 @@ export function dashboardFilterSql(
   thresholdFinancialYear?: string | undefined,
 ) {
   const today = "current_date";
+  // Keep generic Milestone Clearing drilldowns addressable by their displayed
+  // measure names. The ranking still supplies exact fileIds for the UI, but
+  // audit tools and external callers can use these stable criteria aliases.
+  if (filter === "analyticsMilestoneClearing:financialSanction") {
+    return dashboardFilterSql("milestoneCleared:financialSanction", values, thresholdFinancialYear);
+  }
+  if (filter === "analyticsMilestoneClearing:jobCompletion") {
+    return dashboardFilterSql("manualMilestoneCompleted:Job Completion", values, thresholdFinancialYear);
+  }
+  if (filter === "analyticsMilestoneClearing:paymentPcdaCycle") {
+    return dashboardFilterSql("analyticsMilestoneClearing:payment", values, thresholdFinancialYear);
+  }
+  if (filter === "analyticsMilestoneClearing:paymentAslCycle") {
+    return dashboardFilterSql("analyticsMilestoneClearing:paymentPreSubmission", values, thresholdFinancialYear);
+  }
+  if (filter === "analyticsMilestoneClearing:paymentAslPcda") {
+    return dashboardFilterSql("analyticsMilestoneClearing:paymentCumulative", values, thresholdFinancialYear);
+  }
   if (filter.startsWith("delayStatus:")) return delayStatusFilterSql(filter, values);
   if (filter.startsWith("analyticsIndentorFirm:")) {
     return analyticsIndentorFirmFilterSql(filter, values);
@@ -8944,6 +9501,47 @@ export function dashboardFilterSql(
     const toPlaceholder = addSqlValue(values, range.end);
     return `f.received_date >= ${fromPlaceholder}::date
       and f.received_date <= ${toPlaceholder}::date`;
+  }
+  if (filter.startsWith("bidOpeningSchedule:") || filter.startsWith("bidOpeningScheduleFy:")) {
+    const isFy = filter.startsWith("bidOpeningScheduleFy:");
+    const [, state = "all", rawPeriod = ""] = filter.split(":");
+    if (!["all", "due", "opened", "overdue"].includes(state)) return "true";
+    const period = decodeStatusFilterPart(rawPeriod).trim();
+    const periodCondition = (dateColumn: string) => {
+      if (isFy) return fiscalYearDateCondition(dateColumn, period, values) || "true";
+      if (!period) return "true";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
+        const placeholder = addSqlValue(values, period);
+        return `${dateColumn} = ${placeholder}::date`;
+      }
+      if (/^\d{4}-\d{2}$/.test(period)) {
+        const fromPlaceholder = addSqlValue(values, `${period}-01`);
+        const toPlaceholder = addSqlValue(values, getMonthEndDateFromMonthKey(period));
+        return `${dateColumn} >= ${fromPlaceholder}::date and ${dateColumn} <= ${toPlaceholder}::date`;
+      }
+      return "true";
+    };
+    const statusCondition = (dateColumn: string, openedSql: string) => {
+      if (state === "opened") return openedSql;
+      if (state === "overdue") return `not (${openedSql}) and ${dateColumn} < current_date`;
+      if (state === "due") return `not (${openedSql}) and ${dateColumn} >= current_date`;
+      return "true";
+    };
+    const normalDate = "f.bid_opening_date";
+    const refloatDate = "f.refloat_bid_opening_date";
+    const normalOpened = `(${isYesSql("f.bid_opened")} or ${isYesSql("f.bidding_stage_over")})`;
+    const refloatOpened = `(case when ${isYesSql("f.tcec")} then ${isYesSql("f.bidding_stage_over")} else ${isYesSql("f.refloat_bidding_stage_over")} end)`;
+    return `not ${isYesSql("f.demand_cancelled")}
+      and ${biddingApplicableSql()}
+      and (
+        (${hasTextSql(normalDate)}
+          and ${periodCondition(normalDate)}
+          and ${statusCondition(normalDate, normalOpened)})
+        or (${isYesSql("f.refloat")}
+          and ${hasTextSql(refloatDate)}
+          and ${periodCondition(refloatDate)}
+          and ${statusCondition(refloatDate, refloatOpened)})
+      )`;
   }
   if (filter.startsWith("preBidMeeting:") || filter.startsWith("refloatPreBidMeeting:")) {
     const [kind = "", state = "all", monthKey = ""] = filter.split(":");
@@ -9546,6 +10144,8 @@ export function dashboardFilterSql(
   if (filter === "miscLiveFiles") return `not ${fileClosedSql()} and not ${isCancelledFileSql()}`;
   if (filter === "miscFileClosed") return fileClosedSql();
   if (filter === "miscLd") return supplyOrderExists(isYesSql("so.ld"));
+  if (filter === "miscNoFurtherAction")
+    return supplyOrderExists(isYesSql("so.no_further_action"));
   if (filter === "miscDemandCancelled") return isYesSql("f.demand_cancelled");
   if (filter === "miscSoCancelled") return supplyOrderExists(isYesSql("so.so_cancelled"));
   if (filter === "miscShortclosedSo") return supplyOrderExists(isYesSql("so.shortclosure"));
@@ -10588,6 +11188,90 @@ function buildSearchSql(
       `(${hasTextSql("f.post_tcec_minutes_date")} or ${hasTextSql("f.refloat_post_tcec_minutes_date")})`,
     ),
     withDateFilterMode(
+      "refloatGemUndertakingDate",
+      params.refloatGemUndertakingDateFrom,
+      params.refloatGemUndertakingDateTo,
+      fileDateRangeSql(
+        "f.refloat_gem_undertaking_date",
+        params.refloatGemUndertakingDateFrom,
+        params.refloatGemUndertakingDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_gem_undertaking_date"),
+    ),
+    withDateFilterMode(
+      "refloatRecommendationDate",
+      params.refloatRecommendationDateFrom,
+      params.refloatRecommendationDateTo,
+      fileDateRangeSql(
+        "f.refloat_recommendation_date",
+        params.refloatRecommendationDateFrom,
+        params.refloatRecommendationDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_recommendation_date"),
+    ),
+    withDateFilterMode(
+      "refloatPreBidMeetingDate",
+      params.refloatPreBidMeetingDateFrom,
+      params.refloatPreBidMeetingDateTo,
+      fileDateRangeSql(
+        "f.refloat_pre_bid_meeting_date",
+        params.refloatPreBidMeetingDateFrom,
+        params.refloatPreBidMeetingDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_pre_bid_meeting_date"),
+    ),
+    withDateFilterMode(
+      "refloatBiddingDate",
+      params.refloatBiddingDateFrom,
+      params.refloatBiddingDateTo,
+      fileDateRangeSql(
+        "f.refloat_bidding_date",
+        params.refloatBiddingDateFrom,
+        params.refloatBiddingDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_bidding_date"),
+    ),
+    withDateFilterMode(
+      "refloatBidOpeningDate",
+      params.refloatBidOpeningDateFrom,
+      params.refloatBidOpeningDateTo,
+      fileDateRangeSql(
+        "f.refloat_bid_opening_date",
+        params.refloatBidOpeningDateFrom,
+        params.refloatBidOpeningDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_bid_opening_date"),
+    ),
+    withDateFilterMode(
+      "refloatPostTcecDate",
+      params.refloatPostTcecDateFrom,
+      params.refloatPostTcecDateTo,
+      fileDateRangeSql(
+        "f.refloat_post_tcec_date",
+        params.refloatPostTcecDateFrom,
+        params.refloatPostTcecDateTo,
+        values,
+      ),
+      hasTextSql("f.refloat_post_tcec_date"),
+    ),
+    withDateFilterMode(
+      "refloatPostTcecMinutes",
+      params.refloatPostTcecMinutesFrom,
+      params.refloatPostTcecMinutesTo,
+      fileDateRangeSql(
+        "f.refloat_post_tcec_minutes_date",
+        params.refloatPostTcecMinutesFrom,
+        params.refloatPostTcecMinutesTo,
+        values,
+      ),
+      hasTextSql("f.refloat_post_tcec_minutes_date"),
+    ),
+    withDateFilterMode(
       "cncDate",
       params.cncDateFrom,
       params.cncDateTo,
@@ -10833,22 +11517,6 @@ function buildSearchSql(
   };
 }
 
-async function verifyDeletionPassword(value: unknown) {
-  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ ok: boolean; configured: boolean }>(
-    `select
-       deletion_password <> '' as configured,
-       deletion_password <> '' and deletion_password = $1 as ok
-     from app_settings
-     where id = true`,
-    [value],
-  );
-  if (!result.rows[0]?.configured) {
-    throw new HttpError(400, "Set a deletion password in admin settings before deleting files.");
-  }
-  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
-}
-
 async function loadCurrentFinancialYear() {
   const result = await pool.query<{ financial_year: string }>(
     "select financial_year from app_settings where id = true",
@@ -10878,6 +11546,13 @@ function buildFileInsert(body: Record<string, unknown>, divisionId: string | nul
   }
 
   return { columns, values, placeholders };
+}
+
+function validateFileCreateBody(body: Record<string, unknown>) {
+  requireString(body.division, "Division");
+  requireString(body.year, "Financial Year");
+  requireString(body.uniqueCode, "Unique Code");
+  requireString(body.fileType, "File Type");
 }
 
 function buildFileUpdate(body: Record<string, unknown>, divisionId: string | null | undefined) {
@@ -11349,8 +12024,10 @@ filesRouter.get(
     }
     if (categoryScope.sql) conditions.push(categoryScope.sql);
 
-    const includeArchivedYears = readQueryBoolean(request.query.includeArchivedYears);
-    if (!includeArchivedYears) conditions.push(searchableFinancialYearSql());
+    const includeActiveArchivedYears =
+      readQueryBoolean(request.query.includeActiveArchivedYears) ??
+      readQueryBoolean(request.query.includeArchivedYears) ??
+      true;
 
     if (request.query.year === allFilesYear) {
       // No status/year condition.
@@ -11361,13 +12038,16 @@ filesRouter.get(
     } else if (typeof request.query.year === "string" && request.query.year.trim()) {
       conditions.push(specificFinancialYearSql(values, request.query.year));
     }
+    if (request.query.year !== allFilesYear) {
+      conditions.push(searchableFinancialYearSql(includeActiveArchivedYears));
+    }
     if (typeof request.query.division === "string" && request.query.division.trim()) {
       values.push(request.query.division.trim());
       conditions.push(`lower(d.name) = lower($${values.length})`);
     }
 
     const whereSql = conditions.length ? `where ${conditions.join(" and ")}` : "";
-    response.json({ files: await loadFiles(whereSql, values) });
+    response.json({ files: await loadFiles(whereSql, values, request.query.year === allFilesYear) });
   }),
 );
 
@@ -11419,9 +12099,9 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   activeYears: fileExportField("Active Financial Years", "activeYears"),
   fileRemarks: { label: "File Remarks", source: "derived", field: "fileRemarks" },
   fileMarkers: { label: "File Markers", source: "derived", field: "fileMarkers" },
-  fileClosed: { label: "File Closed (Yes/No)", source: "derived" },
+  fileClosed: { label: "File Closed", source: "derived" },
   fileClosureDate: fileExportField("File Closure Date", "fileClosureDate"),
-  demandCancelled: fileExportField("Demand Cancelled (Yes/No)", "demandCancelled"),
+  demandCancelled: fileExportField("Demand Cancelled", "demandCancelled"),
   demandCancelledDate: fileExportField("Demand Cancelled Date", "demandCancelledDate"),
   scrutinyDate: fileExportField("Scrutiny Date", "scrutinyDate"),
   scrutinyResponseDate: fileExportField("Scrutiny Response Date", "scrutinyResponseDate"),
@@ -11492,10 +12172,10 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   firmContactNo: orderExportField("Firm Contact No.", "firmContactNo"),
   firmCity: orderExportField("Firm City", "firmCity"),
   bqBasis: orderExportField("BQ Basis", "bqBasis"),
-  soValueCapital: orderExportField("S.O. Capital Value", "soValueCapital", true),
-  soValueRevenue: orderExportField("S.O. Revenue Value", "soValueRevenue", true),
+  soValueCapital: orderExportField("S.O. (Capital)", "soValueCapital", true),
+  soValueRevenue: orderExportField("S.O. (Revenue)", "soValueRevenue", true),
   dpDate: orderExportField("S.O. D.P. / Last Stage Effective D.P.", "dpDate"),
-  deliveryPeriodStartDate: orderExportField("Delivery Period Start Date", "deliveryPeriodStartDate"),
+  deliveryPeriodStartDate: orderExportField("D.P. Start Date", "deliveryPeriodStartDate"),
   dpExtension: orderExportField("D.P. Extension", "dpExtension"),
   dpExtensionCount: orderExportField("D.P. Extension Count", "dpExtensionCount", true),
   revisedDp: orderExportField("Revised D.P.", "revisedDp"),
@@ -11517,12 +12197,12 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   actualPaymentCapital: orderExportField("Actual Payment Capital", "actualPaymentCapital", true),
   actualPaymentRevenue: orderExportField("Actual Payment Revenue", "actualPaymentRevenue", true),
   billReturnHistory: { label: "Bill Return / Resubmission History", source: "order" },
-  soDemandCancelled: orderExportField("S.O. Demand Cancelled (Yes/No)", "demandCancelled"),
-  soCancelled: orderExportField("S.O. Cancelled (Yes/No)", "soCancelled"),
+  soDemandCancelled: orderExportField("S.O. Demand Cancelled", "demandCancelled"),
+  soCancelled: orderExportField("S.O. Cancelled", "soCancelled"),
   soCancelledDate: orderExportField("S.O. Cancelled Date", "soCancelledDate"),
-  shortclosure: orderExportField("Short Closure (Yes/No)", "shortclosure"),
+  shortclosure: orderExportField("Short Closure", "shortclosure"),
   shortclosureDate: orderExportField("Short Closure Date", "shortclosureDate"),
-  noFurtherAction: orderExportField("No Further Action (Yes/No)", "noFurtherAction"),
+  noFurtherAction: orderExportField("No Further Action", "noFurtherAction"),
   noFurtherActionDate: orderExportField("No Further Action Date", "noFurtherActionDate"),
   psbApplicable: orderExportField("PSB Applicable", "psbApplicable"),
   bgCoverageType: orderExportField("BG Coverage Type", "bgCoverageType"),
@@ -11553,7 +12233,7 @@ const quickEntryExportFields: Record<string, QuickEntryExportField> = {
   stageAmountRevenue: stageExportField("Stage Amount Revenue", "stageAmountRevenue", true),
   stageDpDate: stageExportField("Stage Original D.P.", "dpDate"),
   stageRevisedDp: stageExportField("Stage Revised D.P.", "revisedDp"),
-  stageDeliveryPeriodStartDate: stageExportField("Stage Delivery Period Start Date", "deliveryPeriodStartDate"),
+  stageDeliveryPeriodStartDate: stageExportField("Stage D.P. Start Date", "deliveryPeriodStartDate"),
   stageDpExtension: stageExportField("Stage D.P. Extension", "dpExtension"),
   stageDpExtensionCount: stageExportField("Stage D.P. Extension Count", "dpExtensionCount", true),
   stageLd: stageExportField("Stage L.D.", "ld"),
@@ -11768,6 +12448,124 @@ function formatQuickEntryExportValue(value: unknown) {
   return String(value);
 }
 
+function getQuickEntryCollapsedSupplementaryValue(
+  key: string,
+  order: SupplyOrderDetail,
+) {
+  const bills = order.supplementaryBills ?? [];
+  if (!bills.length) return undefined;
+  const datedBills = [...bills].sort((left, right) => {
+    const leftDate = String(left.paymentDate ?? left.billSentForPaymentDate ?? "");
+    const rightDate = String(right.paymentDate ?? right.billSentForPaymentDate ?? "");
+    return leftDate.localeCompare(rightDate);
+  });
+  const latest = datedBills.at(-1);
+  const numberTotal = (field: "billAmountCapital" | "billAmountRevenue" | "actualPaymentCapital" | "actualPaymentRevenue") => {
+    const values = bills
+      .map((bill) => Number(String((bill as unknown as Record<string, unknown>)[field] ?? "").replace(/[₹,\s]/g, "")))
+      .filter((value) => Number.isFinite(value));
+    return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
+  };
+  const textList = (field: "billNo" | "paymentMode" | "remarks") => {
+    const values = bills
+      .map((bill) => String((bill as unknown as Record<string, unknown>)[field] ?? "").trim())
+      .filter(Boolean);
+    return values.length ? values.join("; ") : undefined;
+  };
+  switch (key) {
+    case "supplementaryBillNo": return textList("billNo");
+    case "supplementaryBillAmountCapital": return numberTotal("billAmountCapital");
+    case "supplementaryBillAmountRevenue": return numberTotal("billAmountRevenue");
+    case "supplementaryBillSentForPaymentDate": return latest?.billSentForPaymentDate;
+    case "supplementaryBillPaymentDate": return latest?.paymentDate;
+    case "supplementaryBillPaymentMode": return latest?.paymentMode;
+    case "supplementaryBillActualPaymentCapital": return numberTotal("actualPaymentCapital");
+    case "supplementaryBillActualPaymentRevenue": return numberTotal("actualPaymentRevenue");
+    case "supplementaryBillRemarks": return textList("remarks");
+    case "supplementaryBillReturnHistory":
+      return bills.map((bill) => formatQuickEntryReturnHistory(bill.billReturnCycles)).filter(Boolean).join("; ") || undefined;
+    default: return undefined;
+  }
+}
+
+function getQuickEntryCollapsedStageValue(key: string, order: SupplyOrderDetail) {
+  const stages = order.stageDeliveries ?? [];
+  if (!stages.length) return undefined;
+  const records = stages as Array<Record<string, unknown>>;
+  const latest = [...records]
+    .sort((left, right) => String(left.paymentDate ?? left.billSentForPaymentDate ?? "").localeCompare(String(right.paymentDate ?? right.billSentForPaymentDate ?? "")))
+    .at(-1);
+  const numberTotal = (field: "actualPaymentCapital" | "actualPaymentRevenue") => {
+    const values = records.map((stage) => Number(String(stage[field] ?? "").replace(/[₹,\s]/g, ""))).filter(Number.isFinite);
+    return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
+  };
+  if (key === "stageBillReturnHistory") {
+    return records.map((stage) => formatQuickEntryReturnHistory(stage.billReturnCycles)).filter(Boolean).join("; ") || undefined;
+  }
+  if (key === "stageActualPaymentCapital") return numberTotal("actualPaymentCapital");
+  if (key === "stageActualPaymentRevenue") return numberTotal("actualPaymentRevenue");
+  if (!latest) return undefined;
+  const field = quickEntryExportFields[key]?.field;
+  return field ? latest[field] : undefined;
+}
+
+let quickEntryBackupSchemaReady: Promise<void> | undefined;
+
+async function ensureQuickEntryBackupSchema() {
+  quickEntryBackupSchemaReady ??= (async () => {
+    await pool.query(`
+      create table if not exists quick_entry_backup_exports (
+        id bigserial primary key,
+        user_id uuid references app_users(id) on delete set null,
+        exported_at timestamptz not null default now(),
+        division_id uuid,
+        file_type_filter text,
+        view_mode text not null,
+        file_count integer not null default 0,
+        row_count integer not null default 0
+      )
+    `);
+    await pool.query(`
+      create index if not exists quick_entry_backup_exports_user_idx
+      on quick_entry_backup_exports(user_id, exported_at desc)
+    `);
+  })();
+  await quickEntryBackupSchemaReady;
+}
+
+function buildFullDatabaseSheets(
+  outputRecords: Array<{ file: FileRecord }>,
+  rows: string[][],
+  dataTable: {
+    headers: string[];
+    numericColumns?: number[];
+    dateColumns?: number[];
+    dateTimeColumns?: number[];
+  },
+) {
+  const grouped = new Map<string, string[][]>();
+  outputRecords.forEach((record, index) => {
+    const year = normalizeFinancialYearLabel(record.file.year) || "Unknown FY";
+    const group = grouped.get(year) ?? [];
+    const row = rows[index];
+    if (row) group.push(row);
+    grouped.set(year, group);
+  });
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([year, groupedRows]) => ({
+      name: year.replace(/[\\/:*?\[\]]/g, "-").slice(0, 31) || "Unknown FY",
+      tables: [{
+        title: `Financial Year ${year}`,
+        headers: dataTable.headers,
+        rows: groupedRows,
+        numericColumns: dataTable.numericColumns,
+        dateColumns: dataTable.dateColumns,
+        dateTimeColumns: dataTable.dateTimeColumns,
+      }],
+    }));
+}
+
 filesRouter.post(
   "/quick-entry/export",
   asyncHandler(async (request, response) => {
@@ -11779,12 +12577,13 @@ filesRouter.post(
     if (!fields.length || fields.some((field) => !quickEntryExportFields[field])) {
       throw new HttpError(400, "Select one or more valid Quick Entry export fields.");
     }
+    const fullDatabase = body.fullDatabase === true;
     const scopeMode = body.scopeMode === "so" ? "so" : body.scopeMode === "fy" ? "fy" : undefined;
     if (!scopeMode) throw new HttpError(400, "Select FY Based or S.O. Based export scope.");
     const viewMode = body.viewMode === "expanded" ? "expanded" : "collapsed";
     const financialYear = normalizeFinancialYearLabel(body.financialYear);
-    const dateRange = getFinancialYearDateRange(financialYear);
-    if (!dateRange) throw new HttpError(400, "Select a valid financial year.");
+    const dateRange = fullDatabase ? undefined : getFinancialYearDateRange(financialYear);
+    if (!fullDatabase && !dateRange) throw new HttpError(400, "Select a valid financial year.");
     const selectedFileTypes = Array.isArray(body.fileTypes)
       ? [...new Set(body.fileTypes
           .filter((value): value is string => typeof value === "string")
@@ -11824,10 +12623,10 @@ filesRouter.post(
           selectedFileTypes.includes(fileType) ||
           (!fileType && selectedFileTypes.includes("goods & services"));
         if (!matchesFileType) return undefined;
-        const orders = (file.supplyOrders ?? []).filter((order) =>
-          scopeMode === "so" ? dateFallsInRange(order.soDate, dateRange) : true,
+      const orders = (file.supplyOrders ?? []).filter((order) =>
+          fullDatabase ? true : scopeMode === "so" ? dateFallsInRange(order.soDate, dateRange!) : true,
         );
-        if (scopeMode === "fy" && !dateFallsInRange(file.receivedDate, dateRange)) return undefined;
+        if (!fullDatabase && scopeMode === "fy" && !dateFallsInRange(file.receivedDate, dateRange!)) return undefined;
         if (scopeMode === "so" && !orders.length) return undefined;
         return { file, orders };
       })
@@ -12102,28 +12901,35 @@ filesRouter.post(
             undefined, index, bill);
         });
       }
-      return [...plannedRows, ...billEventRows];
+      return viewMode === "collapsed" ? plannedRows : [...plannedRows, ...billEventRows];
     };
     columns.unshift(
+      { header: "S.No." },
       { header: "Export Row Type" },
       { header: "File ID" },
+      { header: "S.O. S.No." },
       { header: "S.O. ID" },
       { header: "Stage Label" },
       ...(hasReturnHistoryFields ? [{ header: "Bill ID" }] : []),
       ...(hasSupplementaryFields ? [{ header: "Supplementary Bill ID" }] : []),
     );
     const outputRecords = scopeMode === "so"
-      ? records.flatMap(({ file, orders }) => [
-          { file, rowType: "File summary" as const },
-          ...[...orders]
-            .sort((left, right) => (left.soDate ?? "").localeCompare(right.soDate ?? ""))
-            .flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)),
-        ])
-      : records.flatMap(({ file, orders: matchingOrders }) => {
+      ? records.flatMap(({ file, orders }, fileIndex) => [...orders]
+          .sort((left, right) => (left.soDate ?? "").localeCompare(right.soDate ?? ""))
+          .flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)
+            .map((row) => ({ ...row, fileIndex }))))
+      : records.flatMap(({ file, orders: matchingOrders }, fileIndex) => {
           const rowOrders = includesOrderData ? matchingOrders : [];
+          // When order/stage fields are selected, FY-based exports follow the
+          // same row model as S.O.-based exports: one collapsed row per S.O.
+          // or one expanded row per stage/detail item. A file-only export
+          // retains one file summary row.
+          if (rowOrders.length) {
+            return rowOrders.flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)
+              .map((row) => ({ ...row, fileIndex })));
+          }
           return [
-            { file, rowType: "File summary" as const },
-            ...rowOrders.flatMap((order, orderIndex) => makeOrderRows(file, order, orderIndex)),
+            { file, rowType: "File summary" as const, fileIndex },
           ];
         });
     const rows: string[][] = outputRecords.map(({
@@ -12141,16 +12947,19 @@ filesRouter.post(
       returnCycleIndex,
       returnReason,
       returnRemarks,
+      fileIndex,
     }) => {
       const statuses = statusByFile.get(file.id) ?? [];
       return columns.map((column) => {
+        if (column.header === "S.No.") return String(fileIndex + 1);
+        if (column.header === "S.O. S.No.") return order ? String((orderIndex ?? 0) + 1) : "";
         if (column.header === "Export Row Type") return rowType;
         if (column.header === "File ID") return file.id;
         if (column.header === "S.O. ID") {
           return order?.id ?? "";
         }
         if (column.header === "Stage Label") {
-          if (stageIndex !== undefined) return `Stage ${stageIndex + 1}`;
+          if (stageIndex !== undefined) return String(stageIndex + 1);
           return rowType === "Supplementary bill" ? "Unassigned" : "";
         }
         if (column.header === "Bill ID") {
@@ -12171,7 +12980,7 @@ filesRouter.post(
         if (column.header === "Return Reason") return rowType === "Bill event" ? returnReason ?? "" : "";
         if (column.header === "Return Remarks") return rowType === "Bill event" ? returnRemarks ?? "" : "";
         if (column.statusIndex !== undefined) {
-          if (rowType !== "File summary") return "";
+          if (rowType !== "File summary" && scopeMode !== "so") return "";
           const status = statuses[column.statusIndex];
           if (!status) return "";
           return column.statusPart === "dateTime"
@@ -12208,10 +13017,6 @@ filesRouter.post(
           file: file as unknown as Record<string, unknown>,
           order: order as unknown as Record<string, unknown> | undefined,
         })) return "";
-        const fileIdentityKeys = new Set([
-          "uniqueCode", "controlNo", "fileNo", "year", "receivedDate", "division",
-          "indentor", "demandDescription", "fileType", "currency",
-        ]);
         const orderIdentityKeys = new Set(["soNo", "gemSoNo", "soDate", "firm"]);
         if (rowType === "Bill event") {
           const eventType = billEventType ?? "";
@@ -12253,12 +13058,24 @@ filesRouter.post(
             } else return "";
           }
         }
-        if (column.field.source === "file" && rowType !== "File summary" &&
-          !fileIdentityKeys.has(column.field.field ?? "")) return "";
+        if (column.field.source === "supplementary" && rowType === "S.O. summary" && order) {
+          return formatQuickEntryExportValue(getQuickEntryCollapsedSupplementaryValue(key, order));
+        }
+        if (column.field.source === "stage" && rowType === "S.O. summary" && order) {
+          return formatQuickEntryExportValue(getQuickEntryCollapsedStageValue(key, order));
+        }
+        if (column.field.source === "advance" && rowType === "S.O. summary" && order) {
+          const advance = order.advancePaymentDetail;
+          return formatQuickEntryExportValue(
+            key === "advanceReturnHistory"
+              ? formatQuickEntryReturnHistory(advance?.billReturnCycles)
+              : advance ? (advance as unknown as Record<string, unknown>)[column.field.field ?? ""] : undefined,
+          );
+        }
         if (column.field.source === "order") {
-          if (rowType === "S.O. summary" && orderPaymentFieldKeys.has(key)) return "";
           if (rowType === "S.O. payment" && !orderPaymentFieldKeys.has(key)) return "";
-          if (!new Set(["S.O. summary", "S.O. payment", "Bill event"]).has(rowType) &&
+          if (rowType === "Stage" && orderPaymentFieldKeys.has(key)) return "";
+          if (!new Set(["S.O. summary", "Stage", "S.O. payment", "Bill event"]).has(rowType) &&
             !orderIdentityKeys.has(column.field.field ?? "")) return "";
         }
         if (column.field.source === "stage") {
@@ -12313,14 +13130,54 @@ filesRouter.post(
       second: "2-digit",
       hour12: false,
     }).format(new Date());
+    let previousBackupAt = "Never";
+    if (fullDatabase) {
+      await ensureQuickEntryBackupSchema();
+      const previous = await pool.query<{ exported_at: Date | string }>(
+        `select exported_at from quick_entry_backup_exports
+         where user_id = $1
+         order by exported_at desc
+         limit 1`,
+        [user.id],
+      );
+      if (previous.rows[0]?.exported_at) {
+        previousBackupAt = new Intl.DateTimeFormat("en-IN", {
+          timeZone: "Asia/Kolkata",
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(new Date(previous.rows[0].exported_at));
+      }
+      await pool.query(
+        `insert into quick_entry_backup_exports
+          (user_id, division_id, file_type_filter, view_mode, file_count, row_count)
+         values ($1, $2::uuid, $3, $4, $5, $6)`,
+        [
+          user.id,
+          selectedDivisionId || null,
+          selectedFileTypeLabels.length ? selectedFileTypeLabels.join(", ") : "All file types",
+          viewMode,
+          records.length,
+          rows.length,
+        ],
+      );
+    }
     const scopeDetails = [
+      ...(fullDatabase ? [["Export type", "Full database backup"]] : []),
       ["Export mode", scopeMode === "fy" ? "FY Based" : "S.O. Based"],
-      ["Selected financial year", financialYear],
-      ["Date basis", scopeMode === "fy" ? "File received date" : "S.O. date"],
+      ["Selected financial year", fullDatabase ? "All financial years" : financialYear],
+      ["Date basis", fullDatabase ? "All accessible file history, grouped by FY" : scopeMode === "fy" ? "File received date" : "S.O. date"],
       ["File types", selectedFileTypeLabels.length ? selectedFileTypeLabels.join(", ") : "All file types"],
       ["Division", selectedDivisionId ? Array.from(new Set(records.map(({ file }) => file.division).filter(Boolean))).join(", ") || selectedDivisionId : "All divisions"],
-      ["View", viewMode === "expanded" ? "Expanded (one row per stage; unassigned supplementary bills get separate rows)" : "Collapsed (one row per S.O.)"],
+      ["View", viewMode === "expanded"
+        ? "Expanded (one row per stage, plus selected payment/advance and supplementary/return detail rows)"
+        : "Collapsed (one row per S.O.)"],
       ["Exported at (IST)", exportedAt],
+      ...(fullDatabase ? [["Previous full backup (IST)", previousBackupAt]] : []),
       ["Files represented", String(records.length)],
       ["S.O.s in export scope", String(records.reduce((total, record) => total + record.orders.length, 0))],
       ["Rows exported", String(rows.length)],
@@ -12332,44 +13189,47 @@ filesRouter.post(
       .replace(/[\\/\\"\u0000-\u001f]/g, "-")
       .replace(/\.xlsx$/i, "")
       .slice(0, 160) + ".xlsx";
+    const dataTable = {
+      headers: columns.map((column) => column.header),
+      rows,
+      numericColumns: columns.flatMap((column, index) =>
+        column.numeric || column.field?.numeric ? [index] : [],
+      ),
+      dateColumns: columns.flatMap((column, index) => column.date ? [index] : []),
+      dateTimeColumns: columns.flatMap((column, index) =>
+        column.statusPart === "dateTime" ? [index] : [],
+      ),
+    };
     const document = {
       title:
         typeof body.title === "string" ? body.title.slice(0, 160) : "Quick Entry Export",
-      description: `${scopeMode === "fy" ? `Files received in FY ${financialYear}` : `S.O.s dated in FY ${financialYear}, including files received in earlier years`}. ${viewMode === "expanded" ? "Expanded view exports one row per stage, with separate rows for supplementary bills that cannot be associated with a stage." : "Collapsed view exports one row per S.O."} Status history follows oldest to newest. Files represented: ${records.length}; rows exported: ${rows.length}.`,
-      tables: [
-        {
-          headers: columns.map((column) => column.header),
-          rows,
-          numericColumns: columns.flatMap((column, index) =>
-            column.numeric || column.field?.numeric ? [index] : [],
-          ),
-          dateColumns: columns.flatMap((column, index) =>
-            column.date ? [index] : [],
-          ),
-          dateTimeColumns: columns.flatMap((column, index) =>
-            column.statusPart === "dateTime" ? [index] : [],
-          ),
-        },
-      ],
+      primarySheetName: fullDatabase ? "Information" : undefined,
+      description: `${fullDatabase ? "All accessible file history, grouped into one worksheet per financial year" : scopeMode === "fy" ? `Files received in FY ${financialYear}` : `S.O.s dated in FY ${financialYear}, including files received in earlier years`}. ${viewMode === "expanded" ? "Expanded view exports one row per stage, plus selected payment/advance and supplementary/return detail rows." : "Collapsed view exports one row per S.O."} Status history follows oldest to newest. Files represented: ${records.length}; rows exported: ${rows.length}.`,
+      tables: fullDatabase
+        ? [{
+            title: "Information",
+            headers: ["Export detail", "Value"],
+            rows: scopeDetails,
+            columnWidths: [30, 64],
+          }]
+        : [dataTable],
       sheets: [
-        {
+        ...(!fullDatabase ? [{
           name: "Scope",
-          tables: [
-            {
-              title: "Export scope",
-              headers: ["Export detail", "Value"],
-              rows: scopeDetails,
-              columnWidths: [28, 54],
-            },
-            {
-              title: "Data rows by sheet (headers excluded)",
-              headers: ["Worksheet", "Data rows"],
-              rows: [["Report", String(rows.length)]],
-              numericColumns: [1],
-              columnWidths: [36, 16],
-            },
-          ],
-        },
+          tables: [{
+            title: "Export scope",
+            headers: ["Export detail", "Value"],
+            rows: scopeDetails,
+            columnWidths: [28, 54],
+          }, {
+            title: "Data rows by sheet (headers excluded)",
+            headers: ["Worksheet", "Data rows"],
+            rows: [["Report", String(rows.length)]],
+            numericColumns: [1],
+            columnWidths: [36, 16],
+          }],
+        }] : []),
+        ...(fullDatabase ? buildFullDatabaseSheets(outputRecords, rows, dataTable) : []),
       ],
     };
     response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
@@ -12411,6 +13271,7 @@ filesRouter.get(
 
     const results = await loadSearchFiles(
       buildSearchSql(conditions, values, searchParams, request.query, thresholdFinancialYear),
+      selectedYear === allFilesYear,
     );
     response.json({
       files: results.files,
@@ -12479,7 +13340,7 @@ filesRouter.post(
       offset: 0,
       page: 1,
       pageSize: exportLimit,
-    });
+    }, selectedYear === allFilesYear);
     const exportTable = normalizeSearchExportMoney(
       buildFileSearchExportTable(results.files, columns, layout),
       results.files,
@@ -13047,6 +13908,7 @@ filesRouter.post(
     const user = requireAuth(request as AuthRequest);
     if (!canMutateFiles(user)) throw new HttpError(403, "You cannot add files.");
     const rawBody = normalizeSupplyOrderCountInBody(requireObjectBody(request.body));
+    validateFileCreateBody(rawBody);
     const client = await pool.connect();
     try {
       await client.query("begin");
@@ -13215,7 +14077,7 @@ filesRouter.delete(
     const user = requireAuth(request as AuthRequest);
     if (!canMutateFiles(user)) throw new HttpError(403, "You cannot delete files.");
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const files = await loadFiles("where f.id = $1", [id]);
     if (!files[0]) throw new HttpError(404, "File not found.");
@@ -13230,13 +14092,23 @@ filesRouter.delete(
       throw new HttpError(403, "You cannot delete this file type.");
     }
 
+    // Keep the archive audit label tied to the authenticated actor role.  A
+    // Sub-admin is a distinct file-mutating role and must not be recorded as
+    // an Editor merely because both roles use the same archive endpoint.
+    const archiveReason =
+      user.role === "admin"
+        ? "Archived by admin"
+        : user.role === "sub_admin"
+          ? "Archived by sub-admin"
+          : "Archived by editor";
+
     await pool.query(
       `update files
        set archived_at = now(),
            archived_by = $2,
            archive_reason = $3
        where id = $1 and archived_at is null`,
-      [id, user.id, user.role === "admin" ? "Archived by admin" : "Archived by editor"],
+      [id, user.id, archiveReason],
     );
     clearDashboardReportCaches();
     response.json({ archived: true, file: files[0] });
@@ -13247,8 +14119,33 @@ filesRouter.get(
   "/archive/list",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
-    response.json({ files: await loadFiles("where f.archived_at is not null", [], true) });
+    if (!canArchiveFiles(user)) {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
+    const scope = getDivisionScopeCondition(user, "f");
+    const whereSql = scope.sql
+      ? `where f.archived_at is not null and (${scope.sql})`
+      : "where f.archived_at is not null";
+    response.json({ files: await loadFiles(whereSql, scope.values, true) });
+  }),
+);
+
+// Demand cancellation is a business status, not an explicit archive action.
+// Keep it visible in its own read-only archive bin so cancelling a demand does
+// not silently change restore/delete semantics or hide it from administrators.
+filesRouter.get(
+  "/archive/cancelled-demands",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (!canArchiveFiles(user)) {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
+    const scope = getDivisionScopeCondition(user, "f");
+    const conditions = ["lower(trim(coalesce(f.demand_cancelled, ''))) = 'yes'"];
+    if (scope.sql) conditions.push(`(${scope.sql})`);
+    response.json({
+      files: await loadFiles(`where ${conditions.join(" and ")}`, scope.values, true),
+    });
   }),
 );
 
@@ -13256,12 +14153,21 @@ filesRouter.delete(
   "/archive/:id",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    if (!canArchiveFiles(user)) {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const files = await loadFiles("where f.id = $1 and f.archived_at is not null", [id], true);
     if (!files[0]) throw new HttpError(404, "Archived file not found.");
+    const ownership = await pool.query<{ division_id: string | null }>(
+      "select division_id from files where id = $1 and archived_at is not null",
+      [id],
+    );
+    if (!canAccessDivision(user, ownership.rows[0]?.division_id)) {
+      throw new HttpError(403, "You cannot permanently delete an archived file outside your divisions.");
+    }
     await pool.query("delete from files where id = $1 and archived_at is not null", [id]);
     clearDashboardReportCaches();
     response.json({ deleted: true, file: files[0] });
@@ -13272,7 +14178,7 @@ filesRouter.post(
   "/:id/restore",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    if (!canManageUsers(user)) throw new HttpError(403, "Admin access required.");
     const id = requireParam(request.params.id, "id");
     await pool.query(
       "update files set archived_at = null, archived_by = null, archive_reason = null where id = $1",

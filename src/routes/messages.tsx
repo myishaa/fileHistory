@@ -10,6 +10,7 @@ import {
   useMessages,
 } from "@/lib/files-store";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { hasCapability } from "@/lib/permissions";
 
 type MessageView = "pending" | "resolved" | "sent" | "received" | "processing";
 
@@ -31,11 +32,13 @@ function MessagesPage() {
   const activeUser = useActiveUser();
   const messages = useMessages();
   const fileProcessingNotifications = useFileProcessingNotifications();
-  const isViewer = activeUser?.role === "viewer" || activeUser?.role === "division_user";
-  const defaultView: MessageView = isViewer ? "processing" : "pending";
+  const messagingBlocked = !hasCapability(activeUser, "canSendFileMessages");
+  const isDivisionUser = activeUser?.role === "division_user";
+  const canManageMessages = hasCapability(activeUser, "canResolveMessages");
+  const defaultView: MessageView = isDivisionUser ? "processing" : "pending";
   const view = search.view ?? defaultView;
   const currentPage = search.page ?? 1;
-  const visibleViews = isViewer
+  const visibleViews = isDivisionUser
     ? (["processing", "sent", "received"] as const)
     : (["pending", "resolved"] as const);
   const pendingMessages = messages.filter((message) => message.status === "pending");
@@ -88,6 +91,18 @@ function MessagesPage() {
     (safePage - 1) * pageSize,
     safePage * pageSize,
   );
+
+  if (messagingBlocked) {
+    return (
+      <div className="mx-auto max-w-3xl rounded-md border border-border bg-card p-6">
+        <h1 className="text-lg font-semibold">Messages</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Universal viewers do not have access to urgent messages, file queries, or message
+          notifications.
+        </p>
+      </div>
+    );
+  }
 
   const updateSearch = (
     patch: Partial<{ view: MessageView; page: number; division: string; section: string }>,
@@ -222,8 +237,9 @@ function MessagesPage() {
             <MessageRow
               key={message.id}
               message={message}
-              isViewer={isViewer}
-              isAdmin={activeUser?.role === "admin"}
+              activeUserId={activeUser?.id}
+              isDivisionUser={isDivisionUser}
+              canManage={canManageMessages}
             />
           ))
         ) : (
@@ -385,17 +401,19 @@ function FileProcessingNotificationRow({
 
 function MessageRow({
   message,
-  isViewer,
-  isAdmin,
+  activeUserId,
+  isDivisionUser,
+  canManage,
 }: {
   message: FileMessage;
-  isViewer: boolean;
-  isAdmin: boolean;
+  activeUserId?: string;
+  isDivisionUser: boolean;
+  canManage: boolean;
 }) {
   const navigate = useNavigate();
-  const canMarkViewed = isViewer && message.status === "resolved" && !message.viewedAt;
-  const canDelete = isAdmin || (isViewer && message.status === "pending");
-  const canResolve = !isViewer && message.status === "pending";
+  const canMarkViewed = isDivisionUser && message.status === "resolved" && !message.viewedAt;
+  const canDelete = !!activeUserId && message.createdByUserId === activeUserId;
+  const canResolve = canManage && message.status === "pending";
 
   return (
     <div className="grid grid-cols-[1fr_8rem_8rem_9rem] gap-3 border-b border-border px-4 py-3 last:border-b-0">

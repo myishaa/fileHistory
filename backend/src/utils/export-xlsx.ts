@@ -27,6 +27,7 @@ type ExportPlot = {
 
 type ExportDocument = {
   title: string;
+  primarySheetName?: string;
   subtitle?: string;
   description?: string;
   tables: ExportTable[];
@@ -451,6 +452,9 @@ export function renderXlsxDocument(document: ExportDocument) {
   const additionalSheetRelationships = additionalSheetDefinitions
     .map(({ sheetIndex, relationshipId }) => `<Relationship Id="rId${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetIndex}.xml"/>`)
     .join("");
+  const primarySheetName = (document.primarySheetName ?? "Report")
+    .replace(/[\\/:*?\[\]]/g, "-")
+    .slice(0, 31) || "Report";
   const files: Array<{ name: string; content: string | Buffer }> = [
     { name: "[Content_Types].xml", content: `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${chartSpecs.length ? '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : ""}${additionalSheetContentTypes}${chartSpecs.map((_, index) => `<Override PartName="/xl/charts/chart${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`).join("")}</Types>` },
     { name: "_rels/.rels", content: `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
@@ -475,5 +479,9 @@ export function renderXlsxDocument(document: ExportDocument) {
       content: renderTables(sheet.tables),
     });
   });
+  const workbookFile = files.find((file) => file.name === "xl/workbook.xml");
+  if (workbookFile && typeof workbookFile.content === "string") {
+    workbookFile.content = workbookFile.content.replace('name="Report"', `name="${xmlEscape(primarySheetName)}"`);
+  }
   return makeZip(files);
 }

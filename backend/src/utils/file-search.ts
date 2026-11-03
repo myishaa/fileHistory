@@ -56,7 +56,7 @@ export type FileSearchParams = {
   anomalyFileIds?: string[];
   anomalyFileIdsReady?: boolean;
   selectedYear?: string;
-  includeArchivedYears?: boolean;
+  includeActiveArchivedYears?: boolean;
   milestoneClearingScope?: boolean;
   yearFilter?: string;
   fileYear?: string;
@@ -143,6 +143,20 @@ export type FileSearchParams = {
   postTcecDateTo?: string;
   postTcecMinutesFrom?: string;
   postTcecMinutesTo?: string;
+  refloatGemUndertakingDateFrom?: string;
+  refloatGemUndertakingDateTo?: string;
+  refloatRecommendationDateFrom?: string;
+  refloatRecommendationDateTo?: string;
+  refloatPreBidMeetingDateFrom?: string;
+  refloatPreBidMeetingDateTo?: string;
+  refloatBiddingDateFrom?: string;
+  refloatBiddingDateTo?: string;
+  refloatBidOpeningDateFrom?: string;
+  refloatBidOpeningDateTo?: string;
+  refloatPostTcecDateFrom?: string;
+  refloatPostTcecDateTo?: string;
+  refloatPostTcecMinutesFrom?: string;
+  refloatPostTcecMinutesTo?: string;
   cncDateFrom?: string;
   cncDateTo?: string;
   preBidDateFrom?: string;
@@ -326,6 +340,8 @@ const searchableFileKeys = [
   "cfaSentDate",
   "cfaDate",
   "gemUndertakingDate",
+  "refloatGemUndertakingDate",
+  "refloatRecommendationDate",
   "rfpVettingInitiationDate",
   "rfpVettingApprovalDate",
   "tenderLive",
@@ -334,6 +350,8 @@ const searchableFileKeys = [
   "bidOpeningDate",
   "bidOpened",
   "refloat",
+  "refloatPreBidMeeting",
+  "refloatPreBidMeetingDate",
   "postTcecDate",
   "postTcecMinutesDate",
   "postTcecCommitteeNumber",
@@ -913,6 +931,69 @@ export function searchFiles(files: FileRecord[], params: FileSearchParams) {
         file.refloatPostTcecMinutesDate,
         params.postTcecMinutesFrom,
         params.postTcecMinutesTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatGemUndertakingDate,
+        params.refloatGemUndertakingDateFrom,
+        params.refloatGemUndertakingDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatRecommendationDate,
+        params.refloatRecommendationDateFrom,
+        params.refloatRecommendationDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatPreBidMeetingDate,
+        params.refloatPreBidMeetingDateFrom,
+        params.refloatPreBidMeetingDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatBiddingDate,
+        params.refloatBiddingDateFrom,
+        params.refloatBiddingDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatBidOpeningDate,
+        params.refloatBidOpeningDateFrom,
+        params.refloatBidOpeningDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatPostTcecDate,
+        params.refloatPostTcecDateFrom,
+        params.refloatPostTcecDateTo,
+      )
+    ) {
+      return false;
+    }
+    if (
+      !matchesFileDateRange(
+        file.refloatPostTcecMinutesDate,
+        params.refloatPostTcecMinutesFrom,
+        params.refloatPostTcecMinutesTo,
       )
     ) {
       return false;
@@ -4923,6 +5004,22 @@ function matchesDashboardFilter(file: FileRecord, filter: string, bgReturnOffset
     return !isYes(file.refloat) && isFileTenderLive(file);
   }
   if (filter === "bidOverdue") return isBiddingInProgressFile(file) && isBidOverdue(file);
+  if (filter.startsWith("bidOpeningSchedule:")) {
+    const [, state = "all", monthKey = ""] = filter.split(":");
+    if (!["all", "due", "opened", "overdue"].includes(state)) return false;
+    return (
+      isBidOpeningScheduleStatus(file, false, state as "due" | "opened" | "overdue", monthKey) ||
+      isBidOpeningScheduleStatus(file, true, state as "due" | "opened" | "overdue", monthKey)
+    );
+  }
+  if (filter.startsWith("bidOpeningScheduleFy:")) {
+    const [, state = "all", fiscalYear = ""] = filter.split(":");
+    if (!["all", "due", "opened", "overdue"].includes(state)) return false;
+    return (
+      isBidOpeningScheduleStatus(file, false, state as "due" | "opened" | "overdue", "", fiscalYear) ||
+      isBidOpeningScheduleStatus(file, true, state as "due" | "opened" | "overdue", "", fiscalYear)
+    );
+  }
   if (filter.startsWith("preBidMeetingCombined:")) {
     const [, state = "all", monthKey = ""] = filter.split(":");
     if (state === "all") {
@@ -5055,6 +5152,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string, bgReturnOffset
   if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
+  if (filter === "miscNoFurtherAction")
+    return fileSupplyOrders(file).some((order) => isYes(order.noFurtherAction));
   if (filter === "miscDemandCancelled") return isYes(file.demandCancelled);
   if (filter === "miscSoCancelled")
     return fileSupplyOrders(file).some((order) => isYes(order.soCancelled));
@@ -5300,7 +5399,9 @@ function isInactiveHistoryDashboardFilter(filter: string) {
     filter.startsWith("tcecStatus:") ||
     filter.startsWith("tcecStatusFy:") ||
     filter.startsWith("cncSummary:") ||
-    filter.startsWith("cncSummaryFy:")
+    filter.startsWith("cncSummaryFy:") ||
+    filter.startsWith("bidOpeningSchedule:") ||
+    filter.startsWith("bidOpeningScheduleFy:")
   );
 }
 
@@ -5639,6 +5740,29 @@ function isPreBidMeetingStatus(
     return false;
   }
   return state === "completed" ? isDateBeforeToday(meetingDate) : !isDateBeforeToday(meetingDate);
+}
+
+function isBidOpeningScheduleStatus(
+  file: FileRecord,
+  refloat: boolean,
+  state: "due" | "opened" | "overdue" | "all",
+  monthKey = "",
+  fiscalYear = "",
+) {
+  if (isCancelledFile(file) || !isBiddingApplicableForFile(file)) return false;
+  const date = refloat ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  if (!hasFilledString(date) || (refloat && !isYes(file.refloat))) return false;
+  if (monthKey && (/^\d{4}-\d{2}-\d{2}$/.test(monthKey)
+    ? date!.slice(0, 10) !== monthKey
+    : getMonthKey(date) !== monthKey)) return false;
+  if (fiscalYear && fiscalYear !== "all" && getFinancialYearForDate(date) !== fiscalYear) return false;
+  const opened = refloat
+    ? isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
+  if (state === "all") return true;
+  if (state === "opened") return opened;
+  if (state === "overdue") return !opened && isDateBeforeToday(date);
+  return !opened && !isDateBeforeToday(date);
 }
 
 function hasCurrentSupplyOrderMilestoneRow(file: FileRecord) {

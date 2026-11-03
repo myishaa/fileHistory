@@ -53,6 +53,27 @@ export type DemandProcessingAnalysisRow = {
   unifiedPaymentDate?: string;
 };
 
+export type DemandProcessingDateRange = {
+  fromDate: string;
+  toDate: string;
+};
+
+/**
+ * Applies the optional DPA Activity range to the selected From milestone.
+ * The source file's received date is deliberately not used here: each row's
+ * `fromDate` is the milestone selected by the user for that analysis pair.
+ */
+export function filterDemandProcessingRowsByFromDate(
+  rows: DemandProcessingAnalysisRow[],
+  range: DemandProcessingDateRange | undefined,
+) {
+  if (!range) return rows;
+  return rows.filter(
+    (row) =>
+      Boolean(row.fromDate) && row.fromDate >= range.fromDate && row.fromDate <= range.toDate,
+  );
+}
+
 type DateFieldConfig = {
   id: string;
   label: string;
@@ -66,79 +87,499 @@ function isYes(value: string | undefined) {
 }
 
 const dateFieldConfigs: DateFieldConfig[] = [
-  { id: "file.receivedDate", label: "Demand received date", group: "File details", scope: "file", key: "receivedDate" },
-  { id: "file.demandCancelledDate", label: "Demand cancelled date", group: "File details", scope: "file", key: "demandCancelledDate" },
-  { id: "file.scrutinyDate", label: "Scrutiny date", group: "Scrutiny", scope: "file", key: "scrutinyDate" },
-  { id: "file.scrutinyResponseDate", label: "Scrutiny response date", group: "Scrutiny", scope: "file", key: "scrutinyResponseDate" },
-  { id: "file.scrutinyCompletionDate", label: "Scrutiny completion date", group: "Scrutiny", scope: "file", key: "scrutinyCompletionDate" },
-  { id: "file.immsDate", label: "Demand control date", group: "Scrutiny", scope: "file", key: "immsDate" },
-  { id: "file.highValueMeetingDate", label: "High Value meeting date", group: "Approval / vetting", scope: "file", key: "highValueMeetingDate" },
-  { id: "file.highValueMinutesDate", label: "High Value minutes date", group: "Approval / vetting", scope: "file", key: "highValueMinutesDate" },
-  { id: "file.preTcecDate", label: "Pre-TCEC date", group: "TCEC", scope: "file", key: "preTcecDate" },
-  { id: "file.preTcecMinutesDate", label: "Pre-TCEC minutes date", group: "TCEC", scope: "file", key: "preTcecMinutesDate" },
-  { id: "file.postTcecDate", label: "Post-TCEC date", group: "TCEC", scope: "file", key: "postTcecDate" },
-  { id: "file.postTcecMinutesDate", label: "Post-TCEC minutes date", group: "TCEC", scope: "file", key: "postTcecMinutesDate" },
-  { id: "file.refloatPostTcecDate", label: "Refloat Post-TCEC date", group: "TCEC", scope: "file", key: "refloatPostTcecDate" },
-  { id: "file.refloatPostTcecMinutesDate", label: "Refloat Post-TCEC minutes date", group: "TCEC", scope: "file", key: "refloatPostTcecMinutesDate" },
-  { id: "file.adSentDate", label: "AD sent date", group: "Approval / vetting", scope: "file", key: "adSentDate" },
-  { id: "file.adVettingDate", label: "AD vetting date", group: "Approval / vetting", scope: "file", key: "adVettingDate" },
-  { id: "file.rqaSentDate", label: "R&QA sent date", group: "Approval / vetting", scope: "file", key: "rqaSentDate" },
-  { id: "file.rqaApprovalDate", label: "R&QA approval date", group: "Approval / vetting", scope: "file", key: "rqaApprovalDate" },
-  { id: "file.ifaSentDate", label: "IFA sent date", group: "Approval / vetting", scope: "file", key: "ifaSentDate" },
-  { id: "file.ifaFinalDate", label: "IFA final date", group: "Approval / vetting", scope: "file", key: "ifaFinalDate" },
-  { id: "file.cfaSentDate", label: "CFA sent date", group: "Approval / vetting", scope: "file", key: "cfaSentDate" },
-  { id: "file.cfaDate", label: "CFA approval date", group: "Approval / vetting", scope: "file", key: "cfaDate" },
-  { id: "file.gemUndertakingDate", label: "GeM undertaking date", group: "Bidding", scope: "file", key: "gemUndertakingDate" },
-  { id: "file.refloatGemUndertakingDate", label: "Refloat GeM undertaking", group: "Bidding", scope: "file", key: "refloatGemUndertakingDate" },
-  { id: "file.refloatRecommendationDate", label: "Refloat recommendation", group: "Bidding", scope: "file", key: "refloatRecommendationDate" },
-  { id: "file.refloatBiddingStageOver", label: "Refloat Bidding Stage Over", group: "Bidding", scope: "file", key: "refloatBiddingStageOver" },
-  { id: "file.rfpVettingInitiationDate", label: "RFP vetting initiation date", group: "Bidding", scope: "file", key: "rfpVettingInitiationDate" },
-  { id: "file.rfpVettingApprovalDate", label: "RFP vetting approval date", group: "Bidding", scope: "file", key: "rfpVettingApprovalDate" },
+  {
+    id: "file.receivedDate",
+    label: "Demand received date",
+    group: "File details",
+    scope: "file",
+    key: "receivedDate",
+  },
+  {
+    id: "file.demandCancelledDate",
+    label: "Demand cancelled date",
+    group: "File details",
+    scope: "file",
+    key: "demandCancelledDate",
+  },
+  {
+    id: "file.scrutinyDate",
+    label: "Scrutiny date",
+    group: "Scrutiny",
+    scope: "file",
+    key: "scrutinyDate",
+  },
+  {
+    id: "file.scrutinyResponseDate",
+    label: "Scrutiny response date",
+    group: "Scrutiny",
+    scope: "file",
+    key: "scrutinyResponseDate",
+  },
+  {
+    id: "file.scrutinyCompletionDate",
+    label: "Scrutiny completion date",
+    group: "Scrutiny",
+    scope: "file",
+    key: "scrutinyCompletionDate",
+  },
+  {
+    id: "file.immsDate",
+    label: "Demand control date",
+    group: "Scrutiny",
+    scope: "file",
+    key: "immsDate",
+  },
+  {
+    id: "file.highValueMeetingDate",
+    label: "High Value meeting date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "highValueMeetingDate",
+  },
+  {
+    id: "file.highValueMinutesDate",
+    label: "High Value minutes date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "highValueMinutesDate",
+  },
+  {
+    id: "file.preTcecDate",
+    label: "Pre-TCEC date",
+    group: "TCEC",
+    scope: "file",
+    key: "preTcecDate",
+  },
+  {
+    id: "file.preTcecMinutesDate",
+    label: "Pre-TCEC minutes date",
+    group: "TCEC",
+    scope: "file",
+    key: "preTcecMinutesDate",
+  },
+  {
+    id: "file.postTcecDate",
+    label: "Post-TCEC date",
+    group: "TCEC",
+    scope: "file",
+    key: "postTcecDate",
+  },
+  {
+    id: "file.postTcecMinutesDate",
+    label: "Post-TCEC minutes date",
+    group: "TCEC",
+    scope: "file",
+    key: "postTcecMinutesDate",
+  },
+  {
+    id: "file.refloatPostTcecDate",
+    label: "Refloat Post-TCEC date",
+    group: "TCEC",
+    scope: "file",
+    key: "refloatPostTcecDate",
+  },
+  {
+    id: "file.refloatPostTcecMinutesDate",
+    label: "Refloat Post-TCEC minutes date",
+    group: "TCEC",
+    scope: "file",
+    key: "refloatPostTcecMinutesDate",
+  },
+  {
+    id: "file.adSentDate",
+    label: "AD sent date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "adSentDate",
+  },
+  {
+    id: "file.adVettingDate",
+    label: "AD vetting date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "adVettingDate",
+  },
+  {
+    id: "file.rqaSentDate",
+    label: "R&QA sent date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "rqaSentDate",
+  },
+  {
+    id: "file.rqaApprovalDate",
+    label: "R&QA approval date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "rqaApprovalDate",
+  },
+  {
+    id: "file.ifaSentDate",
+    label: "IFA sent date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "ifaSentDate",
+  },
+  {
+    id: "file.ifaFinalDate",
+    label: "IFA final date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "ifaFinalDate",
+  },
+  {
+    id: "file.cfaSentDate",
+    label: "CFA sent date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "cfaSentDate",
+  },
+  {
+    id: "file.cfaDate",
+    label: "CFA approval date",
+    group: "Approval / vetting",
+    scope: "file",
+    key: "cfaDate",
+  },
+  {
+    id: "file.gemUndertakingDate",
+    label: "GeM undertaking date",
+    group: "Bidding",
+    scope: "file",
+    key: "gemUndertakingDate",
+  },
+  {
+    id: "file.refloatGemUndertakingDate",
+    label: "Refloat GeM undertaking",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatGemUndertakingDate",
+  },
+  {
+    id: "file.refloatRecommendationDate",
+    label: "Refloat recommendation",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatRecommendationDate",
+  },
+  {
+    id: "file.refloatBiddingStageOver",
+    label: "Refloat Bidding Stage Over",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatBiddingStageOver",
+  },
+  {
+    id: "file.rfpVettingInitiationDate",
+    label: "RFP vetting initiation date",
+    group: "Bidding",
+    scope: "file",
+    key: "rfpVettingInitiationDate",
+  },
+  {
+    id: "file.rfpVettingApprovalDate",
+    label: "RFP vetting approval date",
+    group: "Bidding",
+    scope: "file",
+    key: "rfpVettingApprovalDate",
+  },
   { id: "file.bidDate", label: "Bid date", group: "Bidding", scope: "file", key: "bidDate" },
-  { id: "file.bidOpeningDate", label: "Bid opening date", group: "Bidding", scope: "file", key: "bidOpeningDate" },
-  { id: "file.refloatBiddingDate", label: "Refloat bidding date", group: "Bidding", scope: "file", key: "refloatBiddingDate" },
-  { id: "file.refloatBidOpeningDate", label: "Refloat bid opening date", group: "Bidding", scope: "file", key: "refloatBidOpeningDate" },
+  {
+    id: "file.bidOpeningDate",
+    label: "Bid opening date",
+    group: "Bidding",
+    scope: "file",
+    key: "bidOpeningDate",
+  },
+  {
+    id: "file.refloatBiddingDate",
+    label: "Refloat bidding date",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatBiddingDate",
+  },
+  {
+    id: "file.refloatBidOpeningDate",
+    label: "Refloat bid opening date",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatBidOpeningDate",
+  },
   { id: "file.cncDate", label: "CNC date", group: "Bidding", scope: "file", key: "cncDate" },
-  { id: "file.cncApprovalDate", label: "CNC approval date", group: "Bidding", scope: "file", key: "cncApprovalDate" },
-  { id: "order.financialSanctionDate", label: "Financial Sanction date", group: "Financial Sanction", scope: "order", key: "financialSanctionDate" },
+  {
+    id: "file.cncApprovalDate",
+    label: "CNC approval date",
+    group: "Bidding",
+    scope: "file",
+    key: "cncApprovalDate",
+  },
+  {
+    id: "order.financialSanctionDate",
+    label: "Financial Sanction date",
+    group: "Financial Sanction",
+    scope: "order",
+    key: "financialSanctionDate",
+  },
   { id: "order.soDate", label: "S.O. date", group: "Supply Order", scope: "order", key: "soDate" },
-  { id: "order.dpDate", label: "D.P. date", group: "Delivery Period", scope: "order", key: "dpDate" },
-  { id: "order.revisedDp", label: "Revised D.P.", group: "Delivery Period", scope: "order", key: "revisedDp" },
-  { id: "order.psbBgReceivedDate", label: "PSB BG received date", group: "Security/Warranty BG", scope: "order", key: "psbBgReceivedDate" },
-  { id: "order.psbBgValidityDate", label: "PSB BG validity date", group: "Security/Warranty BG", scope: "order", key: "psbBgValidityDate" },
-  { id: "order.psbBgReturnDate", label: "PSB BG return date", group: "Security/Warranty BG", scope: "order", key: "psbBgReturnDate" },
-  { id: "order.pwbBgReceivedDate", label: "PWB BG received date", group: "Security/Warranty BG", scope: "order", key: "pwbBgReceivedDate" },
-  { id: "order.pwbBgValidityDate", label: "PWB BG validity date", group: "Security/Warranty BG", scope: "order", key: "pwbBgValidityDate" },
-  { id: "order.pwbBgReturnDate", label: "PWB BG return date", group: "Security/Warranty BG", scope: "order", key: "pwbBgReturnDate" },
-  { id: "order.combinedBgReceivedDate", label: "PSB+PWB BG received date", group: "Security/Warranty BG", scope: "order", key: "combinedBgReceivedDate" },
-  { id: "order.combinedBgValidityDate", label: "PSB+PWB BG validity date", group: "Security/Warranty BG", scope: "order", key: "combinedBgValidityDate" },
-  { id: "order.combinedBgReturnDate", label: "PSB+PWB BG return date", group: "Security/Warranty BG", scope: "order", key: "combinedBgReturnDate" },
-  { id: "order.materialReceiptDate", label: "Material receipt date", group: "Delivery / IR", scope: "order", key: "materialReceiptDate" },
-  { id: "order.jobCompletionDate", label: "Job Completion Received Date", group: "Delivery / IR", scope: "order", key: "jobCompletionDate" },
-  { id: "order.actualJobCompletionDate", label: "Actual Job Completion Date", group: "Delivery / IR", scope: "order", key: "actualJobCompletionDate" },
-  { id: "order.irPreparationDate", label: "IR preparation date", group: "Delivery / IR", scope: "order", key: "irPreparationDate" },
-  { id: "order.irReceiptDate", label: "IR receipt date", group: "Delivery / IR", scope: "order", key: "irReceiptDate" },
-  { id: "order.billPreparationDate", label: "Bill preparation date", group: "Bill / Payment", scope: "order", key: "billPreparationDate" },
-  { id: "order.billSentForPaymentDate", label: "Bill sent for payment date", group: "Bill / Payment", scope: "order", key: "billSentForPaymentDate" },
-  { id: "order.paymentDate", label: "Payment date", group: "Bill / Payment", scope: "order", key: "paymentDate" },
-  { id: "payment.unifiedSubmissionDate", label: "Unified bill submission / resubmission date", group: "Bill / Payment", scope: "order", key: "__unifiedSubmissionDate" },
-  { id: "payment.unifiedReturnDate", label: "Unified bill return date", group: "Bill / Payment", scope: "order", key: "__unifiedReturnDate" },
-  { id: "payment.unifiedPaymentDate", label: "Unified payment date", group: "Bill / Payment", scope: "order", key: "__unifiedPaymentDate" },
-  { id: "order.soCancelledDate", label: "S.O. cancelled date", group: "Cancellation / Closure", scope: "order", key: "soCancelledDate" },
-  { id: "stage.deliveryPeriodStartDate", label: "Stage delivery period start date", group: "Stage delivery", scope: "stage", key: "deliveryPeriodStartDate" },
-  { id: "stage.dpDate", label: "Stage D.P. date", group: "Stage delivery", scope: "stage", key: "dpDate" },
-  { id: "stage.revisedDp", label: "Stage revised D.P.", group: "Stage delivery", scope: "stage", key: "revisedDp" },
-  { id: "stage.materialReceiptDate", label: "Stage material receipt date", group: "Stage delivery", scope: "stage", key: "materialReceiptDate" },
-  { id: "stage.jobCompletionDate", label: "Stage Job Completion Received Date", group: "Stage delivery", scope: "stage", key: "jobCompletionDate" },
-  { id: "stage.actualJobCompletionDate", label: "Stage Actual Job Completion Date", group: "Stage delivery", scope: "stage", key: "actualJobCompletionDate" },
-  { id: "stage.irPreparationDate", label: "Stage IR preparation date", group: "Stage delivery", scope: "stage", key: "irPreparationDate" },
-  { id: "stage.irReceiptDate", label: "Stage IR receipt date", group: "Stage delivery", scope: "stage", key: "irReceiptDate" },
-  { id: "stage.billPreparationDate", label: "Stage bill preparation date", group: "Stage payment", scope: "stage", key: "billPreparationDate" },
-  { id: "stage.billSentForPaymentDate", label: "Stage bill sent for payment date", group: "Stage payment", scope: "stage", key: "billSentForPaymentDate" },
-  { id: "stage.paymentDate", label: "Stage payment date", group: "Stage payment", scope: "stage", key: "paymentDate" },
-  { id: "advance.billPreparationDate", label: "Advance bill preparation date", group: "Advance payment", scope: "advance", key: "billPreparationDate" },
-  { id: "advance.billSentForPaymentDate", label: "Advance bill sent for payment date", group: "Advance payment", scope: "advance", key: "billSentForPaymentDate" },
-  { id: "advance.paymentDate", label: "Advance payment date", group: "Advance payment", scope: "advance", key: "paymentDate" },
+  {
+    id: "order.dpDate",
+    label: "D.P. date",
+    group: "Delivery Period",
+    scope: "order",
+    key: "dpDate",
+  },
+  {
+    id: "order.revisedDp",
+    label: "Revised D.P.",
+    group: "Delivery Period",
+    scope: "order",
+    key: "revisedDp",
+  },
+  {
+    id: "order.psbBgReceivedDate",
+    label: "PSB BG received date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "psbBgReceivedDate",
+  },
+  {
+    id: "order.psbBgValidityDate",
+    label: "PSB BG validity date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "psbBgValidityDate",
+  },
+  {
+    id: "order.psbBgReturnDate",
+    label: "PSB BG return date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "psbBgReturnDate",
+  },
+  {
+    id: "order.pwbBgReceivedDate",
+    label: "PWB BG received date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "pwbBgReceivedDate",
+  },
+  {
+    id: "order.pwbBgValidityDate",
+    label: "PWB BG validity date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "pwbBgValidityDate",
+  },
+  {
+    id: "order.pwbBgReturnDate",
+    label: "PWB BG return date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "pwbBgReturnDate",
+  },
+  {
+    id: "order.combinedBgReceivedDate",
+    label: "PSB+PWB BG received date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "combinedBgReceivedDate",
+  },
+  {
+    id: "order.combinedBgValidityDate",
+    label: "PSB+PWB BG validity date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "combinedBgValidityDate",
+  },
+  {
+    id: "order.combinedBgReturnDate",
+    label: "PSB+PWB BG return date",
+    group: "Security/Warranty BG",
+    scope: "order",
+    key: "combinedBgReturnDate",
+  },
+  {
+    id: "order.materialReceiptDate",
+    label: "Material receipt date",
+    group: "Delivery / IR",
+    scope: "order",
+    key: "materialReceiptDate",
+  },
+  {
+    id: "order.jobCompletionDate",
+    label: "Job Completion Received Date",
+    group: "Delivery / IR",
+    scope: "order",
+    key: "jobCompletionDate",
+  },
+  {
+    id: "order.actualJobCompletionDate",
+    label: "Work Completion Date",
+    group: "Delivery / IR",
+    scope: "order",
+    key: "actualJobCompletionDate",
+  },
+  {
+    id: "order.irPreparationDate",
+    label: "IR preparation date",
+    group: "Delivery / IR",
+    scope: "order",
+    key: "irPreparationDate",
+  },
+  {
+    id: "order.irReceiptDate",
+    label: "IR receipt date",
+    group: "Delivery / IR",
+    scope: "order",
+    key: "irReceiptDate",
+  },
+  {
+    id: "order.billPreparationDate",
+    label: "Bill preparation date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "billPreparationDate",
+  },
+  {
+    id: "order.billSentForPaymentDate",
+    label: "Bill sent for payment date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "billSentForPaymentDate",
+  },
+  {
+    id: "order.paymentDate",
+    label: "Payment date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "paymentDate",
+  },
+  {
+    id: "payment.unifiedSubmissionDate",
+    label: "Unified bill submission / resubmission date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "__unifiedSubmissionDate",
+  },
+  {
+    id: "payment.unifiedReturnDate",
+    label: "Unified bill return date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "__unifiedReturnDate",
+  },
+  {
+    id: "payment.unifiedPaymentDate",
+    label: "Unified payment date",
+    group: "Bill / Payment",
+    scope: "order",
+    key: "__unifiedPaymentDate",
+  },
+  {
+    id: "order.soCancelledDate",
+    label: "S.O. cancelled date",
+    group: "Cancellation / Closure",
+    scope: "order",
+    key: "soCancelledDate",
+  },
+  {
+    id: "stage.deliveryPeriodStartDate",
+    label: "Stage delivery period start date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "deliveryPeriodStartDate",
+  },
+  {
+    id: "stage.dpDate",
+    label: "Stage D.P. date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "dpDate",
+  },
+  {
+    id: "stage.revisedDp",
+    label: "Stage revised D.P.",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "revisedDp",
+  },
+  {
+    id: "stage.materialReceiptDate",
+    label: "Stage material receipt date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "materialReceiptDate",
+  },
+  {
+    id: "stage.jobCompletionDate",
+    label: "Stage Job Completion Received Date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "jobCompletionDate",
+  },
+  {
+    id: "stage.actualJobCompletionDate",
+    label: "Stage Work Completion Date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "actualJobCompletionDate",
+  },
+  {
+    id: "stage.irPreparationDate",
+    label: "Stage IR preparation date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "irPreparationDate",
+  },
+  {
+    id: "stage.irReceiptDate",
+    label: "Stage IR receipt date",
+    group: "Stage delivery",
+    scope: "stage",
+    key: "irReceiptDate",
+  },
+  {
+    id: "stage.billPreparationDate",
+    label: "Stage bill preparation date",
+    group: "Stage payment",
+    scope: "stage",
+    key: "billPreparationDate",
+  },
+  {
+    id: "stage.billSentForPaymentDate",
+    label: "Stage bill sent for payment date",
+    group: "Stage payment",
+    scope: "stage",
+    key: "billSentForPaymentDate",
+  },
+  {
+    id: "stage.paymentDate",
+    label: "Stage payment date",
+    group: "Stage payment",
+    scope: "stage",
+    key: "paymentDate",
+  },
+  {
+    id: "advance.billPreparationDate",
+    label: "Advance bill preparation date",
+    group: "Advance payment",
+    scope: "advance",
+    key: "billPreparationDate",
+  },
+  {
+    id: "advance.billSentForPaymentDate",
+    label: "Advance bill sent for payment date",
+    group: "Advance payment",
+    scope: "advance",
+    key: "billSentForPaymentDate",
+  },
+  {
+    id: "advance.paymentDate",
+    label: "Advance payment date",
+    group: "Advance payment",
+    scope: "advance",
+    key: "paymentDate",
+  },
 ];
 
 export const demandProcessingDateFields: DemandProcessingDateField[] = dateFieldConfigs.map(
@@ -146,26 +587,112 @@ export const demandProcessingDateFields: DemandProcessingDateField[] = dateField
     ...field,
     getValue: (file, order, stage, advance) => {
       const source =
-        field.scope === "file" ? file : field.scope === "order" ? order : field.scope === "stage" ? stage : advance;
-      return String((source as Record<string, unknown> | undefined)?.[field.key] ?? "") || undefined;
+        field.scope === "file"
+          ? file
+          : field.scope === "order"
+            ? order
+            : field.scope === "stage"
+              ? stage
+              : advance;
+      return (
+        String((source as Record<string, unknown> | undefined)?.[field.key] ?? "") || undefined
+      );
     },
   }),
 );
 
 export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
-  { id: "builtin-received-control", name: "Demand control based on Demand received date", fromFieldId: "file.receivedDate", toFieldId: "file.immsDate", active: true },
-  { id: "builtin-control-so", name: "S.O. based on Demand control date", fromFieldId: "file.immsDate", toFieldId: "order.soDate", active: true },
-  { id: "builtin-fs-so", name: "S.O. based on Financial Sanction date", fromFieldId: "order.financialSanctionDate", toFieldId: "order.soDate", active: true },
-  { id: "builtin-so-material", name: "Material receipt based on S.O. date", fromFieldId: "order.soDate", toFieldId: "order.materialReceiptDate", active: true },
-  { id: "builtin-payment-submission-payment", name: "Payment: Unified payment based on Unified bill submission / resubmission", fromFieldId: "payment.unifiedSubmissionDate", toFieldId: "payment.unifiedPaymentDate", active: true },
-  { id: "builtin-payment-material-submission", name: "Payment: Unified bill submission / resubmission based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
-  { id: "builtin-payment-job-submission", name: "Payment: Unified bill submission / resubmission based on Job Completion Received Date", fromFieldId: "order.jobCompletionDate", toFieldId: "payment.unifiedSubmissionDate", active: true },
-  { id: "builtin-payment-material-payment", name: "Payment: Unified payment based on Material receipt", fromFieldId: "order.materialReceiptDate", toFieldId: "payment.unifiedPaymentDate", active: true },
-  { id: "builtin-ifa", name: "IFA final based on IFA sent date", fromFieldId: "file.ifaSentDate", toFieldId: "file.ifaFinalDate", active: true },
-  { id: "builtin-pre-tcec", name: "Pre-TCEC minutes based on Pre-TCEC date", fromFieldId: "file.preTcecDate", toFieldId: "file.preTcecMinutesDate", active: true },
-  { id: "builtin-post-tcec", name: "Post-TCEC minutes based on Post-TCEC date", fromFieldId: "file.postTcecDate", toFieldId: "file.postTcecMinutesDate", active: true },
-  { id: "builtin-refloat-post-tcec", name: "Refloat Post-TCEC minutes based on Refloat Post-TCEC date", fromFieldId: "file.refloatPostTcecDate", toFieldId: "file.refloatPostTcecMinutesDate", active: true },
-  { id: "builtin-cnc", name: "CNC approval based on CNC date", fromFieldId: "file.cncDate", toFieldId: "file.cncApprovalDate", active: true },
+  {
+    id: "builtin-received-control",
+    name: "Demand control based on Demand received date",
+    fromFieldId: "file.receivedDate",
+    toFieldId: "file.immsDate",
+    active: true,
+  },
+  {
+    id: "builtin-control-so",
+    name: "S.O. based on Demand control date",
+    fromFieldId: "file.immsDate",
+    toFieldId: "order.soDate",
+    active: true,
+  },
+  {
+    id: "builtin-fs-so",
+    name: "S.O. based on Financial Sanction date",
+    fromFieldId: "order.financialSanctionDate",
+    toFieldId: "order.soDate",
+    active: true,
+  },
+  {
+    id: "builtin-so-material",
+    name: "Material receipt based on S.O. date",
+    fromFieldId: "order.soDate",
+    toFieldId: "order.materialReceiptDate",
+    active: true,
+  },
+  {
+    id: "builtin-payment-submission-payment",
+    name: "Payment: Unified payment based on Unified bill submission / resubmission",
+    fromFieldId: "payment.unifiedSubmissionDate",
+    toFieldId: "payment.unifiedPaymentDate",
+    active: true,
+  },
+  {
+    id: "builtin-payment-material-submission",
+    name: "Payment: Unified bill submission / resubmission based on Material receipt",
+    fromFieldId: "order.materialReceiptDate",
+    toFieldId: "payment.unifiedSubmissionDate",
+    active: true,
+  },
+  {
+    id: "builtin-payment-job-submission",
+    name: "Payment: Unified bill submission / resubmission based on Job Completion Received Date",
+    fromFieldId: "order.jobCompletionDate",
+    toFieldId: "payment.unifiedSubmissionDate",
+    active: true,
+  },
+  {
+    id: "builtin-payment-material-payment",
+    name: "Payment: Unified payment based on Material receipt",
+    fromFieldId: "order.materialReceiptDate",
+    toFieldId: "payment.unifiedPaymentDate",
+    active: true,
+  },
+  {
+    id: "builtin-ifa",
+    name: "IFA final based on IFA sent date",
+    fromFieldId: "file.ifaSentDate",
+    toFieldId: "file.ifaFinalDate",
+    active: true,
+  },
+  {
+    id: "builtin-pre-tcec",
+    name: "Pre-TCEC minutes based on Pre-TCEC date",
+    fromFieldId: "file.preTcecDate",
+    toFieldId: "file.preTcecMinutesDate",
+    active: true,
+  },
+  {
+    id: "builtin-post-tcec",
+    name: "Post-TCEC minutes based on Post-TCEC date",
+    fromFieldId: "file.postTcecDate",
+    toFieldId: "file.postTcecMinutesDate",
+    active: true,
+  },
+  {
+    id: "builtin-refloat-post-tcec",
+    name: "Refloat Post-TCEC minutes based on Refloat Post-TCEC date",
+    fromFieldId: "file.refloatPostTcecDate",
+    toFieldId: "file.refloatPostTcecMinutesDate",
+    active: true,
+  },
+  {
+    id: "builtin-cnc",
+    name: "CNC approval based on CNC date",
+    fromFieldId: "file.cncDate",
+    toFieldId: "file.cncApprovalDate",
+    active: true,
+  },
 ];
 
 export function getDemandProcessingField(id: string) {
@@ -211,7 +738,12 @@ export function normalizeDemandProcessingPresets(value: unknown): DemandProcessi
       const name = String(record.name ?? "").trim();
       const fromFieldId = String(record.fromFieldId ?? "").trim();
       const toFieldId = String(record.toFieldId ?? "").trim();
-      if (!id || !name || !getDemandProcessingField(fromFieldId) || !getDemandProcessingField(toFieldId)) {
+      if (
+        !id ||
+        !name ||
+        !getDemandProcessingField(fromFieldId) ||
+        !getDemandProcessingField(toFieldId)
+      ) {
         return undefined;
       }
       return { id, name, fromFieldId, toFieldId, active: record.active !== false };
@@ -449,14 +981,12 @@ function getUnifiedPaymentEvents(
         paymentObjectKind: "advance",
         paymentObject: order.advancePaymentDetail,
         fallbackValue: orderValue,
-        amountCapital:
-          advancePaid
-            ? order.advancePaymentDetail.actualPaymentCapital
-            : order.advancePaymentDetail.stageAmountCapital,
-        amountRevenue:
-          advancePaid
-            ? order.advancePaymentDetail.actualPaymentRevenue
-            : order.advancePaymentDetail.stageAmountRevenue,
+        amountCapital: advancePaid
+          ? order.advancePaymentDetail.actualPaymentCapital
+          : order.advancePaymentDetail.stageAmountCapital,
+        amountRevenue: advancePaid
+          ? order.advancePaymentDetail.actualPaymentRevenue
+          : order.advancePaymentDetail.stageAmountRevenue,
         file,
       }),
     );
@@ -490,9 +1020,7 @@ type PaymentLike = Pick<
 > &
   Partial<
     Pick<
-      StageDeliveryDetail &
-        AdvancePaymentDetail &
-        SupplementaryBillDetail,
+      StageDeliveryDetail & AdvancePaymentDetail & SupplementaryBillDetail,
       | "stageAmountCapital"
       | "stageAmountRevenue"
       | "billAmountCapital"
@@ -577,7 +1105,8 @@ function buildUnifiedPaymentEventsForPaymentObject({
     hasFilledString(base.submissionDate) ||
     hasFilledString(base.returnDate) ||
     hasFilledString(base.paymentDate)
-  ) return [base];
+  )
+    return [base];
   return [];
 }
 

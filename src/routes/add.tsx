@@ -16,6 +16,7 @@ import {
   fetchNextUniqueCode,
   fetchAllIndentors,
   store,
+  type AppUser,
   type Division,
   type FileMessage,
   type FileMarker,
@@ -52,6 +53,7 @@ import {
   Info,
 } from "lucide-react";
 import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
+import { hasCapability } from "@/lib/permissions";
 import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
 import {
   getMilestoneValidationTarget,
@@ -109,8 +111,7 @@ export const Route = createFileRoute("/add")({
     focusTarget: typeof search.focusTarget === "string" ? search.focusTarget : undefined,
     drillPath: typeof search.drillPath === "string" ? search.drillPath : undefined,
     quickFocus: search.quickFocus === true || search.quickFocus === "true",
-    returnToQuickEntry:
-      search.returnToQuickEntry === true || search.returnToQuickEntry === "true",
+    returnToQuickEntry: search.returnToQuickEntry === true || search.returnToQuickEntry === "true",
   }),
   component: AddFilePage,
 });
@@ -394,7 +395,9 @@ function getAddEditRibbonLines(
   selectedFields: AddEditRibbonFieldKey[],
 ) {
   const demandDescription =
-    form.demandDescription.trim() || file?.demandDescription?.trim() || "Demand description not set";
+    form.demandDescription.trim() ||
+    file?.demandDescription?.trim() ||
+    "Demand description not set";
   const selected = normalizeAddEditRibbonFields(selectedFields);
   return {
     demandDescription,
@@ -600,7 +603,7 @@ function normalizeDirtyObject<T extends Record<string, unknown>>(
 ): Record<string, unknown> {
   const normalized = normalizeDirtyValue("", value ?? {});
   return normalized && typeof normalized === "object" && !Array.isArray(normalized)
-    ? normalized as Record<string, unknown>
+    ? (normalized as Record<string, unknown>)
     : {};
 }
 
@@ -987,7 +990,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "combinedBgValidityDate", label: "PSB+PWB validity date", type: "date" },
   { key: "combinedBgReturnDate", label: "PSB+PWB return date", type: "date" },
   { key: "warrantyPeriodDate", label: "Warranty period", type: "date" },
-  { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+  { key: "dpExtension", label: "DP extension", options: yesNo },
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
@@ -995,19 +998,22 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
     key: "materialReceiptDate",
     label: "Material receipt date",
     type: "date",
-    helper: "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | Delivery is completed on 22 Oct.",
+    helper:
+      "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | Delivery is completed on 22 Oct.",
   },
   {
     key: "actualJobCompletionDate",
-    label: "Actual Job Completion Date",
+    label: "Work Completion Date",
     type: "date",
-    helper: "Records when the work was actually completed. Use this for measures that require actual completion, including non-inspection PWB delay.\nExample table: Actual completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | Work completed on 10 Oct; completion was received/recorded on 14 Oct. The dates serve different purposes.",
+    helper:
+      "Records when the work was completed. Use this for measures that require work completion, including non-inspection PWB delay.\nExample table: Work completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | Work completed on 10 Oct; completion was received/recorded on 14 Oct. The dates serve different purposes.",
   },
   {
     key: "jobCompletionDate",
     label: "Job Completion Received Date",
     type: "date",
-    helper: "Records when completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for actual completion date.\nExample table: Actual completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; actual-completion measures use 10 Oct.",
+    helper:
+      "Records when completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for the work completion date.\nExample table: Work completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; work-completion measures use 10 Oct.",
   },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
@@ -1018,8 +1024,8 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "billAmountCapital", label: "Bill amount" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
-  { key: "actualPaymentCapital", label: "Actual payment amount" },
-  { key: "shortclosure", label: "Shortclosure (Yes/No)", options: yesNo },
+  { key: "actualPaymentCapital", label: "Recorded payment amount" },
+  { key: "shortclosure", label: "Shortclosure", options: yesNo },
   { key: "shortclosureDate", label: "Shortclosure date", type: "date" },
   {
     key: "noFurtherAction",
@@ -1028,7 +1034,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
     helper:
       "Purpose: Controls whether unfinished delivery and payment follow-up continues for this S.O.\nExample table: Selection | Unfinished delivery/payment work | Existing records and BG/warranty tracking\nExample row: No | Follow-up continues. | Remain available.\nExample row: Yes | Follow-up stops, including open bill-return/resubmission work. | Recorded events and payments remain; BG receipt, validity, expiry, return, and warranty tracking continue.",
   },
-  { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
+  { key: "soCancelled", label: "S.O. cancelled", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
   { key: "stageDelivery", label: "Stage Delivery", control: "radio", options: yesNo },
   { key: "stageDeliveryCount", label: "No. of stage deliveries", type: "number" },
@@ -1053,7 +1059,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "deliveryPeriodStartDate", label: "Period start date", type: "date" },
   { key: "dpDate", label: "D.P. date", type: "date" },
-  { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+  { key: "dpExtension", label: "DP extension", options: yesNo },
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
@@ -1061,19 +1067,22 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
     key: "materialReceiptDate",
     label: "Material receipt date",
     type: "date",
-    helper: "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Stage delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | This stage's delivery is completed on 22 Oct.",
+    helper:
+      "For inspection-applicable delivery, this date records physical receipt and is the delivery-completion marker for the schedule.\nExample table: Recorded event | Date | Schedule interpretation\nExample row: D.P. 30 Oct; Material Receipt blank | As of 23 Oct | Stage delivery remains pending; the Delivery marker alone does not complete this measure.\nExample row: Material Receipt recorded | 22 Oct | This stage's delivery is completed on 22 Oct.",
   },
   {
     key: "actualJobCompletionDate",
-    label: "Actual Job Completion Date",
+    label: "Work Completion Date",
     type: "date",
-    helper: "Records when this stage's work was actually completed. Use it for measures that require actual completion, including non-inspection PWB delay.\nExample table: Actual completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | This stage's work completed on 10 Oct; completion was received/recorded on 14 Oct.",
+    helper:
+      "Records when this stage's work was completed. Use it for measures that require work completion, including non-inspection PWB delay.\nExample table: Work completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | This stage's work completed on 10 Oct; completion was received/recorded on 14 Oct.",
   },
   {
     key: "jobCompletionDate",
     label: "Job Completion Received Date",
     type: "date",
-    helper: "Records when this stage's completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for actual completion date.\nExample table: Actual completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; actual-completion measures use 10 Oct.",
+    helper:
+      "Records when this stage's completion was received/recorded. It remains the trigger for applicable payment and liability timing; it is not a substitute for the work completion date.\nExample table: Work completion | Completion received | Payment/liability timing uses\nExample row: 10 Oct | 14 Oct | 14 Oct; work-completion measures use 10 Oct.",
   },
   { key: "irPreparationDate", label: "IR Preparation", type: "date" },
   { key: "irReceiptDate", label: "IR Receipt", type: "date" },
@@ -1082,7 +1091,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "billReturnCycles", label: "Returned Bills" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
-  { key: "actualPaymentCapital", label: "Actual payment amount" },
+  { key: "actualPaymentCapital", label: "Recorded payment amount" },
 ];
 
 const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
@@ -1092,7 +1101,7 @@ const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
     label: "Expected Advance Payment Date",
     type: "date",
     helper:
-      "Planning date for the advance payment, independent of the S.O. delivery period. Enter it when Advance Payment is Yes; actual payment reporting uses Payment Date.",
+      "Planning date for the advance payment, independent of the S.O. delivery period. Enter it when Advance Payment is Yes; recorded payment reporting uses Payment Date.",
   },
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "billPreparationDate", label: "Bill preparation", type: "date" },
@@ -1100,7 +1109,7 @@ const advancePaymentFields: ExtraField<AdvancePaymentKey>[] = [
   { key: "billSentForPaymentDate", label: "Bill sent for payment", type: "date" },
   { key: "billReturnCycles", label: "Returned Bills" },
   { key: "paymentDate", label: "Payment Date", type: "date" },
-  { key: "actualPaymentCapital", label: "Actual payment amount" },
+  { key: "actualPaymentCapital", label: "Recorded payment amount" },
 ];
 
 function hasCleanupValue(value: unknown): boolean {
@@ -1145,9 +1154,9 @@ function getSupplyOrderCleanupLabels(
     excludedKeys,
   );
   const extraValueFields = [
-    { key: "soValueRevenue", label: "S.O. value (Revenue)" },
+    { key: "soValueRevenue", label: "S.O. (Revenue)" },
     { key: "billAmountRevenue", label: "Bill amount (Revenue)" },
-    { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+    { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
   ];
   labels.push(
     ...getClearedFieldLabels(
@@ -1184,7 +1193,7 @@ function getSupplyOrderCleanupLabels(
         (newStages[stageIndex] ?? {}) as unknown as Record<string, unknown>,
         [
           { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
-          { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+          { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
           { key: "currentMilestone", label: "Current milestone" },
           { key: "completedMilestones", label: "Completed milestones" },
         ],
@@ -1206,7 +1215,7 @@ function getSupplyOrderCleanupLabels(
       newAdvance as unknown as Record<string, unknown>,
       [
         { key: "stageAmountRevenue", label: "Advance amount (Revenue)" },
-        { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+        { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
       ],
     ).map((label) => `Advance ${label}`),
   );
@@ -1219,8 +1228,8 @@ function getSupplyOrderCleanupLabels(
     { key: "billSentForPaymentDate", label: "Bill sent for payment" },
     { key: "billReturnCycles", label: "Return cycles" },
     { key: "paymentDate", label: "Payment Date" },
-    { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
-    { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+    { key: "actualPaymentCapital", label: "Recorded payment amount (Capital)" },
+    { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
     { key: "remarks", label: "Remarks" },
   ];
   oldSupplementaryBills.forEach((bill, billIndex) => {
@@ -1282,7 +1291,13 @@ const supplyOrderSubviewFields = {
     "warrantyPeriodDate",
   ],
   dp: ["dpDate", "dpExtension", "dpExtensionCount", "ld", "revisedDp"],
-  delivery: ["materialReceiptDate", "actualJobCompletionDate", "jobCompletionDate", "irPreparationDate", "irReceiptDate"],
+  delivery: [
+    "materialReceiptDate",
+    "actualJobCompletionDate",
+    "jobCompletionDate",
+    "irPreparationDate",
+    "irReceiptDate",
+  ],
   payment: [
     "paymentMode",
     "billPreparationDate",
@@ -1458,9 +1473,10 @@ const supplyOrderSubviewMilestones = {
 const stagedDeliverySubviewFields = {
   dp: ["stageAmountCapital", "deliveryPeriodStartDate", ...supplyOrderSubviewFields.dp],
   delivery: supplyOrderSubviewFields.delivery,
-  payment: ["stageAmountCapital", ...supplyOrderSubviewFields.payment.filter(
-    (key) => key !== "billAmountCapital",
-  )],
+  payment: [
+    "stageAmountCapital",
+    ...supplyOrderSubviewFields.payment.filter((key) => key !== "billAmountCapital"),
+  ],
 } satisfies Partial<Record<SupplyOrderSubviewKey, StageDeliveryKey[]>>;
 
 type StagedDeliverySubviewKey = keyof typeof stagedDeliverySubviewFields;
@@ -1486,16 +1502,16 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "receivedDate", label: "Demand received date", type: "date" },
       { key: "fileType", label: "File Type", options: defaultFileTypeOptions },
       { key: "mode", label: "Mode", options: defaultModeOptions },
-      { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
-      { key: "gem", label: "GeM (Yes/No)", options: yesNo },
-      { key: "highValue", label: "High value (Yes/No)", options: yesNo },
-      { key: "ad", label: "AD (Yes/No)", options: yesNo },
-      { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
-      { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
-      { key: "bg", label: "Warranty (Yes/No)", options: yesNo },
-      { key: "ir", label: "IR (Yes/No)", options: yesNo },
+      { key: "tcec", label: "TCEC", options: yesNoCaps },
+      { key: "gem", label: "GeM", options: yesNo },
+      { key: "highValue", label: "High value", options: yesNo },
+      { key: "ad", label: "AD", options: yesNo },
+      { key: "rqa", label: "R&QA", options: yesNo },
+      { key: "ifa", label: "IFA", options: yesNo },
+      { key: "bg", label: "Warranty", options: yesNo },
+      { key: "ir", label: "IR", options: yesNo },
       { key: "rfpVetting", label: "RFP vetting", options: yesNo },
-      { key: "demandCancelled", label: "Demand cancelled (Yes/No)", options: yesNo },
+      { key: "demandCancelled", label: "Demand cancelled", options: yesNo },
       { key: "demandCancelledDate", label: "Demand cancelled date", type: "date" },
     ],
   },
@@ -1553,21 +1569,21 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
       { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
-      { key: "preBidMeeting", label: "Pre-Bid Meeting (Yes/No)", options: yesNo },
+      { key: "preBidMeeting", label: "Pre-Bid Meeting", options: yesNo },
       { key: "preBidMeetingDate", label: "Pre-Bid Meeting date", type: "date" },
       { key: "bidNumber", label: "Bid number" },
       { key: "bidDate", label: "Bid date", type: "date" },
       { key: "bidOpeningDate", label: "Bid closing", type: "date" },
       { key: "tenderLive", label: "Bid Live", options: yesNo },
       { key: "bidOpened", label: "Bid opened", options: yesNoCaps },
-      { key: "refloat", label: "Refloat (Yes/No)", options: yesNo },
-      { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting (Yes/No)", options: yesNo },
+      { key: "refloat", label: "Refloat", options: yesNo },
+      { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting", options: yesNo },
       { key: "refloatPreBidMeetingDate", label: "Refloat Pre-Bid Meeting date", type: "date" },
       { key: "refloatBiddingDate", label: "Refloat bidding date", type: "date" },
       { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
       { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over", options: yesNo },
       { key: "refloatRecommendationDate", label: "Refloat recommendation", type: "date" },
-      { key: "rst", label: "RST (Yes/No)", options: yesNo },
+      { key: "rst", label: "RST", options: yesNo },
       { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
     ],
   },
@@ -1616,17 +1632,16 @@ type TimelineGroup = {
 function AddFilePage() {
   const activeUser = useActiveUser();
   const { fileId } = Route.useSearch();
-  const canEditFiles =
-    activeUser?.role === "admin" ||
-    activeUser?.role === "sub_admin" ||
-    activeUser?.role === "editor";
+  const canEditFiles = hasCapability(activeUser, "canEditFiles");
   const canViewExistingFile =
     (activeUser?.role === "viewer" || activeUser?.role === "universal_viewer") && Boolean(fileId);
   if (!canEditFiles && !canViewExistingFile) {
     return (
       <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">File editing unavailable</h1>
-        <p className="mt-2 text-sm text-muted-foreground">View-only access. Records cannot be changed.</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          View-only access. Records cannot be changed.
+        </p>
       </div>
     );
   }
@@ -2131,10 +2146,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (quickFocusAppliedRef.current === focusKey) return;
 
     window.setTimeout(() => {
-      const firstUnfilledField = getUnfilledFieldKeys(activeSection, formWithLockedYear).find((fieldKey) => {
-        const element = quickFieldRefs.current[fieldKey];
-        return element && !("disabled" in element && element.disabled);
-      });
+      const firstUnfilledField = getUnfilledFieldKeys(activeSection, formWithLockedYear).find(
+        (fieldKey) => {
+          const element = quickFieldRefs.current[fieldKey];
+          return element && !("disabled" in element && element.disabled);
+        },
+      );
       const target = firstUnfilledField ? quickFieldRefs.current[firstUnfilledField] : undefined;
       if (target) {
         quickFocusAppliedRef.current = focusKey;
@@ -2337,9 +2354,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       }
       affectedOrders.forEach(({ index, labels }) =>
         labels.forEach((label) =>
-          confirmedBgCleanupOrdersRef.current.add(
-            `${editingFile?.id ?? "new"}:${index}:${label}`,
-          ),
+          confirmedBgCleanupOrdersRef.current.add(`${editingFile?.id ?? "new"}:${index}:${label}`),
         ),
       );
     }
@@ -2380,9 +2395,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     if (k === "bg" && isNo(v)) {
       setSupplyOrders((current) =>
-        current.map((order) =>
-          applySupplyOrderRules(order, { ...formWithLockedYear, bg: v }),
-        ),
+        current.map((order) => applySupplyOrderRules(order, { ...formWithLockedYear, bg: v })),
       );
     }
     if (k === "bg" && isYes(v)) {
@@ -2527,7 +2540,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                 [
                   ...stageDeliveryFields,
                   { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
-                  { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
+                  { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
                 ],
               ).map((label) => `Delivery-${nextCount + offset + 1} ${label}`),
             ),
@@ -3108,7 +3121,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             </>
           )}
         </button>
-        <span className="text-[11px] font-normal text-black">
+        <span className="text-[11px] font-normal text-foreground">
           Click Update to save, else data will be lost.
         </span>
       </span>
@@ -3207,20 +3220,20 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                         ...field,
                         options: getConfiguredGemBiddingModes(settings.gemBiddingModes),
                       }
-                  : field.key === "demandCancelled" && demandCancellationHasPlacedSupplyOrder
-                    ? {
-                        ...field,
-                        label: `${field.label} - disabled after S.O. placement`,
-                      }
-                    : tcecCommitteeKeys.includes(field.key)
+                    : field.key === "demandCancelled" && demandCancellationHasPlacedSupplyOrder
                       ? {
                           ...field,
-                          options: getTcecCommitteeOptions(
-                            settings.tcecCommittees,
-                            formWithLockedYear[field.key],
-                          ),
+                          label: `${field.label} - disabled after S.O. placement`,
                         }
-                      : field;
+                      : tcecCommitteeKeys.includes(field.key)
+                        ? {
+                            ...field,
+                            options: getTcecCommitteeOptions(
+                              settings.tcecCommittees,
+                              formWithLockedYear[field.key],
+                            ),
+                          }
+                        : field;
         const lockFilledFields = isEditing && !unlockedSections.has(section.title);
         const fieldReadOnly = readOnlyMode;
 
@@ -3434,9 +3447,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       )[0];
       const labels = getClearedBgCoverageFieldLabels(savedOrder, normalizedSavedOrder).filter(
         (label) =>
-          !confirmedBgCleanupOrdersRef.current.has(
-            `${editingFile?.id ?? "new"}:${index}:${label}`,
-          ),
+          !confirmedBgCleanupOrdersRef.current.has(`${editingFile?.id ?? "new"}:${index}:${label}`),
       );
       return labels.length
         ? [`${getSupplyOrderDisplayTitle(currentOrder, index)}: ${labels.join(", ")}`]
@@ -3451,10 +3462,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return;
     }
     const cleanedSupplyOrders = cleanedRequestedSupplyOrders.filter(hasMeaningfulSupplyOrderData);
-    if (
-      isYes(formForSave.demandCancelled) &&
-      hasPlacedSupplyOrderRows(cleanedSupplyOrders)
-    ) {
+    if (isYes(formForSave.demandCancelled) && hasPlacedSupplyOrderRows(cleanedSupplyOrders)) {
       alert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
       );
@@ -3487,9 +3495,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         ? ""
         : currentMilestone;
     const payload = {
-      ...toFilePayload(
-        applyConditionalRules(formForSave),
-      ),
+      ...toFilePayload(applyConditionalRules(formForSave)),
       ...firstSupplyOrderMirrorPatch(cleanedSupplyOrders),
       noOfSo: String(requestedSupplyOrderCount),
       supplyOrders: supplyOrdersForSave,
@@ -3704,9 +3710,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   }
 
   return (
-    <div className="w-full" onKeyDownCapture={handleQuickEntrySaveKey}>
-      <div className="bg-card border border-border rounded-md shadow-[var(--shadow-card)] overflow-hidden">
-        <div className="p-5 border-b border-border bg-secondary/30">
+    <div className="add-file-page w-full" onKeyDownCapture={handleQuickEntrySaveKey}>
+      <div className="relative z-10 flex flex-col overflow-visible rounded-xl border border-border/80 bg-card shadow-[var(--shadow-card)]">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-secondary px-4 py-3">
           <div>
             <div className="text-base font-semibold">{addEditRibbonLines.demandDescription}</div>
             <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
@@ -3730,7 +3736,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               fallbackHref={currentFileHref}
             />
           ) : null}
-          <p className="text-xs text-muted-foreground mt-1">
+          <p className="mt-1 text-xs text-muted-foreground">
             {readOnlyMode
               ? "Viewer access is read-only. Milestones, dates, and file details are available to view."
               : isEditing
@@ -3757,10 +3763,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             </div>
           ) : null}
           {activeBoardSection === "Timeline" && (
-            <TimelineBlock
-              form={formWithLockedYear}
-              supplyOrders={supplyOrders}
-            />
+            <TimelineBlock form={formWithLockedYear} supplyOrders={supplyOrders} />
           )}
           {activeBoardSection === "Remarks Summary" && (
             <RemarksSummaryBlock form={formWithLockedYear} remarks={fileRemarks} />
@@ -3946,7 +3949,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   fileId={editingFile.id}
                   sectionTitle={activeSection.title}
                   messages={activeSectionMessages}
+                  activeUserId={activeUser?.id}
                   activeUserRole={activeUser?.role}
+                  activeUser={activeUser}
+                  fileDivisionId={editingFile.divisionId}
                   messagesEnabled={selectedDivision?.messagesEnabled !== false}
                   renderUpdateButton={
                     activeSection.title === "Supply order and payment"
@@ -3957,7 +3963,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               ) : null}
             </section>
           )}
-          {activeSection && activeSection.title !== "Supply order and payment" && renderSectionUpdateButton() ? (
+          {activeSection &&
+          activeSection.title !== "Supply order and payment" &&
+          renderSectionUpdateButton() ? (
             <div className="md:col-span-2 flex justify-end border-t border-border/60 pt-4">
               {renderSectionUpdateButton()}
             </div>
@@ -4031,7 +4039,7 @@ function SectionBoard({
   ];
 
   return (
-    <div className="border-b border-border bg-card px-5 py-3">
+    <div className="border-b border-border bg-secondary/20 px-4 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className="mr-1 text-xs font-medium text-muted-foreground">Show section</span>
         {links.map((label) => (
@@ -4044,7 +4052,7 @@ function SectionBoard({
               "inline-flex h-7 items-center rounded-md border px-2.5 text-xs font-medium hover:bg-accent " +
               (active === label
                 ? "border-primary/30 bg-primary/10 text-primary"
-                : "border-border bg-secondary/50 text-foreground")
+                : "border-border bg-card text-foreground")
             }
           >
             {label}
@@ -4080,7 +4088,9 @@ function SectionRemarks({
         <div>
           <div className="text-sm font-semibold text-foreground">Remarks</div>
           <div className="text-xs text-muted-foreground">
-            {remarks.length ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"}` : "No remarks added"}
+            {remarks.length
+              ? `${remarks.length} remark${remarks.length === 1 ? "" : "s"}`
+              : "No remarks added"}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -4145,35 +4155,94 @@ function SectionMessages({
   fileId,
   sectionTitle,
   messages,
+  activeUserId,
   activeUserRole,
+  activeUser,
+  fileDivisionId,
   messagesEnabled,
   renderUpdateButton,
 }: {
   fileId: string;
   sectionTitle: string;
   messages: FileMessage[];
+  activeUserId?: string;
   activeUserRole?: string;
+  activeUser?: AppUser;
+  fileDivisionId?: string;
   messagesEnabled: boolean;
   renderUpdateButton?: (dirty?: boolean) => ReactNode;
 }) {
   const [draft, setDraft] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [recipientUserId, setRecipientUserId] = useState("");
+  const [recipientOptions, setRecipientOptions] = useState<AppUser[]>([]);
+  const [recipientLoading, setRecipientLoading] = useState(false);
   const [action, setAction] = useState("");
   const pendingMessages = messages.filter((message) => message.status === "pending");
   const resolvedMessages = messages.filter((message) => message.status === "resolved");
-  const canCreate = activeUserRole === "viewer" || activeUserRole === "division_user";
-  const canResolve =
+  const messagingBlocked = !hasCapability(activeUser, "canSendFileMessages");
+  const isMmgRole =
     activeUserRole === "admin" || activeUserRole === "sub_admin" || activeUserRole === "editor";
-  const canDelete = activeUserRole === "admin" || canCreate;
+  const canCreate = hasCapability(activeUser, "canSendFileMessages");
+  const canResolve = hasCapability(activeUser, "canResolveMessages");
   const draftWords = countMessageWords(draft);
+
+  useEffect(() => {
+    if (!isMmgRole || !fileDivisionId) {
+      setRecipientOptions([]);
+      setRecipientUserId("");
+      return;
+    }
+    let cancelled = false;
+    setRecipientLoading(true);
+    void store
+      .listMessageRecipients(fileDivisionId)
+      .then((users) => {
+        if (!cancelled) setRecipientOptions(users);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRecipientOptions([]);
+          setAction(error instanceof Error ? error.message : "Recipients could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRecipientLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fileDivisionId, isMmgRole]);
+
+  const canReplyTo = (message: FileMessage) => {
+    if (!canResolve && activeUserRole !== "division_user") return false;
+    if (message.status !== "pending") return false;
+    if (activeUserRole === "division_user") {
+      return message.createdByUserId === activeUserId || message.recipientUserId === activeUserId;
+    }
+    return !message.recipientUserId || message.recipientUserId === activeUserId;
+  };
+
+  const canDeleteMessage = (message: FileMessage) =>
+    !messagingBlocked && !!activeUserId && message.createdByUserId === activeUserId;
 
   const sendMessage = async () => {
     const text = draft.trim();
     if (!text || draftWords > 20) return;
+    if (isMmgRole && !recipientUserId) {
+      setAction("Select a Division user before sending.");
+      return;
+    }
     setAction("Sending...");
     try {
-      await store.createMessage(fileId, sectionTitle, text);
+      await store.createMessage(
+        fileId,
+        sectionTitle,
+        text,
+        isMmgRole ? recipientUserId : undefined,
+      );
       setDraft("");
+      setRecipientUserId("");
       setAction("Message sent.");
     } catch (error) {
       setAction(error instanceof Error ? error.message : "Message could not be sent.");
@@ -4232,8 +4301,31 @@ function SectionMessages({
         ) : null}
       </div>
 
+      {messagingBlocked ? (
+        <div className="mb-3 rounded-md border border-dashed border-border bg-background p-3 text-sm text-muted-foreground">
+          Universal viewers cannot send, receive, reply to, or delete messages.
+        </div>
+      ) : null}
+
       {canCreate ? (
         <div className="mb-3">
+          {isMmgRole ? (
+            <select
+              value={recipientUserId}
+              onChange={(event) => setRecipientUserId(event.target.value)}
+              disabled={!messagesEnabled || recipientLoading || !recipientOptions.length}
+              className="mb-2 h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-60"
+            >
+              <option value="">
+                {recipientLoading ? "Loading Division users..." : "Select Division user"}
+              </option>
+              {recipientOptions.map((recipient) => (
+                <option key={recipient.id} value={recipient.id}>
+                  {recipient.name} ({recipient.username})
+                </option>
+              ))}
+            </select>
+          ) : null}
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -4300,7 +4392,7 @@ function SectionMessages({
                   </div>
                 ) : null}
 
-                {canResolve && message.status === "pending" ? (
+                {canReplyTo(message) ? (
                   <div className="mt-2 border-t border-border pt-2">
                     <textarea
                       value={replyDraft}
@@ -4332,23 +4424,26 @@ function SectionMessages({
                         >
                           Reply
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void resolveMessage(message.id)}
-                          className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
-                        >
-                          Resolve
-                        </button>
+                        {canResolve ? (
+                          <button
+                            type="button"
+                            onClick={() => void resolveMessage(message.id)}
+                            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+                          >
+                            Resolve
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   </div>
                 ) : null}
 
-                {canDelete ? (
+                {canDeleteMessage(message) ? (
                   <div className="mt-2 flex justify-end">
                     <button
                       type="button"
                       onClick={() => void deleteMessage(message.id)}
+                      title="Delete your message"
                       className="inline-flex h-8 items-center rounded-md border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
                       Delete
@@ -5391,8 +5486,10 @@ function SupplyOrdersBlock({
         ));
     const paymentTimingChanged =
       activeSubview === "payment" &&
-      (order.includeInPaymentTiming !== lockedOrder?.includeInPaymentTiming);
-    return !isDirtyValueEqual(currentValues, lockedValues) || milestonesChanged || paymentTimingChanged;
+      order.includeInPaymentTiming !== lockedOrder?.includeInPaymentTiming;
+    return (
+      !isDirtyValueEqual(currentValues, lockedValues) || milestonesChanged || paymentTimingChanged
+    );
   };
   const getAdvancePaymentDirty = (
     order: SupplyOrderDetail,
@@ -5529,7 +5626,8 @@ function SupplyOrdersBlock({
       firmContactNo: firm.contactNo ?? "",
       firmCity: firm.city ?? "",
       firmType: firm.firmType ?? "",
-      firmTypeOther: firm.firmType?.trim().toUpperCase() === "OTHER" ? firm.firmTypeOther ?? "" : "",
+      firmTypeOther:
+        firm.firmType?.trim().toUpperCase() === "OTHER" ? (firm.firmTypeOther ?? "") : "",
     });
   };
 
@@ -5775,7 +5873,8 @@ function SupplyOrdersBlock({
               Complete Supply Order and D.P. details before editing this tab.
             </div>
             <div className="text-xs">
-              Incomplete orders stay locked until their D.P. and Security/Warranty fields are unlocked.
+              Incomplete orders stay locked until their D.P. and Security/Warranty fields are
+              unlocked.
             </div>
           </div>
           <button
@@ -5821,8 +5920,7 @@ function SupplyOrdersBlock({
               isYes(order.advancePayment ?? ""),
             );
             const showAdvancePaymentBlock =
-              activeSubview === "payment" &&
-              isYes(order.advancePayment ?? "");
+              activeSubview === "payment" && isYes(order.advancePayment ?? "");
             const showOrderMilestoneControls = useOrderMilestones || activeSubview === "bg";
             const orderMilestones = showOrderMilestoneControls
               ? getApplicableSupplyOrderMilestones(order, {
@@ -5898,23 +5996,24 @@ function SupplyOrdersBlock({
             const advancePaymentKey = `advance:${index}`;
             const advancePaymentOpen =
               openCardKeys.has(advancePaymentKey) || focusBlockKeySet.has(advancePaymentKey);
-            const orderMilestoneBlock = orderMilestones.length && !useStageCards ? (
-              <SupplyOrderMilestonesBlock
-                milestones={orderMilestones}
-                order={order}
-                disabled={disabled || downstreamLocked}
-                lockFilledFields={lockFilledFields}
-                lockedOrder={lockedOrder}
-                fileType={form.fileType}
-                fileTypeGroup={form.fileTypeGroup}
-                completionForm={form}
-                ir={form.ir}
-                onCurrentChange={(milestone) => onOrderCurrentMilestoneChange(index, milestone)}
-                onCompletedChange={(milestones) =>
-                  onOrderCompletedMilestonesChange(index, milestones)
-                }
-              />
-            ) : null;
+            const orderMilestoneBlock =
+              orderMilestones.length && !useStageCards ? (
+                <SupplyOrderMilestonesBlock
+                  milestones={orderMilestones}
+                  order={order}
+                  disabled={disabled || downstreamLocked}
+                  lockFilledFields={lockFilledFields}
+                  lockedOrder={lockedOrder}
+                  fileType={form.fileType}
+                  fileTypeGroup={form.fileTypeGroup}
+                  completionForm={form}
+                  ir={form.ir}
+                  onCurrentChange={(milestone) => onOrderCurrentMilestoneChange(index, milestone)}
+                  onCompletedChange={(milestones) =>
+                    onOrderCompletedMilestonesChange(index, milestones)
+                  }
+                />
+              ) : null;
 
             return (
               <details
@@ -6002,138 +6101,152 @@ function SupplyOrdersBlock({
                     >
                       <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden">
                         <span className="min-w-0 flex-1">Advance Payment</span>
-                        <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">Open</span>
-                        <span className="hidden text-xs font-medium text-muted-foreground group-open/payment:inline">Close</span>
+                        <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">
+                          Open
+                        </span>
+                        <span className="hidden text-xs font-medium text-muted-foreground group-open/payment:inline">
+                          Close
+                        </span>
                       </summary>
                       <div className="border-t border-border p-4">
-                      <PaymentTimingControl
-                        caseLabel={`S.O. ${index + 1} advance payment`}
-                        included={advancePaymentDetail.includeInPaymentTiming !== false}
-                        disabled={advanceControlDisabled}
-                        onChange={(included) =>
-                          onOrderPatch(index, {
-                            advancePaymentDetail: {
-                              ...advancePaymentDetail,
-                              includeInPaymentTiming: included,
-                            },
-                          })
-                        }
-                      />
-                      {paidAdvanceFrozen ? (
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-                          <span className="font-medium">
-                            Recorded paid-advance values are protected. Blank fields can still be completed.
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onPaidAdvanceUnfreeze(index)}
-                            disabled={disabled || downstreamLocked}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <Lock className="size-3.5" /> Unfreeze with password
-                          </button>
-                        </div>
-                      ) : null}
-                      <AdvancePaymentMilestonesBlock advance={advancePaymentDetail} />
-                      <div className="grid grid-cols-1 gap-4">
-                        {advancePaymentFields.map((field) => {
-                          const key = field.key;
-                          const lockedValue = lockedOrder?.advancePaymentDetail?.[key];
-                          if (key === "stageAmountCapital" || key === "actualPaymentCapital") {
-                            const isActual = key === "actualPaymentCapital";
-                            const capitalValue = isActual
-                              ? advancePaymentDetail.actualPaymentCapital ?? ""
-                              : advancePaymentDetail.stageAmountCapital ?? "";
-                            const revenueValue = isActual
-                              ? advancePaymentDetail.actualPaymentRevenue ?? ""
-                              : advancePaymentDetail.stageAmountRevenue ?? "";
-                            return (
-                              <AmountByValueTypeField
-                                key={key}
-                                label={isActual ? "Actual payment amount" : "Advance amount"}
-                                placeholder={isActual ? "Payment amount" : "Advance amount"}
-                                capitalSelected={form.valueCapitalSelected === "Yes"}
-                                revenueSelected={form.valueRevenueSelected === "Yes"}
-                                capitalValue={capitalValue}
-                                revenueValue={revenueValue}
-                                disabled={advanceControlDisabled}
-                                lockFilledFields={advanceLockFilledFields}
-                                testId={`add-field-supplyOrder-${index}-advance-${key}`}
-                                lockedValueFilled={
-                                  hasFilledValue(
-                                    isActual
-                                      ? lockedOrder?.advancePaymentDetail?.actualPaymentCapital
-                                      : lockedOrder?.advancePaymentDetail?.stageAmountCapital,
-                                  ) ||
-                                  hasFilledValue(
-                                    isActual
-                                      ? lockedOrder?.advancePaymentDetail?.actualPaymentRevenue
-                                      : lockedOrder?.advancePaymentDetail?.stageAmountRevenue,
-                                  )
-                                }
-                                onChange={(patch) => {
-                                  const capitalKey = isActual
-                                    ? "actualPaymentCapital"
-                                    : "stageAmountCapital";
-                                  const revenueKey = isActual
-                                    ? "actualPaymentRevenue"
-                                    : "stageAmountRevenue";
-                                  if ("capital" in patch) {
-                                    onAdvancePaymentChange(index, capitalKey, patch.capital ?? "");
-                                  }
-                                  if ("revenue" in patch) {
-                                    onAdvancePaymentChange(index, revenueKey, patch.revenue ?? "");
-                                  }
-                                }}
-                              />
-                            );
+                        <PaymentTimingControl
+                          caseLabel={`S.O. ${index + 1} advance payment`}
+                          included={advancePaymentDetail.includeInPaymentTiming !== false}
+                          disabled={advanceControlDisabled}
+                          onChange={(included) =>
+                            onOrderPatch(index, {
+                              advancePaymentDetail: {
+                                ...advancePaymentDetail,
+                                includeInPaymentTiming: included,
+                              },
+                            })
                           }
-                          if (key === "billReturnCycles") {
+                        />
+                        {paidAdvanceFrozen ? (
+                          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                            <span className="font-medium">
+                              Recorded paid-advance values are protected. Blank fields can still be
+                              completed.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onPaidAdvanceUnfreeze(index)}
+                              disabled={disabled || downstreamLocked}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              <Lock className="size-3.5" /> Unfreeze with password
+                            </button>
+                          </div>
+                        ) : null}
+                        <AdvancePaymentMilestonesBlock advance={advancePaymentDetail} />
+                        <div className="grid grid-cols-1 gap-4">
+                          {advancePaymentFields.map((field) => {
+                            const key = field.key;
+                            const lockedValue = lockedOrder?.advancePaymentDetail?.[key];
+                            if (key === "stageAmountCapital" || key === "actualPaymentCapital") {
+                              const isActual = key === "actualPaymentCapital";
+                              const capitalValue = isActual
+                                ? (advancePaymentDetail.actualPaymentCapital ?? "")
+                                : (advancePaymentDetail.stageAmountCapital ?? "");
+                              const revenueValue = isActual
+                                ? (advancePaymentDetail.actualPaymentRevenue ?? "")
+                                : (advancePaymentDetail.stageAmountRevenue ?? "");
+                              return (
+                                <AmountByValueTypeField
+                                  key={key}
+                                  label={isActual ? "Recorded payment amount" : "Advance amount"}
+                                  placeholder={isActual ? "Payment amount" : "Advance amount"}
+                                  capitalSelected={form.valueCapitalSelected === "Yes"}
+                                  revenueSelected={form.valueRevenueSelected === "Yes"}
+                                  capitalValue={capitalValue}
+                                  revenueValue={revenueValue}
+                                  disabled={advanceControlDisabled}
+                                  lockFilledFields={advanceLockFilledFields}
+                                  testId={`add-field-supplyOrder-${index}-advance-${key}`}
+                                  lockedValueFilled={
+                                    hasFilledValue(
+                                      isActual
+                                        ? lockedOrder?.advancePaymentDetail?.actualPaymentCapital
+                                        : lockedOrder?.advancePaymentDetail?.stageAmountCapital,
+                                    ) ||
+                                    hasFilledValue(
+                                      isActual
+                                        ? lockedOrder?.advancePaymentDetail?.actualPaymentRevenue
+                                        : lockedOrder?.advancePaymentDetail?.stageAmountRevenue,
+                                    )
+                                  }
+                                  onChange={(patch) => {
+                                    const capitalKey = isActual
+                                      ? "actualPaymentCapital"
+                                      : "stageAmountCapital";
+                                    const revenueKey = isActual
+                                      ? "actualPaymentRevenue"
+                                      : "stageAmountRevenue";
+                                    if ("capital" in patch) {
+                                      onAdvancePaymentChange(
+                                        index,
+                                        capitalKey,
+                                        patch.capital ?? "",
+                                      );
+                                    }
+                                    if ("revenue" in patch) {
+                                      onAdvancePaymentChange(
+                                        index,
+                                        revenueKey,
+                                        patch.revenue ?? "",
+                                      );
+                                    }
+                                  }}
+                                />
+                              );
+                            }
+                            if (key === "billReturnCycles") {
+                              return (
+                                <BillReturnCyclesBlock
+                                  key={key}
+                                  cycles={advancePaymentDetail.billReturnCycles}
+                                  lockedCycles={lockedOrder?.advancePaymentDetail?.billReturnCycles}
+                                  disabled={
+                                    advanceControlDisabled ||
+                                    (advanceLockFilledFields &&
+                                      hasFilledValue(
+                                        String(
+                                          lockedOrder?.advancePaymentDetail?.billReturnCycles ?? "",
+                                        ),
+                                      ))
+                                  }
+                                  lockFilledFields={advanceLockFilledFields}
+                                  testIdPrefix={`add-field-supplyOrder-${index}-advance-billReturnCycles`}
+                                  onChange={(cycles) =>
+                                    onAdvancePaymentBillReturnsChange(index, cycles)
+                                  }
+                                />
+                              );
+                            }
                             return (
-                              <BillReturnCyclesBlock
+                              <DynamicField
                                 key={key}
-                                cycles={advancePaymentDetail.billReturnCycles}
-                                lockedCycles={lockedOrder?.advancePaymentDetail?.billReturnCycles}
+                                field={field}
+                                value={String(advancePaymentDetail[key] ?? "")}
+                                radioName={`supplyOrder-${index}-advance-${key}`}
                                 disabled={
                                   advanceControlDisabled ||
                                   (advanceLockFilledFields &&
-                                    hasFilledValue(
-                                      String(
-                                        lockedOrder?.advancePaymentDetail?.billReturnCycles ?? "",
-                                      ),
-                                    ))
+                                    hasFilledValue(String(lockedValue ?? "")))
                                 }
-                                lockFilledFields={advanceLockFilledFields}
-                                testIdPrefix={`add-field-supplyOrder-${index}-advance-billReturnCycles`}
-                                onChange={(cycles) =>
-                                  onAdvancePaymentBillReturnsChange(index, cycles)
-                                }
+                                onChange={(value) => onAdvancePaymentChange(index, key, value)}
+                                inputRef={(element) => {
+                                  orderFieldRefs.current[`${index}:advance:${key}`] = element;
+                                }}
                               />
                             );
-                          }
-                          return (
-                            <DynamicField
-                              key={key}
-                              field={field}
-                              value={String(advancePaymentDetail[key] ?? "")}
-                              radioName={`supplyOrder-${index}-advance-${key}`}
-                              disabled={
-                                advanceControlDisabled ||
-                                (advanceLockFilledFields && hasFilledValue(String(lockedValue ?? "")))
-                              }
-                              onChange={(value) => onAdvancePaymentChange(index, key, value)}
-                              inputRef={(element) => {
-                                orderFieldRefs.current[`${index}:advance:${key}`] = element;
-                              }}
-                            />
-                          );
-                        })}
-                      </div>
-                      {renderUpdateButton ? (
-                        <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
-                          {renderUpdateButton(advancePaymentDirty)}
+                          })}
                         </div>
-                      ) : null}
+                        {renderUpdateButton ? (
+                          <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
+                            {renderUpdateButton(advancePaymentDirty)}
+                          </div>
+                        ) : null}
                       </div>
                     </details>
                   ) : null}
@@ -6144,7 +6257,8 @@ function SupplyOrdersBlock({
                       hasParentDeliveryData(savedParentDeliveryRows[index]) ? (
                         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
                           <span>
-                            Hidden parent delivery data is still saved for this staged S.O. Clear it here, then save the file.
+                            Hidden parent delivery data is still saved for this staged S.O. Clear it
+                            here, then save the file.
                           </span>
                           <div className="flex flex-wrap gap-2">
                             <button
@@ -6152,7 +6266,12 @@ function SupplyOrdersBlock({
                               className="inline-flex h-8 items-center gap-1.5 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
                               disabled={disabled}
                               onClick={() => {
-                                if (!window.confirm("Clear the hidden parent delivery fields for this S.O.? Stage records will be kept.")) return;
+                                if (
+                                  !window.confirm(
+                                    "Clear the hidden parent delivery fields for this S.O.? Stage records will be kept.",
+                                  )
+                                )
+                                  return;
                                 onOrderPatch(index, clearParentDeliveryData(order));
                               }}
                             >
@@ -6164,14 +6283,20 @@ function SupplyOrdersBlock({
                       {isYes(order.stagePayment ?? "") && hasParentStagePaymentData(order) ? (
                         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
                           <span>
-                            Hidden parent bill/payment data is still saved for this staged S.O. Clear it here, then save the file.
+                            Hidden parent bill/payment data is still saved for this staged S.O.
+                            Clear it here, then save the file.
                           </span>
                           <button
                             type="button"
                             className="h-8 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
                             disabled={disabled}
                             onClick={() => {
-                              if (!window.confirm("Clear the hidden parent bill/payment fields for this S.O.? Stage records will be kept.")) return;
+                              if (
+                                !window.confirm(
+                                  "Clear the hidden parent bill/payment fields for this S.O.? Stage records will be kept.",
+                                )
+                              )
+                                return;
                               onOrderPatch(index, clearParentStagePaymentData(order));
                             }}
                           >
@@ -6347,7 +6472,10 @@ function SupplyOrdersBlock({
                                 />
                               ) : null}
                               {(stageFields ?? []).map((key) => {
-                                if (key === "actualJobCompletionDate" && !deliveryInspectionInactive) {
+                                if (
+                                  key === "actualJobCompletionDate" &&
+                                  !deliveryInspectionInactive
+                                ) {
                                   return null;
                                 }
                                 if (!shouldShowStageDeliveryField(activeSubview, key)) {
@@ -6405,7 +6533,7 @@ function SupplyOrdersBlock({
                                   return (
                                     <AmountByValueTypeField
                                       key={key}
-                                      label="Actual payment amount"
+                                      label="Recorded payment amount"
                                       placeholder="Payment amount"
                                       capitalSelected={form.valueCapitalSelected === "Yes"}
                                       revenueSelected={form.valueRevenueSelected === "Yes"}
@@ -6544,7 +6672,9 @@ function SupplyOrdersBlock({
                                         (supplyOrderIrDisabledKeys as readonly string[]).includes(
                                           key,
                                         )) ||
-            (!effectiveIrDisabled && (key === "jobCompletionDate" || key === "actualJobCompletionDate"))
+                                      (!effectiveIrDisabled &&
+                                        (key === "jobCompletionDate" ||
+                                          key === "actualJobCompletionDate"))
                                     }
                                     onChange={(value) =>
                                       onStageDeliveryChange(index, stageIndex, key, value)
@@ -6584,270 +6714,284 @@ function SupplyOrdersBlock({
                       {activeSubview === "payment" ? (
                         <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden">
                           <span className="min-w-0 flex-1">Normal Payment</span>
-                          <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">Open</span>
-                          <span className="hidden text-xs font-medium text-muted-foreground group-open/payment:inline">Close</span>
+                          <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">
+                            Open
+                          </span>
+                          <span className="hidden text-xs font-medium text-muted-foreground group-open/payment:inline">
+                            Close
+                          </span>
                         </summary>
                       ) : null}
-                    {activeSubview === "payment" ? orderMilestoneBlock : null}
-                    <div className={
-                      activeSubview === "payment"
-                        ? "grid grid-cols-1 gap-4 border-t border-border p-4"
-                        : "grid grid-cols-1 gap-4"
-                    }>
-                      {activeSubview === "payment" ? (
-                        <PaymentTimingControl
-                          caseLabel={`S.O. ${index + 1} payment`}
-                          included={order.includeInPaymentTiming !== false}
-                          disabled={disabled || downstreamLocked}
-                          onChange={(included) =>
-                            onOrderPatch(index, { includeInPaymentTiming: included })
-                          }
-                        />
-                      ) : null}
-                      {fieldsToRender.map((field) => {
-                        const key = field.key as SupplyOrderKey;
-                        const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(
-                          key,
-                          order,
-                          form,
-                        );
-                        const cancellationControlLocked =
-                          lockFilledFields && isCancellationSupplyOrderField(key);
-                        const linkedLockedFirm = lockedOrder
-                          ? findLinkedMasterFirm(masterFirms, lockedOrder)
-                          : undefined;
-                        const lockedFieldValue =
-                          key === "firmUniqueNo"
-                            ? lockedOrder?.firmUniqueNo || linkedLockedFirm?.firmUniqueNo || ""
-                            : key === "firmType"
-                              ? lockedOrder?.firmType || linkedLockedFirm?.firmType || ""
-                              : lockedOrder?.[key] ?? "";
-                        const fieldDisabled =
-                          disabled ||
-                          downstreamLocked ||
-                          sequentiallyLocked ||
-                          cancellationControlLocked ||
-                          (lockFilledFields &&
-                            hasFilledValue(String(lockedFieldValue))) ||
-                          (gemDisabled && key === "gemSoNo") ||
-                          (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
-                          (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
-                          (!effectiveIrDisabled && (key === "jobCompletionDate" || key === "actualJobCompletionDate")) ||
-                          isDpExtensionFieldInactive(form, key, order);
-                        const renderedField =
-                          key === "firmType"
-                            ? {
-                                ...field,
-                                options: mergeOptions(firmTypeOptions, order.firmType),
-                              }
-                            : key === "firmUniqueNo"
-                              ? { ...field, label: firmUniqueNoLabel }
-                              : field;
-
-                        if (field.key === "soValueCapital") {
-                          return (
-                            <SoValueField
-                              key={field.key}
-                              capitalSelected={form.valueCapitalSelected === "Yes"}
-                              revenueSelected={form.valueRevenueSelected === "Yes"}
-                              capitalValue={order.soValueCapital ?? ""}
-                              revenueValue={order.soValueRevenue ?? ""}
-                              disabled={disabled || downstreamLocked || sequentiallyLocked}
-                              lockFilledFields={lockFilledFields}
-                              testId={`add-field-supplyOrder-${index}-soValueCapital`}
-                              lockedValueFilled={
-                                hasFilledValue(lockedOrder?.soValueCapital) ||
-                                hasFilledValue(lockedOrder?.soValueRevenue)
-                              }
-                              onChange={(patch) => {
-                                if ("soValueCapital" in patch) {
-                                  onOrderChange(
-                                    index,
-                                    "soValueCapital",
-                                    patch.soValueCapital ?? "",
-                                  );
-                                }
-                                if ("soValueRevenue" in patch) {
-                                  onOrderChange(
-                                    index,
-                                    "soValueRevenue",
-                                    patch.soValueRevenue ?? "",
-                                  );
-                                }
-                              }}
-                            />
-                          );
+                      {activeSubview === "payment" ? orderMilestoneBlock : null}
+                      <div
+                        className={
+                          activeSubview === "payment"
+                            ? "grid grid-cols-1 gap-4 border-t border-border p-4"
+                            : "grid grid-cols-1 gap-4"
                         }
-
-                        if (key === "firm" || key === "firmUniqueNo") {
-                          const value = String(order[key] ?? "");
-                          const options = key === "firm" ? firmNameOptions : firmUniqueNoOptions;
-                          const optionMap =
-                            key === "firm" ? firmNameOptionMap : firmUniqueNoOptionMap;
-                          return (
-                            <label key={field.key} className="block">
-                              <div className="mb-1.5 text-xs font-medium">
-                                {renderedField.label}
-                              </div>
-                              <SearchableDropdown
-                                value={value}
-                                onChange={(nextValue) => {
-                                  updateOrderFirmLookup(index, key, nextValue, optionMap);
-                                }}
-                                options={options}
-                                onSearchChange={setFirmSuggestionQuery}
-                                deferChangeUntilSelect
-                                typeAheadOnly
-                                placeholder={
-                                  key === "firm"
-                                    ? "Select Firm Name"
-                                    : `Select ${firmUniqueNoLabel}`
-                                }
-                                disabled={fieldDisabled}
-                                data-testid={`add-field-supplyOrder-${index}-${key}`}
-                                className={inputCls + disabledCls(fieldDisabled)}
-                                inputRef={(element) => {
-                                  orderFieldRefs.current[`${index}:${key}`] = element;
-                                }}
-                              />
-                            </label>
-                          );
-                        }
-
-                        if (field.key === "actualPaymentCapital") {
-                          return (
-                            <AmountByValueTypeField
-                              key={field.key}
-                              label="Actual payment amount"
-                              placeholder="Payment amount"
-                              capitalSelected={form.valueCapitalSelected === "Yes"}
-                              revenueSelected={form.valueRevenueSelected === "Yes"}
-                              capitalValue={order.actualPaymentCapital ?? ""}
-                              revenueValue={order.actualPaymentRevenue ?? ""}
-                              disabled={disabled || downstreamLocked || sequentiallyLocked}
-                              lockFilledFields={lockFilledFields}
-                              testId={`add-field-supplyOrder-${index}-actualPaymentCapital`}
-                              lockedValueFilled={
-                                hasFilledValue(lockedOrder?.actualPaymentCapital) ||
-                                hasFilledValue(lockedOrder?.actualPaymentRevenue)
-                              }
-                              onChange={(patch) => {
-                                if ("capital" in patch) {
-                                  onOrderChange(index, "actualPaymentCapital", patch.capital ?? "");
-                                }
-                                if ("revenue" in patch) {
-                                  onOrderChange(index, "actualPaymentRevenue", patch.revenue ?? "");
-                                }
-                              }}
-                            />
-                          );
-                        }
-
-                        if (field.key === "billAmountCapital") {
-                          return (
-                            <AmountByValueTypeField
-                              key={field.key}
-                              label="Bill amount"
-                              placeholder="Bill amount"
-                              capitalSelected={form.valueCapitalSelected === "Yes"}
-                              revenueSelected={form.valueRevenueSelected === "Yes"}
-                              capitalValue={order.billAmountCapital ?? ""}
-                              revenueValue={order.billAmountRevenue ?? ""}
-                              disabled={disabled || downstreamLocked || sequentiallyLocked}
-                              lockFilledFields={lockFilledFields}
-                              testId={`add-field-supplyOrder-${index}-billAmountCapital`}
-                              lockedValueFilled={
-                                hasFilledValue(lockedOrder?.billAmountCapital) ||
-                                hasFilledValue(lockedOrder?.billAmountRevenue)
-                              }
-                              onChange={(patch) => {
-                                if ("capital" in patch) {
-                                  onOrderChange(index, "billAmountCapital", patch.capital ?? "");
-                                }
-                                if ("revenue" in patch) {
-                                  onOrderChange(index, "billAmountRevenue", patch.revenue ?? "");
-                                }
-                              }}
-                            />
-                          );
-                        }
-
-                        if (field.key === "ld") {
-                          const detailLocked =
-                            hasFilledValue(lockedOrder?.ldType) ||
-                            hasFilledValue(lockedOrder?.ldPercentage);
-                          return (
-                            <Fragment key={field.key}>
-                              <DynamicField
-                                field={renderedField}
-                                value={String(order[key] ?? "")}
-                                radioName={`supplyOrder-${index}-${field.key}`}
-                                disabled={fieldDisabled}
-                                onChange={(value) => onOrderChange(index, key, value)}
-                                inputRef={(element) => {
-                                  orderFieldRefs.current[`${index}:${key}`] = element;
-                                }}
-                              />
-                              {isYes(order.ld ?? "") ? (
-                                <LdDetailField
-                                  ldType={order.ldType ?? ""}
-                                  ldPercentage={order.ldPercentage ?? ""}
-                                  disabled={
-                                    disabled ||
-                                    downstreamLocked ||
-                                    sequentiallyLocked ||
-                                    (lockFilledFields && detailLocked)
-                                  }
-                                  onTypeChange={(value) => onOrderChange(index, "ldType", value)}
-                                  onPercentageChange={(value) =>
-                                    onOrderChange(index, "ldPercentage", value)
-                                  }
-                                />
-                              ) : null}
-                            </Fragment>
-                          );
-                        }
-
-                        if (field.key === "billReturnCycles") {
-                          return (
-                            <BillReturnCyclesBlock
-                              key={field.key}
-                              cycles={order.billReturnCycles}
-                              lockedCycles={lockedOrder?.billReturnCycles}
-                              disabled={fieldDisabled}
-                              lockFilledFields={lockFilledFields}
-                              testIdPrefix={`add-field-supplyOrder-${index}-billReturnCycles`}
-                              onChange={(cycles) => onOrderBillReturnsChange(index, cycles)}
-                            />
-                          );
-                        }
-
-                        return (
-                          <DynamicField
-                            key={field.key}
-                            field={renderedField}
-                            value={String(order[key] ?? "")}
-                            radioName={`supplyOrder-${index}-${field.key}`}
-                            disabled={fieldDisabled}
-                            onChange={(value) =>
-                              onOrderChange(
-                                index,
-                                key,
-                                key === "firmContactNo" ? numericOnly(value) : value,
-                              )
+                      >
+                        {activeSubview === "payment" ? (
+                          <PaymentTimingControl
+                            caseLabel={`S.O. ${index + 1} payment`}
+                            included={order.includeInPaymentTiming !== false}
+                            disabled={disabled || downstreamLocked}
+                            onChange={(included) =>
+                              onOrderPatch(index, { includeInPaymentTiming: included })
                             }
-                            inputRef={(element) => {
-                              orderFieldRefs.current[`${index}:${key}`] = element;
-                            }}
                           />
-                        );
-                      })}
-                    </div>
-                    {renderUpdateButton ? (
-                      <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
-                        {renderUpdateButton(orderSubviewDirty)}
+                        ) : null}
+                        {fieldsToRender.map((field) => {
+                          const key = field.key as SupplyOrderKey;
+                          const sequentiallyLocked = isSupplyOrderFieldSequentiallyLocked(
+                            key,
+                            order,
+                            form,
+                          );
+                          const cancellationControlLocked =
+                            lockFilledFields && isCancellationSupplyOrderField(key);
+                          const linkedLockedFirm = lockedOrder
+                            ? findLinkedMasterFirm(masterFirms, lockedOrder)
+                            : undefined;
+                          const lockedFieldValue =
+                            key === "firmUniqueNo"
+                              ? lockedOrder?.firmUniqueNo || linkedLockedFirm?.firmUniqueNo || ""
+                              : key === "firmType"
+                                ? lockedOrder?.firmType || linkedLockedFirm?.firmType || ""
+                                : (lockedOrder?.[key] ?? "");
+                          const fieldDisabled =
+                            disabled ||
+                            downstreamLocked ||
+                            sequentiallyLocked ||
+                            cancellationControlLocked ||
+                            (lockFilledFields && hasFilledValue(String(lockedFieldValue))) ||
+                            (gemDisabled && key === "gemSoNo") ||
+                            (bgDisabled && supplyOrderBgDisabledKeys.includes(key)) ||
+                            (effectiveIrDisabled && supplyOrderIrDisabledKeys.includes(key)) ||
+                            (!effectiveIrDisabled &&
+                              (key === "jobCompletionDate" || key === "actualJobCompletionDate")) ||
+                            isDpExtensionFieldInactive(form, key, order);
+                          const renderedField =
+                            key === "firmType"
+                              ? {
+                                  ...field,
+                                  options: mergeOptions(firmTypeOptions, order.firmType),
+                                }
+                              : key === "firmUniqueNo"
+                                ? { ...field, label: firmUniqueNoLabel }
+                                : field;
+
+                          if (field.key === "soValueCapital") {
+                            return (
+                              <SoValueField
+                                key={field.key}
+                                capitalSelected={form.valueCapitalSelected === "Yes"}
+                                revenueSelected={form.valueRevenueSelected === "Yes"}
+                                capitalValue={order.soValueCapital ?? ""}
+                                revenueValue={order.soValueRevenue ?? ""}
+                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                lockFilledFields={lockFilledFields}
+                                testId={`add-field-supplyOrder-${index}-soValueCapital`}
+                                lockedValueFilled={
+                                  hasFilledValue(lockedOrder?.soValueCapital) ||
+                                  hasFilledValue(lockedOrder?.soValueRevenue)
+                                }
+                                onChange={(patch) => {
+                                  if ("soValueCapital" in patch) {
+                                    onOrderChange(
+                                      index,
+                                      "soValueCapital",
+                                      patch.soValueCapital ?? "",
+                                    );
+                                  }
+                                  if ("soValueRevenue" in patch) {
+                                    onOrderChange(
+                                      index,
+                                      "soValueRevenue",
+                                      patch.soValueRevenue ?? "",
+                                    );
+                                  }
+                                }}
+                              />
+                            );
+                          }
+
+                          if (key === "firm" || key === "firmUniqueNo") {
+                            const value = String(order[key] ?? "");
+                            const options = key === "firm" ? firmNameOptions : firmUniqueNoOptions;
+                            const optionMap =
+                              key === "firm" ? firmNameOptionMap : firmUniqueNoOptionMap;
+                            return (
+                              <label key={field.key} className="block">
+                                <div className="mb-1.5 text-xs font-medium">
+                                  {renderedField.label}
+                                </div>
+                                <SearchableDropdown
+                                  value={value}
+                                  onChange={(nextValue) => {
+                                    updateOrderFirmLookup(index, key, nextValue, optionMap);
+                                  }}
+                                  options={options}
+                                  onSearchChange={setFirmSuggestionQuery}
+                                  deferChangeUntilSelect
+                                  typeAheadOnly
+                                  placeholder={
+                                    key === "firm"
+                                      ? "Select Firm Name"
+                                      : `Select ${firmUniqueNoLabel}`
+                                  }
+                                  disabled={fieldDisabled}
+                                  data-testid={`add-field-supplyOrder-${index}-${key}`}
+                                  className={inputCls + disabledCls(fieldDisabled)}
+                                  inputRef={(element) => {
+                                    orderFieldRefs.current[`${index}:${key}`] = element;
+                                  }}
+                                />
+                              </label>
+                            );
+                          }
+
+                          if (field.key === "actualPaymentCapital") {
+                            return (
+                              <AmountByValueTypeField
+                                key={field.key}
+                                label="Recorded payment amount"
+                                placeholder="Payment amount"
+                                capitalSelected={form.valueCapitalSelected === "Yes"}
+                                revenueSelected={form.valueRevenueSelected === "Yes"}
+                                capitalValue={order.actualPaymentCapital ?? ""}
+                                revenueValue={order.actualPaymentRevenue ?? ""}
+                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                lockFilledFields={lockFilledFields}
+                                testId={`add-field-supplyOrder-${index}-actualPaymentCapital`}
+                                lockedValueFilled={
+                                  hasFilledValue(lockedOrder?.actualPaymentCapital) ||
+                                  hasFilledValue(lockedOrder?.actualPaymentRevenue)
+                                }
+                                onChange={(patch) => {
+                                  if ("capital" in patch) {
+                                    onOrderChange(
+                                      index,
+                                      "actualPaymentCapital",
+                                      patch.capital ?? "",
+                                    );
+                                  }
+                                  if ("revenue" in patch) {
+                                    onOrderChange(
+                                      index,
+                                      "actualPaymentRevenue",
+                                      patch.revenue ?? "",
+                                    );
+                                  }
+                                }}
+                              />
+                            );
+                          }
+
+                          if (field.key === "billAmountCapital") {
+                            return (
+                              <AmountByValueTypeField
+                                key={field.key}
+                                label="Bill amount"
+                                placeholder="Bill amount"
+                                capitalSelected={form.valueCapitalSelected === "Yes"}
+                                revenueSelected={form.valueRevenueSelected === "Yes"}
+                                capitalValue={order.billAmountCapital ?? ""}
+                                revenueValue={order.billAmountRevenue ?? ""}
+                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                lockFilledFields={lockFilledFields}
+                                testId={`add-field-supplyOrder-${index}-billAmountCapital`}
+                                lockedValueFilled={
+                                  hasFilledValue(lockedOrder?.billAmountCapital) ||
+                                  hasFilledValue(lockedOrder?.billAmountRevenue)
+                                }
+                                onChange={(patch) => {
+                                  if ("capital" in patch) {
+                                    onOrderChange(index, "billAmountCapital", patch.capital ?? "");
+                                  }
+                                  if ("revenue" in patch) {
+                                    onOrderChange(index, "billAmountRevenue", patch.revenue ?? "");
+                                  }
+                                }}
+                              />
+                            );
+                          }
+
+                          if (field.key === "ld") {
+                            const detailLocked =
+                              hasFilledValue(lockedOrder?.ldType) ||
+                              hasFilledValue(lockedOrder?.ldPercentage);
+                            return (
+                              <Fragment key={field.key}>
+                                <DynamicField
+                                  field={renderedField}
+                                  value={String(order[key] ?? "")}
+                                  radioName={`supplyOrder-${index}-${field.key}`}
+                                  disabled={fieldDisabled}
+                                  onChange={(value) => onOrderChange(index, key, value)}
+                                  inputRef={(element) => {
+                                    orderFieldRefs.current[`${index}:${key}`] = element;
+                                  }}
+                                />
+                                {isYes(order.ld ?? "") ? (
+                                  <LdDetailField
+                                    ldType={order.ldType ?? ""}
+                                    ldPercentage={order.ldPercentage ?? ""}
+                                    disabled={
+                                      disabled ||
+                                      downstreamLocked ||
+                                      sequentiallyLocked ||
+                                      (lockFilledFields && detailLocked)
+                                    }
+                                    onTypeChange={(value) => onOrderChange(index, "ldType", value)}
+                                    onPercentageChange={(value) =>
+                                      onOrderChange(index, "ldPercentage", value)
+                                    }
+                                  />
+                                ) : null}
+                              </Fragment>
+                            );
+                          }
+
+                          if (field.key === "billReturnCycles") {
+                            return (
+                              <BillReturnCyclesBlock
+                                key={field.key}
+                                cycles={order.billReturnCycles}
+                                lockedCycles={lockedOrder?.billReturnCycles}
+                                disabled={fieldDisabled}
+                                lockFilledFields={lockFilledFields}
+                                testIdPrefix={`add-field-supplyOrder-${index}-billReturnCycles`}
+                                onChange={(cycles) => onOrderBillReturnsChange(index, cycles)}
+                              />
+                            );
+                          }
+
+                          return (
+                            <DynamicField
+                              key={field.key}
+                              field={renderedField}
+                              value={String(order[key] ?? "")}
+                              radioName={`supplyOrder-${index}-${field.key}`}
+                              disabled={fieldDisabled}
+                              onChange={(value) =>
+                                onOrderChange(
+                                  index,
+                                  key,
+                                  key === "firmContactNo" ? numericOnly(value) : value,
+                                )
+                              }
+                              inputRef={(element) => {
+                                orderFieldRefs.current[`${index}:${key}`] = element;
+                              }}
+                            />
+                          );
+                        })}
                       </div>
-                    ) : null}
+                      {renderUpdateButton ? (
+                        <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
+                          {renderUpdateButton(orderSubviewDirty)}
+                        </div>
+                      ) : null}
                     </details>
                   )}
                   {activeSubview === "supplementaryBills" ? (
@@ -7112,13 +7256,11 @@ function SupplementaryBillsDraftBlock({
                   />
                   <div className="md:col-span-2">
                     <DynamicField
-                      field={
-                        {
-                          key: "remarks",
-                          label: "Remarks",
-                          type: "textarea",
-                        }
-                      }
+                      field={{
+                        key: "remarks",
+                        label: "Remarks",
+                        type: "textarea",
+                      }}
                       value={bill.remarks}
                       disabled={disabled}
                       radioName={`supplementaryBill-${bill.id}-remarks`}
@@ -7151,9 +7293,9 @@ function PaymentTimingControl({
       <div>
         <div className="text-xs font-semibold">Payment delay and ranking</div>
         <div className="text-xs text-muted-foreground">
-          Include/exclude decides whether this payment is included in Payment Delay calculations
-          and Milestone Clearing Ranking or not. It does not change the payment record, pending
-          status, liability, or cash-out totals.
+          Include/exclude decides whether this payment is included in Payment Delay calculations and
+          Milestone Clearing Ranking or not. It does not change the payment record, pending status,
+          liability, or cash-out totals.
         </div>
       </div>
       <div
@@ -7385,7 +7527,9 @@ function getSupplyOrderFocusFieldKey(kind: string, state: string) {
   if (kind === "deliveryperiod") return state === "extended" ? "revisedDp" : "dpDate";
   const milestone = getSupplyOrderMilestoneByName(kind);
   if (!milestone) return undefined;
-  return (supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>)[milestone];
+  return (
+    supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>
+  )[milestone];
 }
 
 function getSupplyOrderParentFocusBlockKey(blockKey: string) {
@@ -7791,7 +7935,9 @@ function isFocusMilestoneCompleted(row: SupplyOrderFocusRow, kind: string) {
     (milestone) => normalizeMilestoneName(milestone) === kind,
   );
   const milestoneDateKey = dateKey
-    ? (supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>)[dateKey]
+    ? (supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>)[
+        dateKey
+      ]
     : undefined;
   const completedByDate = milestoneDateKey
     ? hasFilledValue(String((row as Record<string, unknown>)[milestoneDateKey] ?? ""))
@@ -8213,7 +8359,9 @@ function getStageDeliveryMilestonesForSubview(
       fileType,
       ir,
     }).filter((milestone) =>
-      (supplyOrderSubviewMilestones.delivery as readonly SupplyOrderMilestoneName[]).includes(milestone),
+      (supplyOrderSubviewMilestones.delivery as readonly SupplyOrderMilestoneName[]).includes(
+        milestone,
+      ),
     );
     const stageDeliveries = order.stageDeliveries ?? [];
     const isFinalSharedPaymentStage =
@@ -8465,8 +8613,7 @@ function getDerivedDeliveryMilestoneState(
 ) {
   const periodTrackingOnly = isJobCompletionWorkflow(fileType, ir, fileTypeGroup);
   const completed =
-    !periodTrackingOnly &&
-    isCompleteDateValue(String(row.materialReceiptDate ?? ""));
+    !periodTrackingOnly && isCompleteDateValue(String(row.materialReceiptDate ?? ""));
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const current =
     !completed &&
@@ -8729,7 +8876,9 @@ function SupplyOrderMilestonesBlock({
           milestone === "Bill sent for payment" ||
           milestone === "Bill returned for correction" ||
           milestone === "Payment";
-        const dateKey = (supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>)[milestone];
+        const dateKey = (
+          supplyOrderMilestoneDateKeys as Partial<Record<SupplyOrderMilestoneName, SupplyOrderKey>>
+        )[milestone];
         const isAutoCurrentMilestone = isAutoCurrentSupplyOrderMilestone(
           order,
           milestone,
@@ -8803,7 +8952,9 @@ function SupplyOrderMilestonesBlock({
               (isCurrent ? "bg-primary/10 font-semibold text-primary" : "")
             }
           >
-            <div className="min-w-0 break-words sm:truncate">{getSupplyOrderMilestoneDisplayLabel(milestone)}</div>
+            <div className="min-w-0 break-words sm:truncate">
+              {getSupplyOrderMilestoneDisplayLabel(milestone)}
+            </div>
             <div className="flex justify-center">
               <input
                 type="checkbox"
@@ -9163,7 +9314,7 @@ function TimelineBlock({
           items: getFullTimelineItems(group.items),
         }))
         .filter((group) => group.items.length > 0)
-    : [{ title: "Timeline by actual date", items: filledItems }];
+    : [{ title: "Timeline by recorded date", items: filledItems }];
 
   useEffect(() => {
     setSelectedSupplyOrderIndexes((current) => {
@@ -9889,7 +10040,9 @@ function exportTimelineReport(
       }));
   const filledExportItems = exportItems.filter((item) => item.date);
   const timelineRows = exportItems.map((item, index) => {
-    const filledIndex = item.date ? filledExportItems.findIndex((filled) => filled.id === item.id) : -1;
+    const filledIndex = item.date
+      ? filledExportItems.findIndex((filled) => filled.id === item.id)
+      : -1;
     const firstItem = filledExportItems[0];
     const previousItem = filledIndex > 0 ? filledExportItems[filledIndex - 1] : undefined;
     const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
@@ -10064,28 +10217,12 @@ const inputCls =
 const textareaCls =
   "w-full max-w-2xl min-h-20 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition resize-y";
 
-function sectionBlockCls(index: number) {
-  const accents = [
-    "border-l-primary",
-    "border-l-success",
-    "border-l-warning",
-    "border-l-chart-5",
-    "border-l-destructive",
-    "border-l-chart-2",
-  ];
-  return `md:col-span-2 scroll-mt-24 rounded-md border border-l-2 border-border bg-card p-4 shadow-sm ${accents[index % accents.length]}`;
+function sectionBlockCls(_index: number) {
+  return "md:col-span-2 scroll-mt-24 rounded-md border border-border bg-secondary/25 p-4";
 }
 
-function sectionStripeCls(index: number) {
-  const colors = [
-    "bg-primary",
-    "bg-success",
-    "bg-warning",
-    "bg-chart-5",
-    "bg-destructive",
-    "bg-chart-2",
-  ];
-  return `inline-block h-4 w-1 rounded-full ${colors[index % colors.length]}`;
+function sectionStripeCls(_index: number) {
+  return "inline-block h-4 w-1 rounded-full bg-primary";
 }
 
 function toFilePayload(form: FormState) {
@@ -10365,9 +10502,7 @@ function getApplicableMilestones(
   supplyOrders: SupplyOrderDetail[],
 ) {
   return new Set(
-    milestones.filter((milestone) =>
-      isMilestoneApplicableToFile(milestone, form, supplyOrders),
-    ),
+    milestones.filter((milestone) => isMilestoneApplicableToFile(milestone, form, supplyOrders)),
   );
 }
 
@@ -10950,8 +11085,8 @@ function getSupplyOrderTabFieldLabel(
   if (key === "firmType") return "Firm Type (set in Firm Database)";
   if (key === "firmTypeOther") return "Specific Firm Type (set in Firm Database)";
   if (key === "soValueCapital") {
-    if (form.valueCapitalSelected === "Yes") return "S.O. value (Capital)";
-    if (form.valueRevenueSelected === "Yes") return "S.O. value (Revenue)";
+    if (form.valueCapitalSelected === "Yes") return "S.O. (Capital)";
+    if (form.valueRevenueSelected === "Yes") return "S.O. (Revenue)";
     return "S.O. value";
   }
   return supplyOrderFields.find((field) => field.key === key)?.label ?? key;
@@ -10967,7 +11102,10 @@ function dateLabelForSupplyOrderMilestone(milestone: SupplyOrderMilestoneName) {
 
 function cleanSupplyOrderRows(
   rows: SupplyOrderDetail[],
-  form?: Pick<FormState, "fileType" | "fileTypeGroup" | "ir" | "valueCapitalSelected" | "valueRevenueSelected">,
+  form?: Pick<
+    FormState,
+    "fileType" | "fileTypeGroup" | "ir" | "valueCapitalSelected" | "valueRevenueSelected"
+  >,
 ) {
   const normalized = rows.map((row) =>
     clearInapplicableBgCoverageFields(applySupplyOrderRules(row, form)),
@@ -11103,10 +11241,7 @@ function getStageDeliveryWarnings(
       );
     }
 
-    if (
-      !stageDeliveryEnabled &&
-      hasStageDeliveryData(order.stageDeliveries ?? [])
-    ) {
+    if (!stageDeliveryEnabled && hasStageDeliveryData(order.stageDeliveries ?? [])) {
       warnings.push(`${orderLabel}: Stage Delivery is No, but hidden stage delivery data exists.`);
     }
     if (stageDeliveryEnabled && hasStageDeliveryData(extraStages)) {
@@ -11140,7 +11275,7 @@ function getStageDeliveryWarnings(
         }
         if (hasWrongAmountSide(stage.actualPaymentCapital, stage.actualPaymentRevenue, form)) {
           warnings.push(
-            `${stageLabel}: Actual payment amount has value on the wrong Capital/Revenue side.`,
+            `${stageLabel}: Recorded payment amount has value on the wrong Capital/Revenue side.`,
           );
         }
       });
@@ -11156,7 +11291,7 @@ function getStageDeliveryWarnings(
       }
       if (hasWrongAmountSide(advance.actualPaymentCapital, advance.actualPaymentRevenue, form)) {
         warnings.push(
-          `${orderLabel} Advance Payment: Actual payment amount has value on the wrong Capital/Revenue side.`,
+          `${orderLabel} Advance Payment: Recorded payment amount has value on the wrong Capital/Revenue side.`,
         );
       }
     }
@@ -11385,7 +11520,7 @@ function getSupplementaryBillChronologyWarnings(
       hasFilledValue(bill.paymentDate) &&
       !hasSelectedAmount(bill.actualPaymentCapital, bill.actualPaymentRevenue, form)
     ) {
-      warnings.push(`${label}: Payment date is filled, but actual payment amount is missing.`);
+      warnings.push(`${label}: Payment date is filled, but recorded payment amount is missing.`);
     }
     if (hasFilledValue(bill.paymentDate) && !hasSelectablePaymentMode(bill.paymentMode)) {
       warnings.push(`${label}: Payment date is filled, but payment mode is missing.`);
@@ -11445,7 +11580,7 @@ function getPaymentChronologyWarnings(
     hasFilledValue(dates.paymentDate) &&
     !hasSelectedAmount(actualPaymentCapital, actualPaymentRevenue, form)
   ) {
-    warnings.push(`${label}: Payment date is filled, but Actual payment amount is missing.`);
+    warnings.push(`${label}: Payment date is filled, but recorded payment amount is missing.`);
   }
 
   return warnings;
@@ -11717,7 +11852,9 @@ function cleanAdvancePaymentDetail(
     actualPaymentCapital: normalized.actualPaymentCapital || undefined,
     actualPaymentRevenue: normalized.actualPaymentRevenue || undefined,
   };
-  return Object.values(cleaned).some((value) => value !== undefined && value !== null && value !== "")
+  return Object.values(cleaned).some(
+    (value) => value !== undefined && value !== null && value !== "",
+  )
     ? cleaned
     : {};
 }
@@ -11751,8 +11888,7 @@ function cleanStageDeliveryRows(
           ? ""
           : normalized.currentMilestone;
     return {
-      includeInPaymentTiming:
-        normalized.includeInPaymentTiming === false ? false : undefined,
+      includeInPaymentTiming: normalized.includeInPaymentTiming === false ? false : undefined,
       stageAmountCapital: normalized.stageAmountCapital || undefined,
       stageAmountRevenue: normalized.stageAmountRevenue || undefined,
       currentMilestone: currentMilestone || undefined,
@@ -12767,8 +12903,8 @@ function autoFillStageDeliveries(
       preserveStageAllocations ||= advanceAmountWasEdited && !advancePaymentPaid;
       advanceAllocation = advancePaymentPaid
         ? (parseMoneyAmount(advance.stageAmountCapital) ??
-            parseMoneyAmount(advance.actualPaymentCapital) ??
-            0)
+          parseMoneyAmount(advance.actualPaymentCapital) ??
+          0)
         : advanceAmountWasEdited
           ? Math.max(0, parseMoneyAmount(advance.stageAmountCapital) ?? 0)
           : Math.min(Math.round(total * 0.3), Math.max(0, total - paidStageAmount));
@@ -12797,8 +12933,8 @@ function autoFillStageDeliveries(
       preserveStageAllocations ||= advanceAmountWasEdited && !advancePaymentPaid;
       advanceAllocation = advancePaymentPaid
         ? (parseMoneyAmount(advance.stageAmountRevenue) ??
-            parseMoneyAmount(advance.actualPaymentRevenue) ??
-            0)
+          parseMoneyAmount(advance.actualPaymentRevenue) ??
+          0)
         : advanceAmountWasEdited
           ? Math.max(0, parseMoneyAmount(advance.stageAmountRevenue) ?? 0)
           : Math.min(Math.round(total * 0.3), Math.max(0, total - paidStageAmount));
@@ -12935,9 +13071,7 @@ function getRedistributedStageAmounts(
     if (!hasPaidStagePayment(stage)) return total;
     return (
       total +
-      (parseMoneyAmount(stage[stageAmountKey]) ??
-        parseMoneyAmount(stage[actualPaymentKey]) ??
-        0)
+      (parseMoneyAmount(stage[stageAmountKey]) ?? parseMoneyAmount(stage[actualPaymentKey]) ?? 0)
     );
   }, 0);
   const unpaidStageIndexes = stages.flatMap((stage, index) =>
@@ -12971,8 +13105,7 @@ function getRedistributedStageAmounts(
       existingUnpaidWeights.length
     : 1;
   const weights = unpaidStageIndexes.map(
-    (stageIndex) =>
-      parseMoneyAmount(stages[stageIndex]?.[stageAmountKey]) || fallbackWeight,
+    (stageIndex) => parseMoneyAmount(stages[stageIndex]?.[stageAmountKey]) || fallbackWeight,
   );
   const redistributed =
     remainingAmount === 0
@@ -12996,9 +13129,7 @@ function getPaidStageAllocationTotal(
     if (!hasPaidStagePayment(stage)) return total;
     return (
       total +
-      (parseMoneyAmount(stage[stageAmountKey]) ??
-        parseMoneyAmount(stage[actualPaymentKey]) ??
-        0)
+      (parseMoneyAmount(stage[stageAmountKey]) ?? parseMoneyAmount(stage[actualPaymentKey]) ?? 0)
     );
   }, 0);
 }
@@ -13230,16 +13361,18 @@ function isContractNoInspectionPaymentDue(
 }
 
 function isFinancialSanctionReachedForForm(
-  form: Partial<Pick<
-    FormState,
-    | "mode"
-    | "fileType"
-    | "biddingStageOver"
-    | "tcec"
-    | "cfaDate"
-    | "cncApprovalDate"
-    | "demandCancelled"
-  >>,
+  form: Partial<
+    Pick<
+      FormState,
+      | "mode"
+      | "fileType"
+      | "biddingStageOver"
+      | "tcec"
+      | "cfaDate"
+      | "cncApprovalDate"
+      | "demandCancelled"
+    >
+  >,
 ) {
   if (isYes(form.demandCancelled)) return false;
   if (isYes(form.tcec)) return hasFilledValue(form.cncApprovalDate);
@@ -13356,9 +13489,8 @@ function getSupplyOrderFieldPrerequisites(
   key: SupplyOrderKey,
   form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
 ) {
-  const prerequisites = (
-    supplyOrderFieldPrerequisites as Partial<Record<SupplyOrderKey, SupplyOrderKey[]>>
-  )[key] ?? [];
+  const prerequisites =
+    (supplyOrderFieldPrerequisites as Partial<Record<SupplyOrderKey, SupplyOrderKey[]>>)[key] ?? [];
   if (
     isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup) &&
     prerequisites.includes("materialReceiptDate")
@@ -13429,10 +13561,7 @@ function getEnabledTimelineFields(form: FormState) {
   return timelineFields.filter((field) => !isTimelineFieldDisabled(field.key, form));
 }
 
-function isTimelineFieldDisabled(
-  key: FieldKey,
-  form: FormState,
-) {
+function isTimelineFieldDisabled(key: FieldKey, form: FormState) {
   return (
     (["adSentDate", "adVettingDate"].includes(key) && isNo(form.ad)) ||
     (isNo(form.tcec) && tcecDisabledKeys.includes(key)) ||
@@ -13734,9 +13863,7 @@ function AmountByValueTypeField({
           disabled={fieldDisabled}
           data-testid={testId}
           placeholder={
-            selectedType
-              ? (placeholder ?? "Bill Value")
-              : "Select Capital or Revenue above"
+            selectedType ? (placeholder ?? "Bill Value") : "Select Capital or Revenue above"
           }
           className={inputCls + disabledCls(fieldDisabled)}
         />
@@ -13807,7 +13934,11 @@ function DynamicField({
           className={inputCls + disabledCls(disabled)}
         >
           {field.key === "gemBiddingMode" ? (
-            !value ? <option value="" disabled>Not set</option> : null
+            !value ? (
+              <option value="" disabled>
+                Not set
+              </option>
+            ) : null
           ) : (
             <option value="">Select</option>
           )}
@@ -13847,13 +13978,18 @@ function DynamicField({
           value={value}
           onChange={onChange}
           disabled={disabled}
+          calendar={field.type === "date"}
           data-testid={testId}
           className={inputCls + disabledCls(disabled)}
         />
       ) : (
         <input
           ref={inputRef}
-          type={field.key === "exchangeRate" || isAmountFieldKey(field.key) ? "text" : (field.type ?? "text")}
+          type={
+            field.key === "exchangeRate" || isAmountFieldKey(field.key)
+              ? "text"
+              : (field.type ?? "text")
+          }
           value={isAmountFieldKey(field.key) ? formatAmountForDisplay(value) : value}
           onChange={(event) => {
             if (isAmountFieldKey(field.key)) {
@@ -13874,7 +14010,9 @@ function DynamicField({
               : undefined
           }
           step={field.key === "exchangeRate" ? "any" : field.type === "number" ? 1 : undefined}
-          inputMode={field.key === "exchangeRate" || isAmountFieldKey(field.key) ? "decimal" : undefined}
+          inputMode={
+            field.key === "exchangeRate" || isAmountFieldKey(field.key) ? "decimal" : undefined
+          }
           placeholder={field.placeholder}
           className={inputCls + disabledCls(disabled)}
         />
@@ -13924,15 +14062,16 @@ function StageDeliveryAutofillHelper() {
                   unless dates are edited manually.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
-                  An MPC stage starting 01-Apr ends 30-Apr. A stage for any other file type
-                  starting 01-Apr ends 30-Jun.
+                  An MPC stage starting 01-Apr ends 30-Apr. A stage for any other file type starting
+                  01-Apr ends 30-Jun.
                 </td>
               </tr>
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Paid stage</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  A stage is frozen when payment date or actual payment amount is filled. Its D.P.,
-                  stage amount and payment details are protected unless unfrozen with password.
+                  A stage is frozen when payment date or recorded payment amount is filled. Its
+                  D.P., stage amount and payment details are protected unless unfrozen with
+                  password.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
                   If Delivery-1 is paid for 50, increasing stages will not change Delivery-1 amount.
@@ -13941,12 +14080,12 @@ function StageDeliveryAutofillHelper() {
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Advance Payment allocation</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  Advance Payment is independent of Stage Delivery and Stage Payment. When
-                  Advance Payment is Yes, an untouched unpaid advance defaults to 30% of the S.O.
-                  value. A manually edited advance amount is preserved; other unpaid stage amounts
-                  are not automatically rebalanced. After a saved Payment Date, recorded advance
-                  values need password unfreeze to edit; blank fields remain fillable. Paid stage
-                  allocations remain fixed.
+                  Advance Payment is independent of Stage Delivery and Stage Payment. When Advance
+                  Payment is Yes, an untouched unpaid advance defaults to 30% of the S.O. value. A
+                  manually edited advance amount is preserved; other unpaid stage amounts are not
+                  automatically rebalanced. After a saved Payment Date, recorded advance values need
+                  password unfreeze to edit; blank fields remain fillable. Paid stage allocations
+                  remain fixed.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
                   S.O. 100, manually set advance 25: other stage amounts remain as entered.
@@ -13955,9 +14094,9 @@ function StageDeliveryAutofillHelper() {
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Increasing stage count</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  Paid stages stay fixed. The remaining stage balance, after the advance
-                  allocation, is distributed by the unpaid stages' existing amount proportions.
-                  If no unpaid stage weights exist, it is split equally.
+                  Paid stages stay fixed. The remaining stage balance, after the advance allocation,
+                  is distributed by the unpaid stages' existing amount proportions. If no unpaid
+                  stage weights exist, it is split equally.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
                   S.O. 100, advance 30, Delivery-1 paid 20: remaining stage balance 50 is
@@ -13967,9 +14106,9 @@ function StageDeliveryAutofillHelper() {
               <tr>
                 <td className="border border-sky-200 px-3 py-2">Manual unpaid amounts</td>
                 <td className="border border-sky-200 px-3 py-2">
-                  A manually edited unpaid stage amount is preserved. Other unpaid stage amounts
-                  are left unchanged; the software does not rebalance them to match the S.O. total.
-                  Paid allocations stay fixed.
+                  A manually edited unpaid stage amount is preserved. Other unpaid stage amounts are
+                  left unchanged; the software does not rebalance them to match the S.O. total. Paid
+                  allocations stay fixed.
                 </td>
                 <td className="border border-sky-200 px-3 py-2">
                   S.O. 100 with advance 30: if one unpaid stage is manually set to 25, the other
@@ -14074,10 +14213,7 @@ function hasFileValueForLock(form: FormState, key: FieldKey) {
   return hasFilledValue(String(form[key] ?? ""));
 }
 
-function getUnfilledFieldKeys(
-  section: (typeof extraSections)[number],
-  form: FormState,
-) {
+function getUnfilledFieldKeys(section: (typeof extraSections)[number], form: FormState) {
   return section.fields
     .filter(
       (field) =>

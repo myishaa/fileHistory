@@ -184,26 +184,30 @@ export function getQuickEntryExportRowPlan(
   const hasStages = isStaged && stages.length > 0;
   const includeStageRows = viewMode === "expanded" && hasStages;
   const rows: QuickEntryExportRowPlanItem[] = includeStageRows
-    ? [
-        { rowType: "S.O. summary" },
-        ...stages.map((_, stageIndex) => ({ rowType: "Stage" as const, stageIndex })),
-      ]
+    ? stages.map((_, stageIndex) => ({ rowType: "Stage" as const, stageIndex }))
     : [{ rowType: "S.O. summary" }];
-  if (options.includeOrderPayment) rows.push({ rowType: "S.O. payment" });
-  for (const stageIndex of options.stagePaymentIndexes ?? []) {
-    rows.push({ rowType: "Stage payment", stageIndex });
+  if (viewMode === "expanded") {
+    if (options.includeOrderPayment) rows.push({ rowType: "S.O. payment" });
+    for (const stageIndex of options.stagePaymentIndexes ?? []) {
+      rows.push({ rowType: "Stage payment", stageIndex });
+    }
+    if (options.includeAdvance) rows.push({ rowType: "Advance", ...(hasStages ? { stageIndex: 0 } : {}) });
   }
-  if (options.includeAdvance) rows.push({ rowType: "Advance", ...(hasStages ? { stageIndex: 0 } : {}) });
-  return [
-    ...rows,
-    ...(options.supplementarySentDates ?? []).map((sentDate, supplementaryItemIndex) => ({
-      rowType: "Supplementary bill" as const,
-      supplementaryItemIndex,
-      ...(hasStages
-        ? { stageIndex: getQuickEntrySupplementaryStageIndex(sentDate, stages) }
-        : {}),
-    })),
-  ];
+  // Collapsed/S.O. exports remain one row per S.O.; supplementary values are
+  // summarized into that row. Expanded/Stage exports keep supplementary bills
+  // as independent detail rows, linked to the nearest stage when possible.
+  return viewMode === "collapsed"
+    ? rows
+    : [
+        ...rows,
+        ...(options.supplementarySentDates ?? []).map((sentDate, supplementaryItemIndex) => ({
+          rowType: "Supplementary bill" as const,
+          supplementaryItemIndex,
+          ...(hasStages
+            ? { stageIndex: getQuickEntrySupplementaryStageIndex(sentDate, stages) }
+            : {}),
+        })),
+      ];
 }
 
 export function getQuickEntryExportDpDate(order: OrderDp) {

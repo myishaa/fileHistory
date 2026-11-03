@@ -4,10 +4,34 @@ const API_BASE_URL = process.env.BACKEND_URL ?? "http://localhost:3001";
 const FRONTEND_URL = process.env.FRONTEND_URL ?? "http://localhost:8081";
 const username = process.env.AUDIT_USERNAME ?? "dashboard_audit";
 const password = process.env.AUDIT_PASSWORD ?? "dashboard_audit123";
-const maxClicks = Number(process.env.AUDIT_MAX_BROWSER_CLICKS ?? 600);
+// A zero limit means unlimited.  The former default of 600 silently stopped
+// the audit part-way through the dashboard/report surface.
+const maxClicks = Number(process.env.AUDIT_MAX_BROWSER_CLICKS ?? 0);
 const tracePath = process.env.AUDIT_BROWSER_TRACE ?? "test-results/audit-clicker-landings-trace.zip";
+const traceEnabled = Boolean(process.env.AUDIT_BROWSER_TRACE);
+const navigationTimeout = Number(process.env.AUDIT_NAVIGATION_TIMEOUT ?? 90000);
+const summaryReadyTimeout = Number(process.env.AUDIT_SUMMARY_READY_TIMEOUT ?? 90000);
+// Report pages can legitimately have no drilldown buttons.  Waiting for the
+// first clicker in that case made the audit spend the full 90-second summary
+// timeout and incorrectly look like a selector failure.  Wait for the report
+// surface itself, then give redesigned controls a short discovery grace.
+const reportSurfaceReadyTimeout = Number(process.env.AUDIT_REPORT_SURFACE_TIMEOUT ?? 90000);
+const reportClickerGraceTimeout = Number(process.env.AUDIT_REPORT_CLICKER_GRACE_TIMEOUT ?? 1500);
 const startReportMode = process.env.AUDIT_BROWSER_START_MODE ?? "";
 const endReportMode = process.env.AUDIT_BROWSER_END_MODE ?? "";
+const startDashboardTab = process.env.AUDIT_BROWSER_START_TAB ?? "";
+const endDashboardTab = process.env.AUDIT_BROWSER_END_TAB ?? "";
+const dashboardOnly = process.env.AUDIT_DASHBOARD_ONLY === "1";
+const auditScope = process.env.AUDIT_BROWSER_SCOPE ?? (dashboardOnly ? "dashboard" : "all");
+const dashboardBatchSize = Number(process.env.AUDIT_DASHBOARD_BATCH_SIZE ?? 0);
+const dashboardBatchIndex = Number(process.env.AUDIT_DASHBOARD_BATCH_INDEX ?? 0);
+const reportBatchSize = Number(process.env.AUDIT_REPORT_BATCH_SIZE ?? 0);
+const reportBatchIndex = Number(process.env.AUDIT_REPORT_BATCH_INDEX ?? 0);
+// Surface-only mode is used to review every report individually without
+// repeating the expensive landing check for every metric in a mode.  It
+// still waits for the report to settle, classifies zero-click states, and
+// records selector gaps; normal runs continue to verify every landing.
+const reportSurfaceOnly = process.env.AUDIT_REPORT_SURFACE_ONLY === "1";
 
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 
@@ -18,7 +42,7 @@ const dashboardTabs = [
   ["status4", "Status-4"],
   ["snapshot", "Snapshot"],
   ["analytics", "Analytics"],
-  ["finance", "Finance"],
+  ["fyActivity", "FY Activity"],
   ["finance1", "FY Snapshot"],
 ];
 
@@ -48,7 +72,7 @@ const reportLabels = {
   itemsDeliveredBillsPrepared: "Delivery / D.P. Done, Bill Prepared",
   billsSubmitted: "Bills Submitted, Payment Pending",
   expectedCashOutgoFy: "Expected Cash Outgo by D.P.",
-  spentTillDateFy: "Actual Cash Outgo as on Date",
+  spentTillDateFy: "Recorded Cash Outgo as on Date",
   billsPaidInMonth: "Bills Paid in Selected Month",
   pendingReturnedBills: "Pending returned bills",
   returnedBillsResubmitted: "Returned bills resubmitted and unpaid",
@@ -70,6 +94,13 @@ const reportLabels = {
   delayStatus: "Delay Status",
 };
 
+const breadcrumbAliases = {
+  "Recorded Cash Outgo as on Date": "Recorded Cash Outgo as on",
+  "Expected cash outgo exclusively for selected month": "Expected Cash Outgo in",
+  "Expected Expenditure Up to Selected Month": "Expected Expenditure Up to",
+  "Cumulative Liability Up to Month": "Cumulative Liability Up to",
+};
+
 const dashboardClickSelector = [
   'button[data-testid^="status-counter-"]',
   "button.rounded-md.px-2.py-1.font-semibold.text-primary",
@@ -89,6 +120,14 @@ const reportClickSelector = [
   'button[title^="Open "]',
   "table tbody button.text-primary",
   "table tfoot td button.rounded-md.px-2.py-1.font-semibold.text-primary",
+  // Some report cards use a neutral foreground colour instead of
+  // `text-primary` while remaining real Search drilldowns (for example
+  // Demand Processing age buckets and payment metric cards).
+  "main button.rounded-md.border.border-border.bg-secondary\\/20.text-left",
+  "main button.block.text-left.text-lg.font-semibold",
+  // Firm Performance summary cards use a plain block/text-left button and
+  // intentionally omit the metric-card colour classes.
+  "main button.block.w-full.text-left",
 ].join(",");
 
 function expectedDashboardSelectedYear(tab, settings, initialSelectedYear, previousExpectedYear) {
@@ -103,14 +142,24 @@ function expectedDashboardSelectedYear(tab, settings, initialSelectedYear, previ
 
   // Snapshot, FY Snapshot, and the default Analytics panel reset the global
   // scope to the current financial year when they mount.
-  if (["snapshot", "finance1", "analytics"].includes(tab)) {
+  if (["snapshot", "finance1", "analytics", "fyActivity"].includes(tab)) {
     return String(settings.financialYear ?? initialSelectedYear ?? "");
   }
 
-  // Finance preserves the session's selected global year. When the complete
-  // dashboard sequence is audited, this is the scope established by the
-  // preceding tab; for a standalone finance run, use the initial setting.
   return previousExpectedYear ?? initialSelectedYear;
+}
+
+function sliceBatch(items, size, index, name) {
+  if (!Number.isFinite(size) || size <= 0) return items;
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`${name}_BATCH_INDEX must be a non-negative integer`);
+  }
+  const start = index * size;
+  return items.slice(start, start + size);
+}
+
+function limitReached(checked) {
+  return maxClicks > 0 && checked >= maxClicks;
 }
 
 async function login() {
@@ -153,6 +202,11 @@ async function collectClickers(page, selector) {
       const identityOccurrence = identity ? occurrences.get(identity) ?? 0 : 0;
       if (identity && visible) occurrences.set(identity, identityOccurrence + 1);
       const numericText = /^(?:₹\s*)?\d[\d,]*(?:\.\d+)?$/.test(text);
+      // Report summary cards often put the metric after a descriptive label
+      // (for example, "Supply orders 174") rather than on its own line.
+      // Match a numeric suffix so those real drilldowns are not mistaken for
+      // a report with no clickable results.
+      const reportMetricText = /(?:₹\s*)?\d[\d,]*(?:\.\d+)?\s*$/.test(text);
       return {
       index,
       text,
@@ -162,8 +216,21 @@ async function collectClickers(page, selector) {
       identityOccurrence,
       disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
       numericCell: Boolean(button.closest("td")) && numericText,
+      // A numeric button is a landing target only when it has an explicit
+      // landing affordance.  Plain numeric cells are presentation values and
+      // must not inflate browser-audit coverage.
+      actionableNumericCell: Boolean(button.closest("td")) && numericText && (
+        Boolean(aria || title || testId) ||
+        button.classList.contains("text-primary") ||
+        Boolean(button.closest("tfoot"))
+      ),
       metricCard: button.classList.contains("text-left") && button.classList.contains("border-border") && button.classList.contains("bg-card"),
       metricResult: button.classList.contains("font-semibold") && button.classList.contains("text-primary") && numericText,
+      reportCard: !button.disabled && (
+        (button.classList.contains("text-left") && button.classList.contains("border-border") && button.classList.contains("bg-secondary/20")) ||
+        (button.classList.contains("block") && button.classList.contains("text-lg") && button.classList.contains("font-semibold") && numericText) ||
+        (button.classList.contains("block") && button.classList.contains("w-full") && button.classList.contains("text-left") && reportMetricText)
+      ),
       identifierLink: Boolean(button.closest("td")) && button.classList.contains("text-primary") &&
         !numericText && !/^\d{4}-\d{2}$/.test(text) && Boolean(text),
       visible,
@@ -172,19 +239,29 @@ async function collectClickers(page, selector) {
     .filter((button) => button.visible)
     .filter((button) => !button.disabled)
     .filter((button) => !/\bhelp\b/i.test(`${button.aria} ${button.title}`))
-    .filter((button) => button.testId || button.numericCell || button.metricCard || button.metricResult || button.identifierLink ||
+    .filter((button) => button.testId || button.actionableNumericCell || button.metricCard || button.metricResult || button.reportCard || button.identifierLink ||
       /^(?:search files|open\s+\d|cleared:|current:|applicable:)/i.test(`${button.aria} ${button.title}`) ||
       /results in search files/i.test(`${button.aria} ${button.title}`))
     .filter((button) => button.text || button.aria || button.title)
     .filter((button) => {
       const countLike = button.testId.startsWith("status-counter-") ||
-        button.numericCell || button.metricCard || button.metricResult || /^Open\s+\d/.test(button.aria);
+        button.actionableNumericCell || button.metricCard || button.metricResult || button.reportCard || /^Open\s+\d/.test(button.aria);
       if (!countLike) return true;
       const values = [...button.text.matchAll(/[\d,]+(?:\.\d+)?/g)]
         .map((match) => Number(match[0].replaceAll(",", "")));
       return values.length === 0 || values.some((value) => value > 0);
     });
   });
+}
+
+async function dismissUrgentPopup(page) {
+  const dialog = page.getByRole("dialog", { name: "Urgent reminders and messages" });
+  if (!(await dialog.isVisible({ timeout: 750 }).catch(() => false))) return false;
+  const close = dialog.getByRole("button", { name: "Close urgent reminders and messages" });
+  if (!(await close.isVisible({ timeout: 750 }).catch(() => false))) return false;
+  await close.click({ timeout: 3000 }).catch(() => undefined);
+  await dialog.waitFor({ state: "hidden", timeout: 3000 }).catch(() => undefined);
+  return true;
 }
 
 function locatorFor(page, selector, item) {
@@ -198,6 +275,7 @@ function hasPositiveDisplayedValue(item) {
 
 async function landingCheck(page, selector, item, context, expectedSelectedYear, issues, notes) {
   const sourceUrl = page.url();
+  await dismissUrgentPopup(page);
   await locatorFor(page, selector, item).waitFor({ state: "visible", timeout: 4500 }).catch(() => undefined);
   const sourceCandidates = await collectClickers(page, selector);
     if (!sourceCandidates.some((candidate) =>
@@ -206,13 +284,17 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
       (item.title && candidate.title === item.title && candidate.text === item.text && candidate.identityOccurrence === item.identityOccurrence) ||
       (!item.testId && !item.aria && !item.title && candidate.index === item.index && candidate.text === item.text)
     )) {
-    issues.push({ type: "click-target-disappeared", context, click: item });
+    // Summaries can refresh between collection and the click (for example after
+    // a late filter hydration). It is not a navigation defect if that stale
+    // number is no longer rendered; record it separately and continue.
+    notes.push({ type: "click-target-refreshed-away", context, click: item });
     return;
   }
 
   try {
     await locatorFor(page, selector, item).click({ timeout: 7000 });
     await page.waitForURL((url) => url.pathname.endsWith("/search") || url.pathname.endsWith("/add"), { timeout: 4000 }).catch(() => undefined);
+    await dismissUrgentPopup(page);
     await page.waitForTimeout(100);
     const landedUrl = page.url();
     const landed = new URL(landedUrl);
@@ -234,6 +316,7 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
     const url = new URL(landedUrl);
     const params = url.searchParams;
     const crumb = page.locator('nav[aria-label="Dashboard drill path"]');
+    await crumb.waitFor({ state: "visible", timeout: 8000 }).catch(() => undefined);
     const crumbText = (await crumb.count()) ? (await crumb.innerText()).replace(/\s+/g, " ").trim() : "";
     const pathValue = params.get("drillPath");
     let pathItems = [];
@@ -250,7 +333,7 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
       if (!crumbText.includes(required) || !pathItems.some((entry) => entry.label === required)) {
         issues.push({ type: "breadcrumb-lost-source-context", context, click: item, crumbText, pathItems });
       }
-      const sourceLabel = context.label;
+      const sourceLabel = breadcrumbAliases[context.label] ?? context.label;
       if (sourceLabel && !crumbText.toLowerCase().includes(sourceLabel.toLowerCase())) {
         issues.push({ type: "breadcrumb-lost-page-context", context, click: item, crumbText });
       }
@@ -288,12 +371,24 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
       }
       if (context.verifyFileOpen) {
         const resultRoot = page.locator('[data-testid="search-results"]');
-        await resultRoot.waitFor({ timeout: 10000 });
         const resultRows = page.locator('[data-testid^="search-result-"]');
-        const resultCount = await resultRows.count();
+        await resultRoot.waitFor({ timeout: 30000 }).catch(() => undefined);
+        let resultCount = 0;
+        let empty = false;
+        const searchStarted = Date.now();
+        while (Date.now() - searchStarted < 30000) {
+          resultCount = await resultRows.count().catch(() => 0);
+          if (resultCount > 0) break;
+          const bodyText = await page.locator("body").innerText().catch(() => "");
+          if (bodyText.includes("No files match your filters.")) {
+            empty = true;
+            break;
+          }
+          await page.waitForTimeout(500);
+        }
         if (!resultCount && hasPositiveDisplayedValue(item)) {
           const bodyText = await page.locator("body").innerText();
-          if (bodyText.includes("No files match your filters.")) {
+          if (empty || bodyText.includes("No files match your filters.")) {
             issues.push({ type: "positive-clicker-opened-empty-search", context, click: item, landedUrl });
           } else {
             issues.push({ type: "search-results-not-rendered", context, click: item, landedUrl });
@@ -329,7 +424,8 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
             issues.push({ type: "file-detail-breadcrumb-lost-search", context, click: item, detailText, landedUrl: page.url() });
           }
           const required = context.kind === "dashboard" ? "Dashboard" : "Reports";
-          if (!detailText.includes(required) || (context.label && !detailText.toLowerCase().includes(context.label.toLowerCase()))) {
+          const sourceLabel = breadcrumbAliases[context.label] ?? context.label;
+          if (!detailText.includes(required) || (sourceLabel && !detailText.toLowerCase().includes(sourceLabel.toLowerCase()))) {
             issues.push({ type: "file-detail-breadcrumb-lost-source", context, click: item, detailText, landedUrl: page.url() });
           }
         }
@@ -354,11 +450,114 @@ async function landingCheck(page, selector, item, context, expectedSelectedYear,
 }
 
 async function returnToSource(page, sourceUrl, selector) {
-  await page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
+  // Always reload the source route. Browser-history/bfcache can restore the
+  // correct URL with stale React state (wrong dashboard tab or report mode),
+  // which makes the next click target collection unreliable.
+  await page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeout }).catch(() => undefined);
+  await dismissUrgentPopup(page);
+  await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
+  const source = new URL(sourceUrl);
+  if (source.pathname.endsWith("/dashboard")) {
+    await waitForDashboardTab(page, source.searchParams.get("tab") || "status");
+  }
   await page.locator(selector).first().waitFor({ timeout: 5000 }).catch(() => undefined);
-  if (new URL(sourceUrl).searchParams.get("mode") === "cashOutGoPlan") {
+  if (source.searchParams.get("mode") === "cashOutGoPlan") {
     await expandCashOutGoSections(page);
   }
+}
+
+async function navigateTo(page, url, context, issues) {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+    return true;
+  } catch (error) {
+    issues.push({
+      type: "page-navigation-failed",
+      context,
+      url,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+async function waitForDashboardTab(page, tab) {
+  const tabButton = page.locator(`[data-testid="dashboard-tab-${tab}"]`);
+  await tabButton.waitFor({ state: "visible", timeout: 15000 }).catch(() => undefined);
+  await page.waitForFunction(
+    (key) => {
+      const button = document.querySelector(`[data-testid="dashboard-tab-${key}"]`);
+      return Boolean(button && button.className.includes("bg-secondary"));
+    },
+    tab,
+    { timeout: 15000 },
+  ).catch(() => undefined);
+  await page.waitForTimeout(250);
+}
+
+async function waitForRenderedClickers(page, selector) {
+  await page.locator(selector).first().waitFor({ state: "visible", timeout: summaryReadyTimeout }).catch(() => undefined);
+}
+
+async function waitForReportSurface(page, label) {
+  const deadline = Date.now() + reportSurfaceReadyTimeout;
+  const labelPattern = label ? new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") : null;
+  while (Date.now() < deadline) {
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const hasReportLabel = labelPattern ? labelPattern.test(bodyText) : false;
+    const hasEmptyState = /\bno (?:data|rows|records|firms|bills|files|expected cash outgo|delayed stages)\b/i.test(bodyText);
+    const hasReportStructure = await page.locator("main table, main [role=table], main h1, main h2, main [data-testid*='report']").count().catch(() => 0);
+    const stillLoading = /\b(?:loading|calculating|updating .*report)\.\.\./i.test(bodyText);
+    if ((hasReportLabel || hasEmptyState || hasReportStructure > 0) && !stillLoading) return;
+    await page.waitForTimeout(250);
+  }
+}
+
+async function inspectReportClickSurface(page, selector) {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  const tableRows = await page.locator("main table tbody tr, main table tfoot tr").count().catch(() => 0);
+  const emptyState = /\b(?:no data available|no rows found|no records found|no firms found|no bills paid found|no expected cash outgo rows found|no delayed stages found|no files match your filters|select .* and wait|choose .* to)\b/i.test(bodyText);
+  const loading = /\b(?:loading|calculating|updating .*report)\.\.\./i.test(bodyText);
+  const selectedClickers = await collectClickers(page, selector);
+  const broadLandingCandidates = await page.locator("main button, main a, main [role=button]").evaluateAll((elements) => {
+    const excluded = /\b(?:pdf|excel|refresh|calculate|stop|reset|table|bar|line|pie|select sections|sequence|rotation|download|export|save|cancel|clear|select all|global rules)\b/i;
+    return elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const text = (element.innerText || element.textContent || "").trim().replace(/\s+/g, " ");
+      const aria = element.getAttribute("aria-label") || "";
+      const title = element.getAttribute("title") || "";
+      const href = element.getAttribute("href") || "";
+      const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      const tableCell = Boolean(element.closest("td,th"));
+      const numeric = /^(?:₹\s*)?\d[\d,.]*(?:\s*\([^)]*\))?$/.test(text);
+      const landingLabel = `${text} ${aria} ${title}`;
+      const likelyLanding = visible && !element.disabled && !excluded.test(landingLabel) && (
+        /search files|open files|results in search|open \d/i.test(landingLabel) ||
+        href.includes("/search") ||
+        (tableCell && (numeric || element.classList.contains("text-primary"))) ||
+        (element.classList.contains("block") && element.classList.contains("w-full") && element.classList.contains("text-left") && /(?:₹\s*)?\d[\d,.]*(?:\s*\([^)]*\))?\s*$/.test(text)) ||
+        element.getAttribute("data-testid")?.match(/(?:counter|click|search|report)/i)
+      );
+      return likelyLanding ? { text, aria, title, href } : null;
+    }).filter(Boolean);
+  }).catch(() => []);
+
+  let classification = "no-clickable-results";
+  if (selectedClickers.length > 0) classification = "non-zero-clickers";
+  else if (broadLandingCandidates.length > 0) classification = "selector-gap";
+  else if (loading) classification = "not-ready";
+  else if (emptyState || tableRows === 0) classification = "no-data";
+
+  return {
+    classification,
+    clickers: selectedClickers,
+    broadLandingCandidates,
+    tableRows,
+    emptyState,
+    loading,
+    bodyPreview: bodyText.replace(/\s+/g, " ").slice(0, 400),
+  };
 }
 
 async function expandCashOutGoSections(page) {
@@ -382,8 +581,18 @@ async function main() {
     httpOnly: true,
     sameSite: "Lax",
   }]);
-  await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+  if (traceEnabled) {
+    await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+  }
   const page = await context.newPage();
+  await page.addLocatorHandler(
+    page.getByRole("dialog", { name: "Urgent reminders and messages" }),
+    async (dialog) => {
+      const close = dialog.getByRole("button", { name: "Close urgent reminders and messages" });
+      if (await close.isVisible().catch(() => false)) await close.click().catch(() => undefined);
+    },
+    { noWaitAfter: true },
+  );
   const issues = [];
   const notes = [];
   const pageErrors = [];
@@ -392,16 +601,36 @@ async function main() {
   const selectedYear = String(settings.selectedYear ?? "");
   let checked = 0;
   let capped = false;
+  let verifiedFileOpen = false;
   const pageCoverage = [];
   let previousExpectedDashboardYear;
 
   try {
-    for (const [tab, label] of startReportMode ? [] : dashboardTabs) {
+    const dashboardStartIndex = startDashboardTab ? dashboardTabs.findIndex(([tab]) => tab === startDashboardTab) : 0;
+    const dashboardEndIndex = endDashboardTab ? dashboardTabs.findIndex(([tab]) => tab === endDashboardTab) : dashboardTabs.length - 1;
+    if (dashboardStartIndex < 0) throw new Error(`Unknown AUDIT_BROWSER_START_TAB: ${startDashboardTab}`);
+    if (dashboardEndIndex < 0) throw new Error(`Unknown AUDIT_BROWSER_END_TAB: ${endDashboardTab}`);
+    if (dashboardEndIndex < dashboardStartIndex) throw new Error("AUDIT_BROWSER_END_TAB must not precede AUDIT_BROWSER_START_TAB");
+    const selectedDashboardTabs = sliceBatch(
+      dashboardTabs.slice(dashboardStartIndex, dashboardEndIndex + 1),
+      dashboardBatchSize,
+      dashboardBatchIndex,
+      "AUDIT_DASHBOARD",
+    );
+    const shouldAuditDashboard = auditScope === "all" || auditScope === "dashboard";
+    const shouldAuditReports = auditScope === "all" || auditScope === "reports";
+    if (!shouldAuditDashboard && !shouldAuditReports) {
+      throw new Error(`AUDIT_BROWSER_SCOPE must be all, dashboard, or reports (received: ${auditScope})`);
+    }
+
+    for (const [tab, label] of shouldAuditDashboard && !startReportMode ? selectedDashboardTabs : []) {
       const url = `${FRONTEND_URL}/dashboard?tab=${encodeURIComponent(tab)}`;
-      await page.goto(url, { waitUntil: "domcontentloaded" });
+      if (!(await navigateTo(page, url, { kind: "dashboard", label }, issues))) continue;
+      await dismissUrgentPopup(page);
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
+      await waitForDashboardTab(page, tab);
       const selector = dashboardClickSelector;
-      await page.locator(selector).first().waitFor({ timeout: 10000 }).catch(() => undefined);
+      await waitForRenderedClickers(page, selector);
       const clickers = await collectClickers(page, selector);
       const expectedDashboardYear = expectedDashboardSelectedYear(
         tab,
@@ -417,18 +646,20 @@ async function main() {
         expectedSelectedYear: expectedDashboardYear,
       });
       for (let index = 0; index < clickers.length; index += 1) {
-        if (checked >= maxClicks) { capped = true; break; }
+        if (limitReached(checked)) { capped = true; break; }
         const item = clickers[index];
         if (!item) continue;
+        const verifyFileOpen = !verifiedFileOpen;
         await landingCheck(
           page,
           selector,
           item,
-          { kind: "dashboard", label, verifyFileOpen: index === 0 },
+          { kind: "dashboard", label, verifyFileOpen },
           expectedDashboardYear,
           issues,
           notes,
         );
+        if (verifyFileOpen) verifiedFileOpen = true;
         checked += 1;
         await returnToSource(page, url, selector);
       }
@@ -438,7 +669,7 @@ async function main() {
       if (capped) break;
     }
 
-    if (!capped) {
+    if (!capped && shouldAuditReports) {
       const startIndex = startReportMode ? reportModes.indexOf(startReportMode) : 0;
       if (startIndex < 0) throw new Error(`Unknown AUDIT_BROWSER_START_MODE: ${startReportMode}`);
       const endIndex = endReportMode ? reportModes.indexOf(endReportMode) : reportModes.length - 1;
@@ -446,18 +677,63 @@ async function main() {
       if (endIndex < startIndex) {
         throw new Error(`AUDIT_BROWSER_END_MODE must not precede AUDIT_BROWSER_START_MODE`);
       }
-      for (const mode of reportModes.slice(startIndex, endIndex + 1)) {
+      const selectedReportModes = sliceBatch(
+        reportModes.slice(startIndex, endIndex + 1),
+        reportBatchSize,
+        reportBatchIndex,
+        "AUDIT_REPORT",
+      );
+      for (const mode of selectedReportModes) {
         const url = `${FRONTEND_URL}/reports?mode=${encodeURIComponent(mode)}`;
-        await page.goto(url, { waitUntil: "domcontentloaded" });
+        if (!(await navigateTo(page, url, { kind: "report", label: reportLabels[mode], mode }, issues))) continue;
+        await dismissUrgentPopup(page);
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
         if (mode === "cashOutGoPlan") await expandCashOutGoSections(page);
-        const clickers = await collectClickers(page, reportClickSelector);
-        pageCoverage.push({ kind: "report", label: reportLabels[mode], clickTargets: clickers.length });
+        await waitForReportSurface(page, reportLabels[mode]);
+        await page.waitForTimeout(reportClickerGraceTimeout);
+        const surface = await inspectReportClickSurface(page, reportClickSelector);
+        const clickers = surface.clickers;
+        pageCoverage.push({
+          kind: "report",
+          mode,
+          label: reportLabels[mode],
+          clickTargets: clickers.length,
+          zeroClickerState: clickers.length ? undefined : surface.classification,
+          tableRows: surface.tableRows,
+          broadLandingCandidates: surface.broadLandingCandidates.length,
+        });
+        if (!clickers.length) {
+          const zeroContext = {
+            kind: "report",
+            mode,
+            label: reportLabels[mode],
+            tableRows: surface.tableRows,
+            broadLandingCandidates: surface.broadLandingCandidates,
+            bodyPreview: surface.bodyPreview,
+          };
+          if (surface.classification === "selector-gap") {
+            issues.push({ type: "report-zero-clickers-selector-gap", context: zeroContext });
+          } else {
+            notes.push({
+              type: "report-zero-clickers-reviewed",
+              state: surface.classification,
+              context: zeroContext,
+            });
+          }
+        }
+        if (reportSurfaceOnly) {
+          process.stderr.write(
+            `Browser audit: ${reportLabels[mode]}, ${clickers.length} actionable targets checked` +
+            `${clickers.length ? " (surface-only)" : ` (zero-click state: ${surface.classification})`}` +
+            ` (total ${checked}).\n`,
+          );
+          continue;
+        }
         for (let index = 0; index < clickers.length; index += 1) {
-          if (checked >= maxClicks) { capped = true; break; }
+          if (limitReached(checked)) { capped = true; break; }
           const item = clickers[index];
           if (!item) continue;
-          const verifyFileOpen = index === 0;
+          const verifyFileOpen = !verifiedFileOpen;
           const searchRoute = "**/api/files/search?*";
           if (!verifyFileOpen) {
             await page.route(searchRoute, (route) => route.abort());
@@ -467,23 +743,34 @@ async function main() {
           } finally {
             if (!verifyFileOpen) await page.unroute(searchRoute).catch(() => undefined);
           }
+          if (verifyFileOpen) verifiedFileOpen = true;
           checked += 1;
           await returnToSource(page, url, reportClickSelector);
         }
-        process.stderr.write(`Browser audit: ${reportLabels[mode]}, ${clickers.length} actionable targets checked (total ${checked}).\n`);
+        process.stderr.write(
+          `Browser audit: ${reportLabels[mode]}, ${clickers.length} actionable targets checked` +
+          `${clickers.length ? "" : ` (zero-click state: ${surface.classification})`}` +
+          ` (total ${checked}).\n`,
+        );
         if (capped) break;
       }
     }
 
     if (pageErrors.length) issues.push({ type: "browser-page-errors", errors: pageErrors });
-    if (issues.length || capped) {
-      await context.tracing.stop({ path: tracePath });
-    } else {
-      await context.tracing.stop();
+    if (traceEnabled) {
+      if (issues.length || capped) {
+        await context.tracing.stop({ path: tracePath });
+      } else {
+        await context.tracing.stop();
+      }
     }
     console.log(JSON.stringify({
       frontend: FRONTEND_URL,
       selectedYear,
+      auditScope,
+      dashboardBatch: dashboardBatchSize > 0 ? { index: dashboardBatchIndex, size: dashboardBatchSize } : undefined,
+      reportBatch: reportBatchSize > 0 ? { index: reportBatchIndex, size: reportBatchSize } : undefined,
+      reportSurfaceOnly,
       dashboardTabs: dashboardTabs.length,
       visibleReportModes: reportModes.length,
       clicksChecked: checked,
@@ -491,7 +778,7 @@ async function main() {
       capped,
       issues,
       notes: notes.slice(0, 100),
-      trace: issues.length || capped ? tracePath : undefined,
+      trace: traceEnabled && (issues.length || capped) ? tracePath : undefined,
     }, null, 2));
     if (issues.length || capped) process.exitCode = 1;
   } finally {

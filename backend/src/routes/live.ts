@@ -26,7 +26,6 @@ type SettingsRow = {
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
-  deletion_password: string;
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
@@ -68,7 +67,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     yearSelectionLocked: row.year_selection_locked,
     theme: row.theme,
     themeTint: row.theme_tint,
-    deletionPassword: row.deletion_password,
+    deletionPassword: "",
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
@@ -100,7 +99,7 @@ function mapDivision(row: DivisionRow): Division {
 async function loadSettings() {
   return getCached("settings:live", cacheTtl.settingsMs, async () => {
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               mmg_live_enabled, mmg_live_options, active_user_id
        from app_settings

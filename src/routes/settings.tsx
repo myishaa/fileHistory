@@ -1,16 +1,27 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
   Check,
   ChevronDown,
+  DatabaseBackup,
+  Download,
   Info,
   Lock,
   Pencil,
   Plus,
   Save,
+  Upload,
   Trash2,
   Unlock,
   X,
@@ -36,6 +47,7 @@ import {
   useSettings as useStoreSettings,
   useUsers,
   type AppSettings,
+  type AppFontFamily,
   type AppUser,
   type AppUserRole,
   type Division,
@@ -48,6 +60,9 @@ import {
   type IpLoginAttempt,
   type MasterFirm,
   type SpecialFileMarker,
+  type AppearancePreset,
+  type TopRibbonColor,
+  type TopRibbonTextColor,
   type TrustedIpAddress,
   type UniversalViewerCashOutgoEditScope,
   type ValueThresholdAppliesTo,
@@ -61,7 +76,11 @@ import {
   type DemandProcessingPreset,
 } from "@/lib/demand-processing-analysis";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
-import { promptDeletionPassword, promptPassword, requestDeletionPassword } from "@/lib/delete-password";
+import {
+  promptDeletionPassword,
+  promptPassword,
+  requestDeletionPassword,
+} from "@/lib/delete-password";
 import {
   fileCategoryOptions,
   getAllFileCategoryKeys,
@@ -102,9 +121,29 @@ export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
 
+type SettingsDraftActions = {
+  hasChanges: boolean;
+  saving: boolean;
+  saveError: string;
+  cancelChanges: () => void;
+  saveChanges: () => Promise<void>;
+};
+
+type SettingsExternalDraftHandlers = {
+  save: () => Promise<void>;
+  cancel: () => void;
+};
+
 type SettingsDraftContextValue = {
   settings: AppSettings;
   updateSettings: (patch: Partial<AppSettings>) => void;
+  actions?: SettingsDraftActions;
+  sectionUnlocked?: boolean;
+  sectionSaving?: boolean;
+  sectionVerifying?: boolean;
+  unlockSection?: () => void;
+  setExternalDirty?: (dirty: boolean) => void;
+  registerExternalDraft?: (handlers: SettingsExternalDraftHandlers | null) => void;
 };
 
 const SettingsDraftContext = createContext<SettingsDraftContextValue | null>(null);
@@ -120,16 +159,55 @@ function useSettingsUpdater() {
   return draft?.updateSettings ?? store.updateSettings;
 }
 
+function SettingsDraftActionBar({ actions }: { actions: SettingsDraftActions }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      {actions.saveError ? (
+        <p role="alert" className="text-sm text-destructive">
+          {actions.saveError}
+        </p>
+      ) : (
+        <span />
+      )}
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={actions.cancelChanges}
+          disabled={actions.saving || !actions.hasChanges}
+          className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void actions.saveChanges()}
+          disabled={!actions.hasChanges || actions.saving}
+          className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          <Save className="size-4" /> {actions.saving ? "Saving..." : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsDraftActionBarFromContext() {
+  const draft = useContext(SettingsDraftContext);
+  return draft?.actions ? <SettingsDraftActionBar actions={draft.actions} /> : null;
+}
+
 function UserSettingsDraft({
   children,
   scope = "personal",
   editors = "You",
   showScope = true,
+  actionPlacement = "top",
 }: {
   children: ReactNode;
   scope?: SettingsScopeKind;
   editors?: string;
   showScope?: boolean;
+  actionPlacement?: "top" | "inside";
 }) {
   const savedSettings = useStoreSettings();
   const [draftPatch, setDraftPatch] = useState<Partial<AppSettings>>({});
@@ -158,30 +236,19 @@ function UserSettingsDraft({
       setSaving(false);
     }
   };
+  const actions: SettingsDraftActions = {
+    hasChanges,
+    saving,
+    saveError,
+    cancelChanges,
+    saveChanges,
+  };
   return (
     <div className="space-y-3">
       {showScope ? <SettingsScope scope={scope} editors={editors} /> : null}
-      <div className="flex items-center justify-end gap-2">
-        {saveError ? <p role="alert" className="mr-auto text-sm text-destructive">{saveError}</p> : null}
-        <button
-          type="button"
-          onClick={cancelChanges}
-          disabled={saving || !hasChanges}
-          className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={() => void saveChanges()}
-          disabled={!hasChanges || saving}
-          className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-        >
-          <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
-        </button>
-      </div>
+      {actionPlacement === "top" ? <SettingsDraftActionBar actions={actions} /> : null}
       <SettingsDraftContext.Provider
-        value={{ settings: { ...savedSettings, ...draftPatch }, updateSettings }}
+        value={{ settings: { ...savedSettings, ...draftPatch }, updateSettings, actions }}
       >
         <fieldset disabled={saving}>{children}</fieldset>
       </SettingsDraftContext.Provider>
@@ -333,15 +400,9 @@ type AdminSection = {
 
 type SettingsScopeKind = "personal" | "shared";
 
-function SettingsScope({
-  scope,
-  editors,
-}: {
-  scope: SettingsScopeKind;
-  editors: string;
-}) {
+function SettingsScope({ scope, editors }: { scope: SettingsScopeKind; editors: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] leading-4">
       <span className="font-semibold text-foreground">
         {scope === "personal" ? "Only for your account" : "Shared with all users"}
       </span>
@@ -356,7 +417,7 @@ function adminSettingsScope(key: string, role: AppUserRole | undefined) {
     return { scope: "personal" as const, editors: "You" };
   }
   if (key === "mmgSummary") {
-    return { scope: "shared" as const, editors: "Administrators and Sub-admins" };
+    return { scope: "shared" as const, editors: "Administrators" };
   }
   if (key === "indentors") {
     return { scope: "shared" as const, editors: "Administrators and Sub-admins" };
@@ -393,6 +454,7 @@ const adminSectionKeys = new Set([
   "users",
   "ipAccess",
   "archive",
+  "protectedBackup",
   "noticeBoard",
   "quickEntryExcel",
 ]);
@@ -412,9 +474,20 @@ const milestoneHelperSectionOrder = [
 ];
 
 const settingsSectionHelpers = {
-  noticeBoard: ["Administrator displays and rotation duration are saved centrally and appear for other accounts after refresh or sign-in. Personal displays stay on this browser."],
+  noticeBoard: [
+    "Administrator displays and rotation duration are saved centrally and appear for other accounts after refresh or sign-in. Personal displays stay on this browser.",
+  ],
   quickEntryExcel: [
     "Administrators configure Excel exports here. Saved exports are shared with all users on the Quick Entry page.",
+  ],
+  protectedBackup: [
+    "Creates an encrypted local backup of the database for emergency recovery.",
+    "Only Administrators can create or restore protected backups; backup files cannot be deleted from this application.",
+    "Restoring requires both the backup file's encryption password and a separately configured restore authorization password.",
+    "The restore authorization must be verified before Select Backup is enabled, and it changes only when an Administrator explicitly saves a replacement.",
+    "The full recovery package also captures PostgreSQL database data, PostgreSQL roles/globals, configured external storage, and explicitly configured deployment files.",
+    "Deployment secrets are included only when the server administrator explicitly configures RECORDKEEPER_BACKUP_SECRETS_FILE; otherwise transfer them through the organisation's secure secret-management process.",
+    "Scheduled server backups run only when the On switch is enabled and the server-side encryption password and destination directory are configured.",
   ],
   theme: [
     "Sets the appearance for this account.",
@@ -434,7 +507,7 @@ const settingsSectionHelpers = {
     "Each offset identifies its starting event and estimated date. Delay Status uses its setting as the default; individual report views may temporarily use another threshold.",
     "Resetting a local override restores the latest value set here.",
     "Example table: Trigger date | Offset | Estimated date | Interpretation",
-    "Example row: Bill sent: 10 Oct | 20 days | 30 Oct | Expected payment date is estimated from the submission date plus the configured offset; it is not an actual payment date.",
+    "Example row: Bill sent: 10 Oct | 20 days | 30 Oct | Expected payment date is estimated from the submission date plus the configured offset; it is not a recorded payment date.",
   ],
   yearSetup: [
     "Purpose: Selects the FY whose division budgets you are editing.",
@@ -560,11 +633,15 @@ const settingsSectionHelpers = {
     "Controls login access by trusted IP address.",
     "Default mode is Off, so existing login behavior is unchanged unless Admin enables monitoring or restriction.",
     "Notify mode collects real IP addresses before Restrict mode is enabled.",
-    "Archived IP attempts can be permanently deleted with the configured deletion password.",
+    "Archived IP attempts can be permanently deleted with your personal deletion password.",
   ],
   archive: [
     "Archived records appear here with restore and permanent-delete actions.",
-    "Restore returns an archived setting to active use; permanent deletion removes it and needs the configured deletion password.",
+    "Restore returns an archived setting to active use; permanent deletion removes it and needs your personal deletion password.",
+  ],
+  archiveSubAdmin: [
+    "Shows archived files from your assigned divisions only.",
+    "You can permanently delete an archived file with your personal deletion password. Restore and other archive bins remain Admin-only.",
   ],
 } satisfies Record<string, string[]>;
 
@@ -583,17 +660,11 @@ const workspaceYearHelpers = {
   archive: [
     "Archives the selected FY for normal Search without deleting any files or records.",
     "Inactive files whose origin is this FY are excluded from normal Search; active carry-forward files remain searchable.",
-    "Use Include archived years in Search when historical archived records are required.",
+    "Use Include active files from archived years to keep active carry-forward files from an archived initiation year in normal views. Explicit historical or all-files scopes include archived records separately.",
     "Archive or restore changes remain pending until you click Save changes.",
-    "The current FY cannot be archived. Admins and Sub-admins can archive or restore a FY.",
+    "The current FY cannot be archived. Only Administrators can archive or restore a FY.",
   ],
 } satisfies Record<string, string[]>;
-
-const deletionPasswordHelper = [
-  "Required for deleting files, financial years, and permanently deleting archived records.",
-  "Keep it known only to admins who are allowed to perform delete actions.",
-  "Changing it applies to future delete confirmations.",
-];
 
 const settingsControlHelpers = {
   genericAdd: [
@@ -603,7 +674,7 @@ const settingsControlHelpers = {
   workspaceDelete: [
     "Deletes only the selected FY from workspace year options.",
     "Current FY and any FY having files cannot be deleted.",
-    "Deletion password required.",
+    "Your personal deletion password is required.",
   ],
   firmTypeName: [
     "Firm Type is chosen in Supply Order details.",
@@ -645,12 +716,13 @@ const settingsControlHelpers = {
   ],
   userDelete: [
     "Moves this user account out of active use.",
-    "Deletion password required.",
+    "Your personal deletion password is required.",
   ],
   universalViewerCashOutgoScope: [
-    "View-only users cannot save MER or Cash Out Go Plan changes.",
-    "Personal Cash Out Go saves offsets and dates for that Universal Viewer account only.",
-    "Global Cash Out Go + MER saves the official plan and MER for everyone.",
+    "Universal Viewers are read-only MMG users whose data access is limited to their assigned divisions. They can use filters and reports, but cannot manage users or edit core file records.",
+    "Type 1 - View only: can vary filters and view results, but cannot save Cash Out Go Plan offsets, row dates, or MER.",
+    "Type 2 - Personal Cash Out Go only: can save Cash Out Go Plan offsets and row dates for that Universal Viewer's own account only. It cannot change the official global plan or MER.",
+    "Type 3 - Global Cash Out Go + MER: can save the official Cash Out Go Plan, top offsets, row dates, and MER for the software.",
   ],
   archiveRestore: [
     "Restores the archived item back to active records.",
@@ -658,7 +730,7 @@ const settingsControlHelpers = {
   ],
   archiveDelete: [
     "Permanently deletes the archived item.",
-    "Deletion password required. This action cannot be undone from this screen.",
+    "Your personal deletion password is required. This action cannot be undone from this screen.",
   ],
   ipMode: [
     "Off leaves login unchanged.",
@@ -699,7 +771,7 @@ const settingsControlHelpers = {
   ],
   ipAttemptBin: [
     "Archived new-IP login attempts appear here.",
-    "Permanent deletion from this bin needs the configured deletion password.",
+    "Permanent deletion from this bin needs your personal deletion password.",
   ],
   anomalyWorkflow: [
     "Current lists active suspected issues, including rejected or revoked items while the data issue remains.",
@@ -817,14 +889,967 @@ function isUniversalViewer(role: AppUserRole | undefined) {
 }
 
 function canViewAllDivisions(role: AppUserRole | undefined) {
-  return role === "admin" || role === "sub_admin" || role === "universal_viewer";
+  return role === "admin";
+}
+
+type BackupScheduleSettings = {
+  enabled: boolean;
+  frequency: "daily" | "weekly";
+  dayOfWeek: number;
+  timeOfDay: string;
+  timezone: string;
+  destinationDir: string;
+  retentionCount: number;
+  nextRunAt: string | null;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  lastStatus: "idle" | "running" | "success" | "failed";
+  lastError: string | null;
+  lastFileName: string | null;
+  schedulePasswordConfigured: boolean;
+  externalStorageConfigured: boolean;
+  deploymentConfigConfigured: boolean;
+  deploymentSecretsConfigured: boolean;
+};
+
+type BackupHealthStatus = "success" | "failed" | "not_run" | "running";
+
+type BackupStatusItem = {
+  status: BackupHealthStatus;
+  lastBackupAt: string | null;
+  fileName: string | null;
+  error: string | null;
+  secretsIncluded: boolean;
+};
+
+type BackupStatusPayload = {
+  local: BackupStatusItem;
+  fullRecovery: BackupStatusItem;
+  server: BackupStatusItem & { scheduleEnabled: boolean };
+  secretFiles: {
+    status: BackupHealthStatus;
+    configured: boolean;
+    readable: boolean;
+    lastIncludedAt: string | null;
+    lastIncludedFileName: string | null;
+    error: string | null;
+  };
+  restoreAuthorizationConfigured: boolean;
+  schedule: BackupScheduleSettings;
+};
+
+const backupScheduleDayOptions = [
+  [0, "Sunday"],
+  [1, "Monday"],
+  [2, "Tuesday"],
+  [3, "Wednesday"],
+  [4, "Thursday"],
+  [5, "Friday"],
+  [6, "Saturday"],
+] as const;
+
+function formatBackupScheduleDate(value: string | null, timeZone: string) {
+  if (!value) return "Not scheduled";
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function backupHealthLabel(status: BackupHealthStatus) {
+  if (status === "success") return "Successful";
+  if (status === "failed") return "Issue";
+  if (status === "running") return "Running";
+  return "Not yet run";
+}
+
+function backupHealthClass(status: BackupHealthStatus) {
+  if (status === "success") {
+    return "border-emerald-600/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (status === "failed") {
+    return "border-red-600/50 bg-red-500/10 text-red-700 dark:text-red-300";
+  }
+  if (status === "running") {
+    return "border-amber-600/50 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-border bg-background text-muted-foreground";
+}
+
+function ProtectedBackupSettings() {
+  const draft = useContext(SettingsDraftContext);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [restoreAuthorizationPassword, setRestoreAuthorizationPassword] = useState("");
+  const [restoreAuthorizationConfirmation, setRestoreAuthorizationConfirmation] = useState("");
+  const [backupFilePassword, setBackupFilePassword] = useState("");
+  const [restoreAuthorizationInput, setRestoreAuthorizationInput] = useState("");
+  const [restoreAuthorized, setRestoreAuthorized] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<
+    | "download"
+    | "fullDownload"
+    | "restore"
+    | "restoreAuthorization"
+    | "authorizeRestore"
+    | "schedule"
+    | "scheduleRun"
+    | ""
+  >("");
+  const [message, setMessage] = useState("");
+  const [schedule, setSchedule] = useState<BackupScheduleSettings | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<BackupScheduleSettings | null>(null);
+  const [backupStatus, setBackupStatus] = useState<BackupStatusPayload | null>(null);
+  const [scheduleMessage, setScheduleMessage] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  const backupPasswordsMatch =
+    password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
+  const backupPasswordsMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+  const restoreAuthorizationPasswordsMatch =
+    restoreAuthorizationPassword.length > 0 &&
+    restoreAuthorizationConfirmation.length > 0 &&
+    restoreAuthorizationPassword === restoreAuthorizationConfirmation;
+  const restoreAuthorizationPasswordsMismatch =
+    restoreAuthorizationConfirmation.length > 0 &&
+    restoreAuthorizationPassword !== restoreAuthorizationConfirmation;
+  const backupPasswordReady = password.length >= 8 && backupPasswordsMatch;
+  const restoreAuthorizationReady =
+    restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch;
+
+  const passwordFieldClass = (invalid: boolean, valid: boolean) =>
+    `h-9 w-full rounded-md border bg-background px-3 text-sm ${
+      invalid
+        ? "border-destructive focus:outline-none focus:ring-2 focus:ring-destructive/30"
+        : valid
+          ? "border-emerald-600/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+          : "border-input"
+    }`;
+
+  const readError = async (response: Response, fallback: string) => {
+    try {
+      const body = await response.json() as { error?: string };
+      return body.error || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const loadBackupStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/status`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Backup status could not be loaded."));
+      }
+      const body = await response.json() as { status: BackupStatusPayload };
+      setBackupStatus(body.status);
+      setSchedule(body.status.schedule);
+      setScheduleDraft(body.status.schedule);
+    } catch (error) {
+      setScheduleMessage(
+        error instanceof Error ? error.message : "Backup status could not be loaded.",
+      );
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    void loadBackupStatus();
+  }, [loadBackupStatus]);
+
+  const saveRestoreAuthorization = async () => {
+    if (restoreAuthorizationPassword.length < 8) {
+      setMessage("Use a restore authorization password with at least 8 characters.");
+      return;
+    }
+    if (restoreAuthorizationPassword !== restoreAuthorizationConfirmation) {
+      setMessage("Restore authorization passwords do not match.");
+      return;
+    }
+    setBusy("restoreAuthorization");
+    setRestoreAuthorized(false);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password: restoreAuthorizationPassword,
+          confirmation: restoreAuthorizationConfirmation,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Restore authorization password could not be saved."));
+      }
+      setRestoreAuthorizationPassword("");
+      setRestoreAuthorizationConfirmation("");
+      setMessage("Restore authorization password saved securely.");
+      await loadBackupStatus();
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Restore authorization password could not be saved.",
+      );
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const authorizeRestore = async () => {
+    if (restoreAuthorizationInput.length < 8) {
+      setMessage("Enter the restore authorization password first.");
+      return;
+    }
+    setBusy("authorizeRestore");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization/verify`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: restoreAuthorizationInput }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Restore authorization failed."));
+      }
+      setRestoreAuthorized(true);
+      setMessage("Restore authorized. You can now select the backup file.");
+    } catch (error) {
+      setRestoreAuthorized(false);
+      setMessage(error instanceof Error ? error.message : "Restore authorization failed.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const saveBackupSchedule = async () => {
+    if (!scheduleDraft) return;
+    setBusy("schedule");
+    setScheduleMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/schedule`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: scheduleDraft.enabled,
+          frequency: scheduleDraft.frequency,
+          dayOfWeek: scheduleDraft.dayOfWeek,
+          timeOfDay: scheduleDraft.timeOfDay,
+          destinationDir: scheduleDraft.destinationDir,
+          retentionCount: scheduleDraft.retentionCount,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Backup schedule could not be saved."));
+      }
+      const body = await response.json() as { schedule: BackupScheduleSettings };
+      setSchedule(body.schedule);
+      setScheduleDraft(body.schedule);
+      setScheduleMessage("Server backup schedule saved.");
+      await loadBackupStatus();
+    } catch (error) {
+      setScheduleMessage(
+        error instanceof Error ? error.message : "Backup schedule could not be saved.",
+      );
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const runScheduledBackupNow = async () => {
+    setBusy("scheduleRun");
+    setScheduleMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/schedule/run`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Server backup could not be started."));
+      }
+      const body = await response.json() as { schedule: BackupScheduleSettings };
+      setSchedule(body.schedule);
+      setScheduleDraft(body.schedule);
+      setScheduleMessage("Server backup completed successfully.");
+      await loadBackupStatus();
+    } catch (error) {
+      setScheduleMessage(
+        error instanceof Error ? error.message : "Server backup could not be started.",
+      );
+      await loadBackupStatus();
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const downloadBackup = async () => {
+    if (password.length < 8) {
+      setMessage("Use a backup password with at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMessage("Backup password and confirmation must match.");
+      return;
+    }
+    setBusy("download");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/export`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!response.ok) throw new Error(await readError(response, "Backup could not be created."));
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      link.download = `recordkeeper-backup-${timestamp}.rbk`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage("Protected backup downloaded. Store it in a second safe location.");
+      await loadBackupStatus();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Backup could not be created.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const restoreBackup = async () => {
+    if (!restoreAuthorized) {
+      setMessage("Authorize restore before selecting or restoring a backup.");
+      return;
+    }
+    if (!restoreFile) {
+      setMessage("Choose a .rbk backup file first.");
+      return;
+    }
+    if (backupFilePassword.length < 8) {
+      setMessage("Enter the password used to encrypt the selected backup file.");
+      return;
+    }
+    if (restoreAuthorizationInput.length < 8) {
+      setMessage("Enter the restore authorization password.");
+      return;
+    }
+    if (!window.confirm("Restore this backup? Current database records will be replaced.")) return;
+    setBusy("restore");
+    setMessage("");
+    try {
+      const backup = JSON.parse(await restoreFile.text());
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          backupFilePassword,
+          restoreAuthorizationPassword: restoreAuthorizationInput,
+          backup,
+        }),
+      });
+      if (!response.ok) throw new Error(await readError(response, "Backup could not be restored."));
+      const result = await response.json() as { tables?: number; rows?: number };
+      setMessage(`Backup restored: ${result.tables ?? 0} tables and ${result.rows ?? 0} rows.`);
+      setRestoreFile(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Backup could not be restored.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const downloadFullRecoveryPackage = async () => {
+    if (password.length < 8) {
+      setMessage("Use a backup password with at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMessage("Backup password and confirmation must match.");
+      return;
+    }
+    setBusy("fullDownload");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/full-export`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!response.ok) throw new Error(await readError(response, "Full recovery package could not be created."));
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      link.download = `recordkeeper-disaster-recovery-${timestamp}.rkdr`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage("Full recovery package downloaded. Keep it outside the server and transfer it only through a secure channel.");
+      await loadBackupStatus();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Full recovery package could not be created.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const statusTimeZone = backupStatus?.schedule.timezone ?? schedule?.timezone ?? "Asia/Kolkata";
+  const renderBackupStatusButton = (label: string, item: BackupStatusItem) => (
+    <button
+      type="button"
+      onClick={() =>
+        setStatusMessage(
+          item.error ??
+            `${label}: ${backupHealthLabel(item.status)}${
+              item.fileName ? ` — ${item.fileName}` : ""
+            }`,
+        )
+      }
+      title={item.error ?? `${label}: ${backupHealthLabel(item.status)}`}
+      className={`inline-flex min-h-12 min-w-48 flex-col items-start justify-center rounded-md border px-3 py-2 text-left text-xs font-medium ${backupHealthClass(item.status)}`}
+    >
+      <span>{label}: {backupHealthLabel(item.status)}</span>
+      <span className="font-normal opacity-80">
+        {item.lastBackupAt
+          ? `Last: ${formatBackupScheduleDate(item.lastBackupAt, statusTimeZone)}`
+          : "No backup recorded"}
+      </span>
+    </button>
+  );
+
+  const renderSecretStatusButton = () => {
+    if (!backupStatus) return null;
+    const secret = backupStatus.secretFiles;
+    const includedAt = secret.lastIncludedAt
+      ? formatBackupScheduleDate(secret.lastIncludedAt, statusTimeZone)
+      : null;
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          setStatusMessage(
+            secret.error ??
+              `Secret file included in ${secret.lastIncludedFileName ?? "the latest package"}${
+                includedAt ? ` on ${includedAt}` : ""
+              }.`,
+          )
+        }
+        title={secret.error ?? "Secret file status"}
+        className={`inline-flex min-h-12 min-w-48 flex-col items-start justify-center rounded-md border px-3 py-2 text-left text-xs font-medium ${backupHealthClass(secret.status)}`}
+      >
+        <span>Secret files: {backupHealthLabel(secret.status)}</span>
+        <span className="font-normal opacity-80">
+          {includedAt ? `Included: ${includedAt}` : "Not included in a package"}
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <section className="rounded-md border border-border bg-secondary/20 p-4">
+      <Tabs defaultValue="local" className="mt-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4 xl:flex-nowrap">
+          <TabsList className="h-12 w-fit shrink-0 justify-start gap-1 rounded-md border border-primary/30 bg-primary/5 p-1 shadow-sm">
+            <TabsTrigger
+              value="local"
+              className="h-10 gap-2 px-5 text-base font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:ring-2 data-[state=active]:ring-primary/30 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+            >
+              <DatabaseBackup className="size-4" />
+              Local Backup
+            </TabsTrigger>
+            <TabsTrigger
+              value="server"
+              className="h-10 gap-2 px-5 text-base font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:ring-2 data-[state=active]:ring-primary/30 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+            >
+              <DatabaseBackup className="size-4" />
+              Server Backup
+            </TabsTrigger>
+          </TabsList>
+          {draft?.actions ? (
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={draft.actions.cancelChanges}
+                disabled={draft.actions.saving || !draft.actions.hasChanges}
+                className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void draft.actions?.saveChanges()}
+                disabled={!draft.actions.hasChanges || draft.actions.saving}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                <Save className="size-4" />
+                {draft.actions.saving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          ) : draft?.unlockSection ? (
+            <button
+              type="button"
+              onClick={draft.unlockSection}
+              disabled={draft.sectionVerifying || draft.sectionSaving}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:cursor-wait disabled:opacity-60"
+            >
+              <Lock className="size-4" />
+              {draft.sectionVerifying ? "Checking..." : "Edit"}
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-3 text-xs text-muted-foreground">
+          <SettingsScope scope="shared" editors="Administrators" />
+        </div>
+        <fieldset
+          disabled={!draft?.sectionUnlocked || draft?.sectionSaving}
+          className={
+            !draft?.sectionUnlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined
+          }
+        >
+        <TabsContent value="local" className="mt-5 space-y-5">
+      <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold">Create a backup</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Create an encrypted local backup or a complete recovery package.
+          </p>
+        </div>
+      <div className="grid max-w-full grid-cols-1 items-end gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
+        <label className="block min-w-0">
+          <span className="mb-1 block text-xs font-medium">Backup password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="At least 8 characters"
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          />
+        </label>
+        <label className="block min-w-0">
+          <span className="mb-1 block text-xs font-medium">Confirm backup password</span>
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={(event) => setConfirmPassword(event.target.value)}
+            placeholder="Re-enter password"
+            aria-invalid={backupPasswordsMismatch}
+            className={passwordFieldClass(backupPasswordsMismatch, backupPasswordsMatch)}
+          />
+          {backupPasswordsMismatch ? (
+            <p className="mt-1 text-xs text-destructive" role="alert">
+              Backup passwords do not match.
+            </p>
+          ) : backupPasswordsMatch ? (
+            <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+              Backup passwords match.
+            </p>
+          ) : null}
+        </label>
+        <button
+          type="button"
+          onClick={() => void downloadBackup()}
+          disabled={Boolean(busy) || !backupPasswordReady}
+          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        >
+          <Download className="size-4" />
+          {busy === "download" ? "Creating..." : "Download backup"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void downloadFullRecoveryPackage()}
+          disabled={Boolean(busy) || !backupPasswordReady}
+          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+        >
+          <Download className="size-4" />
+          {busy === "fullDownload" ? "Creating..." : "Download full recovery package"}
+        </button>
+        <div className="col-span-full border-t border-border pt-4">
+          <h4 className="text-sm font-semibold">Restore authorization</h4>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Set this Administrator password once. It remains fixed until an Administrator explicitly saves a replacement and is required before a backup can be restored.
+          </p>
+        </div>
+        <label className="block min-w-0">
+          <span className="mb-1 block text-xs font-medium">Restore authorization password (set by Administrator)</span>
+          <input
+            type="password"
+            value={restoreAuthorizationPassword}
+            onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
+            placeholder="At least 8 characters"
+            className={passwordFieldClass(
+              restoreAuthorizationPasswordsMismatch,
+              restoreAuthorizationPasswordsMatch,
+            )}
+          />
+        </label>
+        <label className="block min-w-0">
+          <span className="mb-1 block text-xs font-medium">Confirm restore authorization password</span>
+          <input
+            type="password"
+            value={restoreAuthorizationConfirmation}
+            onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
+            placeholder="Re-enter authorization"
+            aria-invalid={restoreAuthorizationPasswordsMismatch}
+            className={passwordFieldClass(
+              restoreAuthorizationPasswordsMismatch,
+              restoreAuthorizationPasswordsMatch,
+            )}
+          />
+          {restoreAuthorizationPasswordsMismatch ? (
+            <p className="mt-1 text-xs text-destructive" role="alert">
+              Restore authorization passwords do not match.
+            </p>
+          ) : restoreAuthorizationPasswordsMatch ? (
+            <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+              Restore authorization passwords match.
+            </p>
+          ) : null}
+        </label>
+        <button
+          type="button"
+          onClick={() => void saveRestoreAuthorization()}
+          disabled={Boolean(busy) || !restoreAuthorizationReady}
+          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        >
+          <Save className="size-4" />
+          {busy === "restoreAuthorization" ? "Saving..." : "Save restore authorization"}
+        </button>
+        <span className="flex min-h-10 items-center text-xs text-muted-foreground">
+          Authorization: {backupStatus?.restoreAuthorizationConfigured ? "Configured" : "Not configured"}
+        </span>
+      </div>
+      </div>
+      {backupStatus ? (
+        <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold">Backup health</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Check the latest result and included secret files. Select a status for more detail.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {renderBackupStatusButton("Local backup", backupStatus.local)}
+            {renderBackupStatusButton("Full recovery", backupStatus.fullRecovery)}
+            {renderSecretStatusButton()}
+          </div>
+        </div>
+      ) : null}
+      <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold">Restore from local backup</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Enter the configured restore authorization password first. After authorization, select the backup and enter that file's encryption password.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 items-end gap-x-4 gap-y-4 lg:grid-cols-[minmax(14rem,1fr)_auto_minmax(0,auto)_minmax(14rem,1fr)_auto]">
+          <input
+            ref={backupFileInputRef}
+            type="file"
+            accept=".rbk,application/json"
+            onChange={(event) => setRestoreFile(event.target.files?.[0] ?? null)}
+            className="sr-only"
+          />
+          <label className="block min-w-0">
+            <span className="mb-1 block text-xs font-medium">Restore authorization password</span>
+            <input
+              type="password"
+              value={restoreAuthorizationInput}
+              onChange={(event) => {
+                setRestoreAuthorizationInput(event.target.value);
+                setRestoreAuthorized(false);
+              }}
+              placeholder="Enter configured authorization password"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void authorizeRestore()}
+            disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            <Lock className="size-4" />
+            {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
+          </button>
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => backupFileInputRef.current?.click()}
+              disabled={Boolean(busy) || !restoreAuthorized}
+              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+            >
+              <Upload className="size-4" />
+              Select Backup
+            </button>
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {restoreFile?.name ?? "No backup selected"}
+            </span>
+          </div>
+          <label className="block min-w-0">
+            <span className="mb-1 block text-xs font-medium">Backup file encryption password</span>
+            <input
+              type="password"
+              value={backupFilePassword}
+              onChange={(event) => setBackupFilePassword(event.target.value)}
+              placeholder="Password used to encrypt this .rbk file"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void restoreBackup()}
+            disabled={Boolean(busy) || !restoreFile || !restoreAuthorized}
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium disabled:opacity-50"
+          >
+            <Upload className="size-4" />
+            {busy === "restore" ? "Restoring..." : "Restore backup"}
+          </button>
+        </div>
+        <p className="mt-4 text-xs leading-5 text-muted-foreground">
+          Restoring replaces current records. The backup file password, restore authorization, file validation, and transaction checks must all pass before changes are committed.
+        </p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          The full recovery package is encrypted with the same password and includes the application .rbk backup, PostgreSQL dump, roles/globals, configured external files, and deployment files. Actual deployment secrets are included only when the server administrator explicitly configures them for this feature; otherwise transfer them separately through a secure secret-management process.
+        </p>
+      </div>
+        </TabsContent>
+        <TabsContent value="server" className="mt-5 space-y-5">
+          <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-semibold">Scheduled server backups</h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Backups run on the server even when no browser is open. The server-side encryption password is configured outside the application and is never shown here.
+                </p>
+              </div>
+              {scheduleDraft ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={scheduleDraft.enabled}
+                  onClick={() =>
+                    setScheduleDraft((current) =>
+                      current ? { ...current, enabled: !current.enabled } : current,
+                    )
+                  }
+                  className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 text-xs font-semibold ${
+                    scheduleDraft.enabled
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  <span className="relative inline-flex h-4 w-7 rounded-full bg-current/25">
+                    <span
+                      className={`absolute top-0.5 size-3 rounded-full bg-current transition-transform ${
+                        scheduleDraft.enabled ? "translate-x-3.5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </span>
+                  {scheduleDraft.enabled ? "On" : "Off"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {backupStatus ? (
+            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold">Backup health</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Check the latest server run and whether configured secret files were included.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {renderBackupStatusButton("Server backup", backupStatus.server)}
+                {renderSecretStatusButton()}
+              </div>
+            </div>
+          ) : null}
+
+          {scheduleDraft ? (
+            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold">Schedule and retention</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose when the server creates packages and how many recent packages it keeps.
+                </p>
+              </div>
+              <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-[14rem_14rem_14rem_14rem]">
+                <label className="block text-xs font-medium">
+                  Frequency
+                  <select
+                    value={scheduleDraft.frequency}
+                    onChange={(event) =>
+                      setScheduleDraft((current) =>
+                        current
+                          ? { ...current, frequency: event.target.value as "daily" | "weekly" }
+                          : current,
+                      )
+                    }
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                  >
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                </label>
+                {scheduleDraft.frequency === "weekly" ? (
+                  <label className="block text-xs font-medium">
+                    Day
+                    <select
+                      value={scheduleDraft.dayOfWeek}
+                      onChange={(event) =>
+                        setScheduleDraft((current) =>
+                          current ? { ...current, dayOfWeek: Number(event.target.value) } : current,
+                        )
+                      }
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                    >
+                      {backupScheduleDayOptions.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                <label className="block text-xs font-medium">
+                  Time ({scheduleDraft.timezone})
+                  <input
+                    type="time"
+                    value={scheduleDraft.timeOfDay}
+                    onChange={(event) =>
+                      setScheduleDraft((current) =>
+                        current ? { ...current, timeOfDay: event.target.value } : current,
+                      )
+                    }
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                  />
+                </label>
+                <label className="block text-xs font-medium">
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex cursor-help items-center gap-1">
+                          Retain packages
+                          <Info className="size-3.5 text-muted-foreground" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        align="start"
+                        className="max-w-xs border border-border bg-background text-foreground shadow-lg"
+                      >
+                        Number of recent server backup packages to keep. Older packages are removed during retention cleanup.
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={scheduleDraft.retentionCount}
+                    onChange={(event) =>
+                      setScheduleDraft((current) =>
+                        current ? { ...current, retentionCount: Number(event.target.value) } : current,
+                      )
+                    }
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                  />
+                </label>
+                <label className="block text-xs font-medium sm:col-span-2 lg:col-span-2">
+                  Server destination directory
+                  <input
+                    type="text"
+                    value={scheduleDraft.destinationDir}
+                    onChange={(event) =>
+                      setScheduleDraft((current) =>
+                        current ? { ...current, destinationDir: event.target.value } : current,
+                      )
+                    }
+                    placeholder="/opt/recordkeeper/backups"
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                  />
+                </label>
+              </div>
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void saveBackupSchedule()}
+                  disabled={Boolean(busy) || !scheduleDraft}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  <Save className="size-4" />
+                  {busy === "schedule" ? "Saving..." : "Save schedule"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runScheduledBackupNow()}
+                  disabled={Boolean(busy) || !schedule?.schedulePasswordConfigured}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium disabled:opacity-50"
+                >
+                  <DatabaseBackup className="size-4" />
+                  {busy === "scheduleRun" ? "Creating..." : "Run backup now"}
+                </button>
+              </div>
+              <p className="mt-4 rounded-md bg-muted/30 px-4 py-3 text-xs leading-5 text-muted-foreground">
+                Deployment files and explicitly configured deployment secrets are included according to the server environment settings. Scheduled packages are encrypted with <code>RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD</code>.
+              </p>
+              {scheduleMessage ? (
+                <p className="mt-3 text-xs text-muted-foreground" role="status">
+                  {scheduleMessage}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+              <p className="text-xs text-muted-foreground">Loading backup schedule…</p>
+            </div>
+          )}
+
+          {schedule ? (
+            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+              <h3 className="mb-4 text-sm font-semibold">Server backup details</h3>
+              <div className="grid gap-3 rounded-md bg-muted/30 px-4 py-3 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                <span>
+                  Server password: {schedule.schedulePasswordConfigured ? "Configured" : "Not configured"}
+                </span>
+                <span>Next run: {formatBackupScheduleDate(schedule.nextRunAt, schedule.timezone)}</span>
+                <span>Last status: {schedule.lastStatus}</span>
+                <span>Last file: {schedule.lastFileName ?? "None"}</span>
+              </div>
+              {schedule.lastError ? (
+                <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive" role="alert">
+                  Last error: {schedule.lastError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </TabsContent>
+        </fieldset>
+      </Tabs>
+      {statusMessage ? (
+        <p className="mt-3 text-xs text-muted-foreground" role="status">
+          {statusMessage}
+        </p>
+      ) : null}
+      {message ? <p className="mt-3 text-xs text-muted-foreground" role="status">{message}</p> : null}
+    </section>
+  );
 }
 
 function useSettingsUsageFiles() {
   const fallbackFiles = useFiles();
-  const [usageFiles, setUsageFiles] = useState<FileRecord[]>(
-    () => fallbackFiles,
-  );
+  const [usageFiles, setUsageFiles] = useState<FileRecord[]>(() => fallbackFiles);
 
   useEffect(() => {
     let cancelled = false;
@@ -864,6 +1889,17 @@ function useSettingsUsageFiles() {
   return usageFiles;
 }
 
+function YearSetupSettings() {
+  const settings = useSettings();
+  const updateSettings = useSettingsUpdater();
+  return (
+    <YearSetupPanel
+      settingsOverride={settings}
+      onSetupYearChange={(setupYear) => updateSettings({ setupYear })}
+    />
+  );
+}
+
 function SettingsPage() {
   const activeUser = useActiveUser();
   const settingsRole: AppUserRole | undefined = activeUser?.role;
@@ -884,24 +1920,33 @@ function SettingsPage() {
 
   if (activeUser?.role === "viewer" || activeUser?.role === "division_user") {
     return (
-      <div className="space-y-4 max-w-6xl">
-        <Tabs defaultValue="theme" className="space-y-4">
-          <TabsList aria-label="Settings sections">
+      <div className="settings-page max-w-6xl space-y-5">
+        <Tabs defaultValue="theme" className="space-y-5">
+          <TabsList
+            aria-label="Settings sections"
+            className="h-auto w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-secondary/20 p-1"
+          >
             <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
             <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
           </TabsList>
           <TabsContent value="theme">
-            <UserSettingsDraft showScope={false}><PreferenceSettings /></UserSettingsDraft>
+            <UserSettingsDraft showScope={false} actionPlacement="inside">
+              <PreferenceSettings />
+            </UserSettingsDraft>
           </TabsContent>
-          <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
+          <TabsContent value="noticeBoard">
+            <QuickAccessSettings section="noticeBoard" />
+          </TabsContent>
           <TabsContent value="indentors">
             <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
             <IndentorSettings />
           </TabsContent>
           <TabsContent value="presets">
-            <UserSettingsDraft><TableFieldPresetSettings /></UserSettingsDraft>
+            <UserSettingsDraft>
+              <TableFieldPresetSettings />
+            </UserSettingsDraft>
           </TabsContent>
         </Tabs>
       </div>
@@ -909,17 +1954,23 @@ function SettingsPage() {
   }
 
   if (activeUser?.role === "sub_admin" || activeUser?.role === "editor") {
-    const canEditMmgSummary = activeUser.role === "sub_admin";
+    const canEditMmgSummary = false;
     return (
-      <div className="space-y-4 max-w-6xl">
-        <Tabs defaultValue="user" className="space-y-4">
-          <TabsList aria-label="Settings sections">
+      <div className="settings-page max-w-6xl space-y-5">
+        <Tabs defaultValue="user" className="space-y-5">
+          <TabsList
+            aria-label="Settings sections"
+            className="h-auto w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-secondary/20 p-1"
+          >
             <SettingsTabTrigger value="theme" label="UI theme" helperKey="theme" />
             <SettingsTabTrigger value="noticeBoard" label="Notice board" helperKey="noticeBoard" />
             <SettingsTabTrigger value="user" label="User" helperKey="user" />
             <SettingsTabTrigger value="indentors" label="Indentors" helperKey="indentors" />
             <SettingsTabTrigger value="firms" label="Firm Database" helperKey="firms" />
             <SettingsTabTrigger value="presets" label="Preset table fields" helperKey="presets" />
+            {activeUser?.role === "sub_admin" ? (
+              <SettingsTabTrigger value="archive" label="Archive" helperKey="archiveSubAdmin" />
+            ) : null}
             {canEditMmgSummary ? (
               <SettingsTabTrigger
                 value="anomalyGovernance"
@@ -932,11 +1983,17 @@ function SettingsPage() {
             ) : null}
           </TabsList>
           <TabsContent value="theme">
-            <UserSettingsDraft showScope={false}><PreferenceSettings /></UserSettingsDraft>
+            <UserSettingsDraft showScope={false} actionPlacement="inside">
+              <PreferenceSettings />
+            </UserSettingsDraft>
           </TabsContent>
-          <TabsContent value="noticeBoard"><QuickAccessSettings section="noticeBoard" /></TabsContent>
+          <TabsContent value="noticeBoard">
+            <QuickAccessSettings section="noticeBoard" />
+          </TabsContent>
           <TabsContent value="user">
-            <UserSettingsDraft><AccountSettings /></UserSettingsDraft>
+            <UserSettingsDraft>
+              <AccountSettings />
+            </UserSettingsDraft>
           </TabsContent>
           <TabsContent value="indentors">
             <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
@@ -950,8 +2007,15 @@ function SettingsPage() {
             <FirmDatabaseSettings />
           </TabsContent>
           <TabsContent value="presets">
-            <UserSettingsDraft><TableFieldPresetSettings /></UserSettingsDraft>
+            <UserSettingsDraft>
+              <TableFieldPresetSettings />
+            </UserSettingsDraft>
           </TabsContent>
+          {activeUser?.role === "sub_admin" ? (
+            <TabsContent value="archive">
+              <ArchiveSettings />
+            </TabsContent>
+          ) : null}
           {canEditMmgSummary ? (
             <TabsContent value="anomalyGovernance">
               <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
@@ -1022,7 +2086,7 @@ function SettingsPage() {
       key: "yearSetup",
       label: "Year Setup",
       helper: settingsSectionHelpers.yearSetup,
-      content: <YearSetupPanel />,
+      content: <YearSetupSettings />,
     },
     {
       key: "mmgSummary",
@@ -1032,7 +2096,7 @@ function SettingsPage() {
     },
     {
       key: "demandProcessing",
-      label: "Demand processing presets",
+      label: "Demand Processing Analysis Presets",
       helper: settingsSectionHelpers.demandProcessing,
       content: <DemandProcessingPresetSettings />,
     },
@@ -1144,30 +2208,29 @@ function SettingsPage() {
       helper: settingsSectionHelpers.archive,
       content: <ArchiveSettings />,
     },
+    {
+      key: "protectedBackup",
+      label: "Protected backup",
+      helper: settingsSectionHelpers.protectedBackup,
+      content: <ProtectedBackupSettings />,
+    },
   ];
   const universalViewer = isUniversalViewer(activeUser?.role);
   const adminSections = universalViewer
     ? allAdminSections.filter((section) =>
-        [
-          "theme",
-          "user",
-          "presets",
-          "offsetDays",
-          "noticeBoard",
-        ].includes(section.key),
+        ["theme", "user", "presets", "offsetDays", "noticeBoard"].includes(section.key),
       )
     : settingsRole === "sub_admin"
-      ? allAdminSections.filter((section) => ["theme", "user", "workspace", "offsetDays"].includes(section.key))
+      ? allAdminSections.filter((section) =>
+          ["theme", "user", "workspace", "offsetDays"].includes(section.key),
+        )
       : allAdminSections;
   const selectedAdminSection =
     adminSections.find((section) => section.key === activeAdminSection) ?? adminSections[0];
   const selectedAdminSectionUnlocked =
     Boolean(unlockedAdminSections[selectedAdminSection.key]) ||
     selectedAdminSection.key === "theme" ||
-    (universalViewer &&
-      ["user", "presets", "noticeBoard"].includes(
-        selectedAdminSection.key,
-      ));
+    (universalViewer && ["user", "presets", "noticeBoard"].includes(selectedAdminSection.key));
   const adminSectionGroups = [
     {
       key: "organization",
@@ -1177,7 +2240,16 @@ function SettingsPage() {
     {
       key: "procurement",
       label: "Procurement Setup",
-      keys: ["modes", "gemBiddingModes", "fileTypes", "firmTypes", "firms", "tcec", "fileMarkers", "milestones"],
+      keys: [
+        "modes",
+        "gemBiddingModes",
+        "fileTypes",
+        "firmTypes",
+        "firms",
+        "tcec",
+        "fileMarkers",
+        "milestones",
+      ],
     },
     {
       key: "analytics",
@@ -1197,7 +2269,7 @@ function SettingsPage() {
     {
       key: "access",
       label: "Access and security",
-      keys: ["user", "users", "ipAccess", "archive"],
+      keys: ["user", "users", "ipAccess", "archive", "protectedBackup"],
     },
     {
       key: "personal",
@@ -1218,19 +2290,12 @@ function SettingsPage() {
   };
 
   return (
-    <div className="space-y-4 max-w-none">
-      <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 text-sm">
-        <div className="font-semibold">Protecting file history</div>
-        <div className="mt-1 text-xs leading-5 text-muted-foreground">
-          Values used in active or archived file history may be locked against editing or deletion.
-          Use the available edit, inactivate, or archive actions; historical references are kept.
-        </div>
-      </div>
+    <div className="settings-page max-w-none space-y-5">
       <div
         className={
           "grid grid-cols-1 gap-4 " +
           (settingsSidePanelHooked
-          ? "lg:grid-cols-[260px_minmax(0,1fr)]"
+            ? "lg:grid-cols-[260px_minmax(0,1fr)]"
             : "lg:grid-cols-[48px_minmax(0,1fr)]")
         }
       >
@@ -1258,9 +2323,7 @@ function SettingsPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setExpandedAdminGroup((current) =>
-                        current === group.key ? "" : group.key,
-                      )
+                      setExpandedAdminGroup((current) => (current === group.key ? "" : group.key))
                     }
                     aria-expanded={expandedAdminGroup === group.key}
                     className={
@@ -1291,8 +2354,11 @@ function SettingsPage() {
                                 if (
                                   section.key !== activeAdminSection &&
                                   hasUnsavedAdminChanges &&
-                                  !window.confirm("Discard unsaved settings changes and switch sections?")
-                                ) return;
+                                  !window.confirm(
+                                    "Discard unsaved settings changes and switch sections?",
+                                  )
+                                )
+                                  return;
                                 if (section.key === activeAdminSection) return;
                                 setHasUnsavedAdminChanges(false);
                                 setActiveAdminSection(section.key);
@@ -1306,7 +2372,10 @@ function SettingsPage() {
                             >
                               {section.label}
                             </button>
-                            <SettingsHelper items={section.helper} label={`${section.label} help`} />
+                            <SettingsHelper
+                              items={section.helper}
+                              label={`${section.label} help`}
+                            />
                           </div>
                         );
                       })}
@@ -1363,13 +2432,30 @@ function LockedAdminSection({
   onDirtyChange: (dirty: boolean) => void;
   hideUnlock?: boolean;
 }) {
+  // These panels persist their own validated local state and render their own
+  // save action.  Showing the outer draft action as well creates a second,
+  // inactive "Save changes" button because those local drafts are not part of
+  // the generic SettingsDraftContext.
+  const hasLocalSaveAction = new Set(["thresholds", "bgReceiptDelay", "quickEntryExcel"]).has(
+    section.key,
+  );
+  const hasInlineActionBar = section.key === "protectedBackup";
   const [verifying, setVerifying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [draftPatch, setDraftPatch] = useState<Partial<AppSettings>>({});
+  const [externalDirty, setExternalDirty] = useState(false);
+  const externalDraftRef = useRef<SettingsExternalDraftHandlers | null>(null);
   const savedSettings = useStoreSettings();
   const draftSettings = { ...savedSettings, ...draftPatch };
-  const hasChanges = Object.keys(draftPatch).length > 0;
+  const hasChanges = Object.keys(draftPatch).length > 0 || externalDirty;
+
+  const registerExternalDraft = useCallback(
+    (handlers: SettingsExternalDraftHandlers | null) => {
+      externalDraftRef.current = handlers;
+    },
+    [],
+  );
 
   const updateDraftSettings = (patch: Partial<AppSettings>) => {
     setDraftPatch((current) => ({ ...current, ...patch }));
@@ -1382,8 +2468,14 @@ function LockedAdminSection({
     setSaving(true);
     setSaveError("");
     try {
-      await store.saveSettings(draftPatch);
+      if (Object.keys(draftPatch).length > 0) {
+        await store.saveSettings(draftPatch);
+      }
+      if (externalDirty && externalDraftRef.current) {
+        await externalDraftRef.current.save();
+      }
       setDraftPatch({});
+      setExternalDirty(false);
       onDirtyChange(false);
       if (!hideUnlock) onLock();
     } catch (error) {
@@ -1396,6 +2488,8 @@ function LockedAdminSection({
   const cancelChanges = () => {
     if (hasChanges && !window.confirm("Discard your unsaved settings changes?")) return;
     setDraftPatch({});
+    externalDraftRef.current?.cancel();
+    setExternalDirty(false);
     onDirtyChange(false);
     setSaveError("");
     if (!hideUnlock) onLock();
@@ -1412,6 +2506,8 @@ function LockedAdminSection({
     try {
       await store.verifyAdminPassword(password);
       setDraftPatch({});
+      externalDraftRef.current?.cancel();
+      setExternalDirty(false);
       onDirtyChange(false);
       setSaveError("");
       onUnlock();
@@ -1422,62 +2518,116 @@ function LockedAdminSection({
     }
   };
 
+  const hasOuterScope = !["theme", "noticeBoard", "offsetDays"].includes(section.key);
+
   return (
-    <div className="space-y-3">
-      {unlocked ? (
-        <div className="flex items-center justify-end gap-2">
-          {saveError ? <p role="alert" className="mr-auto text-sm text-destructive">{saveError}</p> : null}
-          <button
-            type="button"
-            onClick={cancelChanges}
-            disabled={saving || (!hasChanges && hideUnlock)}
-            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void saveChanges()}
-            disabled={!hasChanges || saving}
-            className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          >
-            <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
-          </button>
-        </div>
-      ) : !hideUnlock ? (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={() => void unlock()}
-            disabled={verifying || saving}
-            className={
-              "h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
-              (unlocked
-                ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                : "border-border bg-background hover:bg-accent")
-            }
-          >
-            <>
-              <Lock className="size-4" /> Edit
-            </>
-          </button>
+    <div
+      className={
+        hasOuterScope
+          ? "settings-panel overflow-hidden rounded-lg border border-border bg-secondary/20 shadow-sm"
+          : "settings-panel space-y-0"
+      }
+    >
+      {section.key !== "theme" && !hasInlineActionBar ? (
+        <div
+          className={
+            "flex min-h-10 flex-wrap items-center justify-between gap-3 " +
+            (hasOuterScope ? "px-5 py-3" : "")
+          }
+        >
+          <div className="min-w-0">
+            {hasOuterScope && !hasInlineActionBar ? <SettingsScope {...scopeInfo} /> : null}
+            {saveError ? (
+              <p role="alert" className="mt-1 text-sm text-destructive">
+                {saveError}
+              </p>
+            ) : null}
+          </div>
+          {unlocked ? (
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelChanges}
+                disabled={saving || (!hasChanges && hideUnlock)}
+                className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              {!hasLocalSaveAction ? (
+                <button
+                  type="button"
+                  onClick={() => void saveChanges()}
+                  disabled={!hasChanges || saving}
+                  className="h-9 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
+                </button>
+              ) : null}
+            </div>
+          ) : !hideUnlock ? (
+            <button
+              type="button"
+              onClick={() => void unlock()}
+              disabled={verifying || saving}
+              className={
+                "h-8 shrink-0 px-2.5 inline-flex items-center justify-center gap-1.5 rounded-md border text-[11px] font-medium disabled:cursor-wait disabled:opacity-60 " +
+                (unlocked
+                  ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                  : "border-border bg-background hover:bg-accent")
+              }
+            >
+              <Lock className="size-3.5" /> Edit
+            </button>
+          ) : null}
         </div>
       ) : null}
-      <fieldset
-        disabled={!unlocked || saving}
-        className={
-          !unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined
-        }
-      >
+      {hasInlineActionBar ? (
         <SettingsDraftContext.Provider
-          value={{ settings: draftSettings, updateSettings: updateDraftSettings }}
+          value={{
+            settings: draftSettings,
+            updateSettings: updateDraftSettings,
+            actions: unlocked
+              ? { hasChanges, saving, saveError, cancelChanges, saveChanges }
+              : undefined,
+            sectionUnlocked: unlocked,
+            sectionSaving: saving,
+            sectionVerifying: verifying,
+            unlockSection: () => void unlock(),
+            setExternalDirty: (dirty) => {
+              setExternalDirty(dirty);
+              onDirtyChange(Object.keys(draftPatch).length > 0 || dirty);
+            },
+            registerExternalDraft,
+          }}
         >
-          {!(["theme", "noticeBoard", "offsetDays"].includes(section.key)) ? (
-            <div className="mb-3"><SettingsScope {...scopeInfo} /></div>
-          ) : null}
           {section.content}
         </SettingsDraftContext.Provider>
-      </fieldset>
+      ) : (
+        <fieldset
+          disabled={!unlocked || saving}
+          className={
+            "text-sm text-foreground " +
+            (!unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : "")
+          }
+        >
+          <SettingsDraftContext.Provider
+            value={{
+              settings: draftSettings,
+              updateSettings: updateDraftSettings,
+              actions: unlocked
+                ? { hasChanges, saving, saveError, cancelChanges, saveChanges }
+                : undefined,
+              setExternalDirty: (dirty) => {
+                setExternalDirty(dirty);
+                onDirtyChange(Object.keys(draftPatch).length > 0 || dirty);
+              },
+              registerExternalDraft,
+            }}
+          >
+            {section.content}
+          </SettingsDraftContext.Provider>
+        </fieldset>
+      )}
     </div>
   );
 }
@@ -1493,7 +2643,12 @@ function SettingsTabTrigger({
 }) {
   return (
     <span className="inline-flex items-center gap-1">
-      <TabsTrigger value={value}>{label}</TabsTrigger>
+      <TabsTrigger
+        value={value}
+        className="px-3 py-2 text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+      >
+        {label}
+      </TabsTrigger>
       <SettingsHelper
         items={settingsSectionHelpers[helperKey]}
         label={`${label} help`}
@@ -1544,12 +2699,12 @@ function AuthorisedUserRolesTooltip() {
     {
       role: "Admin",
       can: "Manage all divisions, records, users, shared settings, and security.",
-      limits: "Protected actions may still require the configured deletion password.",
+      limits: "Protected actions may still require the signed-in Admin's personal deletion password.",
     },
     {
       role: "Sub-admin",
-      can: "Work across divisions; edit records and settings enabled for this role.",
-      limits: "Cannot manage user accounts or IP security settings.",
+      can: "Work within assigned divisions; edit records and settings enabled for this role.",
+      limits: "Cannot access unassigned divisions, manage user accounts, or manage IP security settings.",
     },
     {
       role: "Editor",
@@ -1558,18 +2713,21 @@ function AuthorisedUserRolesTooltip() {
     },
     {
       role: "Viewer",
-      can: "View records in assigned divisions.",
-      limits: "Cannot create or edit records.",
+      can: "Division viewer login using that division's viewer password; access is limited to exactly one division.",
+      limits:
+        "Read-only for file records. Can submit a file query/message, but cannot resolve or reply. This is not a named authorised-user account.",
     },
     {
       role: "Division user",
-      can: "View records in assigned divisions.",
-      limits: "Cannot create or edit records.",
+      can: "Named authorised account with its own login and one or more explicitly assigned divisions.",
+      limits:
+        "Read-only for file records. Can submit a file query/message, but cannot resolve or reply; access is denied when no division is assigned.",
     },
     {
       role: "Universal Viewer",
-      can: "View all divisions and add file-status notes. Cash Out Go scope can be view-only, personal, or global with MER.",
-      limits: "Cannot edit core file records. Global Cash Out Go/MER edits affect everyone.",
+      can: "View assigned divisions and add file-status notes. Cash Out Go scope can be view-only, personal, or global with MER.",
+      limits:
+        "Cannot edit core file records. Access is limited to assigned divisions; no assigned division means no records. Global Cash Out Go/MER edits affect everyone.",
     },
   ];
 
@@ -1604,9 +2762,15 @@ function AuthorisedUserRolesTooltip() {
               </caption>
               <thead>
                 <tr className="border-b border-border bg-secondary/60 text-muted-foreground">
-                  <th scope="col" className="w-28 px-2 py-1.5 font-semibold">Role</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Can do</th>
-                  <th scope="col" className="px-2 py-1.5 font-semibold">Cannot do / limits</th>
+                  <th scope="col" className="w-28 px-2 py-1.5 font-semibold">
+                    Role
+                  </th>
+                  <th scope="col" className="px-2 py-1.5 font-semibold">
+                    Can do
+                  </th>
+                  <th scope="col" className="px-2 py-1.5 font-semibold">
+                    Cannot do / limits
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1622,7 +2786,9 @@ function AuthorisedUserRolesTooltip() {
               </tbody>
             </table>
             <p className="mt-2 max-w-[38rem] text-[11px] text-muted-foreground">
-              Admin, Sub-admin, and Universal Viewer can access all divisions. Editor, Viewer, and Division user access is limited to assigned divisions; file-category limits apply to Editors.
+              Admin can access all divisions. Universal Viewer, Sub-admin, Editor, Viewer, and
+              Division user access is limited to assigned divisions; file-category limits apply to
+              Editors.
             </p>
           </div>
         </TooltipContent>
@@ -1674,13 +2840,8 @@ type SettingsCashOutGoRow = {
   billOffsetOverride?: string;
 };
 
-function CashOutGoOffsetSettings({
-  canEdit,
-  scopeNote,
-}: {
-  canEdit: boolean;
-  scopeNote: string;
-}) {
+function CashOutGoOffsetSettings({ canEdit, scopeNote }: { canEdit: boolean; scopeNote: string }) {
+  const draft = useContext(SettingsDraftContext);
   const settings = useSettings();
   const activeUser = useActiveUser();
   const personalScope =
@@ -1695,11 +2856,18 @@ function CashOutGoOffsetSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const initialPlanRef = useRef<SettingsCashOutGoPlan | undefined>(undefined);
+  const saveRef = useRef<() => Promise<void>>(async () => undefined);
+  const cancelRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
+      /\/$/,
+      "",
+    );
     const query = new URLSearchParams({
       financialYear: settings.financialYear,
       includePreviousFySubmitted: "false",
@@ -1713,6 +2881,9 @@ function CashOutGoOffsetSettings({
         if (!response.ok) throw new Error("Cash Out Go offsets could not be loaded.");
         const body = (await response.json()) as { plan?: SettingsCashOutGoPlan };
         setPlan(body.plan);
+        initialPlanRef.current = body.plan;
+        setDirty(false);
+        setSaved(false);
         setError("");
       })
       .catch((loadError: unknown) => {
@@ -1726,20 +2897,25 @@ function CashOutGoOffsetSettings({
     return () => controller.abort();
   }, [settings.financialYear]);
 
-  const updateOffset = (key: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays", value: string) => {
+  const updateOffset = (
+    key: "billOffsetDays" | "handSubmissionOffsetDays" | "dpOffsetDays",
+    value: string,
+  ) => {
     if (!plan) return;
-    const defaultDays = key === "dpOffsetDays"
-      ? plan.settings.defaultDpOffsetDays
-      : key === "billOffsetDays"
-        ? plan.settings.defaultBillOffsetDays
-        : plan.settings.defaultHandSubmissionOffsetDays;
+    const defaultDays =
+      key === "dpOffsetDays"
+        ? plan.settings.defaultDpOffsetDays
+        : key === "billOffsetDays"
+          ? plan.settings.defaultBillOffsetDays
+          : plan.settings.defaultHandSubmissionOffsetDays;
     const isPersonalScope =
       activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal";
-    const enabledKey = key === "dpOffsetDays"
-      ? "useCustomDpOffsetDays"
-      : key === "billOffsetDays"
-        ? "useCustomBillOffsetDays"
-        : "useCustomHandSubmissionOffsetDays";
+    const enabledKey =
+      key === "dpOffsetDays"
+        ? "useCustomDpOffsetDays"
+        : key === "billOffsetDays"
+          ? "useCustomBillOffsetDays"
+          : "useCustomHandSubmissionOffsetDays";
     const days = Math.max(0, Number.parseInt(value || "0", 10) || 0);
     setPlan({
       ...plan,
@@ -1749,6 +2925,7 @@ function CashOutGoOffsetSettings({
         [enabledKey]: isPersonalScope ? days !== defaultDays : true,
       },
     });
+    setDirty(true);
     setSaved(false);
   };
 
@@ -1756,7 +2933,10 @@ function CashOutGoOffsetSettings({
     if (!plan || !canEdit) return;
     setSaving(true);
     setError("");
-    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
+      /\/$/,
+      "",
+    );
     const rows = [
       ...(plan.billsSubmitted ?? []),
       ...(plan.billsAtHand ?? []),
@@ -1777,13 +2957,40 @@ function CashOutGoOffsetSettings({
         body: JSON.stringify({ ...plan.settings, rows }),
       });
       if (!response.ok) throw new Error("Cash Out Go offsets could not be saved.");
+      initialPlanRef.current = plan;
+      setDirty(false);
       setSaved(true);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Offsets could not be saved.");
+      const message = saveError instanceof Error ? saveError.message : "Offsets could not be saved.";
+      setError(message);
+      throw saveError;
     } finally {
       setSaving(false);
     }
   };
+
+  saveRef.current = save;
+  cancelRef.current = () => {
+    setPlan(initialPlanRef.current);
+    setDirty(false);
+    setSaved(false);
+    setError("");
+  };
+
+  useEffect(() => {
+    if (!canEdit || !draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: () => saveRef.current(),
+      cancel: () => cancelRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [canEdit, draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setExternalDirty?.(canEdit && dirty);
+  }, [canEdit, dirty, draft?.setExternalDirty]);
+
+  const parentOwnsSave = Boolean(canEdit && draft?.actions);
 
   const cashSettings = plan?.settings;
   const fields = [
@@ -1824,7 +3031,11 @@ function CashOutGoOffsetSettings({
         <SettingsScope scope={personalScope ? "personal" : "shared"} editors={cashOutGoEditors} />
       </div>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
-        {scopeNote} Save shared offsets to keep changes for future visits. They remain in effect until changed and saved again. Row-specific overrides remain separate where the report allows them.
+        {scopeNote} {parentOwnsSave
+          ? "Use the section Save changes action above to keep changes for future visits."
+          : "Save shared offsets to keep changes for future visits."} They remain in effect until
+        changed and saved again. Row-specific overrides remain separate where the report allows
+        them.
       </p>
       {loading ? <p className="text-xs text-muted-foreground">Loading shared offsets...</p> : null}
       <div className="grid gap-3 md:grid-cols-3">
@@ -1852,12 +3063,18 @@ function CashOutGoOffsetSettings({
           </label>
         ))}
       </div>
-      {canEdit ? (
+      {canEdit && parentOwnsSave ? null : canEdit ? (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : <span />}
+          {error ? (
+            <span role="alert" className="text-xs text-destructive">
+              {error}
+            </span>
+          ) : (
+            <span />
+          )}
           <button
             type="button"
-            onClick={() => void save()}
+            onClick={() => void save().catch(() => undefined)}
             disabled={!plan || loading || saving || saved}
             className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -1866,7 +3083,10 @@ function CashOutGoOffsetSettings({
           </button>
         </div>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">These values are view-only for this role; shared Cash Out Go offsets cannot be changed here.</p>
+        <p className="mt-3 text-xs text-muted-foreground">
+          These values are view-only for this role; shared Cash Out Go offsets cannot be changed
+          here.
+        </p>
       )}
     </div>
   );
@@ -1909,33 +3129,85 @@ function PreferenceSettings() {
   return (
     <div className="space-y-5">
       <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
-        <h2 className="text-sm font-semibold mb-1">UI theme</h2>
-        <div className="mb-3">
-          <SettingsScope scope="personal" editors="You" />
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold mb-1">UI theme</h2>
+            <SettingsScope scope="personal" editors="You" />
+          </div>
+          <SettingsDraftActionBarFromContext />
         </div>
         <p className="text-xs text-muted-foreground mb-5">
-          Sets this account's display theme and colour order for bars, columns and pie charts.
+          Sets this account's display theme, optional ribbon styling, and font.
         </p>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <AppearancePresetField
+            value={settings.appearancePreset}
+            onChange={(preset) => {
+              const selected = appearancePresetOptions.find((option) => option.value === preset);
+              updateSettings(
+                selected
+                  ? {
+                      appearancePreset: selected.value,
+                      theme: selected.theme,
+                      themeTint: selected.themeTint,
+                      topRibbonColor: selected.topRibbonColor,
+                      topRibbonTextColor: selected.topRibbonTextColor,
+                      fontFamily: selected.fontFamily,
+                    }
+                  : {
+                      appearancePreset: null,
+                      topRibbonColor: null,
+                      topRibbonTextColor: null,
+                      fontFamily: null,
+                    },
+              );
+            }}
+          />
           <ThemeField
             label="Theme"
             value={settings.theme}
-            onChange={(value) => updateSettings({ theme: value })}
+            onChange={(value) => updateSettings({ theme: value, appearancePreset: null })}
           />
           <ThemeTintField
             label="Theme color"
             value={settings.themeTint}
-            onChange={(value) => updateSettings({ themeTint: value })}
+            onChange={(value) => updateSettings({ themeTint: value, appearancePreset: null })}
           />
+          <TopRibbonColorField
+            value={settings.topRibbonColor}
+            onChange={(value) => updateSettings({ topRibbonColor: value, appearancePreset: null })}
+          />
+          <TopRibbonTextColorField
+            value={settings.topRibbonTextColor}
+            onChange={(value) =>
+              updateSettings({ topRibbonTextColor: value, appearancePreset: null })
+            }
+          />
+          <FontFamilyField
+            value={settings.fontFamily}
+            onChange={(value) => updateSettings({ fontFamily: value, appearancePreset: null })}
+          />
+        </div>
+      </div>
+      <div className="grid items-stretch grid-cols-1 gap-5 xl:grid-cols-2">
+        {activeUser?.role === "admin" ? <GlobalChartColorSettings /> : null}
+        <section className="h-full rounded-md border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
+          <h2 className="mb-1 text-sm font-semibold">Chart colours for your account</h2>
+          <div className="mb-2">
+            <SettingsScope scope="personal" editors="You" />
+          </div>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Set the colour order used by your bars, columns and pie charts. It is disabled while an
+            administrator's shared colour policy is enforced.
+          </p>
           <ChartColorOrderField
             value={settings.chartColorOrder ?? chartColorOptions.map((option) => option.color)}
             onChange={(value) => updateSettings({ chartColorOrder: value })}
             disabled={settings.globalChartColorsEnforced === true}
           />
-        </div>
+        </section>
       </div>
-      {activeUser?.role === "admin" ? <GlobalChartColorSettings /> : null}
       <AddEditRibbonSettings />
     </div>
   );
@@ -1969,21 +3241,32 @@ function GlobalChartColorSettings() {
           : "Shared colour policy saved.",
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save the shared chart colours.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not save the shared chart colours.",
+      );
     } finally {
       setSaving(false);
     }
   };
 
   const reset = async () => {
-    if (!window.confirm("Apply the default chart palette to everyone and prevent personal colour overrides?")) return;
+    if (
+      !window.confirm(
+        "Apply the default chart palette to everyone and prevent personal colour overrides?",
+      )
+    )
+      return;
     setSaving(true);
     setMessage("");
     try {
       await store.resetChartColorPreferencesForAllUsers();
-      setMessage("Default palette applied to everyone. Users see it after their next refresh or sign-in.");
+      setMessage(
+        "Default palette applied to everyone. Users see it after their next refresh or sign-in.",
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not reset chart colours for all users.");
+      setMessage(
+        error instanceof Error ? error.message : "Could not reset chart colours for all users.",
+      );
     } finally {
       setSaving(false);
     }
@@ -1996,10 +3279,11 @@ function GlobalChartColorSettings() {
         <SettingsScope scope="shared" editors="Administrators" />
       </div>
       <p className="mb-4 text-xs text-muted-foreground">
-        Set a shared order for every account. Bars, columns and pie slices use this order. Users see policy changes after their next refresh or sign-in. Reset applies the default order to everyone.
+        Set a shared order for every account. Bars, columns and pie slices use this order. Users see
+        policy changes after their next refresh or sign-in. Reset applies the default order to
+        everyone.
       </p>
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-        <ChartColorOrderField value={order} onChange={setOrder} />
         <div className="space-y-4">
           <label className="flex items-start gap-2 text-sm">
             <input
@@ -2015,6 +3299,9 @@ function GlobalChartColorSettings() {
               </span>
             </span>
           </label>
+          <ChartColorOrderField value={order} onChange={setOrder} />
+        </div>
+        <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -2033,7 +3320,11 @@ function GlobalChartColorSettings() {
               Reset all users
             </button>
           </div>
-          {message ? <p role="status" className="text-xs text-muted-foreground">{message}</p> : null}
+          {message ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              {message}
+            </p>
+          ) : null}
         </div>
       </div>
     </section>
@@ -2045,13 +3336,37 @@ function AccountSettings() {
   const divisions = useDivisions();
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
+  const [deletionPassword, setDeletionPassword] = useState("");
+  const [deletionPasswordConfirmation, setDeletionPasswordConfirmation] = useState("");
+  const [deletionPasswordSaving, setDeletionPasswordSaving] = useState(false);
+  const [deletionPasswordMessage, setDeletionPasswordMessage] = useState("");
+  const [deletionPasswordError, setDeletionPasswordError] = useState("");
+  const deletionPasswordsMatch = deletionPassword === deletionPasswordConfirmation;
+  const canSaveDeletionPassword =
+    deletionPassword.length > 0 && deletionPasswordConfirmation.length > 0 && deletionPasswordsMatch;
+  const savePersonalDeletionPassword = async () => {
+    if (!canSaveDeletionPassword) return;
+    setDeletionPasswordSaving(true);
+    setDeletionPasswordMessage("");
+    setDeletionPasswordError("");
+    try {
+      await store.saveDeletionPassword(deletionPassword, deletionPasswordConfirmation);
+      setDeletionPassword("");
+      setDeletionPasswordConfirmation("");
+      setDeletionPasswordMessage("Your personal deletion password has been saved.");
+    } catch (error) {
+      setDeletionPasswordError(
+        error instanceof Error ? error.message : "Unable to save the deletion password.",
+      );
+    } finally {
+      setDeletionPasswordSaving(false);
+    }
+  };
   const assignedDivisionNames =
-    activeUser?.role === "sub_admin"
-      ? "All divisions"
-      : activeUser?.divisionIds
-          .map((id) => divisions.find((division) => division.id === id)?.name)
-          .filter(Boolean)
-          .join(", ") || "No divisions assigned";
+    activeUser?.divisionIds
+      .map((id) => divisions.find((division) => division.id === id)?.name)
+      .filter(Boolean)
+      .join(", ") || (activeUser?.role === "admin" ? "All divisions" : "No divisions assigned");
 
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
@@ -2064,6 +3379,60 @@ function AccountSettings() {
         <Field label="Role" value={activeUser ? roleLabel(activeUser.role) : "Not signed in"} />
         <Field label="Divisions" value={assignedDivisionNames} />
       </div>
+
+      {activeUser ? (
+        <section className="mt-5 rounded-md border border-border bg-background p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Personal deletion password</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This password belongs only to your account and is required for protected delete
+              actions performed by you.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <PasswordField
+              label="Deletion password"
+              value={deletionPassword}
+              onChange={setDeletionPassword}
+            />
+            <PasswordField
+              label="Reconfirm deletion password"
+              value={deletionPasswordConfirmation}
+              onChange={setDeletionPasswordConfirmation}
+            />
+          </div>
+          {!deletionPasswordsMatch && deletionPasswordConfirmation ? (
+            <p role="alert" className="mt-2 text-xs text-destructive">
+              The deletion passwords do not match.
+            </p>
+          ) : null}
+          {deletionPasswordError ? (
+            <p role="alert" className="mt-2 text-xs text-destructive">
+              {deletionPasswordError}
+            </p>
+          ) : null}
+          {deletionPasswordMessage ? (
+            <p role="status" className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+              {deletionPasswordMessage}
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {settings.deletionPasswordConfigured
+                ? "A personal deletion password is configured for this account. Saving here replaces it."
+                : "No personal deletion password is configured for this account."}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void savePersonalDeletionPassword()}
+            disabled={!canSaveDeletionPassword || deletionPasswordSaving}
+            className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save className="size-4" />
+            {deletionPasswordSaving ? "Saving..." : "Save deletion password"}
+          </button>
+        </section>
+      ) : null}
 
       {(activeUser?.role === "editor" ||
         activeUser?.role === "sub_admin" ||
@@ -2126,14 +3495,12 @@ function OffsetDaysSettings() {
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
-  const canEditPreSoOffsets =
-    activeUser?.role === "admin" || activeUser?.role === "sub_admin";
+  const canEditPreSoOffsets = activeUser?.role === "admin";
   const canEditCashOutGoOffsets =
     activeUser?.role === "admin" ||
     activeUser?.role === "sub_admin" ||
     (activeUser?.role === "universal_viewer" &&
-      (activeUser.cashOutgoEditScope === "personal" ||
-        activeUser.cashOutgoEditScope === "global"));
+      (activeUser.cashOutgoEditScope === "personal" || activeUser.cashOutgoEditScope === "global"));
   const cashOutGoScopeNote =
     activeUser?.role === "universal_viewer" && activeUser.cashOutgoEditScope === "personal"
       ? "Edits apply only to this account's personal Cash Out Go view."
@@ -2167,7 +3534,7 @@ function OffsetDaysSettings() {
       onChange: (value: number) => updateSettings({ bgReturnOffsetDays: value }),
       helper: [
         "A BG must remain valid through Warranty Period Date + this offset. BG return becomes due the following day. Used by BG-return checks and the Warranty/BG comparison in Search, Dashboard, Analytics, and Reports.",
-        "Admin/Sub-admin changes apply throughout the software.",
+        "Administrator changes apply throughout the software.",
       ],
     },
     {
@@ -2188,15 +3555,19 @@ function OffsetDaysSettings() {
         <div className="mb-3">
           <h2 className="text-sm font-semibold">Shared day settings</h2>
           <div className="mt-1">
-            <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
+            <SettingsScope scope="shared" editors="Administrators" />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Shared offsets and the Delay Status default apply across Analytics and Reports; report-level overrides remain separate where available.
+            Shared offsets and the Delay Status default apply across Analytics and Reports;
+            report-level overrides remain separate where available.
           </p>
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {offsets.map((offset) => (
-            <label key={offset.label} className="block rounded-md border border-border bg-background p-3">
+            <label
+              key={offset.label}
+              className="block rounded-md border border-border bg-background p-3"
+            >
               <span className="mb-1 block text-xs font-medium">{offset.label}</span>
               <span className="flex items-center gap-2">
                 <input
@@ -2213,7 +3584,9 @@ function OffsetDaysSettings() {
               </span>
               <span className="mt-2 block space-y-1 text-xs leading-relaxed text-muted-foreground">
                 {offset.helper.map((line) => (
-                  <span key={line} className="block">{line}</span>
+                  <span key={line} className="block">
+                    {line}
+                  </span>
                 ))}
               </span>
             </label>
@@ -2269,7 +3642,9 @@ function WorkspaceSettings() {
         console.error(error);
         if (!cancelled) {
           setSelectedYearFileCount(-1);
-          setYearUsageError("Could not check whether this year has files. Retry before deleting it.");
+          setYearUsageError(
+            "Could not check whether this year has files. Retry before deleting it.",
+          );
         }
       });
     return () => {
@@ -2282,10 +3657,11 @@ function WorkspaceSettings() {
     !yearUsageError &&
     financialYears.length > 1;
   const canEditWorkspaceGlobals = activeUser?.role === "admin";
-  const canManageYearArchive = activeUser?.role === "admin" || activeUser?.role === "sub_admin";
-  const selectedYearArchived = settings.financialYearStatuses?.some(
-    (status) => status.label === workspaceYear && status.archived,
-  ) ?? false;
+  const canManageYearArchive = activeUser?.role === "admin";
+  const selectedYearArchived =
+    settings.financialYearStatuses?.some(
+      (status) => status.label === workspaceYear && status.archived,
+    ) ?? false;
   const addFinancialYear = () => {
     const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
@@ -2300,7 +3676,7 @@ function WorkspaceSettings() {
   };
 
   const setCurrentFinancialYear = () => {
-    store.updateSettings({
+    updateSettings({
       financialYear: workspaceYear,
       selectedYear: ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
       setupYear: workspaceYear,
@@ -2308,7 +3684,7 @@ function WorkspaceSettings() {
   };
 
   const toggleYearSelectionLock = () => {
-    store.updateSettings({ yearSelectionLocked: !settings.yearSelectionLocked });
+    updateSettings({ yearSelectionLocked: !settings.yearSelectionLocked });
   };
 
   const deleteSelectedFinancialYear = async () => {
@@ -2429,13 +3805,18 @@ function WorkspaceSettings() {
               </button>
               <SettingsHelper items={workspaceYearHelpers.lockSelection} label="Year lock help" />
 
-              <HelpedControl helper={workspaceYearHelpers.archive} label="Archive financial year help">
+              <HelpedControl
+                helper={workspaceYearHelpers.archive}
+                label="Archive financial year help"
+              >
                 <button
                   type="button"
                   onClick={() => {
                     const nextArchived = !selectedYearArchived;
                     const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
-                      status.label === workspaceYear ? { ...status, archived: nextArchived } : status,
+                      status.label === workspaceYear
+                        ? { ...status, archived: nextArchived }
+                        : status,
                     );
                     updateSettings({ financialYearStatuses: nextStatuses });
                   }}
@@ -2482,25 +3863,6 @@ function WorkspaceSettings() {
             </div>
           </div>
         </div>
-        <ThemeField
-          label="Theme"
-          value={settings.theme}
-          onChange={(value) => updateSettings({ theme: value })}
-        />
-        <ThemeTintField
-          label="Theme color"
-          value={settings.themeTint}
-          onChange={(value) => updateSettings({ themeTint: value })}
-        />
-        <PasswordField
-          label="Deletion password"
-          value={settings.deletionPassword}
-          onChange={(value) => {
-            if (canEditWorkspaceGlobals) updateSettings({ deletionPassword: value });
-          }}
-          disabled={!canEditWorkspaceGlobals}
-          helper={deletionPasswordHelper}
-        />
       </div>
     </div>
   );
@@ -2668,28 +4030,32 @@ function FirmTypeSettings() {
               );
               const usedFirmType = row.usageCount > 0;
               return (
-              <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <input
-                    value={row.value}
-                    onChange={(event) => rename(index, event.target.value)}
-                    disabled={usedFirmType}
-                    title={usedFirmType ? "Used firm type cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
-                    className={
-                      "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-                      (usedFirmType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
-                    }
+                <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <input
+                      value={row.value}
+                      onChange={(event) => rename(index, event.target.value)}
+                      disabled={usedFirmType}
+                      title={
+                        usedFirmType
+                          ? "Used firm type cannot be renamed. Inactivate it to hide from future dropdowns."
+                          : undefined
+                      }
+                      className={
+                        "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                        (usedFirmType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                      }
+                    />
+                    <MasterValueMeta row={row} />
+                  </div>
+                  <MasterValueActions
+                    row={row}
+                    onActivate={() => activate(row.value)}
+                    onDeactivate={() => remove(index)}
+                    onDelete={() => remove(index)}
+                    label={row.value}
                   />
-                  <MasterValueMeta row={row} />
-                </div>
-                <MasterValueActions
-                  row={row}
-                  onActivate={() => activate(row.value)}
-                  onDeactivate={() => remove(index)}
-                  onDelete={() => remove(index)}
-                  label={row.value}
-                />
-              </li>
+                </li>
               );
             })}
             {inactiveRows.map((row) => (
@@ -2794,7 +4160,11 @@ function ModeSettings() {
                       value={row.value}
                       onChange={(event) => rename(index, event.target.value)}
                       disabled={lockedModeName}
-                      title={usedMode ? "Used mode cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
+                      title={
+                        usedMode
+                          ? "Used mode cannot be renamed. Inactivate it to hide from future dropdowns."
+                          : undefined
+                      }
                       className={
                         "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
                         (lockedModeName ? "bg-secondary/50 text-muted-foreground" : "bg-background")
@@ -2881,24 +4251,34 @@ function GemBiddingModeSettings() {
           const isBuiltIn = ["Custom", "Catalogue", "Comparison"].includes(mode);
           const cannotDelete = usageCount > 0 || isBuiltIn;
           return (
-          <li key={mode} className="flex items-center gap-3 px-4 py-2.5">
-            <span className="min-w-0 flex-1 text-sm">
-              {mode}
-              {usageCount > 0 ? (
-                <span className="ml-2 text-xs text-muted-foreground">Used by {usageCount} file{usageCount === 1 ? "" : "s"}</span>
-              ) : null}
-            </span>
-            <button
-              type="button"
-              onClick={() => updateSettings({ gemBiddingModes: modes.filter((item) => item !== mode) })}
-              disabled={cannotDelete}
-              className="grid size-8 shrink-0 place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
-              aria-label={`Delete ${mode} GeM bidding mode`}
-              title={usageCount > 0 ? `In use by ${usageCount} file${usageCount === 1 ? "" : "s"}` : isBuiltIn ? "Built-in modes cannot be removed" : `Delete ${mode}`}
-            >
-              <Trash2 className="size-4" />
-            </button>
-          </li>
+            <li key={mode} className="flex items-center gap-3 px-4 py-2.5">
+              <span className="min-w-0 flex-1 text-sm">
+                {mode}
+                {usageCount > 0 ? (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    Used by {usageCount} file{usageCount === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  updateSettings({ gemBiddingModes: modes.filter((item) => item !== mode) })
+                }
+                disabled={cannotDelete}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label={`Delete ${mode} GeM bidding mode`}
+                title={
+                  usageCount > 0
+                    ? `In use by ${usageCount} file${usageCount === 1 ? "" : "s"}`
+                    : isBuiltIn
+                      ? "Built-in modes cannot be removed"
+                      : `Delete ${mode}`
+                }
+              >
+                <Trash2 className="size-4" />
+              </button>
+            </li>
           );
         })}
       </ul>
@@ -3018,7 +4398,10 @@ function FileTypeSettings() {
               </option>
             ))}
           </select>
-          <SettingsHelper items={settingsControlHelpers.fileTypeGroup} label="File type group help" />
+          <SettingsHelper
+            items={settingsControlHelpers.fileTypeGroup}
+            label="File type group help"
+          />
         </div>
         <button
           type="button"
@@ -3038,13 +4421,13 @@ function FileTypeSettings() {
         ) : (
           <ul className="divide-y divide-border">
             {activeRows.map((row) => {
-	              const index = fileTypes.findIndex(
-	                (fileType) => fileType.toLowerCase() === row.value.toLowerCase(),
-	              );
-	              const fileType = row.value;
-	              const usedFileType = row.usageCount > 0;
-	              const protectedFileType = isDefaultFileType(fileType) || usedFileType;
-	              return (
+              const index = fileTypes.findIndex(
+                (fileType) => fileType.toLowerCase() === row.value.toLowerCase(),
+              );
+              const fileType = row.value;
+              const usedFileType = row.usageCount > 0;
+              const protectedFileType = isDefaultFileType(fileType) || usedFileType;
+              return (
                 <li
                   key={`${fileType}-${index}`}
                   className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_260px_auto]"
@@ -3053,7 +4436,7 @@ function FileTypeSettings() {
                     <input
                       value={fileType}
                       onChange={(event) => rename(index, event.target.value)}
-	                      disabled={protectedFileType}
+                      disabled={protectedFileType}
                       className={
                         "h-9 w-full min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
                         (protectedFileType
@@ -3064,23 +4447,23 @@ function FileTypeSettings() {
                     <MasterValueMeta row={row} />
                   </div>
                   <div className="flex items-center gap-1">
-	                    <select
+                    <select
                       value={
                         fileTypeGroups.find(
                           (entry) =>
                             entry.fileType.trim().toLowerCase() === fileType.trim().toLowerCase(),
                         )?.group ?? getDefaultFileTypeGroup(fileType)
                       }
-	                      onChange={(event) =>
-	                        updateGroup(fileType, event.target.value as FileTypeGroup)
-	                      }
-	                      disabled={usedFileType}
-	                      className={
-	                        "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-	                        (usedFileType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
-	                      }
-	                      aria-label={`Workflow group for ${fileType}`}
-	                    >
+                      onChange={(event) =>
+                        updateGroup(fileType, event.target.value as FileTypeGroup)
+                      }
+                      disabled={usedFileType}
+                      className={
+                        "h-9 min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
+                        (usedFileType ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                      }
+                      aria-label={`Workflow group for ${fileType}`}
+                    >
                       {fileTypeGroupOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
@@ -3092,10 +4475,10 @@ function FileTypeSettings() {
                       label={`${fileType} workflow group help`}
                     />
                   </div>
-	                  {protectedFileType ? (
-	                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
-	                      {usedFileType ? "In use" : "Default"}
-	                    </span>
+                  {protectedFileType ? (
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                      {usedFileType ? "In use" : "Default"}
+                    </span>
                   ) : (
                     <MasterValueActions
                       row={row}
@@ -3233,36 +4616,40 @@ function SpecialFileMarkerSettings() {
               const index = markers.findIndex((marker) => marker.code === row.marker.code);
               const usedMarker = row.usageCount > 0;
               return (
-              <li
-                key={`${row.marker.code}-${index}`}
-                className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
-              >
-                <div>
+                <li
+                  key={`${row.marker.code}-${index}`}
+                  className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
+                >
+                  <div>
+                    <input
+                      value={row.marker.code}
+                      onChange={(event) => rename(index, event.target.value)}
+                      disabled={usedMarker}
+                      title={
+                        usedMarker
+                          ? "Used marker code cannot be renamed. Inactivate it to hide from future dropdowns."
+                          : undefined
+                      }
+                      className={
+                        "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm font-semibold uppercase outline-none focus:ring-2 focus:ring-ring/40 " +
+                        (usedMarker ? "bg-secondary/50 text-muted-foreground" : "bg-background")
+                      }
+                    />
+                    <MasterValueMeta row={row} />
+                  </div>
                   <input
-                    value={row.marker.code}
-                    onChange={(event) => rename(index, event.target.value)}
-                    disabled={usedMarker}
-                    title={usedMarker ? "Used marker code cannot be renamed. Inactivate it to hide from future dropdowns." : undefined}
-                    className={
-                      "h-9 w-full min-w-0 rounded-md border border-input px-3 text-sm font-semibold uppercase outline-none focus:ring-2 focus:ring-ring/40 " +
-                      (usedMarker ? "bg-secondary/50 text-muted-foreground" : "bg-background")
-                    }
+                    value={row.marker.description}
+                    onChange={(event) => updateDescription(index, event.target.value)}
+                    className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   />
-                  <MasterValueMeta row={row} />
-                </div>
-                <input
-                  value={row.marker.description}
-                  onChange={(event) => updateDescription(index, event.target.value)}
-                  className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
-                />
-                <MasterValueActions
-                  row={row}
-                  onActivate={() => activate(row.marker)}
-                  onDeactivate={() => remove(index)}
-                  onDelete={() => remove(index)}
-                  label={row.marker.code}
-                />
-              </li>
+                  <MasterValueActions
+                    row={row}
+                    onActivate={() => activate(row.marker)}
+                    onDeactivate={() => remove(index)}
+                    onDelete={() => remove(index)}
+                    label={row.marker.code}
+                  />
+                </li>
               );
             })}
             {inactiveRows.map((row) => (
@@ -3271,7 +4658,9 @@ function SpecialFileMarkerSettings() {
                 className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
               >
                 <div>
-                  <div className="text-sm font-semibold text-muted-foreground">{row.marker.code}</div>
+                  <div className="text-sm font-semibold text-muted-foreground">
+                    {row.marker.code}
+                  </div>
                   <MasterValueMeta row={row} />
                 </div>
                 <div className="text-sm text-muted-foreground">
@@ -3397,7 +4786,9 @@ function validateValueThresholdRanges(levels: ValueThresholdLevel[]) {
     const invalid = ranges.find((range): range is { error: string } => "error" in range);
     if (invalid) return invalid.error;
     const message = validateRangeContinuity(
-      ranges.filter((range): range is { label: string; min?: number; max?: number } => !("error" in range)),
+      ranges.filter(
+        (range): range is { label: string; min?: number; max?: number } => !("error" in range),
+      ),
       1,
     );
     if (message) return message;
@@ -3515,7 +4906,10 @@ function getIndentorUsage(files: FileRecord[]) {
   return usage;
 }
 
-function getFirmUsageCount(firm: MasterFirm, usage: Map<string, { value: string; fileIds: Set<string> }>) {
+function getFirmUsageCount(
+  firm: MasterFirm,
+  usage: Map<string, { value: string; fileIds: Set<string> }>,
+) {
   const fileIds = new Set<string>();
   [firm.firmName, firm.firmUniqueNo].forEach((value) => {
     const key = normalizeMasterKey(value ?? "");
@@ -3543,7 +4937,9 @@ function getMasterValueUsageRows(
   usage: Map<string, { value: string; fileIds: Set<string> }>,
   options: { uppercase?: boolean } = {},
 ): MasterValueUsageRow[] {
-  const activeKeys = new Set(activeValues.map((value) => normalizeMasterKey(value, options.uppercase)));
+  const activeKeys = new Set(
+    activeValues.map((value) => normalizeMasterKey(value, options.uppercase)),
+  );
   const activeRows = activeValues.map((value) => {
     const displayValue = options.uppercase ? value.trim().toUpperCase() : value.trim();
     const key = normalizeMasterKey(displayValue, options.uppercase);
@@ -3721,15 +5117,15 @@ function ValueThresholdSettings() {
         (min.value !== undefined && max.value !== undefined && min.value > max.value)
       );
     });
-	    if (invalid) {
-	      setMessage("Check threshold values before saving.");
-	      return;
-	    }
-	    const rangeMessage = validateValueThresholdRanges(normalized);
-	    if (rangeMessage) {
-	      setMessage(rangeMessage);
-	      return;
-	    }
+    if (invalid) {
+      setMessage("Check threshold values before saving.");
+      return;
+    }
+    const rangeMessage = validateValueThresholdRanges(normalized);
+    if (rangeMessage) {
+      setMessage(rangeMessage);
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
@@ -3879,9 +5275,7 @@ const defaultBgReceiptDelayDays = [10, 30, 60];
 function normalizeBgReceiptDelaySettings(value: number[] | undefined) {
   const thresholds = Array.from(
     new Set(
-      (value ?? defaultBgReceiptDelayDays).filter(
-        (days) => Number.isInteger(days) && days >= 0,
-      ),
+      (value ?? defaultBgReceiptDelayDays).filter((days) => Number.isInteger(days) && days >= 0),
     ),
   )
     .sort((left, right) => left - right)
@@ -3912,8 +5306,7 @@ function BgReceiptDelaySettings() {
     new Set(normalized).size === normalized.length;
   const savedDays = normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays);
   const changed =
-    valid &&
-    JSON.stringify([...normalized].sort((a, b) => a - b)) !== JSON.stringify(savedDays);
+    valid && JSON.stringify([...normalized].sort((a, b) => a - b)) !== JSON.stringify(savedDays);
 
   const save = async (nextDays = normalized) => {
     const sorted = [...nextDays].sort((left, right) => left - right);
@@ -3976,12 +5369,16 @@ function BgReceiptDelaySettings() {
         ))}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-muted-foreground" role="status">{message}</div>
+        <div className="text-xs text-muted-foreground" role="status">
+          {message}
+        </div>
         <div className="flex gap-2">
           <button
             type="button"
             disabled={saving || days.length >= 6}
-            onClick={() => setDays((current) => [...current, String((Number(current.at(-1)) || 0) + 30)])}
+            onClick={() =>
+              setDays((current) => [...current, String((Number(current.at(-1)) || 0) + 30)])
+            }
             className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
           >
             Add threshold
@@ -4004,7 +5401,9 @@ function BgReceiptDelaySettings() {
           </button>
           <button
             type="button"
-            disabled={saving || JSON.stringify(savedDays) === JSON.stringify(defaultBgReceiptDelayDays)}
+            disabled={
+              saving || JSON.stringify(savedDays) === JSON.stringify(defaultBgReceiptDelayDays)
+            }
             onClick={() => {
               setDays(defaultBgReceiptDelayDays.map(String));
               void save(defaultBgReceiptDelayDays);
@@ -4016,7 +5415,9 @@ function BgReceiptDelaySettings() {
         </div>
       </div>
       {!valid ? (
-        <p className="mt-2 text-xs text-destructive">Thresholds must be distinct, non-negative whole numbers.</p>
+        <p className="mt-2 text-xs text-destructive">
+          Thresholds must be distinct, non-negative whole numbers.
+        </p>
       ) : null}
     </section>
   );
@@ -4107,8 +5508,7 @@ function AnomalyGovernanceSettings() {
       .split("_")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(" ");
-  const formatScope = (scope: string | undefined) =>
-    scope === "universal" ? "Universal" : "File";
+  const formatScope = (scope: string | undefined) => (scope === "universal" ? "Universal" : "File");
 
   const review = async (signature: string, action: string) => {
     const adminMessage =
@@ -4127,7 +5527,9 @@ function AnomalyGovernanceSettings() {
 
   const clearSelected = async (signatures: string[]) => {
     if (!signatures.length) return;
-    const password = await promptPassword("Enter your account password to clear selected anomalies:");
+    const password = await promptPassword(
+      "Enter your account password to clear selected anomalies:",
+    );
     if (!password?.trim()) return;
     try {
       await store.clearSuspectedAnomalyHistory(password.trim(), signatures);
@@ -4244,10 +5646,12 @@ function AnomalyGovernanceSettings() {
                   </div>
                   <div>
                     <div>
-                      {row.previousField ? `${row.previousField}: ` : ""}{row.previousDate || "-"}
+                      {row.previousField ? `${row.previousField}: ` : ""}
+                      {row.previousDate || "-"}
                     </div>
                     <div>
-                      {row.laterField ? `${row.laterField}: ` : ""}{row.laterDate || "-"}
+                      {row.laterField ? `${row.laterField}: ` : ""}
+                      {row.laterDate || "-"}
                     </div>
                     {row.userExplanation ? (
                       <div className="mt-1 text-muted-foreground">
@@ -4360,12 +5764,12 @@ function AnomalyGovernanceSettings() {
                         </div>
                       ) : null}
                     </div>
-	                    <div>
-	                      <div className="font-medium">{formatStatus(row.status)}</div>
-	                      <div className="text-muted-foreground">{formatScope(row.scope)} decision</div>
-	                      <div className="text-muted-foreground">
-	                        {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
-	                      </div>
+                    <div>
+                      <div className="font-medium">{formatStatus(row.status)}</div>
+                      <div className="text-muted-foreground">{formatScope(row.scope)} decision</div>
+                      <div className="text-muted-foreground">
+                        {row.reviewedByName || row.revokedByName || row.requestedByName || "-"}
+                      </div>
                       <div className="text-muted-foreground">
                         {(row.reviewedAt || row.revokedAt || row.requestedAt || "").slice(0, 10)}
                       </div>
@@ -4414,7 +5818,7 @@ function AnomalyGovernanceSettings() {
     <div className="space-y-6">
       <div>
         <h2 className="mb-1 text-sm font-semibold">Anomaly Control</h2>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs leading-5 text-muted-foreground">
           Review user acceptance requests and approve file-specific or universal exceptions.
         </p>
       </div>
@@ -4434,7 +5838,10 @@ function AnomalyGovernanceSettings() {
               label="Anomaly workflow help"
             />
           </span>
-          <HelpedControl helper={settingsControlHelpers.anomalyRefresh} label="Refresh anomaly help">
+          <HelpedControl
+            helper={settingsControlHelpers.anomalyRefresh}
+            label="Refresh anomaly help"
+          >
             <button
               type="button"
               onClick={() => void load()}
@@ -4481,7 +5888,6 @@ function AnomalyGovernanceSettings() {
             ? renderActiveAnomalyGroups(sentAnomalies)
             : renderHistoryGroups()}
       </section>
-
     </div>
   );
 }
@@ -4561,8 +5967,11 @@ function MilestoneSettings() {
         Controls the active milestone order on file boards and in Dashboard Status-2 and Status-4.
       </p>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_170px_auto]">
-        <DivisionInput value={name} onChange={setName} placeholder="Milestone name" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_170px_auto] md:items-end">
+        <label className="block min-w-0">
+          <div className="text-xs font-medium mb-1.5">Milestone</div>
+          <DivisionInput value={name} onChange={setName} placeholder="Milestone name" />
+        </label>
         <label className="block">
           <div className="text-xs font-medium mb-1.5">Position</div>
           <select
@@ -4580,7 +5989,7 @@ function MilestoneSettings() {
         <button
           type="button"
           onClick={add}
-          className="h-10 self-end px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
         >
           <Plus className="size-4" /> Add
         </button>
@@ -4600,62 +6009,62 @@ function MilestoneSettings() {
               );
               const active = row.status === "active";
               return (
-              <li key={milestone} className="flex items-center justify-between gap-3 px-4 py-3">
-                <span className="flex min-w-0 items-center gap-3">
-                  <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-secondary text-xs font-semibold">
-                    {active ? activeIndex + 1 : "-"}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{milestone}</span>
-                    <MasterValueMeta row={row} />
-                  </span>
-                </span>
-                <span className="flex shrink-0 items-center gap-1">
-                  {active ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => move(activeIndex, -1)}
-                        disabled={activeIndex === 0}
-                        className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                        aria-label={`Move ${milestone} up`}
-                      >
-                        <ArrowUp className="size-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => move(activeIndex, 1)}
-                        disabled={activeIndex === milestones.length - 1}
-                        className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                        aria-label={`Move ${milestone} down`}
-                      >
-                        <ArrowDown className="size-4" />
-                      </button>
-                    </>
-                  ) : null}
-                  {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
-                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
-                      Existing
+                <li key={milestone} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <span className="flex min-w-0 items-center gap-3">
+                    <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-secondary text-xs font-semibold">
+                      {active ? activeIndex + 1 : "-"}
                     </span>
-                  ) : active ? (
-                    <MasterValueActions
-                      row={row}
-                      onActivate={() => activate(milestone)}
-                      onDeactivate={() => remove(milestone)}
-                      onDelete={() => remove(milestone)}
-                      label={milestone}
-                    />
-                  ) : (
-                    <MasterValueActions
-                      row={row}
-                      onActivate={() => activate(milestone)}
-                      onDeactivate={() => undefined}
-                      onDelete={() => undefined}
-                      label={milestone}
-                    />
-                  )}
-                </span>
-              </li>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{milestone}</span>
+                      <MasterValueMeta row={row} />
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {active ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => move(activeIndex, -1)}
+                          disabled={activeIndex === 0}
+                          className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                          aria-label={`Move ${milestone} up`}
+                        >
+                          <ArrowUp className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => move(activeIndex, 1)}
+                          disabled={activeIndex === milestones.length - 1}
+                          className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                          aria-label={`Move ${milestone} down`}
+                        >
+                          <ArrowDown className="size-4" />
+                        </button>
+                      </>
+                    ) : null}
+                    {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
+                      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                        Existing
+                      </span>
+                    ) : active ? (
+                      <MasterValueActions
+                        row={row}
+                        onActivate={() => activate(milestone)}
+                        onDeactivate={() => remove(milestone)}
+                        onDelete={() => remove(milestone)}
+                        label={milestone}
+                      />
+                    ) : (
+                      <MasterValueActions
+                        row={row}
+                        onActivate={() => activate(milestone)}
+                        onDeactivate={() => undefined}
+                        onDelete={() => undefined}
+                        label={milestone}
+                      />
+                    )}
+                  </span>
+                </li>
               );
             })}
           </ul>
@@ -4728,7 +6137,10 @@ function TableFieldPresetSettings() {
         <div>
           <div className="mb-1 inline-flex items-center gap-1.5">
             <h2 className="text-sm font-semibold">Preset table fields</h2>
-            <SettingsHelper items={settingsSectionHelpers.presets} label="Preset table fields help" />
+            <SettingsHelper
+              items={settingsSectionHelpers.presets}
+              label="Preset table fields help"
+            />
           </div>
           <p className="text-xs text-muted-foreground">
             Shared presets are set by admin and visible to all. Add personal presets visible only to
@@ -4939,7 +6351,7 @@ function DemandProcessingPresetSettings() {
       <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold mb-1">Demand processing presets</h2>
+            <h2 className="text-sm font-semibold mb-1">Demand Processing Analysis Presets</h2>
             <p className="text-xs text-muted-foreground">
               Create shared presets for the Demand processing analysis report.
             </p>
@@ -5139,7 +6551,9 @@ function validateDemandProcessingDayRanges(ranges: DemandProcessingDayRange[]) {
   const invalid = parsed.find((range): range is { error: string } => "error" in range);
   if (invalid) return invalid.error;
   return validateRangeContinuity(
-    parsed.filter((range): range is { label: string; min: number; max?: number } => !("error" in range)),
+    parsed.filter(
+      (range): range is { label: string; min: number; max?: number } => !("error" in range),
+    ),
     1,
   );
 }
@@ -5190,13 +6604,13 @@ function DemandProcessingDayRangeSettings({
             <Plus className="size-4" /> Add range
           </button>
         </div>
-	      </div>
-	      {message ? (
-	        <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-	          {message}
-	        </p>
-	      ) : null}
-	      <div className="space-y-2">
+      </div>
+      {message ? (
+        <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {message}
+        </p>
+      ) : null}
+      <div className="space-y-2">
         {ranges.map((range) => (
           <div
             key={range.id}
@@ -5471,7 +6885,7 @@ function DivisionSettings() {
                       <span className="font-medium">{division.name}</span>
                     )}
                   </td>
-	    <td className="break-words px-3 py-3 text-muted-foreground">
+                  <td className="break-words px-3 py-3 text-muted-foreground">
                     {isEditing ? (
                       <DivisionInput
                         value={editCode}
@@ -5542,36 +6956,38 @@ function DivisionSettings() {
                           >
                             <Pencil className="size-4" />
                           </button>
-	                          {usageCount > 0 ? (
-	                            <button
-	                              type="button"
-	                              disabled
-	                              title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"}, including Archive. Historical references are protected.`}
-	                              aria-label={`Cannot delete ${division.name}; it is used in file history`}
-	                              className="size-8 grid place-items-center rounded-md text-muted-foreground opacity-60"
-	                            >
-	                              <Trash2 className="size-4" />
-	                            </button>
-	                          ) : (
-	                            <HelpedControl
-	                              helper={settingsControlHelpers.genericDelete}
-	                              label={`Delete ${division.name} help`}
-	                            >
-	                              <button
-	                                type="button"
-	                                onClick={async () => {
-	                                  if (
-	                                    await requestDeletionPassword(`delete division "${division.name}"`)
-	                                  ) {
-	                                    store.deleteDivision(division.id);
-	                                  }
-	                                }}
-	                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-	                              >
-	                                <Trash2 className="size-4" />
-	                              </button>
-	                            </HelpedControl>
-	                          )}
+                          {usageCount > 0 ? (
+                            <button
+                              type="button"
+                              disabled
+                              title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"}, including Archive. Historical references are protected.`}
+                              aria-label={`Cannot delete ${division.name}; it is used in file history`}
+                              className="size-8 grid place-items-center rounded-md text-muted-foreground opacity-60"
+                            >
+                              <Trash2 className="size-4" />
+                            </button>
+                          ) : (
+                            <HelpedControl
+                              helper={settingsControlHelpers.genericDelete}
+                              label={`Delete ${division.name} help`}
+                            >
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (
+                                    await requestDeletionPassword(
+                                      `delete division "${division.name}"`,
+                                    )
+                                  ) {
+                                    store.deleteDivision(division.id);
+                                  }
+                                }}
+                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </HelpedControl>
+                          )}
                         </>
                       )}
                     </div>
@@ -5593,7 +7009,14 @@ type IndentorDraft = Pick<
 
 type FirmDraft = Pick<
   MasterFirm,
-  "firmName" | "firmType" | "firmTypeOther" | "emailId" | "city" | "address" | "firmUniqueNo" | "contactNo"
+  | "firmName"
+  | "firmType"
+  | "firmTypeOther"
+  | "emailId"
+  | "city"
+  | "address"
+  | "firmUniqueNo"
+  | "contactNo"
 >;
 
 const emptyFirmDraft: FirmDraft = {
@@ -5611,7 +7034,8 @@ function cleanFirmDraft(draft: FirmDraft): FirmDraft {
   return {
     firmName: draft.firmName?.trim() || "",
     firmType: draft.firmType?.trim() || "",
-    firmTypeOther: draft.firmType?.trim().toUpperCase() === "OTHER" ? draft.firmTypeOther?.trim() || "" : "",
+    firmTypeOther:
+      draft.firmType?.trim().toUpperCase() === "OTHER" ? draft.firmTypeOther?.trim() || "" : "",
     emailId: draft.emailId?.trim() || "",
     city: draft.city?.trim() || "",
     address: draft.address?.trim() || "",
@@ -5758,10 +7182,7 @@ function FirmDatabaseSettings() {
   const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
   const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
   const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
-  const firmTypeOptions = normalizeFirmTypes([
-    ...normalizeFirmTypes(settings.firmTypes),
-    "Other",
-  ]);
+  const firmTypeOptions = normalizeFirmTypes([...normalizeFirmTypes(settings.firmTypes), "Other"]);
   const firmUniqueNoLabelChanged = (labelDraft.trim() || "Firm Unique No.") !== firmUniqueNoLabel;
 
   useEffect(() => {
@@ -5804,8 +7225,7 @@ function FirmDatabaseSettings() {
   const isComplete = (value: FirmDraft) => {
     const cleaned = cleanFirmDraft(value);
     return Boolean(
-      cleaned.firmName &&
-      (cleaned.firmType?.toUpperCase() !== "OTHER" || cleaned.firmTypeOther),
+      cleaned.firmName && (cleaned.firmType?.toUpperCase() !== "OTHER" || cleaned.firmTypeOther),
     );
   };
 
@@ -5918,18 +7338,24 @@ function FirmDatabaseSettings() {
 
       {activeUser?.role === "admin" ? (
         <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-          <DivisionInput
-            value={labelDraft}
-            onChange={setLabelDraft}
-            placeholder="Firm Unique No. label"
-          />
+          <div>
+            <DivisionInput
+              value={labelDraft}
+              onChange={setLabelDraft}
+              placeholder="Firm Unique No. label"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Changes the label shown for the firm&apos;s unique-number field; it does not save a firm
+              record.
+            </p>
+          </div>
           <button
             type="button"
             onClick={() => void saveFirmUniqueNoLabel()}
             disabled={!firmUniqueNoLabelChanged}
             className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <Check className="size-4" /> Save label
+            <Check className="size-4" /> Save unique-number label
           </button>
         </div>
       ) : null}
@@ -6109,7 +7535,9 @@ function FirmDatabaseSettings() {
                             value={editDraft.firmType ?? ""}
                             options={firmTypeOptions}
                             onChange={(value) => updateEditDraft("firmType", value)}
-                            onAddType={canManageFirmTypes ? (value) => addFirmType(value, "edit") : undefined}
+                            onAddType={
+                              canManageFirmTypes ? (value) => addFirmType(value, "edit") : undefined
+                            }
                           />
                           {editDraft.firmType?.toUpperCase() === "OTHER" ? (
                             <FirmInput
@@ -6121,15 +7549,18 @@ function FirmDatabaseSettings() {
                           ) : null}
                         </div>
                       ) : (
-                        [firm.firmType, firm.firmType?.toUpperCase() === "OTHER" ? firm.firmTypeOther : ""]
+                        [
+                          firm.firmType,
+                          firm.firmType?.toUpperCase() === "OTHER" ? firm.firmTypeOther : "",
+                        ]
                           .filter(Boolean)
                           .join(": ") || "Not set"
                       )}
                     </td>
-	                    <td className="break-words px-3 py-3 text-muted-foreground">
-	                      {firm.firmRating || "Not rated"}
-	                    </td>
-	                    <td className="px-3 py-3">
+                    <td className="break-words px-3 py-3 text-muted-foreground">
+                      {firm.firmRating || "Not rated"}
+                    </td>
+                    <td className="px-3 py-3">
                       <div className="flex justify-end gap-1">
                         {isEditing ? (
                           <>
@@ -6164,31 +7595,31 @@ function FirmDatabaseSettings() {
                             >
                               <Pencil className="size-4" />
                             </button>
-	                            {canDeleteFirms ? (
-	                              usageCount > 0 ? (
-	                                <button
-	                                  type="button"
-	                                  disabled
-		                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Keep historical firm reference.`}
-	                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
-	                                >
-	                                  Used
-	                                </button>
-	                              ) : (
-	                                <HelpedControl
-	                                  helper={settingsControlHelpers.genericDelete}
-	                                  label={`Delete ${firm.firmName || "firm"} help`}
-	                                >
-	                                  <button
-	                                    type="button"
-	                                    onClick={() => void removeFirm(firm.id)}
-	                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-	                                  >
-	                                    <Trash2 className="size-4" />
-	                                  </button>
-	                                </HelpedControl>
-	                              )
-	                            ) : null}
+                            {canDeleteFirms ? (
+                              usageCount > 0 ? (
+                                <button
+                                  type="button"
+                                  disabled
+                                  title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Keep historical firm reference.`}
+                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+                                >
+                                  Used
+                                </button>
+                              ) : (
+                                <HelpedControl
+                                  helper={settingsControlHelpers.genericDelete}
+                                  label={`Delete ${firm.firmName || "firm"} help`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => void removeFirm(firm.id)}
+                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                  >
+                                    <Trash2 className="size-4" />
+                                  </button>
+                                </HelpedControl>
+                              )
+                            ) : null}
                           </>
                         )}
                       </div>
@@ -6606,8 +8037,7 @@ function IndentorSettings() {
     setEditDraft((current) => ({ ...current, [key]: value }));
   };
 
-  const isReadyToSave = (value: IndentorDraft) =>
-    Boolean(value.divisionId && value.name.trim());
+  const isReadyToSave = (value: IndentorDraft) => Boolean(value.divisionId && value.name.trim());
 
   const resetDraft = () =>
     setDraft({ ...emptyIndentorDraft, divisionId: availableDivisions[0]?.id ?? "" });
@@ -6677,20 +8107,20 @@ function IndentorSettings() {
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-	          <h2 className="text-sm font-semibold mb-1">Indentors</h2>
-	          <p className="text-xs text-muted-foreground">
-	            Add and search division-wise indentors used when files are created.
-	          </p>
-	          <p className="mt-1 text-xs text-muted-foreground">
-	            Division and Name are required. Other details may be left blank and completed later
-	            by an admin or sub-admin.
-	          </p>
-          <p className="mt-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
-            Editing changes the indentor master record only. Existing file records keep the
-            indentor name and division saved on them.
+          <h2 className="text-sm font-semibold mb-1">Indentors</h2>
+          <p className="text-xs text-muted-foreground">
+            Add and search division-wise indentors used when files are created.
           </p>
-	        </div>
-        <div className="flex w-full flex-col gap-2 sm:max-w-xl sm:flex-row">
+          <p className="mt-1 text-xs text-muted-foreground">
+            Division and Name are required. Other details may be left blank and completed later by
+            an admin or sub-admin.
+          </p>
+          <p className="mt-2 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+            Editing changes the indentor master record only. Existing file records keep the indentor
+            name and division saved on them.
+          </p>
+        </div>
+        <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:max-w-2xl sm:grid-cols-[minmax(180px,0.8fr)_minmax(300px,1.2fr)]">
           <SearchableDropdown
             value={divisionFilter}
             onChange={(value) => {
@@ -6708,13 +8138,14 @@ function IndentorSettings() {
             placeholder="All divisions"
             deferChangeUntilSelect
             allowCustomValue={false}
+            containerClassName="min-w-0 w-full"
             className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search name, SF ID, designation, email"
-            className="h-10 flex-1 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="h-10 min-w-0 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
       </div>
@@ -6833,7 +8264,7 @@ function IndentorSettings() {
                 });
                 return (
                   <tr key={indentor.id} className="border-t border-border align-top">
-	                    <td className="break-words px-3 py-3">
+                    <td className="break-words px-3 py-3">
                       {isEditing ? (
                         <IndentorDivisionSelect
                           value={editDraft.divisionId}
@@ -6874,7 +8305,7 @@ function IndentorSettings() {
                       value={isEditing ? editDraft.email : indentor.email}
                       onChange={(value) => updateEditDraft("email", value)}
                     />
-	                    <td className="px-3 py-3">
+                    <td className="px-3 py-3">
                       {canManage ? (
                         <div className="flex justify-end gap-1">
                           {isEditing ? (
@@ -6964,12 +8395,20 @@ function IndentorSettings() {
 }
 
 function IpAccessSettings() {
+  const draft = useContext(SettingsDraftContext);
   const [config, setConfig] = useState<IpAccessConfig | undefined>();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [ipAddress, setIpAddress] = useState("");
   const [remarks, setRemarks] = useState("");
   const [showArchive, setShowArchive] = useState(false);
+  const [draftMode, setDraftMode] = useState<IpAccessMode | undefined>();
+  const [pendingAdds, setPendingAdds] = useState<TrustedIpAddress[]>([]);
+  const [pendingUpdates, setPendingUpdates] = useState<
+    Record<string, { remarks?: string; active?: boolean }>
+  >({});
+  const saveIpChangesRef = useRef<() => Promise<void>>(async () => undefined);
+  const cancelIpChangesRef = useRef<() => void>(() => undefined);
 
   const load = async () => {
     setLoading(true);
@@ -6989,7 +8428,51 @@ function IpAccessSettings() {
     void load();
   }, []);
 
-  const updateMode = async (mode: IpAccessMode) => {
+  const hasIpChanges =
+    Boolean(config && draftMode && draftMode !== config.mode) ||
+    pendingAdds.length > 0 ||
+    Object.keys(pendingUpdates).length > 0;
+
+  const cancelIpChanges = useCallback(() => {
+    setDraftMode(undefined);
+    setPendingAdds([]);
+    setPendingUpdates({});
+    setMessage("");
+  }, []);
+
+  const saveIpChanges = useCallback(async () => {
+    if (!config || !hasIpChanges) return;
+    if (draftMode && draftMode !== config.mode) {
+      await store.updateIpAccessMode(draftMode);
+    }
+    for (const row of pendingAdds) {
+      await store.addTrustedIpAddress(row.ipAddress, row.remarks);
+    }
+    for (const [id, patch] of Object.entries(pendingUpdates)) {
+      await store.updateTrustedIpAddress(id, patch);
+    }
+    setDraftMode(undefined);
+    setPendingAdds([]);
+    setPendingUpdates({});
+    await load();
+  }, [config, draftMode, hasIpChanges, pendingAdds, pendingUpdates]);
+
+  saveIpChangesRef.current = saveIpChanges;
+  cancelIpChangesRef.current = cancelIpChanges;
+
+  useEffect(() => {
+    draft?.registerExternalDraft?.({
+      save: () => saveIpChangesRef.current(),
+      cancel: () => cancelIpChangesRef.current(),
+    });
+    return () => draft?.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setExternalDirty?.(hasIpChanges);
+  }, [draft?.setExternalDirty, hasIpChanges]);
+
+  const updateMode = (mode: IpAccessMode) => {
     if (
       mode === "restrict" &&
       !window.confirm(
@@ -6998,15 +8481,48 @@ function IpAccessSettings() {
     ) {
       return;
     }
-    setConfig(await store.updateIpAccessMode(mode));
+    setDraftMode(mode);
   };
 
-  const addIp = async (value = ipAddress) => {
+  const addIp = (value = ipAddress) => {
     if (!value.trim()) return;
-    setConfig(await store.addTrustedIpAddress(value.trim(), remarks.trim()));
+    const now = new Date().toISOString();
+    setPendingAdds((current) => [
+      ...current,
+      {
+        id: `pending-${Date.now()}-${current.length}`,
+        ipAddress: value.trim(),
+        remarks: remarks.trim(),
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
     setIpAddress("");
     setRemarks("");
   };
+
+  const updateTrustedIp = async (
+    id: string,
+    patch: { remarks?: string; active?: boolean },
+  ) => {
+    if (id.startsWith("pending-")) {
+      setPendingAdds((current) =>
+        current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+      );
+      return;
+    }
+    setPendingUpdates((current) => ({
+      ...current,
+      [id]: { ...current[id], ...patch },
+    }));
+  };
+
+  const displayedTrustedIps = (config?.trustedIps ?? []).map((row) => ({
+    ...row,
+    ...(pendingUpdates[row.id] ?? {}),
+  }));
+  displayedTrustedIps.push(...pendingAdds);
 
   const permanentlyDeleteArchivedAttempt = async (attempt: IpLoginAttempt) => {
     const deletionPassword = await promptDeletionPassword(
@@ -7055,7 +8571,7 @@ function IpAccessSettings() {
               <SettingsHelper items={settingsControlHelpers.ipMode} label="IP access mode help" />
             </div>
             <select
-              value={config?.mode ?? "off"}
+              value={draftMode ?? config?.mode ?? "off"}
               onChange={(event) => void updateMode(event.target.value as IpAccessMode)}
               disabled={loading || !config}
               className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -7099,7 +8615,10 @@ function IpAccessSettings() {
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1.5fr_auto]">
           <div className="flex items-center gap-1">
             <DivisionInput value={ipAddress} onChange={setIpAddress} placeholder="IP address" />
-            <SettingsHelper items={settingsControlHelpers.ipManualAddress} label="IP address help" />
+            <SettingsHelper
+              items={settingsControlHelpers.ipManualAddress}
+              label="IP address help"
+            />
           </div>
           <div className="flex items-center gap-1">
             <DivisionInput value={remarks} onChange={setRemarks} placeholder="Remarks" />
@@ -7119,8 +8638,8 @@ function IpAccessSettings() {
       </div>
 
       <TrustedIpTable
-        rows={config?.trustedIps ?? []}
-        onUpdate={async (id, patch) => setConfig(await store.updateTrustedIpAddress(id, patch))}
+        rows={displayedTrustedIps}
+        onUpdate={updateTrustedIp}
       />
 
       <IpAttemptTable
@@ -7134,7 +8653,10 @@ function IpAccessSettings() {
         <div className="flex w-full items-center justify-between gap-3">
           <span className="inline-flex items-center gap-1.5 text-sm font-semibold">
             New IP bin / archive ({archivedAttempts.length})
-            <SettingsHelper items={settingsControlHelpers.ipAttemptBin} label="New IP archive help" />
+            <SettingsHelper
+              items={settingsControlHelpers.ipAttemptBin}
+              label="New IP archive help"
+            />
           </span>
           <button
             type="button"
@@ -7202,8 +8724,8 @@ function TrustedIpTable({
                   <td className="px-3 py-2 font-mono">{row.ipAddress}</td>
                   <td className="px-3 py-2">
                     <input
-                      defaultValue={row.remarks}
-                      onBlur={(event) => void onUpdate(row.id, { remarks: event.target.value })}
+                      value={row.remarks}
+                      onChange={(event) => void onUpdate(row.id, { remarks: event.target.value })}
                       className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
                     />
                   </td>
@@ -7212,14 +8734,14 @@ function TrustedIpTable({
                       <input
                         type="checkbox"
                         checked={row.active}
-                        onChange={(event) => void onUpdate(row.id, { active: event.target.checked })}
+                        onChange={(event) =>
+                          void onUpdate(row.id, { active: event.target.checked })
+                        }
                       />
                       {row.active ? "Active" : "Inactive"}
                     </label>
                   </td>
-                  <td className="px-3 py-2 text-muted-foreground">
-                    {row.createdByName || "-"}
-                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">{row.createdByName || "-"}</td>
                 </tr>
               ))
             ) : (
@@ -7335,6 +8857,10 @@ function ipModeLabel(mode: IpAccessMode) {
   return "Off";
 }
 
+function roleRequiresDivisionAssignment(role: AppUserRole) {
+  return role !== "admin";
+}
+
 function UserSettings() {
   const users = useUsers();
   const divisions = useDivisions();
@@ -7367,6 +8893,33 @@ function UserSettings() {
   const [editEmergencyIpBypass, setEditEmergencyIpBypass] = useState(false);
   const [editDivisionIds, setEditDivisionIds] = useState<string[]>([]);
   const [editAllowedFileCategories, setEditAllowedFileCategories] = useState<FileCategoryKey[]>([]);
+  type UserRoleTab = "admin" | "sub_admin" | "editor" | "universal_viewer" | "division_users";
+  const [userRoleTab, setUserRoleTab] = useState<UserRoleTab>("admin");
+  const roleTabs: readonly {
+    value: UserRoleTab;
+    label: string;
+    matches: (user: (typeof users)[number]) => boolean;
+  }[] = [
+    { value: "admin", label: "Admin", matches: (user) => user.role === "admin" },
+    { value: "sub_admin", label: "Sub-admin", matches: (user) => user.role === "sub_admin" },
+    { value: "editor", label: "Editor", matches: (user) => user.role === "editor" },
+    {
+      value: "universal_viewer",
+      label: "Universal viewer",
+      matches: (user) => user.role === "universal_viewer",
+    },
+    {
+      value: "division_users",
+      label: "Division users",
+      // `viewer` is retained as a legacy division-scoped role, so it stays visible here.
+      matches: (user) => user.role === "division_user" || user.role === "viewer",
+    },
+  ];
+  const selectedRoleTab = roleTabs.find((tab) => tab.value === userRoleTab) ?? roleTabs[0];
+  const visibleUsers = useMemo(
+    () => users.filter((user) => selectedRoleTab.matches(user)),
+    [selectedRoleTab, users],
+  );
 
   const add = () => {
     if (!name.trim() || !username.trim() || !password.trim()) return;
@@ -7428,6 +8981,12 @@ function UserSettings() {
       <p className="text-xs text-muted-foreground mb-5">
         Add users and assign the divisions they should be allowed to work with.
       </p>
+      <div className="mb-4 rounded-md border border-border bg-background/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+        <span className="font-semibold text-foreground">Role distinction:</span> Viewer is a
+        division-password login for exactly one division. Division user is a named account with
+        its own login and one or more assigned divisions. Both are read-only for file records, but
+        both can submit file queries/messages; neither can resolve or reply to them.
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_0.8fr_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="User name" />
@@ -7443,7 +9002,13 @@ function UserSettings() {
         <button
           type="button"
           onClick={add}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          disabled={
+            !name.trim() ||
+            !username.trim() ||
+            !password.trim() ||
+            (roleRequiresDivisionAssignment(role) && divisionIds.length === 0)
+          }
+          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus className="size-4" /> Add
         </button>
@@ -7470,6 +9035,11 @@ function UserSettings() {
           selectedIds={divisionIds}
           onChange={setDivisionIds}
         />
+        {roleRequiresDivisionAssignment(role) && divisionIds.length === 0 ? (
+          <div className="mt-1.5 text-xs font-medium text-destructive">
+            No divisions assigned — assign at least one division before adding this restricted user.
+          </div>
+        ) : null}
       </div>
       <div className="mt-3">
         <div className="mb-1.5 text-xs font-medium text-muted-foreground">Allowed file types</div>
@@ -7480,8 +9050,29 @@ function UserSettings() {
         />
       </div>
 
-      <div className="mt-5 overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[1100px] table-fixed text-sm">
+      <Tabs
+        value={userRoleTab}
+        onValueChange={(value) => setUserRoleTab(value as UserRoleTab)}
+        className="mt-5"
+      >
+        <TabsList
+          aria-label="Authorised users by role"
+          className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-md border border-border bg-background p-1"
+        >
+          {roleTabs.map((tab) => {
+            const count = users.filter((user) => tab.matches(user)).length;
+            return (
+              <TabsTrigger key={tab.value} value={tab.value} className="gap-1.5 px-3 py-2">
+                <span>{tab.label}</span>
+                <span className="text-xs text-muted-foreground">({count})</span>
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        <TabsContent value={userRoleTab} className="mt-3">
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[1100px] table-fixed text-sm">
           <colgroup>
             <col className="w-[15%]" />
             <col className="w-[15%]" />
@@ -7503,14 +9094,14 @@ function UserSettings() {
             </tr>
           </thead>
           <tbody>
-            {users.length === 0 ? (
+            {visibleUsers.length === 0 ? (
               <tr className="border-t border-border">
                 <td className="px-4 py-6 text-muted-foreground text-center" colSpan={7}>
-                  No users added yet.
+                  No {selectedRoleTab.label.toLowerCase()} users added yet.
                 </td>
               </tr>
             ) : (
-              users.map((user) => {
+              visibleUsers.map((user) => {
                 const isEditing = editingId === user.id;
                 const editChanged =
                   editName.trim() !== user.name ||
@@ -7595,13 +9186,30 @@ function UserSettings() {
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {isEditing ? (
-                        <DivisionAccessPicker
-                          divisions={divisions}
-                          selectedIds={editDivisionIds}
-                          onChange={setEditDivisionIds}
-                        />
+                        <div>
+                          <DivisionAccessPicker
+                            divisions={divisions}
+                            selectedIds={editDivisionIds}
+                            onChange={setEditDivisionIds}
+                          />
+                          {roleRequiresDivisionAssignment(editRole) && editDivisionIds.length === 0 ? (
+                            <div className="mt-1.5 text-xs font-medium text-destructive">
+                              No divisions assigned — assign at least one division before saving.
+                            </div>
+                          ) : null}
+                        </div>
                       ) : (
-                        divisionAccessLabel(user.divisionIds, divisions)
+                        <span
+                          className={
+                            roleRequiresDivisionAssignment(user.role) && user.divisionIds.length === 0
+                              ? "font-medium text-destructive"
+                              : undefined
+                          }
+                        >
+                          {roleRequiresDivisionAssignment(user.role) && user.divisionIds.length === 0
+                            ? "No divisions assigned"
+                            : divisionAccessLabel(user.divisionIds, divisions)}
+                        </span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
@@ -7622,7 +9230,12 @@ function UserSettings() {
                             <button
                               type="button"
                               onClick={() => saveEdit(user.id)}
-                              disabled={!editChanged || !editName.trim() || !editUsername.trim()}
+                              disabled={
+                                !editChanged ||
+                                !editName.trim() ||
+                                !editUsername.trim() ||
+                                (roleRequiresDivisionAssignment(editRole) && editDivisionIds.length === 0)
+                              }
                               className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Check className="size-4" />
@@ -7669,8 +9282,10 @@ function UserSettings() {
               })
             )}
           </tbody>
-        </table>
-      </div>
+            </table>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -7743,7 +9358,10 @@ function UniversalViewerCashOutgoScopeSelect({
 }
 
 function ArchiveSettings() {
+  const activeUser = useActiveUser();
+  const isSubAdmin = activeUser?.role === "sub_admin";
   const [archivedFiles, setArchivedFiles] = useState<FileRecord[]>([]);
+  const [cancelledDemandFiles, setCancelledDemandFiles] = useState<FileRecord[]>([]);
   const [archivedDivisions, setArchivedDivisions] = useState<Division[]>([]);
   const [archivedUsers, setArchivedUsers] = useState<AppUser[]>([]);
   const [archivedFirms, setArchivedFirms] = useState<MasterFirm[]>([]);
@@ -7755,30 +9373,47 @@ function ArchiveSettings() {
     setLoading(true);
     setError(undefined);
     try {
+      if (isSubAdmin) {
+        const [archivedResult, cancelledResult] = await Promise.all([
+          store.listArchivedFiles(),
+          store.listCancelledDemandFiles(),
+        ]);
+        setArchivedFiles(archivedResult.files);
+        setCancelledDemandFiles(cancelledResult.files);
+        setArchivedDivisions([]);
+        setArchivedUsers([]);
+        setArchivedFirms([]);
+        setArchivedIndentors([]);
+        return;
+      }
       const results = await Promise.allSettled([
         store.listArchivedFiles(),
+        store.listCancelledDemandFiles(),
         store.listArchivedDivisions(),
         store.listArchivedUsers(),
         listArchivedMasterFirms(),
         store.listArchivedIndentors(),
       ]);
-      const labels = ["Files", "Divisions", "Users", "Master firms", "Indentors"];
+      const labels = ["Files", "Cancelled demands", "Divisions", "Users", "Master firms", "Indentors"];
       const failures: string[] = [];
 
       if (results[0].status === "fulfilled") setArchivedFiles(results[0].value.files);
       else failures.push(`${labels[0]}: ${getErrorMessage(results[0].reason)}`);
 
-      if (results[1].status === "fulfilled") setArchivedDivisions(results[1].value.divisions);
+      if (results[1].status === "fulfilled") setCancelledDemandFiles(results[1].value.files);
       else failures.push(`${labels[1]}: ${getErrorMessage(results[1].reason)}`);
 
-      if (results[2].status === "fulfilled") setArchivedUsers(results[2].value.users);
+      if (results[2].status === "fulfilled") setArchivedDivisions(results[2].value.divisions);
       else failures.push(`${labels[2]}: ${getErrorMessage(results[2].reason)}`);
 
-      if (results[3].status === "fulfilled") setArchivedFirms(results[3].value.firms);
+      if (results[3].status === "fulfilled") setArchivedUsers(results[3].value.users);
       else failures.push(`${labels[3]}: ${getErrorMessage(results[3].reason)}`);
 
-      if (results[4].status === "fulfilled") setArchivedIndentors(results[4].value.indentors);
+      if (results[4].status === "fulfilled") setArchivedFirms(results[4].value.firms);
       else failures.push(`${labels[4]}: ${getErrorMessage(results[4].reason)}`);
+
+      if (results[5].status === "fulfilled") setArchivedIndentors(results[5].value.indentors);
+      else failures.push(`${labels[5]}: ${getErrorMessage(results[5].reason)}`);
 
       if (failures.length) {
         setError(`Some archive bins could not be loaded. ${failures.join("; ")}`);
@@ -7792,7 +9427,7 @@ function ArchiveSettings() {
 
   useEffect(() => {
     void loadArchive();
-  }, []);
+  }, [isSubAdmin]);
 
   const restore = async (file: FileRecord) => {
     await store.restoreArchivedFile(file.id);
@@ -7876,7 +9511,9 @@ function ArchiveSettings() {
         <div>
           <h2 className="text-sm font-semibold mb-1">Archive</h2>
           <p className="text-xs text-muted-foreground">
-            Review archived files, divisions, users, firms, and indentors.
+            {isSubAdmin
+              ? "Review archived files and cancelled demands in your assigned divisions. Restore and other archive bins remain Admin-only."
+              : "Review archived files, cancelled demands, divisions, users, firms, and indentors."}
           </p>
         </div>
         <button
@@ -7894,7 +9531,37 @@ function ArchiveSettings() {
         </div>
       ) : null}
 
-      <details open className="mb-5 overflow-hidden rounded-md border border-border">
+      <Tabs defaultValue="files" className="mt-5">
+        <TabsList
+          aria-label="Archived records by type"
+          className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-md border border-border bg-background p-1"
+        >
+          <TabsTrigger value="files" className="gap-1.5 px-3 py-2">
+            Files <span className="text-xs text-muted-foreground">({archivedFiles.length})</span>
+          </TabsTrigger>
+          <TabsTrigger value="cancelledDemands" className="gap-1.5 px-3 py-2">
+            Cancelled demands <span className="text-xs text-muted-foreground">({cancelledDemandFiles.length})</span>
+          </TabsTrigger>
+          {!isSubAdmin ? (
+            <>
+              <TabsTrigger value="divisions" className="gap-1.5 px-3 py-2">
+                Divisions <span className="text-xs text-muted-foreground">({archivedDivisions.length})</span>
+              </TabsTrigger>
+              <TabsTrigger value="users" className="gap-1.5 px-3 py-2">
+                Users <span className="text-xs text-muted-foreground">({archivedUsers.length})</span>
+              </TabsTrigger>
+              <TabsTrigger value="firms" className="gap-1.5 px-3 py-2">
+                Master firms <span className="text-xs text-muted-foreground">({archivedFirms.length})</span>
+              </TabsTrigger>
+              <TabsTrigger value="indentors" className="gap-1.5 px-3 py-2">
+                Indentors <span className="text-xs text-muted-foreground">({archivedIndentors.length})</span>
+              </TabsTrigger>
+            </>
+          ) : null}
+        </TabsList>
+
+        <TabsContent value="divisions" className="mt-3">
+          <details open className="overflow-hidden rounded-md border border-border">
         <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
           Divisions bin ({archivedDivisions.length})
         </summary>
@@ -7971,9 +9638,11 @@ function ArchiveSettings() {
             </tbody>
           </table>
         </div>
-      </details>
+          </details>
+        </TabsContent>
 
-      <details open className="mb-5 overflow-hidden rounded-md border border-border">
+        <TabsContent value="files" className="mt-3">
+          <details open className="overflow-hidden rounded-md border border-border">
         <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
           Files bin ({archivedFiles.length})
         </summary>
@@ -8026,18 +9695,20 @@ function ArchiveSettings() {
                     <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
                     <td className="py-3 pl-8 pr-4">
                       <div className="flex justify-end gap-1">
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveRestore}
-                          label="Restore archived file help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void restore(file)}
-                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                        {!isSubAdmin ? (
+                          <HelpedControl
+                            helper={settingsControlHelpers.archiveRestore}
+                            label="Restore archived file help"
                           >
-                            Restore
-                          </button>
-                        </HelpedControl>
+                            <button
+                              type="button"
+                              onClick={() => void restore(file)}
+                              className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                            >
+                              Restore
+                            </button>
+                          </HelpedControl>
+                        ) : null}
                         <HelpedControl
                           helper={settingsControlHelpers.archiveDelete}
                           label="Delete archived file help"
@@ -8058,9 +9729,68 @@ function ArchiveSettings() {
             </tbody>
           </table>
         </div>
-      </details>
+          </details>
+        </TabsContent>
 
-      <details className="mb-5 overflow-hidden rounded-md border border-border">
+        <TabsContent value="cancelledDemands" className="mt-3">
+          <details open className="overflow-hidden rounded-md border border-border">
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Cancelled demands ({cancelledDemandFiles.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[18%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[32%]" />
+                  <col className="w-[16%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Unique code</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Division</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Cancelled on</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Description</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Year</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading cancelled demands...
+                      </td>
+                    </tr>
+                  ) : cancelledDemandFiles.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                        No cancelled demands.
+                      </td>
+                    </tr>
+                  ) : (
+                    cancelledDemandFiles.map((file) => (
+                      <tr key={file.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{file.division || "Not set"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.demandCancelledDate ? formatArchiveDate(file.demandCancelledDate) : "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {getArchivedFileDescription(file)}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </TabsContent>
+
+        <TabsContent value="users" className="mt-3">
+          <details className="overflow-hidden rounded-md border border-border">
         <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
           Users bin ({archivedUsers.length})
         </summary>
@@ -8138,9 +9868,11 @@ function ArchiveSettings() {
             </tbody>
           </table>
         </div>
-      </details>
+          </details>
+        </TabsContent>
 
-      <details className="mb-5 overflow-hidden rounded-md border border-border">
+        <TabsContent value="firms" className="mt-3">
+          <details className="overflow-hidden rounded-md border border-border">
         <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
           Master firms bin ({archivedFirms.length})
         </summary>
@@ -8227,9 +9959,11 @@ function ArchiveSettings() {
             </tbody>
           </table>
         </div>
-      </details>
+          </details>
+        </TabsContent>
 
-      <details className="overflow-hidden rounded-md border border-border">
+        <TabsContent value="indentors" className="mt-3">
+          <details className="overflow-hidden rounded-md border border-border">
         <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
           Indentors bin ({archivedIndentors.length})
         </summary>
@@ -8312,7 +10046,9 @@ function ArchiveSettings() {
             </tbody>
           </table>
         </div>
-      </details>
+          </details>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -8529,7 +10265,7 @@ function EditableField({
 }) {
   return (
     <label className="block">
-      <div className="text-xs font-medium mb-1.5">{label}</div>
+      <div className="text-xs font-semibold mb-1.5">{label}</div>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -8708,7 +10444,7 @@ function ThemeField({
 }) {
   return (
     <label className="block">
-      <div className="text-xs font-medium mb-1.5">{label}</div>
+      <div className="text-xs font-semibold mb-1.5">{label}</div>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value as "light" | "dark")}
@@ -8732,7 +10468,7 @@ function ThemeTintField({
 }) {
   return (
     <label className="block">
-      <div className="text-xs font-medium mb-1.5">{label}</div>
+      <div className="text-xs font-semibold mb-1.5">{label}</div>
       <select
         value={value}
         onChange={(event) =>
@@ -8753,6 +10489,347 @@ function ThemeTintField({
   );
 }
 
+const appearancePresetOptions: Array<{
+  value: AppearancePreset;
+  label: string;
+  description: string;
+  theme: "light" | "dark";
+  themeTint: "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
+  topRibbonColor: TopRibbonColor;
+  topRibbonTextColor: TopRibbonTextColor;
+  fontFamily: AppFontFamily;
+  colors: [string, string];
+}> = [
+  {
+    value: "ocean",
+    label: "Ocean clarity",
+    description: "Cool blue surfaces with a calm teal ribbon.",
+    theme: "light",
+    themeTint: "blue",
+    topRibbonColor: "teal",
+    topRibbonTextColor: "white",
+    fontFamily: "inter",
+    colors: ["#eaf3f7", "#0f4c5c"],
+  },
+  {
+    value: "forest",
+    label: "Forest calm",
+    description: "Soft green surfaces with a deep navy ribbon.",
+    theme: "light",
+    themeTint: "green",
+    topRibbonColor: "navy",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "sourceSans",
+    colors: ["#edf6f1", "#082733"],
+  },
+  {
+    value: "graphite",
+    label: "Graphite focus",
+    description: "Dark charcoal surfaces with warm, readable lettering.",
+    theme: "dark",
+    themeTint: "plain",
+    topRibbonColor: "charcoal",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "manrope",
+    colors: ["#20252b", "#f1f4f6"],
+  },
+  {
+    value: "plum",
+    label: "Plum studio",
+    description: "A gentle lavender workspace with an indigo ribbon.",
+    theme: "light",
+    themeTint: "lavender",
+    topRibbonColor: "indigo",
+    topRibbonTextColor: "white",
+    fontFamily: "nunito",
+    colors: ["#f2effa", "#24234a"],
+  },
+  {
+    value: "arcticGlass",
+    label: "Arctic glass",
+    description: "Crisp blue-white surfaces with a calm teal ribbon.",
+    theme: "light",
+    themeTint: "blue",
+    topRibbonColor: "teal",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "inter",
+    colors: ["#f2f8fb", "#0f4c5c"],
+  },
+  {
+    value: "sageModern",
+    label: "Sage modern",
+    description: "Fresh sage surfaces with a dependable navy ribbon.",
+    theme: "light",
+    themeTint: "green",
+    topRibbonColor: "navy",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "sourceSans",
+    colors: ["#eff7f1", "#082733"],
+  },
+  {
+    value: "sunsetEditorial",
+    label: "Sunset editorial",
+    description: "Warm cream surfaces with a confident maroon ribbon.",
+    theme: "light",
+    themeTint: "yellow",
+    topRibbonColor: "maroon",
+    topRibbonTextColor: "gold",
+    fontFamily: "sourceSans",
+    colors: ["#fff8e8", "#4f1d24"],
+  },
+  {
+    value: "roseQuartz",
+    label: "Rose quartz",
+    description: "A soft rose workspace with a refined maroon ribbon.",
+    theme: "light",
+    themeTint: "pink",
+    topRibbonColor: "maroon",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "nunito",
+    colors: ["#fff1f4", "#4f1d24"],
+  },
+  {
+    value: "midnightIndigo",
+    label: "Midnight indigo",
+    description: "A focused dark workspace with a rich indigo ribbon.",
+    theme: "dark",
+    themeTint: "plain",
+    topRibbonColor: "indigo",
+    topRibbonTextColor: "softWhite",
+    fontFamily: "manrope",
+    colors: ["#111329", "#24234a"],
+  },
+];
+
+const fontFamilyOptions: Array<{ value: AppFontFamily; label: string; sample: string }> = [
+  { value: "inter", label: "Inter", sample: "Clean and compact" },
+  { value: "manrope", label: "Manrope", sample: "Modern and rounded" },
+  { value: "sourceSans", label: "Source Sans 3", sample: "Open and readable" },
+  { value: "nunito", label: "Nunito Sans", sample: "Friendly and soft" },
+];
+
+const topRibbonColorOptions: Array<{ value: TopRibbonColor; label: string; color: string }> = [
+  { value: "navy", label: "GeM navy", color: "#082733" },
+  { value: "teal", label: "Deep teal", color: "#0f4c5c" },
+  { value: "charcoal", label: "Charcoal", color: "#20252b" },
+  { value: "maroon", label: "Maroon", color: "#4f1d24" },
+  { value: "indigo", label: "Indigo", color: "#24234a" },
+  { value: "gold", label: "Gold", color: "#8a5a00" },
+  { value: "warmGold", label: "Warm gold", color: "#f7d774" },
+  { value: "black", label: "Black", color: "#111111" },
+];
+
+const topRibbonTextColorOptions: Array<{
+  value: TopRibbonTextColor;
+  label: string;
+  color: string;
+}> = [
+  { value: "white", label: "White", color: "#ffffff" },
+  { value: "softWhite", label: "Soft white", color: "#e6eef2" },
+  { value: "gold", label: "Warm gold", color: "#f7d774" },
+  { value: "black", label: "Black", color: "#111827" },
+  { value: "brickRed", label: "Brick red", color: "#b7473f" },
+];
+
+function AppearancePresetField({
+  value,
+  onChange,
+}: {
+  value?: AppearancePreset | null;
+  onChange: (value: AppearancePreset | null) => void;
+}) {
+  return (
+    <fieldset className="sm:col-span-2">
+      <legend className="mb-1.5 text-xs font-semibold">Modern appearance preset</legend>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Presets apply a coordinated screen theme, ribbon, lettering and font. Leave this on Standard
+        to keep the regular theme.
+      </p>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-pressed={!value}
+          className={`rounded-md border px-3 py-2 text-left text-xs transition-shadow ${
+            !value ? "border-primary ring-2 ring-primary/25" : "border-border hover:bg-accent"
+          }`}
+        >
+          <span className="block font-semibold">Standard theme</span>
+          <span className="mt-0.5 block text-muted-foreground">Use regular screen colours</span>
+        </button>
+        {appearancePresetOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={value === option.value}
+            className={`rounded-md border px-3 py-2 text-left text-xs transition-shadow ${
+              value === option.value
+                ? "border-primary ring-2 ring-primary/25"
+                : "border-border hover:bg-accent"
+            }`}
+          >
+            <span className="mb-1 flex items-center gap-1.5 font-semibold">
+              <span
+                className="size-3.5 rounded-full border border-black/15"
+                style={{
+                  background: `linear-gradient(135deg, ${option.colors[0]} 50%, ${option.colors[1]} 50%)`,
+                }}
+                aria-hidden="true"
+              />
+              {option.label}
+            </span>
+            <span className="block text-muted-foreground">{option.description}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function TopRibbonColorField({
+  value,
+  onChange,
+}: {
+  value?: TopRibbonColor | null;
+  onChange: (value: TopRibbonColor | null) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="mb-1.5 text-xs font-semibold">Top ribbon colour</legend>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-pressed={!value}
+          className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium transition-shadow ${
+            !value ? "border-primary ring-2 ring-primary/25" : "border-border hover:bg-accent"
+          }`}
+        >
+          <span
+            className="size-4 rounded-full border border-border bg-background"
+            aria-hidden="true"
+          />
+          Regular theme
+        </button>
+        {topRibbonColorOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={value === option.value}
+            className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium transition-shadow ${
+              value === option.value
+                ? "border-primary ring-2 ring-primary/25"
+                : "border-border hover:bg-accent"
+            }`}
+          >
+            <span
+              className="size-4 rounded-full border border-black/20 shadow-inner"
+              style={{ backgroundColor: option.color }}
+              aria-hidden="true"
+            />
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function TopRibbonTextColorField({
+  value,
+  onChange,
+}: {
+  value?: TopRibbonTextColor | null;
+  onChange: (value: TopRibbonTextColor | null) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="mb-1.5 text-xs font-semibold">Top ribbon letters</legend>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-pressed={!value}
+          className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium transition-shadow ${
+            !value ? "border-primary ring-2 ring-primary/25" : "border-border hover:bg-accent"
+          }`}
+        >
+          <span
+            className="size-4 rounded-full border border-border bg-background"
+            aria-hidden="true"
+          />
+          Regular theme
+        </button>
+        {topRibbonTextColorOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={value === option.value}
+            className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs font-medium transition-shadow ${
+              value === option.value
+                ? "border-primary ring-2 ring-primary/25"
+                : "border-border hover:bg-accent"
+            }`}
+          >
+            <span
+              className="size-4 rounded-full border border-black/20 shadow-inner"
+              style={{ backgroundColor: option.color }}
+              aria-hidden="true"
+            />
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function FontFamilyField({
+  value,
+  onChange,
+}: {
+  value?: AppFontFamily | null;
+  onChange: (value: AppFontFamily | null) => void;
+}) {
+  return (
+    <fieldset>
+      <legend className="mb-1.5 text-xs font-semibold">Font</legend>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-pressed={!value}
+          className={`rounded-md border px-2.5 py-2 text-left text-xs transition-shadow ${
+            !value ? "border-primary ring-2 ring-primary/25" : "border-border hover:bg-accent"
+          }`}
+        >
+          <span className="block font-medium">Regular</span>
+          <span className="block text-muted-foreground">Default font</span>
+        </button>
+        {fontFamilyOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            aria-pressed={value === option.value}
+            className={`rounded-md border px-2.5 py-2 text-left text-xs transition-shadow ${
+              value === option.value
+                ? "border-primary ring-2 ring-primary/25"
+                : "border-border hover:bg-accent"
+            }`}
+          >
+            <span className="block font-medium">{option.label}</span>
+            <span className="block text-muted-foreground">{option.sample}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 function ChartColorOrderField({
   value,
   onChange,
@@ -8764,9 +10841,7 @@ function ChartColorOrderField({
 }) {
   const orderedColors = [
     ...new Set(value.filter((color) => chartColorOptions.some((option) => option.color === color))),
-    ...chartColorOptions
-      .map((option) => option.color)
-      .filter((color) => !value.includes(color)),
+    ...chartColorOptions.map((option) => option.color).filter((color) => !value.includes(color)),
   ];
 
   const moveColor = (index: number, offset: -1 | 1) => {
@@ -8779,7 +10854,9 @@ function ChartColorOrderField({
 
   return (
     <fieldset className="block">
-      <legend className="mb-1.5 text-xs font-medium">Chart colour priority for bars, columns and pie charts</legend>
+      <legend className="mb-1.5 text-xs font-semibold">
+        Chart colour priority for bars, columns and pie charts
+      </legend>
       <p className="mb-2 text-xs text-muted-foreground">
         {disabled
           ? "An administrator is setting the colour order for all users."
@@ -8789,9 +10866,17 @@ function ChartColorOrderField({
         {orderedColors.map((color, index) => {
           const option = chartColorOptions.find((item) => item.color === color)!;
           return (
-            <li key={color} className="flex items-center gap-2 rounded border border-border px-2 py-1">
-              <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-              <span className="size-4 shrink-0 rounded-sm border border-black/10" style={{ backgroundColor: color }} />
+            <li
+              key={color}
+              className="flex items-center gap-2 rounded border border-border px-2 py-1"
+            >
+              <span className="w-5 text-right text-xs tabular-nums text-muted-foreground">
+                {index + 1}
+              </span>
+              <span
+                className="size-4 shrink-0 rounded-sm border border-black/10"
+                style={{ backgroundColor: color }}
+              />
               <span className="min-w-0 flex-1 text-xs">{option.label}</span>
               <button
                 type="button"

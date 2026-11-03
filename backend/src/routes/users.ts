@@ -1,15 +1,21 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import type { AppUser, AppUserRole, UniversalViewerCashOutgoEditScope } from "../types.js";
+import type {
+  AppUser,
+  AppUserRole,
+  UniversalViewerCashOutgoEditScope,
+} from "../types.js";
 import {
-  canUseAllDivisions,
   ensureUserPermissionSchema,
+  canViewUsers,
   requireAdmin,
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import { cacheTtl, clearCachePrefix, getCached } from "../utils/cache.js";
 import { normalizeFileCategories } from "../utils/file-categories.js";
+import { getRoleCapabilities } from "../utils/permissions.js";
 import { ensureIpAccessControlSchema } from "../utils/ip-access-control.js";
 import {
   asyncHandler,
@@ -41,6 +47,10 @@ const allowedRoles = new Set<AppUserRole>([
   "universal_viewer",
 ]);
 
+function roleRequiresDivisionAssignment(role: AppUserRole) {
+  return role !== "admin";
+}
+
 type UserRow = {
   id: string;
   name: string;
@@ -67,6 +77,7 @@ function mapUser(row: UserRow): AppUser {
       : undefined,
     cashOutgoEditScope: row.cash_outgo_edit_scope ?? "none",
     emergencyIpBypass: Boolean(row.emergency_ip_bypass),
+    capabilities: getRoleCapabilities(row.role),
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : undefined,
   };
 }
@@ -109,27 +120,24 @@ function clearUserCache() {
   clearCachePrefix("lookup:users");
 }
 
-async function verifyDeletionPassword(value: unknown) {
-  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ ok: boolean; configured: boolean }>(
-    `select
-       deletion_password <> '' as configured,
-       deletion_password <> '' and deletion_password = $1 as ok
-     from app_settings
-     where id = true`,
-    [value],
-  );
-  if (!result.rows[0]?.configured) {
-    throw new HttpError(400, "Set a deletion password in admin settings before deleting users.");
-  }
-  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
-}
-
-async function listUsers(includeArchived = false) {
+async function listUsers(includeArchived = false, divisionIds?: readonly string[]) {
   await ensureIpAccessControlSchema();
   await ensureUserPermissionSchema();
-  const cacheKey = includeArchived ? "lookup:users:archived" : "lookup:users";
+  const scopedDivisionIds = divisionIds ? [...new Set(divisionIds)].sort() : undefined;
+  const cacheKeyBase = includeArchived ? "lookup:users:archived" : "lookup:users";
+  const cacheKey = scopedDivisionIds
+    ? `${cacheKeyBase}:divisions:${scopedDivisionIds.join(",") || "none"}`
+    : cacheKeyBase;
   return getCached(cacheKey, cacheTtl.lookupMs, async () => {
+    const scopeSql = scopedDivisionIds
+      ? `
+       and exists (
+         select 1
+         from user_divisions visible_ud
+         where visible_ud.user_id = u.id
+           and visible_ud.division_id = any($1::uuid[])
+       )`
+      : "";
     const result = await pool.query<UserRow>(
       `select
          u.id,
@@ -141,15 +149,20 @@ async function listUsers(includeArchived = false) {
          u.allowed_file_categories,
          u.archived_at,
          coalesce(
-           array_agg(ud.division_id::text order by d.name) filter (where ud.division_id is not null),
+           array_agg(ud.division_id::text order by d.name) filter (
+             where ud.division_id is not null
+               ${scopedDivisionIds ? "and ud.division_id = any($1::uuid[])" : ""}
+           ),
            array[]::text[]
          ) as division_ids
        from app_users u
        left join user_divisions ud on ud.user_id = u.id
        left join divisions d on d.id = ud.division_id
        where ${includeArchived ? "u.archived_at is not null" : "u.archived_at is null"}
+       ${scopeSql}
        group by u.id
        order by u.name asc`,
+      scopedDivisionIds ? [scopedDivisionIds] : [],
     );
     return result.rows.map(mapUser);
   });
@@ -183,8 +196,13 @@ usersRouter.get(
   "/",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (!canUseAllDivisions(user)) throw new HttpError(403, "Admin access required.");
-    response.json({ users: await listUsers() });
+    if (!canViewUsers(user)) {
+      throw new HttpError(403, "Admin or Sub-admin access required.");
+    }
+    // Sub-admins see only users with a real division intersection. Global or
+    // unassigned accounts (including organisation-wide admins) are omitted.
+    const divisionScope = user.role === "sub_admin" ? user.divisionIds : undefined;
+    response.json({ users: await listUsers(false, divisionScope) });
   }),
 );
 
@@ -198,6 +216,9 @@ usersRouter.post(
     const role = readRole(body.role ?? "editor");
     const password = requireString(body.password, "password");
     const divisionIds = readDivisionIds(body.divisionIds) ?? [];
+    if (roleRequiresDivisionAssignment(role) && divisionIds.length === 0) {
+      throw new HttpError(400, "At least one division must be assigned to this restricted user.");
+    }
     const allowedFileCategories = readAllowedFileCategories(body.allowedFileCategories);
     const cashOutgoEditScope =
       role === "universal_viewer"
@@ -281,13 +302,36 @@ usersRouter.patch(
       await ensureIpAccessControlSchema();
       await ensureUserPermissionSchema();
       await client.query("begin");
-      const existing = await client.query<{ id: string; role: AppUserRole; is_active: boolean }>(
-        "select id, role, is_active from app_users where id = $1",
+      const existing = await client.query<{
+        id: string;
+        role: AppUserRole;
+        is_active: boolean;
+        division_ids: string[] | null;
+      }>(
+        `select
+           u.id,
+           u.role,
+           u.is_active,
+           coalesce(
+             (
+               select array_agg(ud.division_id::text order by ud.division_id)
+               from user_divisions ud
+               where ud.user_id = u.id
+             ),
+             array[]::text[]
+           ) as division_ids
+         from app_users u
+         where u.id = $1`,
         [id],
       );
       if (existing.rowCount === 0) throw new HttpError(404, "User not found.");
+      const effectiveRole = nextRole ?? existing.rows[0].role;
+      const effectiveDivisionIds = divisionIds ?? existing.rows[0].division_ids ?? [];
+      if (roleRequiresDivisionAssignment(effectiveRole) && effectiveDivisionIds.length === 0) {
+        throw new HttpError(400, "At least one division must be assigned to this restricted user.");
+      }
       if ("cashOutgoEditScope" in body || nextRole) {
-        const targetRole = nextRole ?? existing.rows[0].role;
+        const targetRole = effectiveRole;
         addField(
           "cash_outgo_edit_scope",
           targetRole === "universal_viewer" ? (cashOutgoEditScope ?? "none") : "none",
@@ -391,9 +435,9 @@ usersRouter.post(
 usersRouter.delete(
   "/archive/:id",
   asyncHandler(async (request, response) => {
-    requireAdmin(request as AuthRequest);
+    const actingUser = requireAdmin(request as AuthRequest);
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(actingUser.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const user = await getArchivedUser(id);
     if (!user) throw new HttpError(404, "Archived user not found.");

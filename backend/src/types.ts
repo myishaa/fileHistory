@@ -5,9 +5,41 @@ export type AppUserRole =
   | "editor"
   | "viewer"
   | "universal_viewer";
+export type PermissionCapability =
+  | "canManageUsers"
+  | "canViewUsers"
+  | "canEditFiles"
+  | "canResolveMessages"
+  | "canArchiveFiles"
+  | "canSendUrgentMessages"
+  | "canSendFileMessages"
+  | "canUseAllDivisions"
+  | "canAcceptUniversalAnomalies";
+export type UserCapabilities = Readonly<Record<PermissionCapability, boolean>>;
 export type UniversalViewerCashOutgoEditScope = "none" | "personal" | "global";
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
+export type TopRibbonColor =
+  | "navy"
+  | "teal"
+  | "charcoal"
+  | "maroon"
+  | "indigo"
+  | "gold"
+  | "warmGold"
+  | "black";
+export type TopRibbonTextColor = "white" | "softWhite" | "gold" | "black" | "brickRed";
+export type AppearancePreset =
+  | "ocean"
+  | "forest"
+  | "graphite"
+  | "plum"
+  | "arcticGlass"
+  | "sageModern"
+  | "sunsetEditorial"
+  | "roseQuartz"
+  | "midnightIndigo";
+export type AppFontFamily = "inter" | "manrope" | "sourceSans" | "nunito";
 export type FileTypeGroup = "goodsServices" | "contract";
 
 export type Division = {
@@ -48,6 +80,7 @@ export type AppUser = {
   allowedFileCategories?: string[] | null;
   cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
+  capabilities?: UserCapabilities;
   archivedAt?: string;
 };
 
@@ -60,6 +93,7 @@ export type AuthUser = {
   allowedFileCategories?: string[] | null;
   cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
+  capabilities?: UserCapabilities;
 };
 
 export type AppSettings = {
@@ -71,11 +105,16 @@ export type AppSettings = {
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
+  appearancePreset?: AppearancePreset | null;
+  fontFamily?: AppFontFamily | null;
+  topRibbonColor?: TopRibbonColor | null;
+  topRibbonTextColor?: TopRibbonTextColor | null;
   chartBarColor?: string;
   chartColorOrder?: string[];
   globalChartColorOrder?: string[];
   globalChartColorsEnforced?: boolean;
   deletionPassword: string;
+  deletionPasswordConfigured?: boolean;
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
@@ -486,6 +525,9 @@ export type FileMessageReply = {
 export type FileMessage = {
   id: string;
   fileId: string;
+  createdByUserId?: string;
+  recipientUserId?: string;
+  recipientUserName?: string;
   divisionId?: string;
   divisionName: string;
   fileUniqueCode?: string;

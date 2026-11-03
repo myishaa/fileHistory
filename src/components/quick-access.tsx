@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { store, useActiveUser, useSettings, type FileRecord } from "@/lib/files-store";
 import { formatIndiaMonth } from "@/lib/india-date";
 import { delayMilestoneOptions } from "@/lib/delay-status-options";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { QuickEntryExcelExportList } from "@/components/quick-entry-excel";
+import { UrgentMessageTicker, UrgentMessagesPanel } from "@/components/urgent-messages";
 import {
   ArrowDown,
+  ArrowDownUp,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
@@ -14,9 +16,12 @@ import {
   CircleAlert,
   FileSpreadsheet,
   Maximize2,
+  Monitor,
   MonitorPlay,
+  MessageSquare,
   Pause,
   Play,
+  RefreshCw,
   Timer,
   X,
 } from "lucide-react";
@@ -38,6 +43,14 @@ type DeliveryDay = {
   completedCount: number;
 };
 type PreBidDay = { date: string; monthKey: string; count: number };
+type BidOpeningDay = {
+  date: string;
+  monthKey: string;
+  count: number;
+  bidOpeningDue: number;
+  bidOpeningOpened: number;
+  bidOpeningOverdue: number;
+};
 type NoticeSummary = {
   expectedCashOutgoDays?: number;
   dailyFileInflow?: DailyCount[];
@@ -47,6 +60,7 @@ type NoticeSummary = {
   dailyPaymentCompleted?: DailyCount[];
   dailyDeliverySchedule?: DeliveryDay[];
   preBidMeetingDailyRows?: PreBidDay[];
+  bidOpeningDailyRows?: BidOpeningDay[];
 };
 type WatchboardNotice = {
   id: string;
@@ -70,9 +84,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Nearest expiry in 4 days",
     tone: "urgent",
     rows: [
-      { record: "DEMO-1042 · S.O. 1", detail: "PWB BG · expires 26 Oct", division: "Trial", timing: "4 days left" },
-      { record: "DEMO-1088 · Stage 2", detail: "Combined BG · expires 30 Oct", division: "Systems", timing: "8 days left" },
-      { record: "DEMO-1121 · S.O. 1", detail: "PSB BG · expires 5 Nov", division: "Electronics", timing: "14 days left" },
+      {
+        record: "DEMO-1042 · S.O. 1",
+        detail: "PWB BG · expires 26 Oct",
+        division: "Trial",
+        timing: "4 days left",
+      },
+      {
+        record: "DEMO-1088 · Stage 2",
+        detail: "Combined BG · expires 30 Oct",
+        division: "Systems",
+        timing: "8 days left",
+      },
+      {
+        record: "DEMO-1121 · S.O. 1",
+        detail: "PSB BG · expires 5 Nov",
+        division: "Electronics",
+        timing: "14 days left",
+      },
     ],
   },
   {
@@ -84,9 +113,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 18 days",
     tone: "attention",
     rows: [
-      { record: "DEMO-2031", detail: "Scrutiny · received 4 Oct", division: "Trial", timing: "18 days" },
-      { record: "DEMO-2056", detail: "Scrutiny · received 9 Oct", division: "Systems", timing: "13 days" },
-      { record: "DEMO-2094", detail: "Scrutiny · received 14 Oct", division: "Electronics", timing: "8 days" },
+      {
+        record: "DEMO-2031",
+        detail: "Scrutiny · received 4 Oct",
+        division: "Trial",
+        timing: "18 days",
+      },
+      {
+        record: "DEMO-2056",
+        detail: "Scrutiny · received 9 Oct",
+        division: "Systems",
+        timing: "13 days",
+      },
+      {
+        record: "DEMO-2094",
+        detail: "Scrutiny · received 14 Oct",
+        division: "Electronics",
+        timing: "8 days",
+      },
     ],
   },
   {
@@ -98,9 +142,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest return 9 days ago",
     tone: "attention",
     rows: [
-      { record: "DEMO-3012 · Stage 1", detail: "Bill 1 · returned 13 Oct", division: "Trial", timing: "9 days" },
-      { record: "DEMO-3077 · S.O. 1", detail: "Regular bill · returned 16 Oct", division: "Systems", timing: "6 days" },
-      { record: "DEMO-3115 · Supplementary 2", detail: "Bill 2 · returned 19 Oct", division: "Electronics", timing: "3 days" },
+      {
+        record: "DEMO-3012 · Stage 1",
+        detail: "Bill 1 · returned 13 Oct",
+        division: "Trial",
+        timing: "9 days",
+      },
+      {
+        record: "DEMO-3077 · S.O. 1",
+        detail: "Regular bill · returned 16 Oct",
+        division: "Systems",
+        timing: "6 days",
+      },
+      {
+        record: "DEMO-3115 · Supplementary 2",
+        detail: "Bill 2 · returned 19 Oct",
+        division: "Electronics",
+        timing: "3 days",
+      },
     ],
   },
   {
@@ -112,9 +171,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest due 11 days ago",
     tone: "urgent",
     rows: [
-      { record: "DEMO-4018 · Stage 2", detail: "Stage payment · due 11 Oct", division: "Trial", timing: "11 days overdue" },
-      { record: "DEMO-4053 · S.O. 1", detail: "Regular payment · due 16 Oct", division: "Systems", timing: "6 days overdue" },
-      { record: "DEMO-4099 · Supplementary 1", detail: "Supplementary · due 20 Oct", division: "Electronics", timing: "2 days overdue" },
+      {
+        record: "DEMO-4018 · Stage 2",
+        detail: "Stage payment · due 11 Oct",
+        division: "Trial",
+        timing: "11 days overdue",
+      },
+      {
+        record: "DEMO-4053 · S.O. 1",
+        detail: "Regular payment · due 16 Oct",
+        division: "Systems",
+        timing: "6 days overdue",
+      },
+      {
+        record: "DEMO-4099 · Supplementary 1",
+        detail: "Supplementary · due 20 Oct",
+        division: "Electronics",
+        timing: "2 days overdue",
+      },
     ],
   },
   {
@@ -126,9 +200,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest trigger 21 days ago",
     tone: "attention",
     rows: [
-      { record: "DEMO-5024 · S.O. 1", detail: "PWB BG · trigger 1 Oct", division: "Trial", timing: "21 days" },
-      { record: "DEMO-5066 · Stage 1", detail: "PSB BG · trigger 7 Oct", division: "Systems", timing: "15 days" },
-      { record: "DEMO-5098 · S.O. 2", detail: "Combined BG · trigger 12 Oct", division: "Electronics", timing: "10 days" },
+      {
+        record: "DEMO-5024 · S.O. 1",
+        detail: "PWB BG · trigger 1 Oct",
+        division: "Trial",
+        timing: "21 days",
+      },
+      {
+        record: "DEMO-5066 · Stage 1",
+        detail: "PSB BG · trigger 7 Oct",
+        division: "Systems",
+        timing: "15 days",
+      },
+      {
+        record: "DEMO-5098 · S.O. 2",
+        detail: "Combined BG · trigger 12 Oct",
+        division: "Electronics",
+        timing: "10 days",
+      },
     ],
   },
   {
@@ -140,9 +229,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest completion 16 days ago",
     tone: "attention",
     rows: [
-      { record: "DEMO-6021 · Stage 2", detail: "Actual completion · 6 Oct", division: "Trial", timing: "16 days" },
-      { record: "DEMO-6085 · S.O. 1", detail: "Material received · 11 Oct", division: "Systems", timing: "11 days" },
-      { record: "DEMO-6129 · Stage 1", detail: "Actual completion · 14 Oct", division: "Electronics", timing: "8 days" },
+      {
+        record: "DEMO-6021 · Stage 2",
+        detail: "Work completion · 6 Oct",
+        division: "Trial",
+        timing: "16 days",
+      },
+      {
+        record: "DEMO-6085 · S.O. 1",
+        detail: "Material received · 11 Oct",
+        division: "Systems",
+        timing: "11 days",
+      },
+      {
+        record: "DEMO-6129 · Stage 1",
+        detail: "Work completion · 14 Oct",
+        division: "Electronics",
+        timing: "8 days",
+      },
     ],
   },
   {
@@ -154,9 +258,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest expired 24 days ago",
     tone: "urgent",
     rows: [
-      { record: "DEMO-7014 · S.O. 1", detail: "Effective D.P. · 30 Sep", division: "Trial", timing: "24 days overdue" },
-      { record: "DEMO-7048 · Stage 3", detail: "Effective D.P. · 8 Oct", division: "Systems", timing: "16 days overdue" },
-      { record: "DEMO-7092 · Stage 1", detail: "Effective D.P. · 15 Oct", division: "Electronics", timing: "9 days overdue" },
+      {
+        record: "DEMO-7014 · S.O. 1",
+        detail: "Effective D.P. · 30 Sep",
+        division: "Trial",
+        timing: "24 days overdue",
+      },
+      {
+        record: "DEMO-7048 · Stage 3",
+        detail: "Effective D.P. · 8 Oct",
+        division: "Systems",
+        timing: "16 days overdue",
+      },
+      {
+        record: "DEMO-7092 · Stage 1",
+        detail: "Effective D.P. · 15 Oct",
+        division: "Electronics",
+        timing: "9 days overdue",
+      },
     ],
   },
   {
@@ -170,7 +289,12 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     rows: [
       { record: "DEMO-8017", detail: "Pre-Bid · 24 Oct", division: "Trial", timing: "2 days" },
       { record: "DEMO-8055", detail: "Pre-Bid · 27 Oct", division: "Systems", timing: "5 days" },
-      { record: "DEMO-8091", detail: "Refloat Pre-Bid · 29 Oct", division: "Electronics", timing: "7 days" },
+      {
+        record: "DEMO-8091",
+        detail: "Refloat Pre-Bid · 29 Oct",
+        division: "Electronics",
+        timing: "7 days",
+      },
     ],
   },
   {
@@ -183,9 +307,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 14 days",
     tone: "attention",
     rows: [
-      { record: "DEMO-9011", detail: "Pre-TCEC pending · since 9 Oct", division: "Trial", timing: "14 days" },
-      { record: "DEMO-9043", detail: "Pre-TCEC pending · since 12 Oct", division: "Systems", timing: "11 days" },
-      { record: "DEMO-9087", detail: "Pre-TCEC pending · since 16 Oct", division: "Electronics", timing: "7 days" },
+      {
+        record: "DEMO-9011",
+        detail: "Pre-TCEC pending · since 9 Oct",
+        division: "Trial",
+        timing: "14 days",
+      },
+      {
+        record: "DEMO-9043",
+        detail: "Pre-TCEC pending · since 12 Oct",
+        division: "Systems",
+        timing: "11 days",
+      },
+      {
+        record: "DEMO-9087",
+        detail: "Pre-TCEC pending · since 16 Oct",
+        division: "Electronics",
+        timing: "7 days",
+      },
     ],
   },
   {
@@ -198,9 +337,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 12 days",
     tone: "attention",
     rows: [
-      { record: "DEMO-9112", detail: "R&QA pending · since 11 Oct", division: "Trial", timing: "12 days" },
-      { record: "DEMO-9144", detail: "R&QA pending · since 15 Oct", division: "Systems", timing: "8 days" },
-      { record: "DEMO-9180", detail: "R&QA pending · since 19 Oct", division: "Electronics", timing: "4 days" },
+      {
+        record: "DEMO-9112",
+        detail: "R&QA pending · since 11 Oct",
+        division: "Trial",
+        timing: "12 days",
+      },
+      {
+        record: "DEMO-9144",
+        detail: "R&QA pending · since 15 Oct",
+        division: "Systems",
+        timing: "8 days",
+      },
+      {
+        record: "DEMO-9180",
+        detail: "R&QA pending · since 19 Oct",
+        division: "Electronics",
+        timing: "4 days",
+      },
     ],
   },
   {
@@ -215,7 +369,12 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     rows: [
       { record: "DEMO-9213", detail: "IFA sent · 4 Oct", division: "Trial", timing: "19 days" },
       { record: "DEMO-9247", detail: "IFA sent · 9 Oct", division: "Systems", timing: "14 days" },
-      { record: "DEMO-9291", detail: "IFA sent · 13 Oct", division: "Electronics", timing: "10 days" },
+      {
+        record: "DEMO-9291",
+        detail: "IFA sent · 13 Oct",
+        division: "Electronics",
+        timing: "10 days",
+      },
     ],
   },
   {
@@ -230,7 +389,12 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     rows: [
       { record: "DEMO-9310", detail: "CFA sent · 7 Oct", division: "Trial", timing: "16 days" },
       { record: "DEMO-9342", detail: "CFA sent · 12 Oct", division: "Systems", timing: "11 days" },
-      { record: "DEMO-9386", detail: "CFA sent · 18 Oct", division: "Electronics", timing: "5 days" },
+      {
+        record: "DEMO-9386",
+        detail: "CFA sent · 18 Oct",
+        division: "Electronics",
+        timing: "5 days",
+      },
     ],
   },
   {
@@ -243,9 +407,24 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 22 days",
     tone: "attention",
     rows: [
-      { record: "DEMO-9415", detail: "Bidding · since 1 Oct", division: "Trial", timing: "22 days" },
-      { record: "DEMO-9449", detail: "Bidding · since 8 Oct", division: "Systems", timing: "15 days" },
-      { record: "DEMO-9493", detail: "Bidding · since 15 Oct", division: "Electronics", timing: "8 days" },
+      {
+        record: "DEMO-9415",
+        detail: "Bidding · since 1 Oct",
+        division: "Trial",
+        timing: "22 days",
+      },
+      {
+        record: "DEMO-9449",
+        detail: "Bidding · since 8 Oct",
+        division: "Systems",
+        timing: "15 days",
+      },
+      {
+        record: "DEMO-9493",
+        detail: "Bidding · since 15 Oct",
+        division: "Electronics",
+        timing: "8 days",
+      },
     ],
   },
   {
@@ -258,8 +437,18 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 13 days",
     tone: "attention",
     rows: [
-      { record: "DEMO-9518", detail: "CNC pending · since 10 Oct", division: "Trial", timing: "13 days" },
-      { record: "DEMO-9552", detail: "CNC pending · since 17 Oct", division: "Systems", timing: "6 days" },
+      {
+        record: "DEMO-9518",
+        detail: "CNC pending · since 10 Oct",
+        division: "Trial",
+        timing: "13 days",
+      },
+      {
+        record: "DEMO-9552",
+        detail: "CNC pending · since 17 Oct",
+        division: "Systems",
+        timing: "6 days",
+      },
     ],
   },
   {
@@ -272,8 +461,18 @@ const watchboardPreviewNotices: WatchboardNotice[] = [
     timing: "Oldest pending 17 days",
     tone: "urgent",
     rows: [
-      { record: "DEMO-9611 · Expected S.O.", detail: "Financial Sanction pending · since 6 Oct", division: "Trial", timing: "17 days" },
-      { record: "DEMO-9655 · Expected S.O.", detail: "Financial Sanction pending · since 13 Oct", division: "Systems", timing: "10 days" },
+      {
+        record: "DEMO-9611 · Expected S.O.",
+        detail: "Financial Sanction pending · since 6 Oct",
+        division: "Trial",
+        timing: "17 days",
+      },
+      {
+        record: "DEMO-9655 · Expected S.O.",
+        detail: "Financial Sanction pending · since 13 Oct",
+        division: "Systems",
+        timing: "10 days",
+      },
     ],
   },
 ];
@@ -312,7 +511,7 @@ const favoriteCatalog: AccessItem[] = [
     ["Delivery / D.P. Done, Bill Prepared", "itemsDeliveredBillsPrepared"],
     ["Bills Submitted, Payment Pending", "billsSubmitted"],
     ["Expected Cash Outgo by D.P.", "expectedCashOutgoFy"],
-    ["Actual Cash Outgo as on Date", "spentTillDateFy"],
+    ["Recorded Cash Outgo as on Date", "spentTillDateFy"],
     ["Bills Paid in Selected Month", "billsPaidInMonth"],
     ["Pending returned bills", "pendingReturnedBills"],
     ["Returned bills resubmitted and unpaid", "returnedBillsResubmitted"],
@@ -339,7 +538,8 @@ const favoriteCatalog: AccessItem[] = [
     group: "Reports",
   })),
   ...[
-    ["Pre-Bid Meetings", "preBidMeetings"],
+    ["Pre-Bid Schedule", "preBidMeetings"],
+    ["Bid-opening schedule", "bidOpeningSchedule"],
     ["TCEC summary", "tcecStatus"],
     ["CNC summary", "cncSummary"],
     ["Delay status", "delayStatus"],
@@ -370,6 +570,7 @@ const favoriteCatalog: AccessItem[] = [
 
 const boardCalendarIds: Record<string, string> = {
   "analytics-preBidMeetings": "preBidMeetings",
+  "analytics-bidOpeningSchedule": "bidOpeningSchedule",
   "report-monthlyFileInflow": "monthlyFileInflow",
   "report-monthWiseSupplyOrder": "supplyOrders",
   "report-monthWiseDeliverySchedule": "deliverySchedule",
@@ -396,7 +597,13 @@ function getCalendarBoardId(item: BoardItem | undefined) {
     monthWiseBgExpiry: "bgExpiry",
     soPaymentMatrix: "paymentDue",
     paymentCompletedMatrix: "paymentCompleted",
-  }[mode as "monthWiseDeliverySchedule" | "monthWiseBgExpiry" | "soPaymentMatrix" | "paymentCompletedMatrix"];
+  }[
+    mode as
+      | "monthWiseDeliverySchedule"
+      | "monthWiseBgExpiry"
+      | "soPaymentMatrix"
+      | "paymentCompletedMatrix"
+  ];
 }
 
 const boardCatalog: BoardItem[] = [
@@ -459,10 +666,9 @@ const boardCatalog: BoardItem[] = [
                     ]
                   : [{ ...item, id: boardCalendarIds[item.id] ?? item.id }],
     ),
-  ...[
-    { key: "all", label: "All milestones" },
-    ...delayMilestoneOptions,
-  ].map((item) => ({
+  { id: "urgent-reminders", label: "Urgent Reminders", href: "", group: "Urgent Messages" },
+  { id: "urgent-messages", label: "Urgent Messages", href: "", group: "Urgent Messages" },
+  ...[{ key: "all", label: "All milestones" }, ...delayMilestoneOptions].map((item) => ({
     id: `notice-delay-status-${item.key}`,
     label: item.label,
     group: "Delay Status",
@@ -474,7 +680,7 @@ const boardCatalog: BoardItem[] = [
     ["Booked", "booked", "Booked"],
     ["Committed", "committed", "Committed"],
     ["Paid Till Date", "paid-till-date", "Paid Till Date"],
-    ["S.O.s placed and files closed", "orders-and-closures", "S.O.s placed and files closed"],
+    ["FY Activity", "orders-and-closures", "S.O.s placed and files closed"],
     ["Payments in selected FY", "payments", "Payments in"],
     [
       "Balance Carry Forward from previous FYs",
@@ -493,7 +699,7 @@ const boardCatalog: BoardItem[] = [
     focus,
   })),
   ...[
-    ["Financial Position", "financial-position", "Financial Position"],
+    ["FY Snapshot", "financial-position", "Financial Position"],
     ["Capital and Revenue comparison", "capital-revenue", "Capital and Revenue comparison"],
     ["Payments recorded during FY", "payments", "Payments recorded during FY"],
     ["File Type Distribution", "file-type", "File Type Distribution"],
@@ -510,11 +716,19 @@ const boardCatalog: BoardItem[] = [
 const calendarBoardIds = new Set(Object.values(boardCalendarIds));
 
 const screenshotSourceIds = [
+  // Core Dashboard views are available to the rotation picker as well as the
+  // regular Dashboard shortcut list.
+  "dashboard-status",
+  "dashboard-liveStatus",
+  "dashboard-status3",
+  "dashboard-status4",
+  "dashboard-snapshot",
   "analytics-preTcecMonthly",
   "analytics-preTcecCommittee",
   "analytics-postTcecMonthly",
   "analytics-postTcecCommittee",
   "analytics-cncSummary",
+  "bidOpeningSchedule",
   "analytics-biddingMode",
   "analytics-delayStatus",
   "analytics-paymentPending",
@@ -538,15 +752,23 @@ const screenshotSourceIds = [
   "analytics-indentorsByFiles",
   "analytics-divisionTotalValue",
   "analytics-divisionFiles",
+  "analytics-milestoneClearingTable",
+  "analytics-divisionValue",
+];
+const noticeBoardSourceIds = [...screenshotSourceIds, "urgent-reminders", "urgent-messages"];
+const defaultNoticeBoardSelectionIds = [
+  ...screenshotSourceIds,
+  "urgent-reminders",
+  "urgent-messages",
 ];
 
 function getNoticeBoardEmbedHref(href: string) {
   const url = new URL(href, "http://notice-board.local");
-  if (
-    url.pathname === "/reports" ||
-    (url.pathname === "/dashboard" &&
-      ["analytics", "finance1", "fyActivity"].includes(url.searchParams.get("tab") ?? ""))
-  ) {
+  // Every page rendered inside the rotation iframe must be marked as an
+  // embed.  Without this marker, the dashboard's root shell mounts its own
+  // urgent-message prompt, which can cover Status-1 through Snapshot while
+  // the parent Notice Board is rotating.
+  if (url.pathname === "/reports" || url.pathname === "/dashboard") {
     url.searchParams.set("noticeBoardEmbed", "1");
   }
   if (url.pathname === "/dashboard" && url.searchParams.get("tab") === "finance1") {
@@ -556,6 +778,67 @@ function getNoticeBoardEmbedHref(href: string) {
     url.searchParams.set("noticeBoardView", "fyActivitySummary");
   }
   return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function isExtendedRotationView(item: BoardItem | undefined) {
+  if (!item) return false;
+  const label = item.label.trim().toLowerCase();
+  const id = item.id.trim().toLowerCase();
+  if (
+    label === "delay status" ||
+    label === "milestone clearing ranking" ||
+    (id.includes("delay") && id.includes("status")) ||
+    id.includes("milestoneclearing")
+  )
+    return true;
+  try {
+    const url = new URL(item.href, "http://notice-board.local");
+    return (
+      url.searchParams.get("mode") === "delayStatus" ||
+      url.searchParams.get("analyticsPanel") === "delayStatus" ||
+      url.searchParams.get("analyticsPanel") === "milestoneClearingTable"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isStatusOneOrThreeRotationView(item: BoardItem | undefined) {
+  if (!item) return false;
+  const label = item.label.trim().toLowerCase();
+  const id = item.id.trim().toLowerCase();
+  if (
+    label === "status-1" ||
+    label === "status-3" ||
+    id === "dashboard-status" ||
+    id === "dashboard-status3"
+  )
+    return true;
+  try {
+    const url = new URL(item.href, "http://notice-board.local");
+    const tab = url.searchParams.get("tab")?.trim().toLowerCase();
+    return tab === "status" || tab === "status3";
+  } catch {
+    return false;
+  }
+}
+
+function noticeBoardScrollProgress(progress: number, slow: boolean) {
+  const clamped = Math.min(1, Math.max(0, progress));
+  if (!slow) return clamped;
+  // Ease in and out so dense views do not jump through their content at the
+  // same perceived speed, while still reaching the bottom within the hold.
+  return clamped < 0.5
+    ? 4 * clamped ** 3
+    : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+}
+
+function noticeBoardScrollProgressInverse(progress: number, slow: boolean) {
+  const clamped = Math.min(1, Math.max(0, progress));
+  if (!slow) return clamped;
+  return clamped < 0.5
+    ? Math.cbrt(clamped / 4)
+    : 1 - Math.cbrt((1 - clamped) * 2) / 2;
 }
 
 function OptionPicker({
@@ -697,7 +980,8 @@ const storageKeys = {
   adminFavorites: "recordkeeper.quickAccess.adminFavorites.v1",
   adminBoard: "recordkeeper.noticeBoard.admin.v1",
   personalFavorites: (userId: string) => `recordkeeper.quickAccess.user.${userId}.favorites.v1`,
-  personalBoardSelection: (userId: string) => `recordkeeper.noticeBoard.user.${userId}.sourceSelection.v1`,
+  personalBoardSelection: (userId: string) =>
+    `recordkeeper.noticeBoard.user.${userId}.sourceSelection.v1`,
   personalInterval: (userId: string) => `recordkeeper.noticeBoard.user.${userId}.interval.v1`,
   personalTransitionDuration: (userId: string, key: string) =>
     `recordkeeper.noticeBoard.user.${userId}.${key}.v1`,
@@ -725,11 +1009,33 @@ type NoticeBoardTransitionSettings = Pick<
   ReturnType<typeof store.getSettings>["sharedQuickAccess"],
   NoticeBoardTransitionKey
 >;
+type NoticeBoardPersonalPreferences = {
+  intervalSeconds: number;
+  transitionEffect: NoticeBoardTransitionEffect;
+  slideDurationMs: number;
+  fadeOutDurationMs: number;
+  fadeInDurationMs: number;
+  verticalScrollDurationMs: number;
+};
+
+const noticeBoardPersonalDefaults: NoticeBoardPersonalPreferences = {
+  intervalSeconds: 15,
+  transitionEffect: "slide",
+  slideDurationMs: 1200,
+  fadeOutDurationMs: 1400,
+  fadeInDurationMs: 900,
+  verticalScrollDurationMs: 2800,
+};
 
 function readTransitionDuration(key: string, fallback: number) {
   if (typeof window === "undefined") return fallback;
-  const stored = Number(window.localStorage.getItem(key));
-  return Number.isInteger(stored) ? Math.min(30000, Math.max(100, stored)) : fallback;
+  const raw = window.localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const stored = Number(raw);
+  if (!Number.isFinite(stored) || stored <= 0) return fallback;
+  // Older builds stored the input in seconds; current builds store milliseconds.
+  const milliseconds = stored < 100 ? stored * 1000 : stored;
+  return Math.min(30000, Math.max(100, Math.round(milliseconds)));
 }
 
 function readTransitionEffect(key: string): NoticeBoardTransitionEffect {
@@ -753,15 +1059,126 @@ function parseTransitionDuration(value: string, fallback: number) {
     : fallback;
 }
 
+function readPersonalNoticeBoardPreferences(userId: string) {
+  const durations = Object.fromEntries(
+    noticeBoardTransitionFields.map(({ key, defaultMs }) => [
+      key,
+      readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs),
+    ]),
+  ) as NoticeBoardTransitionSettings;
+  return {
+    intervalSeconds: readInterval(storageKeys.personalInterval(userId)),
+    transitionEffect: readTransitionEffect(storageKeys.personalTransitionEffect(userId)),
+    slideDurationMs: durations.noticeBoardSlideDurationMs,
+    fadeOutDurationMs: durations.noticeBoardFadeOutDurationMs,
+    fadeInDurationMs: durations.noticeBoardFadeInDurationMs,
+    verticalScrollDurationMs: durations.noticeBoardVerticalScrollDurationMs,
+  } satisfies NoticeBoardPersonalPreferences;
+}
+
+function writePersonalNoticeBoardPreferences(
+  userId: string,
+  preferences: NoticeBoardPersonalPreferences,
+) {
+  window.localStorage.setItem(
+    storageKeys.personalInterval(userId),
+    String(preferences.intervalSeconds),
+  );
+  window.localStorage.setItem(
+    storageKeys.personalTransitionEffect(userId),
+    preferences.transitionEffect,
+  );
+  const durationValues: Record<NoticeBoardTransitionKey, number> = {
+    noticeBoardSlideDurationMs: preferences.slideDurationMs,
+    noticeBoardFadeOutDurationMs: preferences.fadeOutDurationMs,
+    noticeBoardFadeInDurationMs: preferences.fadeInDurationMs,
+    noticeBoardVerticalScrollDurationMs: preferences.verticalScrollDurationMs,
+  };
+  for (const { key } of noticeBoardTransitionFields) {
+    window.localStorage.setItem(
+      storageKeys.personalTransitionDuration(userId, key),
+      String(durationValues[key]),
+    );
+  }
+}
+
+function hasStoredPersonalNoticeBoardPreferences(userId: string) {
+  return [
+    storageKeys.personalInterval(userId),
+    storageKeys.personalTransitionEffect(userId),
+    ...noticeBoardTransitionFields.map(({ key }) =>
+      storageKeys.personalTransitionDuration(userId, key),
+    ),
+  ].some((key) => window.localStorage.getItem(key) !== null);
+}
+
+async function requestNoticeBoardPersonalPreferences<T>(path: string, init?: RequestInit) {
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+  });
+  const payload = (await response.json().catch(() => undefined)) as
+    | (T & { error?: string })
+    | undefined;
+  if (!response.ok)
+    throw new Error(
+      payload?.error ?? `Notice Board preferences request failed: ${response.status}`,
+    );
+  return payload as T;
+}
+
+function usePersonalNoticeBoardPreferences(userId: string) {
+  const [preferences, setPreferences] = useState<NoticeBoardPersonalPreferences>(() =>
+    readPersonalNoticeBoardPreferences(userId),
+  );
+  useEffect(() => {
+    let active = true;
+    const localPreferences = readPersonalNoticeBoardPreferences(userId);
+    setPreferences(localPreferences);
+    void requestNoticeBoardPersonalPreferences<{
+      preferences: NoticeBoardPersonalPreferences;
+      saved: boolean;
+    }>("/api/settings/notice-board-preferences")
+      .then((result) => {
+        if (!active) return;
+        if (result.saved) {
+          writePersonalNoticeBoardPreferences(userId, result.preferences);
+          setPreferences(result.preferences);
+          return;
+        }
+        if (hasStoredPersonalNoticeBoardPreferences(userId)) {
+          setPreferences(localPreferences);
+          void requestNoticeBoardPersonalPreferences("/api/settings/notice-board-preferences", {
+            method: "PATCH",
+            body: JSON.stringify(localPreferences),
+          });
+        } else {
+          setPreferences(result.preferences);
+        }
+      })
+      .catch(() => {
+        // Keep the local preference fallback if the preference endpoint is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, [userId]);
+  return preferences;
+}
+
 let sharedQuickAccessSaveQueue: Promise<unknown> = Promise.resolve();
 
 function saveSharedQuickAccess(patch: SharedQuickAccessPatch) {
-  const save = sharedQuickAccessSaveQueue.catch(() => undefined).then(() => {
-    const current = store.getSettings().sharedQuickAccess;
-    return store.saveSettings({
-      sharedQuickAccess: { ...current, ...patch, initialized: true },
+  const save = sharedQuickAccessSaveQueue
+    .catch(() => undefined)
+    .then(() => {
+      const current = store.getSettings().sharedQuickAccess;
+      return store.saveSettings({
+        sharedQuickAccess: { ...current, ...patch, initialized: true },
+      });
     });
-  });
   sharedQuickAccessSaveQueue = save;
   return save;
 }
@@ -801,7 +1218,11 @@ function useLegacySharedQuickAccessMigration(admin: boolean) {
     const noticeBoardItems = readArray<BoardItem>(storageKeys.adminBoard).map((item) => item.id);
     const interval = readInterval(storageKeys.adminInterval);
     if (!favorites.length && !noticeBoardItems.length && interval === 15) return;
-    void saveSharedQuickAccess({ favorites, noticeBoardItems, noticeBoardIntervalSeconds: interval })
+    void saveSharedQuickAccess({
+      favorites,
+      noticeBoardItems,
+      noticeBoardIntervalSeconds: interval,
+    })
       .then(() => {
         window.localStorage.setItem(storageKeys.sharedImportComplete, "true");
       })
@@ -834,12 +1255,16 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
   const sharedIds = new Set(settings.sharedQuickAccess.favorites);
   const shared = favoriteCatalog.filter((item) => sharedIds.has(item.id));
   const [saveError, setSaveError] = useState("");
-  const personalHasChanges = JSON.stringify(personal) !== JSON.stringify(readArray<AccessItem>(personalKey));
+  const personalHasChanges =
+    JSON.stringify(personal) !== JSON.stringify(readArray<AccessItem>(personalKey));
   const updateFavorites = (target: "shared" | "personal", next: AccessItem[]) => {
     if (target === "shared") {
       setSaveError("");
-      void saveSharedQuickAccess({ favorites: next.map((item) => item.id) }).catch((error: unknown) =>
-        setSaveError(error instanceof Error ? error.message : "Shared shortcuts could not be saved."),
+      void saveSharedQuickAccess({ favorites: next.map((item) => item.id) }).catch(
+        (error: unknown) =>
+          setSaveError(
+            error instanceof Error ? error.message : "Shared shortcuts could not be saved.",
+          ),
       );
     } else {
       setSaveError("");
@@ -929,18 +1354,23 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
 
 function NoticeBoardEditor() {
   const user = useActiveUser();
-  const settings = useSettings();
   const userId = user?.id ?? "anonymous";
+  const personalPreferences = usePersonalNoticeBoardPreferences(userId);
+  const [saving, setSaving] = useState(false);
   const [personalInterval, setPersonalInterval] = useState(() =>
     readInterval(storageKeys.personalInterval(userId)),
   );
-  const [personalTransitionDrafts, setPersonalTransitionDrafts] = useState(() =>
-    Object.fromEntries(
-      noticeBoardTransitionFields.map(({ key, defaultMs }) => [
-        key,
-        String(readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) / 1000),
-      ]),
-    ) as Record<NoticeBoardTransitionKey, string>,
+  const [personalTransitionDrafts, setPersonalTransitionDrafts] = useState(
+    () =>
+      Object.fromEntries(
+        noticeBoardTransitionFields.map(({ key, defaultMs }) => [
+          key,
+          String(
+            readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) /
+              1000,
+          ),
+        ]),
+      ) as Record<NoticeBoardTransitionKey, string>,
   );
   const [personalTransitionEffect, setPersonalTransitionEffect] = useState(() =>
     readTransitionEffect(storageKeys.personalTransitionEffect(userId)),
@@ -948,25 +1378,34 @@ function NoticeBoardEditor() {
   const [saveError, setSaveError] = useState("");
   const personalHasChanges =
     personalInterval !== readInterval(storageKeys.personalInterval(userId)) ||
-    personalTransitionEffect !== readTransitionEffect(storageKeys.personalTransitionEffect(userId)) ||
-    noticeBoardTransitionFields.some(({ key, defaultMs }) =>
-      parseTransitionDuration(personalTransitionDrafts[key] ?? "", defaultMs) !==
-      readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs),
+    personalTransitionEffect !==
+      readTransitionEffect(storageKeys.personalTransitionEffect(userId)) ||
+    noticeBoardTransitionFields.some(
+      ({ key, defaultMs }) =>
+        parseTransitionDuration(personalTransitionDrafts[key] ?? "", defaultMs) !==
+        readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs),
     );
-  useEffect(
-    () => {
-      setPersonalTransitionDrafts(
-        Object.fromEntries(
-          noticeBoardTransitionFields.map(({ key, defaultMs }) => [
-            key,
-            String(readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) / 1000),
-          ]),
-        ) as Record<NoticeBoardTransitionKey, string>,
-      );
-      setPersonalTransitionEffect(readTransitionEffect(storageKeys.personalTransitionEffect(userId)));
-    },
-    [userId],
-  );
+  useEffect(() => {
+    setPersonalTransitionDrafts(
+      Object.fromEntries(
+        noticeBoardTransitionFields.map(({ key }) => [
+          key,
+          String(
+            (
+              {
+                noticeBoardSlideDurationMs: personalPreferences.slideDurationMs,
+                noticeBoardFadeOutDurationMs: personalPreferences.fadeOutDurationMs,
+                noticeBoardFadeInDurationMs: personalPreferences.fadeInDurationMs,
+                noticeBoardVerticalScrollDurationMs: personalPreferences.verticalScrollDurationMs,
+              } as Record<NoticeBoardTransitionKey, number>
+            )[key] / 1000,
+          ),
+        ]),
+      ) as Record<NoticeBoardTransitionKey, string>,
+    );
+    setPersonalInterval(personalPreferences.intervalSeconds);
+    setPersonalTransitionEffect(personalPreferences.transitionEffect);
+  }, [personalPreferences]);
   const setInterval = (value: number) => {
     const next = Math.min(120, Math.max(5, value || 15));
     setPersonalInterval(next);
@@ -974,18 +1413,53 @@ function NoticeBoardEditor() {
   const setTransitionDraft = (key: NoticeBoardTransitionKey, value: string) => {
     setPersonalTransitionDrafts((current) => ({ ...current, [key]: value }));
   };
-  const savePersonalSettings = () => {
+  const savePersonalSettings = async () => {
+    setSaving(true);
     try {
       window.localStorage.setItem(storageKeys.personalInterval(userId), String(personalInterval));
-      window.localStorage.setItem(storageKeys.personalTransitionEffect(userId), personalTransitionEffect);
+      window.localStorage.setItem(
+        storageKeys.personalTransitionEffect(userId),
+        personalTransitionEffect,
+      );
+      const nextPreferences = {
+        intervalSeconds: personalInterval,
+        transitionEffect: personalTransitionEffect,
+        slideDurationMs: parseTransitionDuration(
+          personalTransitionDrafts.noticeBoardSlideDurationMs,
+          1200,
+        ),
+        fadeOutDurationMs: parseTransitionDuration(
+          personalTransitionDrafts.noticeBoardFadeOutDurationMs,
+          1400,
+        ),
+        fadeInDurationMs: parseTransitionDuration(
+          personalTransitionDrafts.noticeBoardFadeInDurationMs,
+          900,
+        ),
+        verticalScrollDurationMs: parseTransitionDuration(
+          personalTransitionDrafts.noticeBoardVerticalScrollDurationMs,
+          2800,
+        ),
+      } satisfies NoticeBoardPersonalPreferences;
       for (const { key, defaultMs } of noticeBoardTransitionFields) {
         const milliseconds = parseTransitionDuration(personalTransitionDrafts[key], defaultMs);
-        window.localStorage.setItem(storageKeys.personalTransitionDuration(userId, key), String(milliseconds));
+        window.localStorage.setItem(
+          storageKeys.personalTransitionDuration(userId, key),
+          String(milliseconds),
+        );
         setTransitionDraft(key, String(milliseconds / 1000));
       }
+      await requestNoticeBoardPersonalPreferences("/api/settings/notice-board-preferences", {
+        method: "PATCH",
+        body: JSON.stringify(nextPreferences),
+      });
       setSaveError("");
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "Notice Board preferences could not be saved.");
+      setSaveError(
+        error instanceof Error ? error.message : "Notice Board preferences could not be saved.",
+      );
+    } finally {
+      setSaving(false);
     }
   };
   const cancelPersonalSettings = () => {
@@ -996,7 +1470,10 @@ function NoticeBoardEditor() {
       Object.fromEntries(
         noticeBoardTransitionFields.map(({ key, defaultMs }) => [
           key,
-          String(readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) / 1000),
+          String(
+            readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) /
+              1000,
+          ),
         ]),
       ) as Record<NoticeBoardTransitionKey, string>,
     );
@@ -1005,7 +1482,9 @@ function NoticeBoardEditor() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-6 border-t border-border pt-4">
-        <div className="w-full"><QuickAccessScope personal /></div>
+        <div className="w-full">
+          <QuickAccessScope personal />
+        </div>
         <label className="text-xs font-medium">
           View hold duration (seconds)
           <input
@@ -1032,11 +1511,15 @@ function NoticeBoardEditor() {
               className="mt-1 block h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
             >
               {noticeBoardTransitionEffects.map((effect) => (
-                <option key={effect.value} value={effect.value}>{effect.label}</option>
+                <option key={effect.value} value={effect.value}>
+                  {effect.label}
+                </option>
               ))}
             </select>
           </label>
-          <p className="text-xs font-medium text-muted-foreground">Transition durations (seconds)</p>
+          <p className="text-xs font-medium text-muted-foreground">
+            Transition durations (seconds)
+          </p>
           <div className="flex flex-wrap gap-4">
             {noticeBoardTransitionFields.map(({ key, label }) => (
               <label key={key} className="text-xs font-medium">
@@ -1066,11 +1549,11 @@ function NoticeBoardEditor() {
         </button>
         <button
           type="button"
-          onClick={savePersonalSettings}
-          disabled={!personalHasChanges}
+          onClick={() => void savePersonalSettings()}
+          disabled={!personalHasChanges || saving}
           className="h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
-          Save changes
+          {saving ? "Saving…" : "Save changes"}
         </button>
       </div>
       {saveError ? (
@@ -1085,38 +1568,49 @@ function NoticeBoardEditor() {
 export function QuickAccessSettings({ section }: { section: "favorites" | "noticeBoard" }) {
   const admin = useActiveUser()?.role === "admin";
   useLegacySharedQuickAccessMigration(admin);
-  return section === "favorites" ? (
-    <FavoriteEditor admin={admin} />
-  ) : (
-    <NoticeBoardEditor />
-  );
+  return section === "favorites" ? <FavoriteEditor admin={admin} /> : <NoticeBoardEditor />;
 }
 
 export function QuickEntryAccess() {
   const user = useActiveUser();
+  const messagingBlocked = user?.role === "viewer" || user?.role === "universal_viewer";
   useLegacySharedQuickAccessMigration(user?.role === "admin");
   const userId = user?.id ?? "anonymous";
-  const delay = readInterval(storageKeys.personalInterval(userId));
-  const transitionDurations = Object.fromEntries(
-    noticeBoardTransitionFields.map(({ key, defaultMs }) => [
-      key,
-      readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs),
-    ]),
-  ) as NoticeBoardTransitionSettings;
-  const transitionEffect = readTransitionEffect(storageKeys.personalTransitionEffect(userId));
-  type QuickEntryTab = "noticeBoard" | "excelExports";
+  const personalPreferences = usePersonalNoticeBoardPreferences(userId);
+  const delay = personalPreferences.intervalSeconds;
+  const transitionDurations = {
+    noticeBoardSlideDurationMs: personalPreferences.slideDurationMs,
+    noticeBoardFadeOutDurationMs: personalPreferences.fadeOutDurationMs,
+    noticeBoardFadeInDurationMs: personalPreferences.fadeInDurationMs,
+    noticeBoardVerticalScrollDurationMs: personalPreferences.verticalScrollDurationMs,
+  } satisfies NoticeBoardTransitionSettings;
+  const transitionEffect = personalPreferences.transitionEffect;
+  type QuickEntryTab = "noticeBoard" | "urgentReminders" | "messages" | "excelExports";
   const [activeTab, setActiveTab] = useState<QuickEntryTab>("noticeBoard");
+  useEffect(() => {
+    if (messagingBlocked && (activeTab === "urgentReminders" || activeTab === "messages")) {
+      setActiveTab("noticeBoard");
+    }
+  }, [activeTab, messagingBlocked]);
+  const tabClass = (tab: QuickEntryTab) => {
+    const selected = activeTab === tab;
+    return `inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition-colors ${selected ? "border-foreground/35 bg-background text-foreground shadow-sm" : "border-border/70 bg-transparent text-foreground hover:bg-muted/40"}`;
+  };
   return (
     <>
-      <section className="rounded-md border border-border bg-card shadow-[var(--shadow-card)]">
-        <div className="overflow-x-auto border-b border-border bg-primary/10">
-          <div className="flex min-w-max p-1" role="tablist" aria-label="Quick Entry tools">
+      <section className="overflow-hidden rounded-2xl border border-border/80 border-l-4 border-l-primary/45 bg-card shadow-[var(--shadow-card)]">
+        <div className="overflow-x-auto border-b border-border/70 bg-secondary">
+          <div
+            className="flex min-w-max gap-1 px-5 py-2"
+            role="tablist"
+            aria-label="Quick Entry tools"
+          >
             <button
               type="button"
               role="tab"
               aria-selected={activeTab === "noticeBoard"}
               onClick={() => setActiveTab("noticeBoard")}
-              className={`inline-flex min-h-10 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors ${activeTab === "noticeBoard" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+              className={tabClass("noticeBoard")}
             >
               <MonitorPlay className="size-4" /> Notice Board
             </button>
@@ -1125,20 +1619,59 @@ export function QuickEntryAccess() {
               role="tab"
               aria-selected={activeTab === "excelExports"}
               onClick={() => setActiveTab("excelExports")}
-              className={`inline-flex min-h-10 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors ${activeTab === "excelExports" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+              className={tabClass("excelExports")}
             >
               <FileSpreadsheet className="size-4" /> Excel Exports
             </button>
+            {!messagingBlocked ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "urgentReminders"}
+                onClick={() => setActiveTab("urgentReminders")}
+                className={tabClass("urgentReminders")}
+              >
+                <BellRing className="size-4" /> Urgent Reminders
+              </button>
+            ) : null}
+            {!messagingBlocked ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "messages"}
+                onClick={() => setActiveTab("messages")}
+                className={tabClass("messages")}
+              >
+                <MessageSquare className="size-4" /> Urgent Messages
+              </button>
+            ) : null}
           </div>
         </div>
         {activeTab === "noticeBoard" ? (
-          <section role="tabpanel" className="relative p-5">
+          <section
+            role="tabpanel"
+            className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
+          >
             <LiveSourceBoard
               userId={userId}
               delaySeconds={delay}
               transitionDurations={transitionDurations}
               transitionEffect={transitionEffect}
             />
+          </section>
+        ) : activeTab === "urgentReminders" ? (
+          <section
+            role="tabpanel"
+            className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
+          >
+            <UrgentMessagesPanel kind="reminder" />
+          </section>
+        ) : activeTab === "messages" ? (
+          <section
+            role="tabpanel"
+            className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
+          >
+            <UrgentMessagesPanel kind="admin" />
           </section>
         ) : (
           <QuickEntryExcelExportList />
@@ -1160,13 +1693,24 @@ function LiveSourceBoard({
   transitionEffect: NoticeBoardTransitionEffect;
 }) {
   const settings = useSettings();
+  const activeUser = useActiveUser();
+  const messagingBlocked =
+    activeUser?.role === "viewer" || activeUser?.role === "universal_viewer";
   const sourceItems = useMemo(
-    () => boardCatalog.filter((item) => screenshotSourceIds.includes(item.id)),
-    [],
+    () =>
+      boardCatalog.filter(
+        (item) =>
+          noticeBoardSourceIds.includes(item.id) &&
+          (!messagingBlocked || (item.id !== "urgent-reminders" && item.id !== "urgent-messages")),
+      ),
+    [messagingBlocked],
   );
   const selectionDropdownRef = useRef<HTMLDetailsElement>(null);
   const sequenceDropdownRef = useRef<HTMLDetailsElement>(null);
+  const sectionTabsRef = useRef<HTMLDivElement>(null);
   const selectionKey = storageKeys.personalBoardSelection(userId);
+  const urgentSelectionMigrationKey = `${selectionKey}:urgent-v1`;
+  const bidOpeningSelectionMigrationKey = `${selectionKey}:bid-opening-v1`;
   const [selectedIds, setSelectedIds] = useState<string[]>(() => {
     if (typeof window !== "undefined") {
       try {
@@ -1186,30 +1730,59 @@ function LiveSourceBoard({
                   "analytics-postTcecMonthly",
                   "analytics-postTcecCommittee",
                 ];
+              if (id === "analytics-bidOpeningSchedule") return ["bidOpeningSchedule"];
               return [id];
             });
-            return expanded.filter((id): id is string =>
-              typeof id === "string" && sourceItems.some((item) => item.id === id),
+            const normalized = expanded.filter(
+              (id): id is string =>
+                typeof id === "string" && sourceItems.some((item) => item.id === id),
             );
+            const addUrgent = !window.localStorage.getItem(urgentSelectionMigrationKey);
+            const addBidOpening = !window.localStorage.getItem(bidOpeningSelectionMigrationKey);
+            if (addUrgent) window.localStorage.setItem(urgentSelectionMigrationKey, "1");
+            if (addBidOpening) window.localStorage.setItem(bidOpeningSelectionMigrationKey, "1");
+            return Array.from(
+              new Set([
+                ...normalized,
+                ...(addBidOpening ? ["bidOpeningSchedule"] : []),
+                ...(addUrgent && !messagingBlocked ? ["urgent-reminders", "urgent-messages"] : []),
+              ]),
+            ).filter((id) => sourceItems.some((item) => item.id === id));
           }
         }
       } catch {
         // Use the shared screenshot set if the saved selection is unreadable.
       }
     }
-    return screenshotSourceIds;
+    return defaultNoticeBoardSelectionIds.filter(
+      (id) => !messagingBlocked || (id !== "urgent-reminders" && id !== "urgent-messages"),
+    );
   });
   const selectedItems = useMemo(
-    () => selectedIds.flatMap((id) => {
-      const item = sourceItems.find((candidate) => candidate.id === id);
-      return item ? [item] : [];
-    }),
+    () =>
+      selectedIds.flatMap((id) => {
+        const item = sourceItems.find((candidate) => candidate.id === id);
+        return item ? [item] : [];
+      }),
     [selectedIds, sourceItems],
   );
   const [activeId, setActiveId] = useState(selectedItems[0]?.id ?? "");
   const [rotationOpen, setRotationOpen] = useState(false);
+  useEffect(() => {
+    if (!messagingBlocked) return;
+    setSelectedIds((ids) => {
+      const filtered = ids.filter((id) => id !== "urgent-reminders" && id !== "urgent-messages");
+      return filtered.length === ids.length ? ids : filtered;
+    });
+  }, [messagingBlocked]);
   const activeItem = selectedItems.find((item) => item.id === activeId) ?? selectedItems[0];
   const activeCalendarId = getCalendarBoardId(activeItem);
+  const activeUrgentKind =
+    activeItem?.id === "urgent-reminders"
+      ? "reminder"
+      : activeItem?.id === "urgent-messages"
+        ? "admin"
+        : undefined;
   const [summary, setSummary] = useState<NoticeSummary>();
   const [summaryError, setSummaryError] = useState("");
   useEffect(() => {
@@ -1219,7 +1792,10 @@ function LiveSourceBoard({
       delayDays: "0",
       delayMilestone: "all",
     });
-    const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
+      /\/$/,
+      "",
+    );
     let cancelled = false;
     fetch(`${baseUrl}/api/reports/summary?${params}`, { credentials: "include" })
       .then(async (response) => {
@@ -1260,7 +1836,7 @@ function LiveSourceBoard({
   }, [activeId, selectedItems]);
 
   useEffect(() => {
-    const closeDropdowns = (event: PointerEvent) => {
+    const closeDropdowns = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
       for (const dropdown of [selectionDropdownRef.current, sequenceDropdownRef.current]) {
@@ -1270,14 +1846,18 @@ function LiveSourceBoard({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       for (const dropdown of [selectionDropdownRef.current, sequenceDropdownRef.current]) {
-        if (dropdown?.open) dropdown.open = false;
+        if (dropdown?.open) {
+          event.preventDefault();
+          dropdown.open = false;
+          dropdown.querySelector<HTMLElement>("summary")?.focus();
+        }
       }
     };
-    document.addEventListener("pointerdown", closeDropdowns);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("click", closeDropdowns, true);
+    document.addEventListener("keydown", closeOnEscape, true);
     return () => {
-      document.removeEventListener("pointerdown", closeDropdowns);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("click", closeDropdowns, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
     };
   }, []);
 
@@ -1296,41 +1876,71 @@ function LiveSourceBoard({
       return next;
     });
   };
+  const scrollSectionTabs = (direction: -1 | 1) => {
+    const tabs = sectionTabsRef.current;
+    if (!tabs) return;
+    tabs.scrollBy({
+      left: direction * Math.max(240, Math.round(tabs.clientWidth * 0.75)),
+      behavior: "smooth",
+    });
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">Live information</h2>
-          <p className="text-sm text-muted-foreground">Choose source sections to show here.</p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-start gap-2">
         <div className="flex items-center gap-2">
           <details ref={selectionDropdownRef} className="group relative">
-            <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-md border border-border bg-background px-3 text-sm [&::-webkit-details-marker]:hidden">
-              Select sections <span className="text-muted-foreground">{selectedIds.length} selected</span>
+            <summary className="flex h-9 cursor-pointer list-none items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-xs shadow-sm transition-colors hover:bg-accent [&::-webkit-details-marker]:hidden">
+              Sections <span className="text-muted-foreground">{selectedIds.length}</span>
             </summary>
-            <div className="absolute right-0 z-30 mt-1 max-h-[70vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-md border border-border bg-popover p-3 shadow-lg">
+            <div className="absolute left-0 z-30 mt-1 max-h-[70vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-md border border-border bg-popover p-3 shadow-lg">
               <div className="mb-2 flex justify-end gap-3 border-b border-border pb-2 text-xs">
-                <button type="button" onClick={() => setSelectedIds(screenshotSourceIds)} className="font-medium text-primary">Select all</button>
-                <button type="button" onClick={() => setSelectedIds([])} className="font-medium text-primary">Clear</button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(noticeBoardSourceIds)}
+                  className="font-medium text-primary"
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds([])}
+                  className="font-medium text-primary"
+                >
+                  Clear
+                </button>
               </div>
               {sourceItems.map((item) => (
-                <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent">
-                  <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSource(item.id)} className="mt-0.5 size-4 shrink-0 accent-primary" />
+                <label
+                  key={item.id}
+                  className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(item.id)}
+                    onChange={() => toggleSource(item.id)}
+                    className="mt-0.5 size-4 shrink-0 accent-primary"
+                  />
                   <span>{item.label}</span>
                 </label>
               ))}
             </div>
           </details>
           <details ref={sequenceDropdownRef} className="group relative">
-            <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-md border border-border bg-background px-3 text-sm [&::-webkit-details-marker]:hidden">
-              Sequence <span className="text-muted-foreground">{selectedItems.length}</span>
+            <summary
+              className="flex h-9 cursor-pointer list-none items-center justify-center rounded-lg border border-border/80 bg-background px-3 text-xs shadow-sm transition-colors hover:bg-accent [&::-webkit-details-marker]:hidden"
+              title="Set section sequence"
+              aria-label={`Set section sequence (${selectedItems.length} selected)`}
+            >
+              <ArrowDownUp className="size-4" aria-hidden="true" />
             </summary>
-            <div className="absolute right-0 z-30 mt-1 max-h-[70vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-md border border-border bg-popover p-3 shadow-lg">
+            <div className="absolute left-0 z-30 mt-1 max-h-[70vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto rounded-md border border-border bg-popover p-3 shadow-lg">
               {selectedItems.length ? (
                 selectedItems.map((item, index) => (
                   <div key={item.id} className="flex items-center gap-2 rounded-sm px-2 py-1.5">
-                    <span className="w-5 shrink-0 text-right text-xs font-semibold tabular-nums text-muted-foreground">{index + 1}.</span>
+                    <span className="w-5 shrink-0 text-right text-xs font-semibold tabular-nums text-muted-foreground">
+                      {index + 1}.
+                    </span>
                     <span className="min-w-0 flex-1 text-sm">{item.label}</span>
                     <button
                       type="button"
@@ -1361,44 +1971,80 @@ function LiveSourceBoard({
           </details>
           <button
             type="button"
-            onClick={() => setRotationOpen(true)}
+            onClick={() => {
+              // Mark rotation synchronously so the global urgent prompt is
+              // hidden before the overlay and its embedded view mount.
+              document.documentElement.dataset.noticeBoardRotation = "active";
+              window.dispatchEvent(
+                new CustomEvent("recordkeeper:notice-board-rotation", {
+                  detail: { active: true },
+                }),
+              );
+              setRotationOpen(true);
+            }}
             disabled={!selectedItems.length}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm hover:bg-accent disabled:opacity-50"
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border/80 bg-background px-3 text-xs shadow-sm transition-colors hover:bg-accent disabled:opacity-50"
+            aria-label="Start Notice Board rotation"
             title="Show selected sections in full-screen rotation"
           >
-            <Maximize2 className="size-4" /> Start rotation
+            <span className="relative inline-flex size-5 items-center justify-center" aria-hidden="true">
+              <Monitor className="size-5" />
+              <RefreshCw className="absolute left-1 top-[3px] size-3 stroke-[2.5]" />
+            </span>
           </button>
         </div>
       </div>
 
       {selectedItems.length ? (
         <>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {selectedItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveId(item.id)}
-                aria-pressed={item.id === activeItem?.id}
-                className={`shrink-0 rounded-md border px-3 py-2 text-sm ${item.id === activeItem?.id ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-accent"}`}
-              >
-                {item.label}
-              </button>
-            ))}
+          <div className="relative px-8">
+            <button
+              type="button"
+              onClick={() => scrollSectionTabs(-1)}
+              className="absolute left-0 top-1/2 z-10 grid size-7 -translate-y-1/2 place-items-center rounded-full border border-border/80 bg-background text-foreground shadow-sm transition-colors hover:bg-accent"
+              aria-label="Scroll sections left"
+              title="Scroll sections left"
+            >
+              <ArrowLeft className="size-4" aria-hidden="true" />
+            </button>
+            <div ref={sectionTabsRef} className="flex gap-2 overflow-x-auto scroll-smooth pb-1">
+              {selectedItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveId(item.id)}
+                  aria-pressed={item.id === activeItem?.id}
+                  className={`shrink-0 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${item.id === activeItem?.id ? "border-primary/40 bg-primary/10 text-primary shadow-sm" : "border-border/70 bg-background hover:bg-accent"}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => scrollSectionTabs(1)}
+              className="absolute right-0 top-1/2 z-10 grid size-7 -translate-y-1/2 place-items-center rounded-full border border-border/80 bg-background text-foreground shadow-sm transition-colors hover:bg-accent"
+              aria-label="Scroll sections right"
+              title="Scroll sections right"
+            >
+              <ArrowRight className="size-4" aria-hidden="true" />
+            </button>
           </div>
-          {activeItem?.href ? (
-            <div className="overflow-hidden rounded-md border border-border bg-background">
-              <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-                <h3 className="text-sm font-medium">{activeItem.label}</h3>
-                <span className="text-xs text-muted-foreground">{selectedItems.findIndex((item) => item.id === activeItem.id) + 1} of {selectedItems.length}</span>
-              </div>
+          {activeUrgentKind ? (
+            <UrgentMessageTicker kind={activeUrgentKind} />
+          ) : activeItem?.href ? (
+            <div className="overflow-hidden rounded-2xl border border-border/80 bg-background shadow-sm">
               {activeCalendarId ? (
                 summaryError ? (
-                  <p role="alert" className="p-6 text-center text-sm text-destructive">{summaryError}</p>
+                  <p role="alert" className="p-6 text-center text-sm text-destructive">
+                    {summaryError}
+                  </p>
                 ) : !summary ? (
-                  <p className="p-6 text-center text-sm text-muted-foreground">Loading calendar...</p>
+                  <p className="p-6 text-center text-sm text-muted-foreground">
+                    Loading calendar...
+                  </p>
                 ) : twoMonthCalendarIds.has(activeCalendarId) ? (
-                  <div className="grid grid-cols-1 items-start gap-4 p-4 xl:grid-cols-2">
+                  <div className="grid grid-cols-1 items-start gap-4 bg-gradient-to-br from-background to-muted/20 p-4 xl:grid-cols-2">
                     {[currentMonthKey, nextMonthKey].map((monthKey) => (
                       <MonthlyCountCalendar
                         key={monthKey}
@@ -1439,7 +2085,10 @@ function LiveSourceBoard({
           delaySeconds={delaySeconds}
           transitionDurations={transitionDurations}
           transitionEffect={transitionEffect}
-          initialIndex={Math.max(0, selectedItems.findIndex((item) => item.id === activeItem?.id))}
+          initialIndex={Math.max(
+            0,
+            selectedItems.findIndex((item) => item.id === activeItem?.id),
+          )}
           onClose={() => setRotationOpen(false)}
         />
       ) : null}
@@ -1448,7 +2097,9 @@ function LiveSourceBoard({
 }
 
 function OperationalWatchboardPreview() {
-  const [selectedIds, setSelectedIds] = useState(() => watchboardPreviewNotices.slice(0, 4).map((item) => item.id));
+  const [selectedIds, setSelectedIds] = useState(() =>
+    watchboardPreviewNotices.slice(0, 4).map((item) => item.id),
+  );
   const selectedNotices = useMemo(
     () => watchboardPreviewNotices.filter((item) => selectedIds.includes(item.id)),
     [selectedIds],
@@ -1511,7 +2162,10 @@ function OperationalWatchboardPreview() {
   };
 
   return (
-    <section className="mb-6 rounded-md border border-border bg-background p-4 sm:p-5" aria-label="Operational watchboard preview">
+    <section
+      className="mb-6 rounded-md border border-border bg-background p-4 sm:p-5"
+      aria-label="Operational watchboard preview"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <div className="grid size-9 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/5 text-primary">
@@ -1543,7 +2197,10 @@ function OperationalWatchboardPreview() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setSelectedIds([]); setRotating(false); }}
+                    onClick={() => {
+                      setSelectedIds([]);
+                      setRotating(false);
+                    }}
                     className="text-xs font-medium text-primary hover:underline"
                   >
                     Clear
@@ -1551,7 +2208,10 @@ function OperationalWatchboardPreview() {
                 </div>
               </div>
               {watchboardPreviewNotices.map((item) => (
-                <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-xs hover:bg-accent">
+                <label
+                  key={item.id}
+                  className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-xs hover:bg-accent"
+                >
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(item.id)}
@@ -1565,7 +2225,12 @@ function OperationalWatchboardPreview() {
           </details>
           <button
             type="button"
-            onClick={() => setActiveId(selectedNotices[(activeIndex - 1 + selectedNotices.length) % selectedNotices.length]?.id ?? "")}
+            onClick={() =>
+              setActiveId(
+                selectedNotices[(activeIndex - 1 + selectedNotices.length) % selectedNotices.length]
+                  ?.id ?? "",
+              )
+            }
             disabled={selectedNotices.length < 2}
             className="grid size-8 place-items-center rounded-md hover:bg-accent"
             aria-label="Previous sample notice"
@@ -1585,7 +2250,9 @@ function OperationalWatchboardPreview() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveId(selectedNotices[(activeIndex + 1) % selectedNotices.length]?.id ?? "")}
+            onClick={() =>
+              setActiveId(selectedNotices[(activeIndex + 1) % selectedNotices.length]?.id ?? "")
+            }
             disabled={selectedNotices.length < 2}
             className="grid size-8 place-items-center rounded-md hover:bg-accent"
             aria-label="Next sample notice"
@@ -1598,70 +2265,77 @@ function OperationalWatchboardPreview() {
 
       {selectedNotices.length > 0 && notice ? (
         <>
-        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        {selectedNotices.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setActiveId(item.id)}
-            aria-pressed={item.id === activeId}
-            className={`min-w-0 rounded-md border border-l-4 bg-card p-3 text-left transition-colors hover:bg-accent/50 ${
-              item.tone === "urgent"
-                ? "border-l-destructive"
-                : item.tone === "attention"
-                  ? "border-l-amber-500"
-                  : "border-l-primary"
-            } ${item.id === activeId ? "ring-1 ring-primary/30" : ""}`}
-          >
-            <span className="block text-xs font-medium text-muted-foreground">{item.label}</span>
-            <span className="mt-1 block text-xl font-semibold leading-tight">
-              {item.count} <span className="text-sm font-medium">{item.unit}</span>
-            </span>
-            <span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-4 overflow-hidden rounded-md border border-border">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2.5">
-          <div className="flex min-w-0 items-center gap-2">
-            {notice?.tone === "urgent" ? (
-              <CircleAlert className="size-4 shrink-0 text-destructive" />
-            ) : (
-              <CalendarClock className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <h4 className="truncate text-sm font-semibold">{notice.label}</h4>
-            <span className="text-xs text-muted-foreground">· {notice.timing}</span>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {selectedNotices.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveId(item.id)}
+                aria-pressed={item.id === activeId}
+                className={`min-w-0 rounded-md border border-l-4 bg-card p-3 text-left transition-colors hover:bg-accent/50 ${
+                  item.tone === "urgent"
+                    ? "border-l-destructive"
+                    : item.tone === "attention"
+                      ? "border-l-amber-500"
+                      : "border-l-primary"
+                } ${item.id === activeId ? "ring-1 ring-primary/30" : ""}`}
+              >
+                <span className="block text-xs font-medium text-muted-foreground">
+                  {item.label}
+                </span>
+                <span className="mt-1 block text-xl font-semibold leading-tight">
+                  {item.count} <span className="text-sm font-medium">{item.unit}</span>
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">{item.detail}</span>
+              </button>
+            ))}
           </div>
-          <span className="text-xs text-muted-foreground">Sample scope: all divisions · selected FY</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-xs">
-            <thead className="bg-muted/20 text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 font-medium">File / related record</th>
-                <th className="px-3 py-2 font-medium">Notice detail</th>
-                <th className="px-3 py-2 font-medium">Division</th>
-                <th className="px-3 py-2 text-right font-medium">Age / deadline</th>
-              </tr>
-            </thead>
-            <tbody>
-              {notice.rows.map((row) => (
-                <tr key={row.record} className="border-t border-border">
-                  <td className="px-3 py-2.5 font-medium">{row.record}</td>
-                  <td className="px-3 py-2.5">{row.detail}</td>
-                  <td className="px-3 py-2.5">{row.division}</td>
-                  <td className="px-3 py-2.5 text-right">{row.timing}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="flex items-center justify-between gap-3 border-t border-border px-3 py-2 text-xs text-muted-foreground">
-          <span>Select a notice above to preview its matching row format.</span>
-          <span>{activeIndex + 1} of {selectedNotices.length} · {rotating ? "rotates every 15s" : "paused"}</span>
-        </div>
-      </div>
+
+          <div className="mt-4 overflow-hidden rounded-md border border-border">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                {notice?.tone === "urgent" ? (
+                  <CircleAlert className="size-4 shrink-0 text-destructive" />
+                ) : (
+                  <CalendarClock className="size-4 shrink-0 text-muted-foreground" />
+                )}
+                <h4 className="truncate text-sm font-semibold">{notice.label}</h4>
+                <span className="text-xs text-muted-foreground">· {notice.timing}</span>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                Sample scope: all divisions · selected FY
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px] text-left text-xs">
+                <thead className="bg-muted/20 text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">File / related record</th>
+                    <th className="px-3 py-2 font-medium">Notice detail</th>
+                    <th className="px-3 py-2 font-medium">Division</th>
+                    <th className="px-3 py-2 text-right font-medium">Age / deadline</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {notice.rows.map((row) => (
+                    <tr key={row.record} className="border-t border-border">
+                      <td className="px-3 py-2.5 font-medium">{row.record}</td>
+                      <td className="px-3 py-2.5">{row.detail}</td>
+                      <td className="px-3 py-2.5">{row.division}</td>
+                      <td className="px-3 py-2.5 text-right">{row.timing}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-border px-3 py-2 text-xs text-muted-foreground">
+              <span>Select a notice above to preview its matching row format.</span>
+              <span>
+                {activeIndex + 1} of {selectedNotices.length} ·{" "}
+                {rotating ? "rotates every 15s" : "paused"}
+              </span>
+            </div>
+          </div>
         </>
       ) : (
         <div className="mt-4 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
@@ -1694,14 +2368,54 @@ function NoticeBoard({
   const [displayIndex, setDisplayIndex] = useState(initialIndex);
   const [playing, setPlaying] = useState(true);
   const [durationDraft, setDurationDraft] = useState(String(delaySeconds));
-  const [transitionEffect, setTransitionEffect] = useState<NoticeBoardTransitionEffect>(initialTransitionEffect);
+  const [transitionEffect, setTransitionEffect] =
+    useState<NoticeBoardTransitionEffect>(initialTransitionEffect);
   const [error, setError] = useState("");
   const slideFrameRefs = useRef<[HTMLIFrameElement | null, HTMLIFrameElement | null]>([null, null]);
   const [visibleFrameSlot, setVisibleFrameSlot] = useState(0);
+
+  useLayoutEffect(() => {
+    // Publish rotation synchronously and keep a DOM-level marker so the
+    // root-level urgent popup cannot reappear during a view transition.
+    // A depth counter keeps this safe if React mounts/tears down the board
+    // more than once while StrictMode or a transition is active.
+    const root = document.documentElement;
+    const currentDepth = Number(root.dataset.noticeBoardRotationDepth ?? "0");
+    const nextDepth = currentDepth + 1;
+    root.dataset.noticeBoardRotationDepth = String(nextDepth);
+    root.dataset.noticeBoardRotation = "active";
+    window.dispatchEvent(
+      new CustomEvent("recordkeeper:notice-board-rotation", {
+        detail: { active: true },
+      }),
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("recordkeeper:notice-board-rotation", {
+          detail: { active: false },
+        }),
+      );
+      const depth = Number(root.dataset.noticeBoardRotationDepth ?? "1");
+      const remainingDepth = Math.max(0, depth - 1);
+      if (remainingDepth > 0) {
+        root.dataset.noticeBoardRotationDepth = String(remainingDepth);
+      } else {
+        delete root.dataset.noticeBoardRotationDepth;
+        delete root.dataset.noticeBoardRotation;
+      }
+      window.dispatchEvent(
+        new CustomEvent("recordkeeper:notice-board-rotation", {
+          detail: { active: remainingDepth > 0 },
+        }),
+      );
+    };
+  }, []);
   const [frameSlots, setFrameSlots] = useState<[BoardFrameSlot, BoardFrameSlot]>(() => {
     const createSlot = (index: number): BoardFrameSlot => {
       const item = items[index];
-      return item?.href ? { itemId: item.id, src: getNoticeBoardEmbedHref(item.href), loaded: false } : null;
+      return item?.href
+        ? { itemId: item.id, src: getNoticeBoardEmbedHref(item.href), loaded: false }
+        : null;
     };
     return [createSlot(initialIndex), createSlot((initialIndex + 1) % items.length)];
   });
@@ -1709,66 +2423,117 @@ function NoticeBoard({
   const slideDirectionRef = useRef<"next" | "previous">("next");
   const viewTransitionGenerationRef = useRef(0);
   const previousIndexRef = useRef(displayIndex);
+  const scrollResetKeyRef = useRef<string | undefined>(undefined);
   const parsedDuration = Number(durationDraft);
-  const activeDelaySeconds = Number.isFinite(parsedDuration) && parsedDuration >= 5
-    ? Math.min(120, parsedDuration)
-    : delaySeconds;
-  const transitionDurationSeconds = transitionEffect === "slide"
-    ? transitionDurations.noticeBoardSlideDurationMs / 1000
-    : transitionEffect === "vertical-scroll"
-      ? transitionDurations.noticeBoardVerticalScrollDurationMs / 1000
-      : transitionEffect === "fade"
-        ? Math.max(
-            transitionDurations.noticeBoardFadeOutDurationMs,
-            transitionDurations.noticeBoardFadeInDurationMs,
-          ) / 1000
-        : 0;
-  const rotationIntervalSeconds = activeDelaySeconds + transitionDurationSeconds;
-  const navigateBy = useCallback((direction: "next" | "previous") => {
-    slideDirectionRef.current = direction;
-    setActiveIndex((index) =>
-      direction === "previous"
-        ? (index - 1 + items.length) % items.length
-        : (index + 1) % items.length,
-    );
-  }, [items.length]);
-  const revealSlide = useCallback((index: number, frameSlot?: number) => {
-    const generation = ++viewTransitionGenerationRef.current;
-    const update = () => {
-      if (frameSlot !== undefined) setVisibleFrameSlot(frameSlot);
-      setDisplayIndex(index);
-    };
-    const startViewTransition = (document as NoticeViewTransitionDocument).startViewTransition;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reducedMotion && transitionEffect !== "none" && startViewTransition) {
-      document.documentElement.dataset.noticeBoardDirection = slideDirectionRef.current;
-      document.documentElement.dataset.noticeBoardEffect = transitionEffect;
-      document.documentElement.style.setProperty("--notice-board-slide-duration", `${transitionDurations.noticeBoardSlideDurationMs}ms`);
-      document.documentElement.style.setProperty("--notice-board-fade-out-duration", `${transitionDurations.noticeBoardFadeOutDurationMs}ms`);
-      document.documentElement.style.setProperty("--notice-board-fade-in-duration", `${transitionDurations.noticeBoardFadeInDurationMs}ms`);
-      document.documentElement.style.setProperty("--notice-board-vertical-duration", `${transitionDurations.noticeBoardVerticalScrollDurationMs}ms`);
-      document.documentElement.style.setProperty("--notice-board-transition-duration", `${transitionDurationSeconds * 1000}ms`);
-      const clearTransitionProperties = () => {
-        if (generation !== viewTransitionGenerationRef.current) return;
-        delete document.documentElement.dataset.noticeBoardDirection;
-        delete document.documentElement.dataset.noticeBoardEffect;
-        for (const property of [
-          "--notice-board-slide-duration",
-          "--notice-board-fade-out-duration",
-          "--notice-board-fade-in-duration",
-          "--notice-board-vertical-duration",
-          "--notice-board-transition-duration",
-        ]) document.documentElement.style.removeProperty(property);
-      };
-      const transition = startViewTransition.call(document, update);
-      void transition.finished.then(
-        clearTransitionProperties,
-        clearTransitionProperties,
-      );
-      return;
+  const configuredDelaySeconds =
+    Number.isFinite(parsedDuration) && parsedDuration >= 5
+      ? Math.min(120, parsedDuration)
+      : delaySeconds;
+  const activeItem = items[displayIndex];
+  // Do not rely on one catalog id here. Notice Board items can be rebuilt from
+  // the saved selection and may carry a different id while still rendering the
+  // same dense report. Identify the views by their visible label/route so the
+  // slower scroll profile is applied consistently.
+  const slowScrollingItem =
+    isExtendedRotationView(activeItem) || isStatusOneOrThreeRotationView(activeItem);
+  // The configured hold is the complete time allocated to a view. Scrolling
+  // consumes that interval; it is not followed by a second hold interval.
+  const activeScrollSeconds = configuredDelaySeconds;
+  const activeHoldSeconds = configuredDelaySeconds;
+  const transitionDurationSeconds =
+    transitionEffect === "slide"
+      ? transitionDurations.noticeBoardSlideDurationMs / 1000
+      : transitionEffect === "vertical-scroll"
+        ? transitionDurations.noticeBoardVerticalScrollDurationMs / 1000
+        : transitionEffect === "fade"
+          ? Math.max(
+              transitionDurations.noticeBoardFadeOutDurationMs,
+              transitionDurations.noticeBoardFadeInDurationMs,
+            ) / 1000
+          : 0;
+  const rotationIntervalSeconds = activeHoldSeconds + transitionDurationSeconds;
+  const activeCalendarId = getCalendarBoardId(activeItem);
+  const activeUrgentKind =
+    activeItem?.id === "urgent-reminders"
+      ? "reminder"
+      : activeItem?.id === "urgent-messages"
+        ? "admin"
+        : undefined;
+  const showEmbeddedFrame = Boolean(activeItem?.href) && !activeCalendarId && !activeUrgentKind;
+  const resetContentScroll = useCallback(() => {
+    slideContentRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    const frame = slideFrameRefs.current[visibleFrameSlot];
+    try {
+      frame?.contentWindow?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } catch {
+      // A cross-origin embedded page cannot be scrolled from the parent window.
     }
-    update();
-  }, [transitionDurationSeconds, transitionDurations, transitionEffect]);
+  }, [visibleFrameSlot]);
+  const navigateBy = useCallback(
+    (direction: "next" | "previous") => {
+      resetContentScroll();
+      slideDirectionRef.current = direction;
+      setActiveIndex((index) =>
+        direction === "previous"
+          ? (index - 1 + items.length) % items.length
+          : (index + 1) % items.length,
+      );
+    },
+    [items.length, resetContentScroll],
+  );
+  const revealSlide = useCallback(
+    (index: number, frameSlot?: number) => {
+      const generation = ++viewTransitionGenerationRef.current;
+      const update = () => {
+        if (frameSlot !== undefined) setVisibleFrameSlot(frameSlot);
+        setDisplayIndex(index);
+      };
+      const startViewTransition = (document as NoticeViewTransitionDocument).startViewTransition;
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!reducedMotion && transitionEffect !== "none" && startViewTransition) {
+        document.documentElement.dataset.noticeBoardDirection = slideDirectionRef.current;
+        document.documentElement.dataset.noticeBoardEffect = transitionEffect;
+        document.documentElement.style.setProperty(
+          "--notice-board-slide-duration",
+          `${transitionDurations.noticeBoardSlideDurationMs}ms`,
+        );
+        document.documentElement.style.setProperty(
+          "--notice-board-fade-out-duration",
+          `${transitionDurations.noticeBoardFadeOutDurationMs}ms`,
+        );
+        document.documentElement.style.setProperty(
+          "--notice-board-fade-in-duration",
+          `${transitionDurations.noticeBoardFadeInDurationMs}ms`,
+        );
+        document.documentElement.style.setProperty(
+          "--notice-board-vertical-duration",
+          `${transitionDurations.noticeBoardVerticalScrollDurationMs}ms`,
+        );
+        document.documentElement.style.setProperty(
+          "--notice-board-transition-duration",
+          `${transitionDurationSeconds * 1000}ms`,
+        );
+        const clearTransitionProperties = () => {
+          if (generation !== viewTransitionGenerationRef.current) return;
+          delete document.documentElement.dataset.noticeBoardDirection;
+          delete document.documentElement.dataset.noticeBoardEffect;
+          for (const property of [
+            "--notice-board-slide-duration",
+            "--notice-board-fade-out-duration",
+            "--notice-board-fade-in-duration",
+            "--notice-board-vertical-duration",
+            "--notice-board-transition-duration",
+          ])
+            document.documentElement.style.removeProperty(property);
+        };
+        const transition = startViewTransition.call(document, update);
+        void transition.finished.then(clearTransitionProperties, clearTransitionProperties);
+        return;
+      }
+      update();
+    },
+    [transitionDurationSeconds, transitionDurations, transitionEffect],
+  );
   useEffect(() => {
     const params = new URLSearchParams({
       division: "all",
@@ -1806,7 +2571,9 @@ function NoticeBoard({
       return;
     }
     const src = getNoticeBoardEmbedHref(target.href);
-    const existingSlot = frameSlots.findIndex((slot) => slot?.itemId === target.id && slot.src === src);
+    const existingSlot = frameSlots.findIndex(
+      (slot) => slot?.itemId === target.id && slot.src === src,
+    );
     if (existingSlot >= 0) {
       const slot = frameSlots[existingSlot];
       if (slot?.loaded) {
@@ -1866,30 +2633,123 @@ function NoticeBoard({
   }, []);
   useEffect(() => {
     if (!playing || items.length < 2 || activeIndex !== displayIndex) return;
-    const timer = window.setTimeout(
-      () => navigateBy("next"),
-      rotationIntervalSeconds * 1000,
-    );
+    const timer = window.setTimeout(() => navigateBy("next"), rotationIntervalSeconds * 1000);
     return () => window.clearTimeout(timer);
   }, [activeIndex, displayIndex, items.length, navigateBy, playing, rotationIntervalSeconds]);
+  useEffect(() => {
+    if (!playing || !items.length || activeIndex !== displayIndex) return;
+    const durationMs = Math.max(1, activeScrollSeconds * 1000);
+    const scrollKey = `${activeIndex}:${displayIndex}:${visibleFrameSlot}`;
+    if (scrollResetKeyRef.current !== scrollKey) {
+      resetContentScroll();
+      scrollResetKeyRef.current = scrollKey;
+    }
+    let startTime: number | undefined;
+    let animationFrame = 0;
+
+    const readScrollTarget = () => {
+      if (showEmbeddedFrame) {
+        const frame = slideFrameRefs.current[visibleFrameSlot];
+        try {
+          const frameWindow = frame?.contentWindow;
+          const frameDocument = frame?.contentDocument;
+          if (frameWindow && frameDocument) {
+            const documentElement = frameDocument.documentElement;
+            const body = frameDocument.body;
+            const scrollHeight = Math.max(
+              documentElement?.scrollHeight ?? 0,
+              body?.scrollHeight ?? 0,
+            );
+            const viewportHeight = frameWindow.innerHeight || frame?.clientHeight || 0;
+            return {
+              current: frameWindow.scrollY,
+              max: Math.max(0, scrollHeight - viewportHeight),
+              scrollTo: (top: number) => frameWindow.scrollTo({ top, left: 0, behavior: "auto" }),
+            };
+          }
+        } catch {
+          // A cross-origin embedded page cannot be inspected from the parent window.
+        }
+      }
+      const node = slideContentRef.current;
+      if (!node) return null;
+      return {
+        current: node.scrollTop,
+        max: Math.max(0, node.scrollHeight - node.clientHeight),
+        scrollTo: (top: number) => node.scrollTo({ top, left: 0, behavior: "auto" }),
+      };
+    };
+
+    const animateScroll = (now: number) => {
+      const target = readScrollTarget();
+      if (target?.max) {
+        // If rotation was paused, continue from the current position instead
+        // of restarting the view at the top. This also preserves a user's
+        // manual scroll position while the view is paused.
+        if (startTime === undefined) {
+          const currentProgress = Math.min(1, Math.max(0, target.current / target.max));
+          const elapsedProgress = noticeBoardScrollProgressInverse(
+            currentProgress,
+            slowScrollingItem,
+          );
+          startTime = now - elapsedProgress * durationMs;
+        }
+        const elapsedProgress = Math.min(1, (now - startTime) / durationMs);
+        const progress = noticeBoardScrollProgress(elapsedProgress, slowScrollingItem);
+        target.scrollTo(target.max * progress);
+      }
+      if (startTime === undefined || now - startTime < durationMs)
+        animationFrame = window.requestAnimationFrame(animateScroll);
+    };
+    animationFrame = window.requestAnimationFrame(animateScroll);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    activeScrollSeconds,
+    activeIndex,
+    displayIndex,
+    items.length,
+    playing,
+    resetContentScroll,
+    slowScrollingItem,
+    showEmbeddedFrame,
+    visibleFrameSlot,
+  ]);
   useEffect(() => {
     if (previousIndexRef.current === displayIndex) return;
     previousIndexRef.current = displayIndex;
     const node = slideContentRef.current;
-    if (!node || transitionEffect === "none" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    if ((transitionEffect === "slide" || transitionEffect === "fade" || transitionEffect === "vertical-scroll") && (document as NoticeViewTransitionDocument).startViewTransition) return;
+    if (
+      !node ||
+      transitionEffect === "none" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    if (
+      (transitionEffect === "slide" ||
+        transitionEffect === "fade" ||
+        transitionEffect === "vertical-scroll") &&
+      (document as NoticeViewTransitionDocument).startViewTransition
+    )
+      return;
     const enteringFrom = slideDirectionRef.current === "next" ? "100%" : "-100%";
-    const keyframes: Keyframe[] = transitionEffect === "fade"
-      ? [{ opacity: 0 }, { opacity: 1 }]
-      : transitionEffect === "vertical-scroll"
-          ? [{ transform: `translateY(${slideDirectionRef.current === "next" ? "100%" : "-100%"})` }, { transform: "translateY(0)" }]
-        : [{ transform: `translateX(${enteringFrom})` }, { transform: "translateX(0)" }];
+    const keyframes: Keyframe[] =
+      transitionEffect === "fade"
+        ? [{ opacity: 0 }, { opacity: 1 }]
+        : transitionEffect === "vertical-scroll"
+          ? [
+              {
+                transform: `translateY(${slideDirectionRef.current === "next" ? "100%" : "-100%"})`,
+              },
+              { transform: "translateY(0)" },
+            ]
+          : [{ transform: `translateX(${enteringFrom})` }, { transform: "translateX(0)" }];
     const animation = node.animate(keyframes, {
-      duration: transitionEffect === "vertical-scroll"
-        ? transitionDurations.noticeBoardVerticalScrollDurationMs
-        : transitionEffect === "fade"
-          ? transitionDurations.noticeBoardFadeInDurationMs
-          : transitionDurations.noticeBoardSlideDurationMs,
+      duration:
+        transitionEffect === "vertical-scroll"
+          ? transitionDurations.noticeBoardVerticalScrollDurationMs
+          : transitionEffect === "fade"
+            ? transitionDurations.noticeBoardFadeInDurationMs
+            : transitionDurations.noticeBoardSlideDurationMs,
       easing: transitionEffect === "vertical-scroll" ? "linear" : "cubic-bezier(0.4, 0, 0.2, 1)",
     });
     return () => animation.cancel();
@@ -1903,15 +2763,20 @@ function NoticeBoard({
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
-        target?.closest("input, textarea, select, [role='textbox'], [role='combobox'], [contenteditable='true']")
+        target?.closest(
+          "input, textarea, select, [role='textbox'], [role='combobox'], [contenteditable='true']",
+        )
       ) {
         return;
       }
 
       if (event.code === "Space" || event.key === " ") {
-        if (target?.closest("button, a, summary, [role='checkbox'], [role='switch'], [role='radio']")) return;
-        if (event.repeat || items.length < 2) return;
+        // Space is the rotation pause/resume shortcut, including when focus is
+        // on one of the navigation buttons. Prevent the focused button's
+        // native Space activation so it cannot advance to the next screen.
         event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat || items.length < 2) return;
         setPlaying((current) => !current);
         return;
       }
@@ -1925,17 +2790,35 @@ function NoticeBoard({
     },
     [items.length, navigateBy, onClose, setPlaying, transitionEffect],
   );
+  const handleBoardKeyUp = useCallback((event: KeyboardEvent) => {
+    if (event.code !== "Space" && event.key !== " ") return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.isContentEditable ||
+      target?.closest(
+        "input, textarea, select, [role='textbox'], [role='combobox'], [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    // Native buttons activate on Space keyup. Suppress that activation so the
+    // shortcut always pauses/resumes rotation instead of advancing a view.
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
   useEffect(() => {
     const slideWindow = slideFrameRefs.current[visibleFrameSlot]?.contentWindow;
     window.addEventListener("keydown", handleBoardKeyDown, true);
+    window.addEventListener("keyup", handleBoardKeyUp, true);
     slideWindow?.addEventListener("keydown", handleBoardKeyDown, true);
+    slideWindow?.addEventListener("keyup", handleBoardKeyUp, true);
     return () => {
       window.removeEventListener("keydown", handleBoardKeyDown, true);
+      window.removeEventListener("keyup", handleBoardKeyUp, true);
       slideWindow?.removeEventListener("keydown", handleBoardKeyDown, true);
+      slideWindow?.removeEventListener("keyup", handleBoardKeyUp, true);
     };
-  }, [activeIndex, handleBoardKeyDown, visibleFrameSlot]);
-  const activeItem = items[displayIndex];
-  const activeCalendarId = getCalendarBoardId(activeItem);
+  }, [activeIndex, handleBoardKeyDown, handleBoardKeyUp, visibleFrameSlot]);
   const getDisplayLabel = (item: BoardItem | undefined) =>
     item?.id === "paymentDue" && summary?.expectedCashOutgoDays !== undefined
       ? `Month-wise Payment due Matrix with ${summary.expectedCashOutgoDays} offset days`
@@ -1944,7 +2827,6 @@ function NoticeBoard({
   const monthKey = chooseBoardMonth(days);
   const currentMonthKey = formatIndiaMonth();
   const nextMonthKey = getNextMonthKey(currentMonthKey);
-  const showEmbeddedFrame = Boolean(activeItem?.href) && !activeCalendarId;
   return (
     <div
       className="fixed inset-0 z-[100] flex flex-col bg-background p-4 sm:p-8"
@@ -1969,8 +2851,10 @@ function NoticeBoard({
               value={durationDraft}
               onChange={(event) => setDurationDraft(event.target.value)}
               onBlur={() => {
-                const next = Math.min(120, Math.max(5, Number(durationDraft) || delaySeconds));
-                setDurationDraft(String(next));
+                setDurationDraft((current) => {
+                  const next = Math.min(120, Math.max(5, Number(current) || delaySeconds));
+                  return String(next);
+                });
               }}
               aria-label="Slide duration in seconds"
               title="Choose how long each view stays before transitioning"
@@ -1982,12 +2866,16 @@ function NoticeBoard({
             Transition
             <select
               value={transitionEffect}
-              onChange={(event) => setTransitionEffect(event.target.value as typeof transitionEffect)}
+              onChange={(event) =>
+                setTransitionEffect(event.target.value as typeof transitionEffect)
+              }
               aria-label="Notice Board transition effect"
               className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
             >
               {noticeBoardTransitionEffects.map((effect) => (
-                <option key={effect.value} value={effect.value}>{effect.label}</option>
+                <option key={effect.value} value={effect.value}>
+                  {effect.label}
+                </option>
               ))}
             </select>
           </label>
@@ -2043,8 +2931,14 @@ function NoticeBoard({
           </button>
         </div>
       </header>
-      <main ref={slideContentRef} style={{ viewTransitionName: "notice-board-slide" }} className="relative flex min-h-0 flex-1 flex-col justify-center overflow-auto py-4">
-        {activeCalendarId && error ? (
+      <main
+        ref={slideContentRef}
+        style={{ viewTransitionName: "notice-board-slide" }}
+        className="relative flex min-h-0 flex-1 flex-col justify-center overflow-auto py-4"
+      >
+        {activeUrgentKind ? (
+          <UrgentMessageTicker kind={activeUrgentKind} />
+        ) : activeCalendarId && error ? (
           <p role="alert" className="text-center text-sm text-destructive">
             {error}
           </p>
@@ -2077,48 +2971,73 @@ function NoticeBoard({
             This display has no available content.
           </p>
         )}
-        <div className={`absolute inset-0 min-h-[60vh] overflow-hidden ${showEmbeddedFrame ? "visible" : "invisible pointer-events-none"}`}>
-          {frameSlots.map((slot, slotIndex) => slot && (
-            <iframe
-              key={slot.itemId}
-              ref={(element) => { slideFrameRefs.current[slotIndex] = element; }}
-              src={slot.src}
-              title={items.find((item) => item.id === slot.itemId)?.label ?? "Notice Board display"}
-              aria-hidden={!showEmbeddedFrame || slotIndex !== visibleFrameSlot}
-              tabIndex={showEmbeddedFrame && slotIndex === visibleFrameSlot ? 0 : -1}
-              className={`absolute inset-0 size-full border-0 bg-background ${showEmbeddedFrame && slotIndex === visibleFrameSlot ? "visible" : "invisible pointer-events-none"}`}
-              onLoad={(event) => {
-                const item = items.find((candidate) => candidate.id === slot.itemId);
-                setFrameSlots((slots) => {
-                  const current = slots[slotIndex];
-                  if (current?.itemId !== slot.itemId || current.src !== slot.src || current.loaded) return slots;
-                  const next: [BoardFrameSlot, BoardFrameSlot] = [...slots];
-                  next[slotIndex] = { ...current, loaded: true };
-                  return next;
-                });
-                const focus = item?.focus?.trim().toLowerCase();
-                const frameDocument = event.currentTarget.contentDocument;
-                if (!focus || !frameDocument) return;
-                let attempts = 0;
-                const focusSection = () => {
-                  const headings = Array.from(frameDocument.querySelectorAll("h1, h2, h3, h4, [role='heading']"));
-                  const target = headings.find((element) =>
-                    (element.textContent?.trim().toLowerCase() ?? "").includes(focus),
-                  ) ?? Array.from(frameDocument.querySelectorAll("div, span"))
-                    .filter((element) => (element.textContent?.trim().toLowerCase() ?? "").includes(focus))
-                    .sort((left, right) => (left.textContent?.length ?? Infinity) - (right.textContent?.length ?? Infinity))[0];
-                  if (target) {
-                    const frameWindow = frameDocument.defaultView;
-                    const top = target.getBoundingClientRect().top + (frameWindow?.scrollY ?? 0) - 24;
-                    frameWindow?.scrollTo({ top: Math.max(0, top), behavior: "auto" });
-                    return;
+        <div
+          className={`absolute inset-0 min-h-[60vh] overflow-hidden ${showEmbeddedFrame ? "visible" : "invisible pointer-events-none"}`}
+        >
+          {frameSlots.map(
+            (slot, slotIndex) =>
+              slot && (
+                <iframe
+                  key={slot.itemId}
+                  ref={(element) => {
+                    slideFrameRefs.current[slotIndex] = element;
+                  }}
+                  src={slot.src}
+                  title={
+                    items.find((item) => item.id === slot.itemId)?.label ?? "Notice Board display"
                   }
-                  if (attempts++ < 40) window.setTimeout(focusSection, 150);
-                };
-                focusSection();
-              }}
-            />
-          ))}
+                  aria-hidden={!showEmbeddedFrame || slotIndex !== visibleFrameSlot}
+                  tabIndex={showEmbeddedFrame && slotIndex === visibleFrameSlot ? 0 : -1}
+                  className={`absolute inset-0 size-full border-0 bg-background ${showEmbeddedFrame && slotIndex === visibleFrameSlot ? "visible" : "invisible pointer-events-none"}`}
+                  onLoad={(event) => {
+                    const item = items.find((candidate) => candidate.id === slot.itemId);
+                    setFrameSlots((slots) => {
+                      const current = slots[slotIndex];
+                      if (
+                        current?.itemId !== slot.itemId ||
+                        current.src !== slot.src ||
+                        current.loaded
+                      )
+                        return slots;
+                      const next: [BoardFrameSlot, BoardFrameSlot] = [...slots];
+                      next[slotIndex] = { ...current, loaded: true };
+                      return next;
+                    });
+                    const focus = item?.focus?.trim().toLowerCase();
+                    const frameDocument = event.currentTarget.contentDocument;
+                    if (!focus || !frameDocument) return;
+                    let attempts = 0;
+                    const focusSection = () => {
+                      const headings = Array.from(
+                        frameDocument.querySelectorAll("h1, h2, h3, h4, [role='heading']"),
+                      );
+                      const target =
+                        headings.find((element) =>
+                          (element.textContent?.trim().toLowerCase() ?? "").includes(focus),
+                        ) ??
+                        Array.from(frameDocument.querySelectorAll("div, span"))
+                          .filter((element) =>
+                            (element.textContent?.trim().toLowerCase() ?? "").includes(focus),
+                          )
+                          .sort(
+                            (left, right) =>
+                              (left.textContent?.length ?? Infinity) -
+                              (right.textContent?.length ?? Infinity),
+                          )[0];
+                      if (target) {
+                        const frameWindow = frameDocument.defaultView;
+                        const top =
+                          target.getBoundingClientRect().top + (frameWindow?.scrollY ?? 0) - 24;
+                        frameWindow?.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+                        return;
+                      }
+                      if (attempts++ < 40) window.setTimeout(focusSection, 150);
+                    };
+                    focusSection();
+                  }}
+                />
+              ),
+          )}
         </div>
       </main>
       <footer className="flex items-center justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
@@ -2129,6 +3048,7 @@ function NoticeBoard({
               key={item.id}
               type="button"
               onClick={() => {
+                resetContentScroll();
                 slideDirectionRef.current = index >= activeIndex ? "next" : "previous";
                 setActiveIndex(index);
               }}
@@ -2138,7 +3058,7 @@ function NoticeBoard({
             />
           ))}
         </div>
-        <span>{playing ? `Holds for ${activeDelaySeconds}s` : "Paused"}</span>
+        <span>{playing ? `Holds for ${activeHoldSeconds}s` : "Paused"}</span>
       </footer>
     </div>
   );
@@ -2158,22 +3078,43 @@ function getBoardDays(
         { label: "Completed", value: row.completedCount, color: "green", hideLabel: true },
       ],
     }));
+  if (id === "bidOpeningSchedule")
+    return (summary.bidOpeningDailyRows ?? []).map((row) => ({
+      date: row.date,
+      metrics: [
+        { label: "Due", value: row.bidOpeningDue, color: "blue", hideLabel: true },
+        { label: "Opened", value: row.bidOpeningOpened, color: "green", hideLabel: true },
+        { label: "Overdue", value: row.bidOpeningOverdue, color: "red", hideLabel: true },
+      ],
+    }));
   const rows = {
     preBidMeetings: summary.preBidMeetingDailyRows,
+    bidOpeningSchedule: summary.bidOpeningDailyRows,
     monthlyFileInflow: summary.dailyFileInflow,
     supplyOrders: summary.dailySupplyOrder,
     bgExpiry: summary.dailyBgExpiry,
     paymentDue: summary.dailyPaymentDue,
     paymentCompleted: summary.dailyPaymentCompleted,
-  }[id as "preBidMeetings" | "monthlyFileInflow" | "supplyOrders" | "bgExpiry" | "paymentDue" | "paymentCompleted"];
+  }[
+    id as
+      | "preBidMeetings"
+      | "bidOpeningSchedule"
+      | "monthlyFileInflow"
+      | "supplyOrders"
+      | "bgExpiry"
+      | "paymentDue"
+      | "paymentCompleted"
+  ];
   return (rows ?? []).map((row) => ({
     date: row.date,
-    metrics: [{
-      label: id === "paymentDue" ? "Due" : id === "paymentCompleted" ? "Completed" : "Total",
-      value: row.count,
-      color: id === "paymentDue" ? "red" : id === "paymentCompleted" ? "green" : "blue",
-      hideLabel: true,
-    }],
+    metrics: [
+      {
+        label: id === "paymentDue" ? "Due" : id === "paymentCompleted" ? "Completed" : "Total",
+        value: row.count,
+        color: id === "paymentDue" ? "red" : id === "paymentCompleted" ? "green" : "blue",
+        hideLabel: true,
+      },
+    ],
   }));
 }
 

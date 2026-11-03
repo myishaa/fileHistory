@@ -12,7 +12,8 @@ import { indentorsRouter } from "./routes/indentors.js";
 import { liveRouter } from "./routes/live.js";
 import { messagesRouter } from "./routes/messages.js";
 import { reportsRouter } from "./routes/reports.js";
-import { settingsRouter } from "./routes/settings.js";
+import { settingsRouter, startBackupScheduler } from "./routes/settings.js";
+import { urgentMessagesRouter } from "./routes/urgent-messages.js";
 import { usersRouter } from "./routes/users.js";
 import { attachAuthUser } from "./utils/auth.js";
 import { HttpError } from "./utils/http.js";
@@ -43,7 +44,10 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json({ limit: "15mb" }));
+// Protected database backups can legitimately exceed a fixed JSON payload
+// threshold.  Keep the application parser unrestricted; deployment proxies
+// may still impose their own transport-level limits.
+app.use(express.json({ limit: Infinity }));
 app.use(attachAuthUser);
 
 app.get("/", (_request, response) => {
@@ -62,6 +66,7 @@ app.use("/api/messages", messagesRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/urgent-messages", urgentMessagesRouter);
 app.use("/api/files", filesRouter);
 
 const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
@@ -77,4 +82,5 @@ app.use(errorHandler);
 
 app.listen(port, "0.0.0.0", () => {
   console.log(`Recordkeeper backend listening on http://0.0.0.0:${port}`);
+  startBackupScheduler();
 });

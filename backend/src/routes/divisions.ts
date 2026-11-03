@@ -7,6 +7,7 @@ import {
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
+import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import {
   cacheTtl,
   clearCachePrefix,
@@ -60,25 +61,6 @@ async function getSelectedYear() {
 async function readAllocationYear(value: unknown) {
   if (typeof value === "string" && value.trim()) return value.trim();
   return (await getSelectedYear()) ?? "";
-}
-
-async function verifyDeletionPassword(value: unknown) {
-  if (typeof value !== "string") throw new HttpError(400, "Deletion password is required.");
-  const result = await pool.query<{ ok: boolean; configured: boolean }>(
-    `select
-       deletion_password <> '' as configured,
-       deletion_password <> '' and deletion_password = $1 as ok
-     from app_settings
-     where id = true`,
-    [value],
-  );
-  if (!result.rows[0]?.configured) {
-    throw new HttpError(
-      400,
-      "Set a deletion password in admin settings before deleting divisions.",
-    );
-  }
-  if (!result.rows[0].ok) throw new HttpError(403, "Incorrect deletion password.");
 }
 
 async function assertDivisionUnusedBeforeArchive(divisionId: string) {
@@ -911,9 +893,9 @@ divisionsRouter.post(
 divisionsRouter.delete(
   "/archive/:id",
   asyncHandler(async (request, response) => {
-    requireAdmin(request as AuthRequest);
+    const user = requireAdmin(request as AuthRequest);
     const body = requireObjectBody(request.body);
-    await verifyDeletionPassword(body.deletionPassword);
+    await verifyDeletionPassword(user.id, body.deletionPassword);
     const id = requireParam(request.params.id, "id");
     const division = await getDivision(id, await readAllocationYear(request.query.year));
     if (!division?.archivedAt) throw new HttpError(404, "Archived division not found.");

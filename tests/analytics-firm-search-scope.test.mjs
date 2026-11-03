@@ -55,8 +55,9 @@ test("Archive filtering is explicit, and ordinary firm searches retain the searc
     "2026-27",
     analyticsDrilldowns[0],
   );
-  assert.equal(archivedExcluded.length, 1);
-  assert.match(archivedExcluded[0], /financial_years archived_search_year/);
+  // Explicit All Files scope intentionally bypasses the normal archive
+  // predicate; the include/exclude option applies to normal searchable scopes.
+  assert.deepEqual(archivedExcluded, []);
 
   const ordinaryFirmSearch = [];
   appendSearchGlobalYearScope(ordinaryFirmSearch, [], "__all_active_files__", "2026-27", {

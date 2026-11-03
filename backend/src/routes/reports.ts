@@ -8,7 +8,7 @@ import type {
   SupplementaryBillDetail,
   SupplyOrderDetail,
 } from "../types.js";
-import { loadFiles } from "./files.js";
+import { loadFiles, loadReportFiles } from "./files.js";
 import { fromDbDate, fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import {
   buildReportsSummary,
@@ -161,6 +161,24 @@ type CashOutGoPlanPayload = {
   monthwisePlan: CashOutgoRow[];
 };
 
+type CashOutGoPlanSection = "forecast" | "expenditure" | "monthly";
+
+const allCashOutGoPlanSections: readonly CashOutGoPlanSection[] = [
+  "forecast",
+  "expenditure",
+  "monthly",
+];
+
+function readCashOutGoPlanSections(value: unknown): readonly CashOutGoPlanSection[] {
+  if (typeof value !== "string" || !value.trim()) return allCashOutGoPlanSections;
+  const allowed = new Set<CashOutGoPlanSection>(allCashOutGoPlanSections);
+  const sections = value
+    .split(",")
+    .map((section) => section.trim())
+    .filter((section): section is CashOutGoPlanSection => allowed.has(section as CashOutGoPlanSection));
+  return sections.length ? Array.from(new Set(sections)) : allCashOutGoPlanSections;
+}
+
 type MonthCountRow = {
   name: string;
   monthKey: string;
@@ -234,6 +252,7 @@ type ReportsSummaryPayload = {
   activeDivision: string;
   reportFileCount: number;
   statusSummaryGroups: StatusSummaryTableGroup[];
+  bgReturnDueCounts: { psb: number; pwb: number; psbPwb: number };
   expectedCashOutgoDpRows: CashOutgoRow[];
   expectedCashOutgoReceiptRows: CashOutgoRow[];
   expectedCashOutgoReceiptPendingBillRows: CashOutgoRow[];
@@ -260,6 +279,22 @@ type ReportsSummaryPayload = {
   monthWiseDeliverySchedule: MonthWiseDeliveryScheduleRow[];
   monthWiseCompletedDeliveries: MonthCountRow[];
   monthWiseBgExpiry: MonthWiseBgExpiryRow[];
+  bidOpeningRows: Array<{
+    name: string;
+    monthKey: string;
+    count: number;
+    bidOpeningDue: number;
+    bidOpeningOpened: number;
+    bidOpeningOverdue: number;
+  }>;
+  bidOpeningDailyRows: Array<{
+    date: string;
+    monthKey: string;
+    count: number;
+    bidOpeningDue: number;
+    bidOpeningOpened: number;
+    bidOpeningOverdue: number;
+  }>;
   bgReceiptDelayRows: Array<{
     thresholdDays: number;
     nextThresholdDays?: number;
@@ -312,6 +347,20 @@ function pickReportsSqlComparableSummary(summary: ReportsSummaryPayload) {
   return Object.fromEntries(
     reportsSqlCompareKeys.map((key) => [key, summary[key]]),
   ) as Pick<ReportsSummaryPayload, (typeof reportsSqlCompareKeys)[number]>;
+}
+
+function getBgReturnDueCountsFromStatusSummaryGroups(groups: StatusSummaryTableGroup[]) {
+  const getCount = (milestone: string) =>
+    Number(
+      groups
+        .flatMap((group) => group.rows)
+        .find((row) => row.milestone === milestone)?.counts["To be returned"] ?? 0,
+    );
+  return {
+    psb: getCount("PSB"),
+    pwb: getCount("PWB"),
+    psbPwb: getCount("PSB+PWB"),
+  };
 }
 
 function getReportsSqlDiffKeys(
@@ -637,7 +686,6 @@ type SettingsRow = {
   year_selection_locked: boolean;
   theme: AppSettings["theme"];
   theme_tint: AppSettings["themeTint"];
-  deletion_password: string;
   tcec_committees: unknown;
   firm_types: unknown;
   file_types: unknown;
@@ -687,7 +735,7 @@ function mapSettings(row: SettingsRow): AppSettings {
     yearSelectionLocked: row.year_selection_locked,
     theme: row.theme,
     themeTint: row.theme_tint,
-    deletionPassword: row.deletion_password,
+    deletionPassword: "",
     tcecCommittees: fromDbJsonArray(row.tcec_committees) as string[],
     firmTypes: fromDbJsonArray(row.firm_types) as string[],
     fileTypes: fromDbJsonArray(row.file_types) as string[],
@@ -713,7 +761,7 @@ async function loadSettings() {
   return getCached("settings:reports", cacheTtl.settingsMs, async () => {
     await ensurePreSoCashOutgoSchema();
     const result = await pool.query<SettingsRow>(
-      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint, deletion_password,
+      `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
               tcec_committees, firm_types, file_types, file_type_groups, modes, milestones, table_field_presets,
               bg_receipt_delay_days, active_user_id,
               pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days,
@@ -756,10 +804,27 @@ function readNumberList(value: unknown) {
 }
 
 const reportSummarySectionKeys = new Set<ReportsSummarySection>([
+  "none",
   "status",
   "delay",
   "cashOutgo",
+  "cashOutgoExpectedDp",
+  "cashOutgoExpectedReceipt",
+  "cashOutgoReceiptPending",
+  "cashOutgoBillPreparation",
+  "cashOutgoBillSent",
+  "cashOutgoActual",
+  "cashOutgoSupplementaryBillSent",
+  "cashOutgoSupplementaryActual",
+  "cashOutgoPendingReturned",
+  "cashOutgoReturnedResubmitted",
+  "cashOutgoReturnedPaid",
+  "cashOutgoSupplementaryPendingReturned",
+  "cashOutgoSupplementaryReturnedResubmitted",
+  "cashOutgoSupplementaryReturnedPaid",
   "monthly",
+  "deliverySchedule",
+  "bgExpiry",
   "bg",
 ]);
 
@@ -968,7 +1033,6 @@ async function loadPreSoCashOutgoPlan(scopeKey: string, user?: AuthUser) {
          and (
            $3::boolean
            or f.division_id = any($4::uuid[])
-           or f.division_id is null
          )
        order by case when scope_key = $2 then 1 else 0 end`,
       [scopeKeys, scopeKey, !user || canUseAllDivisions(user), user?.divisionIds ?? []],
@@ -1257,7 +1321,13 @@ function buildCashOutGoPlan(
   includePreviousFySubmitted: boolean,
   allocation: CashOutGoPlanPayload["allocation"],
   useOrganizationWideMer: boolean,
+  sections: readonly CashOutGoPlanSection[] = allCashOutGoPlanSections,
 ): CashOutGoPlanPayload {
+  const requestedSections = new Set(sections);
+  const wantsForecast = requestedSections.has("forecast");
+  const wantsExpenditure = requestedSections.has("expenditure");
+  const wantsMonthly = requestedSections.has("monthly");
+  const needsForecastRows = wantsForecast || wantsMonthly;
   const today = formatDate(new Date());
   const currentMonthKey = today.slice(0, 7);
   const hasPositiveMerForPastExpectedPaymentMonth = (expectedPaymentDate?: string | null) => {
@@ -1276,14 +1346,16 @@ function buildCashOutGoPlan(
   const activityFallsAfterSelectedFy = (date?: string | null) =>
     Boolean(fyRange && date && String(date).slice(0, 10) > fyRange.end);
   const paymentCutoffDate = getFinancialYearDateRange(currentFinancialYear)?.end;
-  const expenditureTillDate = buildExpenditureTillDateRows(
-    files,
-    merRows,
-    financialYear,
-    currentMonthKey,
-    paymentCutoffDate,
-    useOrganizationWideMer,
-  );
+  const expenditureTillDate = wantsExpenditure
+    ? buildExpenditureTillDateRows(
+        files,
+        merRows,
+        financialYear,
+        currentMonthKey,
+        paymentCutoffDate,
+        useOrganizationWideMer,
+      )
+    : [];
   const submittedRows: CashOutGoPlanDetailRow[] = [];
   const chequeslipsNotReceivedRows: CashOutGoPlanDetailRow[] = [];
   const handRows: CashOutGoPlanDetailRow[] = [];
@@ -1294,7 +1366,7 @@ function buildCashOutGoPlan(
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(settings);
 
-  files.forEach((file) => {
+  if (needsForecastRows) files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
     filePaymentEntries(file).forEach((entry, paymentOrderIndex) => {
       const { order, orderIndex, stageIndex, advancePayment } = entry;
@@ -1646,28 +1718,38 @@ function buildCashOutGoPlan(
     settings,
     allocation,
     expenditureTillDate,
-    billsSubmitted: sortCashOutGoPlanRows(currentRows[0]),
-    chequeslipsNotReceived: sortCashOutGoPlanRows(chequeslipsNotReceivedRows),
-    expectedPaymentDateInPast: sortCashOutGoPlanRows(expectedPaymentDateInPastRows),
-    billsAtHand: sortCashOutGoPlanRows(currentRows[1]),
-    deliveredBillsPending: sortCashOutGoPlanRows(currentRows[2]),
-    dpBasedForecast: sortCashOutGoPlanRows([...currentRows[3], ...currentRows[5]]),
-    dpExpired: sortCashOutGoPlanRows(currentRows[4]),
-    expectedPaymentInLaterFys: sortCashOutGoPlanRows(expectedPaymentInLaterFys),
-    monthwisePlan: buildMonthwiseCashOutGoPlan(
-      fyMonths,
-      merRows,
-      currentMonthKey,
-      currentRows.flat().filter(
-        (row) =>
-          !fyRange?.end ||
-          !row.expectedPaymentDate ||
-          row.expectedPaymentDate <= fyRange.end,
-      ),
-      files,
-      paymentCutoffDate,
-      useOrganizationWideMer,
-    ),
+    billsSubmitted: wantsForecast ? sortCashOutGoPlanRows(currentRows[0]) : [],
+    chequeslipsNotReceived: wantsForecast
+      ? sortCashOutGoPlanRows(chequeslipsNotReceivedRows)
+      : [],
+    expectedPaymentDateInPast: wantsForecast
+      ? sortCashOutGoPlanRows(expectedPaymentDateInPastRows)
+      : [],
+    billsAtHand: wantsForecast ? sortCashOutGoPlanRows(currentRows[1]) : [],
+    deliveredBillsPending: wantsForecast ? sortCashOutGoPlanRows(currentRows[2]) : [],
+    dpBasedForecast: wantsForecast
+      ? sortCashOutGoPlanRows([...currentRows[3], ...currentRows[5]])
+      : [],
+    dpExpired: wantsForecast ? sortCashOutGoPlanRows(currentRows[4]) : [],
+    expectedPaymentInLaterFys: wantsForecast
+      ? sortCashOutGoPlanRows(expectedPaymentInLaterFys)
+      : [],
+    monthwisePlan: wantsMonthly
+      ? buildMonthwiseCashOutGoPlan(
+          fyMonths,
+          merRows,
+          currentMonthKey,
+          currentRows.flat().filter(
+            (row) =>
+              !fyRange?.end ||
+              !row.expectedPaymentDate ||
+              row.expectedPaymentDate <= fyRange.end,
+          ),
+          files,
+          paymentCutoffDate,
+          useOrganizationWideMer,
+        )
+      : [],
   };
 }
 
@@ -2294,7 +2376,7 @@ function getReportWhereSql({
   currentFinancialYear,
   division,
   fileCategories,
-  includeArchivedYears = false,
+  includeArchivedYears = true,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -2311,11 +2393,13 @@ function getReportWhereSql({
   const values = [...scopeValues];
   const conditions: string[] = [];
   if (scopeSql) conditions.push(scopeSql);
-  const searchableYearCondition = getSearchableFinancialYearSql(
-    activeFilesExpression(),
-    includeArchivedYears,
-  );
-  if (searchableYearCondition) conditions.push(searchableYearCondition);
+  if (selectedYear !== allFilesYear) {
+    const searchableYearCondition = getSearchableFinancialYearSql(
+      activeFilesExpression(),
+      includeArchivedYears,
+    );
+    if (searchableYearCondition) conditions.push(searchableYearCondition);
+  }
   const selectedYearCondition =
     selectedYearMode === "candidate"
       ? getSelectedYearCandidateCondition(selectedYear, values, currentFinancialYear)
@@ -2355,10 +2439,13 @@ function getCashOutGoPlanFileWhereSql(
   const conditions: string[] = [];
   if (!canUseAllDivisions(user)) {
     if (user.divisionIds.length === 0) {
-      conditions.push("f.division_id is null");
+      // Restricted users must not inherit unassigned records. An empty
+      // assignment is an explicit no-access scope, not an organisation-wide
+      // fallback.
+      conditions.push("1 = 0");
     } else {
       values.push(user.divisionIds);
-      conditions.push(`(f.division_id = any($${values.length}::uuid[]) or f.division_id is null)`);
+      conditions.push(`f.division_id = any($${values.length}::uuid[])`);
     }
   }
 
@@ -5920,6 +6007,25 @@ reportsRouter.put(
 );
 
 reportsRouter.get(
+  "/cash-out-go-plan/settings",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    const scopeKey = getCashOutGoPlanScopeKey(user);
+    const cacheKey = `reports:cash-out-go-plan:settings:${JSON.stringify({
+      version: 1,
+      scope: getAuthScopeCacheKey(user),
+      scopeKey,
+    })}`;
+    const settings = await getCached(
+      cacheKey,
+      cacheTtl.reportsSummaryMs,
+      () => loadCashOutGoPlanSettings(scopeKey),
+    );
+    response.json({ settings });
+  }),
+);
+
+reportsRouter.get(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
@@ -5932,6 +6038,7 @@ reportsRouter.get(
       readString(request.query.includePreviousFySubmitted) === "true";
     const divisionId = readString(request.query.divisionId)?.trim() || "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const planSections = readCashOutGoPlanSections(request.query.sections);
     const useOrganizationWideMer =
       divisionId === "all" &&
       !fileCategories &&
@@ -5942,7 +6049,7 @@ reportsRouter.get(
     const useSqlScopedLoad = process.env.CASH_OUT_GO_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.CASH_OUT_GO_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:cash-out-go-plan:${JSON.stringify({
-      version: 2,
+      version: 3,
       scope: getAuthScopeCacheKey(user),
       scopeKey,
       financialYear,
@@ -5953,6 +6060,7 @@ reportsRouter.get(
       useOrganizationWideMer,
       useSqlScopedLoad,
       compareFileScope,
+      sections: planSections,
       whereSql: fileWhere.whereSql,
       values: fileWhere.values,
     })}`;
@@ -5995,6 +6103,7 @@ reportsRouter.get(
         includePreviousFySubmitted,
         allocation,
         useOrganizationWideMer,
+        planSections,
       );
     });
     response.json({ plan });
@@ -6507,6 +6616,7 @@ async function buildReportsSummarySql({
     activeDivision: division,
     reportFileCount,
     statusSummaryGroups,
+    bgReturnDueCounts: getBgReturnDueCountsFromStatusSummaryGroups(statusSummaryGroups),
     expectedCashOutgoDpRows,
     expectedCashOutgoReceiptRows,
     expectedCashOutgoReceiptPendingBillRows,
@@ -6531,6 +6641,8 @@ async function buildReportsSummarySql({
     dailyPaymentCompleted: [],
     dailyCompletedDeliveries: [],
     monthWiseDeliverySchedule: [],
+    bidOpeningRows: [],
+    bidOpeningDailyRows: [],
     monthWiseCompletedDeliveries: [],
     monthWiseBgExpiry: [],
     bgReceiptDelayRows: [],
@@ -6540,6 +6652,71 @@ async function buildReportsSummarySql({
     delayMilestoneOptions,
   };
 }
+
+reportsRouter.get(
+  "/compact-files",
+  asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
+    const user = requireAuth(request as AuthRequest);
+    const mode = readString(request.query.mode);
+    if (mode !== "preSoExpectedCashOutgo" && mode !== "paymentCompletedMatrix") {
+      throw new HttpError(400, "A supported compact report mode is required.");
+    }
+    const settings = await loadSettings();
+    const scope = getDivisionScopeCondition(user);
+    const categoryScope = getFileCategoryScopeCondition(user);
+    const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
+    const fileYear = readString(request.query.fileYear);
+    const fileInitiationFrom = readDateString(request.query.fileInitiationFrom);
+    const fileInitiationTo = readDateString(request.query.fileInitiationTo);
+    const division = readString(request.query.division) ?? "all";
+    const fileCategories = readOptionalFileCategories(request.query.fileCategories);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
+    const reportWhere = getReportWhereSql({
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+      scopeValues: scope.values,
+      selectedYear,
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      currentFinancialYear: settings.financialYear,
+      division,
+      fileCategories,
+      includeArchivedYears,
+    });
+    const compactWhereSql =
+      mode === "preSoExpectedCashOutgo"
+        ? `${reportWhere.whereSql ? `${reportWhere.whereSql} and ` : "where "}not exists (
+            select 1
+            from supply_orders so_pre
+            where so_pre.file_id = f.id
+              and lower(coalesce(so_pre.so_cancelled, '')) <> 'yes'
+              and (so_pre.so_date is not null or nullif(trim(coalesce(so_pre.so_no, '')), '') is not null)
+          )`
+        : reportWhere.whereSql;
+    const cacheKey = `reports:compact-files:${JSON.stringify({
+      version: 5,
+      mode,
+      scope: getAuthScopeCacheKey(user),
+      selectedYear,
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      division,
+      fileCategories,
+      includeArchivedYears,
+      whereSql: compactWhereSql,
+      values: reportWhere.values,
+    })}`;
+    const files = await getCached(cacheKey, cacheTtl.reportsSummaryMs, () =>
+      loadReportFiles(compactWhereSql, reportWhere.values, selectedYear === allFilesYear, mode),
+    );
+    response.json({ files });
+  }),
+);
 
 reportsRouter.get(
   "/summary",
@@ -6556,7 +6733,10 @@ reportsRouter.get(
     const fileInitiationTo = readDateString(request.query.fileInitiationTo);
     const division = readString(request.query.division) ?? "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
-    const includeArchivedYears = readBoolean(request.query.includeArchivedYears);
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
     const delayDays = readNonNegativeInteger(
       request.query.delayDays,
       settings.delayStatusDefaultDays ?? 5,
@@ -6603,7 +6783,7 @@ reportsRouter.get(
     const useSqlScopedFileLoad = process.env.REPORTS_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.REPORTS_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:summary:${JSON.stringify({
-      version: 11,
+      version: 13,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -6629,10 +6809,18 @@ reportsRouter.get(
       const combinedScopeSql = [scope.sql, categoryScope.sql].filter(Boolean).join(" and ");
       const [sqlScopedFiles, legacyFiles] = await Promise.all([
         useSqlScopedFileLoad || compareFileScope
-          ? loadFiles(reportLoadWhere.whereSql, reportLoadWhere.values)
+          ? loadFiles(
+              reportLoadWhere.whereSql,
+              reportLoadWhere.values,
+              selectedYear === allFilesYear,
+            )
           : Promise.resolve(undefined),
         !useSqlScopedFileLoad || compareFileScope
-          ? loadFiles(combinedScopeSql ? `where ${combinedScopeSql}` : "", scope.values)
+          ? loadFiles(
+              combinedScopeSql ? `where ${combinedScopeSql}` : "",
+              scope.values,
+              selectedYear === allFilesYear,
+            )
           : Promise.resolve(undefined),
       ]);
       const selectReportFiles = (sourceFiles: FileRecord[]) => {

@@ -87,10 +87,7 @@ import {
   buildDemandProcessingRows,
   getDemandProcessingField,
 } from "@/lib/demand-processing-analysis";
-import {
-  fileMatchesCategory,
-  normalizeFileCategories,
-} from "@/lib/file-categories";
+import { fileMatchesCategory, normalizeFileCategories } from "@/lib/file-categories";
 import {
   getReturnedBillCashOutgoEventDate,
   hasBillReturnHistory,
@@ -102,9 +99,11 @@ import {
   normalizeBillReturnCycles,
 } from "@/lib/refloat-returned-bill";
 import {
+  ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
   ALL_FILES_YEAR,
   isCancelledFile,
 } from "@/lib/year-filter";
+import { readFilterCombinationLock } from "@/lib/filter-combination-lock";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
 
 export const Route = createFileRoute("/search")({
@@ -189,7 +188,8 @@ export const Route = createFileRoute("/search")({
     if (typeof search.focusTarget === "string") validated.focusTarget = search.focusTarget;
     if (typeof search.focusTargets === "string") validated.focusTargets = search.focusTargets;
     if (typeof search.drillPath === "string") validated.drillPath = search.drillPath;
-    else if (Array.isArray(search.drillPath)) validated.drillPath = JSON.stringify(search.drillPath);
+    else if (Array.isArray(search.drillPath))
+      validated.drillPath = JSON.stringify(search.drillPath);
     if (typeof search.localFilters === "string") validated.localFilters = search.localFilters;
     if (search.anomalyPresenceFilter === "has" || search.anomalyPresenceFilter === "none") {
       validated.anomalyPresenceFilter = search.anomalyPresenceFilter;
@@ -239,6 +239,13 @@ type DateRangeFilterKey =
   | "cfaApproval"
   | "postTcecDate"
   | "postTcecMinutes"
+  | "refloatGemUndertakingDate"
+  | "refloatRecommendationDate"
+  | "refloatPreBidMeetingDate"
+  | "refloatBiddingDate"
+  | "refloatBidOpeningDate"
+  | "refloatPostTcecDate"
+  | "refloatPostTcecMinutes"
   | "cncDate"
   | "preBidDate"
   | "biddingDate"
@@ -367,9 +374,7 @@ const searchFilterHelpers = {
     "Matching files have the selected type recorded in File Details.",
     "Select several types to include files matching any of them.",
   ],
-  indentor: [
-    "Matching files were raised by the selected indentor.",
-  ],
+  indentor: ["Matching files were raised by the selected indentor."],
   division: [
     "Matching files are recorded under the selected division.",
     "Access permissions may limit the divisions shown.",
@@ -503,7 +508,7 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
     items: [
       "Example table: Workflow | Recorded dates/status | Filter interpretation",
       "Example row: Inspection applies, IR = Yes | D.P.: 30 Oct; Material Receipt blank; today: 23 Oct | Delivery/payment follow-up can remain pending; the D.P. has not expired.",
-      "Example row: Goods & Services, IR = No | Job Completion Received: 22 Oct; Actual Job Completion blank | Received date can trigger payment timing; actual completion remains a distinct date.",
+      "Example row: Goods & Services, IR = No | Job Completion Received: 22 Oct; Work Completion blank | Received date can trigger payment timing; work completion remains a distinct date.",
       "Example row: Returned bill | Sent: 1 May; returned: 5 May; resubmitted: 15 May; paid: 20 May | Returned/resubmitted filters inspect the bill cycle; payment filters inspect payment status/date.",
     ],
   },
@@ -526,7 +531,7 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
     items: [
       "Example table: Dates | Selected filter | Result",
       "Example row: Original D.P.: 10 Aug; Revised D.P.: 20 Aug; Material Receipt: 18 Aug | Revised D.P. | Matches the revised-date range; the receipt date is a separate event.",
-      "Example row: D.P.: 10 Aug; Actual Job Completion: 5 Aug | D.P. expiry | D.P. is expired, but this alone does not establish completion or non-completion.",
+      "Example row: D.P.: 10 Aug; Work Completion: 5 Aug | D.P. expiry | D.P. is expired, but this alone does not establish completion or non-completion.",
     ],
   },
   "Firm help": {
@@ -580,7 +585,12 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
       { label: "Bid opening overdue", filter: "bidOverdue" },
       { label: "Pre-Bid due", filter: "preBidMeeting:due" },
       { label: "Pre-Bid completed", filter: "preBidMeeting:completed" },
+      { label: "Bidding stage over", filter: "attribute:biddingStageOver:yes" },
       { label: "Refloat", filter: "attribute:refloat:yes" },
+      {
+        label: "Refloat Bidding Stage Over",
+        filter: "attribute:refloatBiddingStageOver:yes",
+      },
       { label: "Refloat bidding current", filter: "manualMilestoneCurrent:Refloat bidding" },
     ],
   },
@@ -671,6 +681,7 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
       { label: "Live files", filter: "miscLiveFiles" },
       { label: "File closed", filter: "miscFileClosed" },
       { label: "LD", filter: "miscLd" },
+      { label: "No Further Action = Yes", filter: "miscNoFurtherAction" },
       { label: "RST", filter: "attribute:rst:yes" },
     ],
   },
@@ -698,18 +709,43 @@ const workflowFilterLocatorExtras: Record<string, string[]> = {
 const dateFilterLocatorLabels: Record<string, string[]> = {
   "dates:demand-control": ["Demand Receipt Date", "Demand Control Date"],
   "dates:approval-committee": [
-    "High Value Minutes Date", "Pre-TCEC date", "Pre-TCEC Minutes date", "Pre-TCEC committee",
-    "R&QA approval date", "IFA Final date", "CFA Approval Date", "Post-TCEC date",
-    "Post-TCEC Minutes date", "Post-TCEC committee", "CNC Date", "Pre-Bid date",
-    "Bidding date", "Bid opening date",
+    "High Value Minutes Date",
+    "Pre-TCEC date",
+    "Pre-TCEC Minutes date",
+    "Pre-TCEC committee",
+    "R&QA approval date",
+    "IFA Final date",
+    "CFA Approval Date",
+    "Post-TCEC date",
+    "Post-TCEC Minutes date",
+    "Refloat GeM undertaking",
+    "Refloat recommendation",
+    "Refloat Pre-Bid date",
+    "Refloat bidding date",
+    "Refloat bid opening date",
+    "Refloat Post-TCEC date",
+    "Refloat Post-TCEC Minutes date",
+    "Post-TCEC committee",
+    "CNC Date",
+    "Pre-Bid date",
+    "Bidding date",
+    "Bid opening date",
   ],
   "dates:supply-delivery": [
-    "Financial Sanction date", "S.O. date", "Expected Advance Payment Date", "D.P. period", "Material receipt date",
-    "Actual Job Completion Date",
+    "Financial Sanction date",
+    "S.O. date",
+    "Expected Advance Payment Date",
+    "D.P. period",
+    "Material receipt date",
+    "Work Completion Date",
   ],
   "dates:bg-payment-closure": [
-    "BG received date", "BG validity date", "BG return date", "Bill sent/submitted date",
-    "Payment date", "File Closure Date",
+    "BG received date",
+    "BG validity date",
+    "BG return date",
+    "Bill sent/submitted date",
+    "Payment date",
+    "File Closure Date",
   ],
 };
 const defaultMilestones = [
@@ -947,6 +983,8 @@ type SupplyOrderKey =
   | "dpDate"
   | "firm"
   | "firmUniqueNo"
+  | "firmContactNo"
+  | "firmCity"
   | "firmType"
   | "firmTypeOther"
   | "dpExtension"
@@ -983,6 +1021,7 @@ type SupplyOrderKey =
   | "soCancelledDate"
   | "shortclosure"
   | "shortclosureDate"
+  | "noFurtherAction"
   | "deliveryPeriodStartDate"
   | "stageDelivery"
   | "stageDeliveryCount"
@@ -1023,6 +1062,8 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "soValueRevenue",
   "firm",
   "firmUniqueNo",
+  "firmContactNo",
+  "firmCity",
   "firmType",
   "firmTypeOther",
   "psbApplicable",
@@ -1079,6 +1120,7 @@ const supplyOrderKeys: SupplyOrderKey[] = [
   "soCancelledDate",
   "shortclosure",
   "shortclosureDate",
+  "noFurtherAction",
   "stageDelivery",
   "stageDeliveryCount",
   "stageDeliveryLabel",
@@ -1123,18 +1165,18 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "gte", label: "GTE", options: yesNo },
       { key: "fileType", label: "File Type", options: defaultFileTypeOptions },
       { key: "mode", label: "Mode", options: defaultModeOptions },
-      { key: "tcec", label: "TCEC (Yes/No)", options: yesNoCaps },
-      { key: "gem", label: "GeM (Yes/No)", options: yesNo },
-      { key: "highValue", label: "High value (Yes/No)", options: yesNo },
-      { key: "ad", label: "AD (Yes/No)", options: yesNo },
-      { key: "rqa", label: "R&QA (Yes/No)", options: yesNo },
-      { key: "ifa", label: "IFA (Yes/No)", options: yesNo },
-      { key: "bg", label: "Warranty (Yes/No)", options: yesNo },
-      { key: "ir", label: "IR (Yes/No)", options: yesNo },
+      { key: "tcec", label: "TCEC", options: yesNoCaps },
+      { key: "gem", label: "GeM", options: yesNo },
+      { key: "highValue", label: "High value", options: yesNo },
+      { key: "ad", label: "AD", options: yesNo },
+      { key: "rqa", label: "R&QA", options: yesNo },
+      { key: "ifa", label: "IFA", options: yesNo },
+      { key: "bg", label: "Warranty", options: yesNo },
+      { key: "ir", label: "IR", options: yesNo },
       { key: "rfpVetting", label: "RFP vetting", options: yesNo },
       { key: "currentMilestone", label: "Current milestone" },
       { key: "fileClosureDate", label: "File Closure Date", type: "date" },
-      { key: "demandCancelled", label: "Demand cancelled (Yes/No)", options: yesNo },
+      { key: "demandCancelled", label: "Demand cancelled", options: yesNo },
       { key: "demandCancelledDate", label: "Demand cancelled date", type: "date" },
     ],
   },
@@ -1187,21 +1229,21 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
-      { key: "preBidMeeting", label: "Pre-Bid Meeting (Yes/No)", options: yesNo },
+      { key: "preBidMeeting", label: "Pre-Bid Meeting", options: yesNo },
       { key: "preBidMeetingDate", label: "Pre-Bid Meeting date", type: "date" },
-      { key: "tenderLive", label: "Bid Live (Yes/No)", options: yesNo },
+      { key: "tenderLive", label: "Bid Live", options: yesNo },
       { key: "bidNumber", label: "Bid number" },
       { key: "bidDate", label: "Bid date", type: "date" },
       { key: "bidOpeningDate", label: "Bid closing date", type: "date" },
-      { key: "bidOpened", label: "Bid opened (Yes/No)", options: yesNoCaps },
-      { key: "refloat", label: "Refloat (Yes/No)", options: yesNo },
-      { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting (Yes/No)", options: yesNo },
+      { key: "bidOpened", label: "Bid opened", options: yesNoCaps },
+      { key: "refloat", label: "Refloat", options: yesNo },
+      { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting", options: yesNo },
       { key: "refloatPreBidMeetingDate", label: "Refloat Pre-Bid Meeting date", type: "date" },
       { key: "refloatBiddingDate", label: "Refloat bidding date", type: "date" },
       { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
       { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over", options: yesNo },
       { key: "refloatRecommendationDate", label: "Refloat recommendation", type: "date" },
-      { key: "rst", label: "RST (Yes/No)", options: yesNo },
+      { key: "rst", label: "RST", options: yesNo },
       { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
       { key: "cncDate", label: "CNC date", type: "date" },
       { key: "cncApprovalDate", label: "CNC approval date", type: "date" },
@@ -1216,12 +1258,14 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "soNo", label: "S.O. No." },
       { key: "gemSoNo", label: "GeM S.O. No." },
       { key: "soDate", label: "S.O. date", type: "date" },
-      { key: "soValueCapital", label: "S.O. value (Capital)" },
-      { key: "soValueRevenue", label: "S.O. value (Revenue)" },
+      { key: "soValueCapital", label: "S.O. (Capital)" },
+      { key: "soValueRevenue", label: "S.O. (Revenue)" },
       { key: "billAmountCapital", label: "Bill amount (Capital)" },
       { key: "billAmountRevenue", label: "Bill amount (Revenue)" },
       { key: "firm", label: "S.O. Firm" },
       { key: "firmUniqueNo", label: "S.O. Firm Unique No." },
+      { key: "firmContactNo", label: "S.O. Firm Contact No." },
+      { key: "firmCity", label: "S.O. Firm City" },
       { key: "firmType", label: "Firm type" },
       { key: "firmTypeOther", label: "Firm type other" },
       { key: "psbApplicable", label: "PSB applicable", options: yesNo },
@@ -1242,16 +1286,16 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "combinedBgValidityDate", label: "PSB+PWB BG validity date", type: "date" },
       { key: "combinedBgReturnDate", label: "PSB+PWB BG return date", type: "date" },
       { key: "warrantyPeriodDate", label: "Warranty period", type: "date" },
-      { key: "deliveryPeriodStartDate", label: "Delivery period start date", type: "date" },
+      { key: "deliveryPeriodStartDate", label: "D.P. Start Date", type: "date" },
       { key: "dpDate", label: "D.P. date", type: "date" },
-      { key: "dpExtension", label: "DP extension (Yes/No)", options: yesNo },
+      { key: "dpExtension", label: "DP extension", options: yesNo },
       { key: "dpExtensionCount", label: "Extension count", type: "number" },
       { key: "ld", label: "LD", options: yesNo },
       { key: "ldType", label: "LD type", options: ["Full", "Partial"] },
       { key: "ldPercentage", label: "LD percentage", type: "number" },
       { key: "revisedDp", label: "Revised D.P.", type: "date" },
       { key: "materialReceiptDate", label: "Material receipt date", type: "date" },
-      { key: "actualJobCompletionDate", label: "Actual Job Completion Date", type: "date" },
+      { key: "actualJobCompletionDate", label: "Work Completion Date", type: "date" },
       { key: "jobCompletionDate", label: "Job Completion Received Date", type: "date" },
       { key: "irPreparationDate", label: "IR Preparation", type: "date" },
       { key: "irReceiptDate", label: "IR Receipt", type: "date" },
@@ -1261,9 +1305,8 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "billReturnCycles", label: "Returned Bills" },
       { key: "paymentDate", label: "Payment date", type: "date" },
       { key: "paymentMode", label: "Payment mode (Online/Offline)", options: paymentModeOptions },
-      { key: "actualPaymentCapital", label: "Actual payment amount (Capital)" },
-      { key: "actualPaymentRevenue", label: "Actual payment amount (Revenue)" },
-      { key: "supplementaryBills", label: "Supplementary bills" },
+      { key: "actualPaymentCapital", label: "Recorded payment amount (Capital)" },
+      { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
       { key: "supplementaryBillNo", label: "Supplementary Bill No." },
       { key: "supplementaryBillAmountCapital", label: "Supplementary bill amount (Capital)" },
       { key: "supplementaryBillAmountRevenue", label: "Supplementary bill amount (Revenue)" },
@@ -1276,16 +1319,17 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "supplementaryBillPaymentMode", label: "Supplementary payment mode" },
       {
         key: "supplementaryBillActualPaymentCapital",
-        label: "Supplementary actual payment amount (Capital)",
+        label: "Supplementary recorded payment amount (Capital)",
       },
       {
         key: "supplementaryBillActualPaymentRevenue",
-        label: "Supplementary actual payment amount (Revenue)",
+        label: "Supplementary recorded payment amount (Revenue)",
       },
       { key: "supplementaryBillRemarks", label: "Supplementary bill remarks" },
-      { key: "shortclosure", label: "Shortclosure (Yes/No)", options: yesNo },
+      { key: "shortclosure", label: "Shortclosure", options: yesNo },
       { key: "shortclosureDate", label: "Shortclosure date", type: "date" },
-      { key: "soCancelled", label: "S.O. cancelled (Yes/No)", options: yesNo },
+      { key: "noFurtherAction", label: "No Further Action", options: yesNo },
+      { key: "soCancelled", label: "S.O. cancelled", options: yesNo },
       { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
       { key: "stageDelivery", label: "Stage delivery", options: yesNo },
       { key: "stageDeliveryCount", label: "No. of stage deliveries", type: "number" },
@@ -1298,8 +1342,8 @@ const fieldSections: { title: string; fields: FieldDef[] }[] = [
       { key: "advanceStageAmountRevenue", label: "Advance stage amount (Revenue)" },
       { key: "advanceExpectedPaymentDate", label: "Expected Advance Payment Date", type: "date" },
       { key: "advancePaymentDate", label: "Advance payment date", type: "date" },
-      { key: "advanceActualPaymentCapital", label: "Advance actual payment capital" },
-      { key: "advanceActualPaymentRevenue", label: "Advance actual payment revenue" },
+      { key: "advanceActualPaymentCapital", label: "Advance recorded payment capital" },
+      { key: "advanceActualPaymentRevenue", label: "Advance recorded payment revenue" },
     ],
   },
 ];
@@ -1341,12 +1385,12 @@ type ImportantWorkflowFilterGroup = {
 };
 
 const firmDetailFieldLabels: Record<FirmDetailTableFieldKey, string> = {
-  bqFirmNames: "BQ firm names",
-  bqFirmUniqueNos: "BQ firm unique nos.",
-  invitedFirmNames: "Invited firm names",
-  invitedFirmUniqueNos: "Invited firm unique nos.",
-  bidderFirmNames: "Bidder firm names",
-  bidderFirmUniqueNos: "Bidder firm unique nos.",
+  bqFirmNames: "BQ firm",
+  bqFirmUniqueNos: "BQ firm unique No.",
+  invitedFirmNames: "Invited firm",
+  invitedFirmUniqueNos: "Invited firm unique No.",
+  bidderFirmNames: "Bidder firm",
+  bidderFirmUniqueNos: "Bidder firm unique No.",
 };
 
 const firmDetailColumns: PrintColumn[] = [
@@ -1370,14 +1414,23 @@ const sortCollator = new Intl.Collator(undefined, {
 });
 
 const printColumns: PrintColumn[] = [
-  ...editableFields.filter((field) => field.key !== "fileNo").map((field) => ({
-    key: field.key,
-    label: field.label,
-    getValue: (file: FileRecord) => {
-      const value = getPrintColumnValue(file, field.key);
-      return field.type === "date" ? formatIsoDateForDisplay(value) : value;
-    },
-  })),
+  ...editableFields
+    .filter((field) => field.key !== "fileNo")
+    .map((field) => ({
+      key: field.key,
+      label:
+        field.key === "deliveryPeriodStartDate"
+          ? "D.P. Start Date"
+          : field.key === "soValueCapital"
+            ? "S.O. (Capital)"
+            : field.key === "soValueRevenue"
+              ? "S.O. (Revenue)"
+              : field.label,
+      getValue: (file: FileRecord) => {
+        const value = getPrintColumnValue(file, field.key);
+        return field.type === "date" ? formatIsoDateForDisplay(value) : value;
+      },
+    })),
   ...firmDetailColumns,
 ];
 
@@ -1454,6 +1507,8 @@ const stagedSupplyOrderExportKeys = new Set<string>([
   "dpExtension",
   "dpExtensionCount",
   "ld",
+  "ldType",
+  "ldPercentage",
   "revisedDp",
   "stageDeliveryLabel",
   "stageAmountCapital",
@@ -1495,6 +1550,29 @@ const stagedPaymentWorkflowKeys = new Set<string>([
   "paymentMode",
   "actualPaymentCapital",
   "actualPaymentRevenue",
+]);
+// These fields describe delivery/payment stages rather than the parent S.O.
+// They are intentionally omitted from the one-row-per-S.O. export.
+const stageSpecificSupplyOrderExportKeys = new Set<string>([
+  ...stagedDeliveryWorkflowKeys,
+  ...stagedPaymentWorkflowKeys,
+  "jobCompletionDate",
+  "stageDelivery",
+  "stageDeliveryCount",
+  "stageDeliveryLabel",
+  "stageAmountCapital",
+  "stageAmountRevenue",
+  "stagePayment",
+]);
+const latestSoStageDateKeys = new Set([
+  "materialReceiptDate",
+  "actualJobCompletionDate",
+  "jobCompletionDate",
+  "irPreparationDate",
+  "irReceiptDate",
+  "billPreparationDate",
+  "billSentForPaymentDate",
+  "paymentDate",
 ]);
 const supplementaryBillTableKeys = new Set<string>([
   "supplementaryBills",
@@ -1550,7 +1628,11 @@ function appendSearchParam(params: URLSearchParams, key: string, value: string |
 }
 
 function appendSearchBool(params: URLSearchParams, key: string, value: boolean) {
-  if (value) params.set(key, "true");
+  if (key === "includeArchivedYears") {
+    params.set(key, value ? "true" : "false");
+  } else if (value) {
+    params.set(key, "true");
+  }
 }
 
 function appendIncludeExcludeParam(
@@ -1601,11 +1683,13 @@ function parseDrillPath(value: unknown): DrillPathItem[] {
       .filter((item): item is DrillPathItem => Boolean(item))
       .slice(0, 12);
   } catch {
-    return typeof value === "string" ? value
-      .split(">")
-      .map((item) => ({ label: item.trim() }))
-      .filter((item) => item.label)
-      .slice(0, 12) : [];
+    return typeof value === "string"
+      ? value
+          .split(">")
+          .map((item) => ({ label: item.trim() }))
+          .filter((item) => item.label)
+          .slice(0, 12)
+      : [];
   }
 }
 
@@ -1711,10 +1795,61 @@ function SearchPage() {
   const gemBiddingModeOptions = getConfiguredGemBiddingModes(settings.gemBiddingModes);
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const includeArchivedYears = search.includeArchivedYears === true;
+  const [filterCombinationLock, setFilterCombinationLock] = useState(() =>
+    readFilterCombinationLock(activeUser?.id),
+  );
+  // A plain visit to Search Files is a new page context, so it should start
+  // with Search's recommended scope instead of inheriting the last page's
+  // Global Filter.  Drill-downs carry one or more route filters and must keep
+  // their originating scope intact.
+  const isSearchDrilldown = Boolean(
+    search.dashboardFilter ||
+      search.extraDashboardFilters ||
+      search.valueThresholdFilter ||
+      search.soValueThresholdFilter ||
+      search.division ||
+      search.includeModes ||
+      search.selectedYear ||
+      search.includeArchivedYears !== undefined ||
+      search.milestoneClearingScope !== undefined ||
+      search.fileYear ||
+      search.fileInitiationFrom ||
+      search.fileInitiationTo ||
+      search.fileCategories ||
+      search.analyticsType ||
+      search.analyticsNames ||
+      search.capitalOnly !== undefined ||
+      search.revenueOnly !== undefined ||
+      search.soCancelledPresenceFilter ||
+      search.shortclosedSoPresenceFilter ||
+      search.multipleSupplyOrdersPresenceFilter ||
+      search.focusSection ||
+      search.focusMilestone ||
+      search.focusTarget ||
+      search.focusTargets ||
+      search.drillPath ||
+      search.localFilters ||
+      search.anomalyPresenceFilter,
+  );
+  const searchRecommendationAppliedRef = useRef(false);
+  useEffect(() => {
+    if (searchRecommendationAppliedRef.current || isSearchDrilldown || filterCombinationLock) return;
+    searchRecommendationAppliedRef.current = true;
+    store.updateSessionSelectedYear(ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR);
+  }, [filterCombinationLock, isSearchDrilldown]);
+  useEffect(() => {
+    const syncLock = () => setFilterCombinationLock(readFilterCombinationLock(activeUser?.id));
+    window.addEventListener("recordkeeper:filter-combination-lock-changed", syncLock);
+    return () =>
+      window.removeEventListener("recordkeeper:filter-combination-lock-changed", syncLock);
+  }, [activeUser?.id]);
+  const includeArchivedYears = search.includeArchivedYears !== false;
   const defaultSearchExclusions = !(
-    search.dashboardFilter || search.extraDashboardFilters || search.analyticsType ||
-    search.analyticsNames || search.fileCategories
+    search.dashboardFilter ||
+    search.extraDashboardFilters ||
+    search.analyticsType ||
+    search.analyticsNames ||
+    search.fileCategories
   );
   const defaultDemandCancelledExclusion =
     defaultSearchExclusions || search.analyticsType === "indentor";
@@ -1779,7 +1914,9 @@ function SearchPage() {
   }, [search.revenueOnly]);
   useEffect(() => {
     if (!search.localFilters) {
-      setSoCancelledPresenceFilter(search.soCancelledPresenceFilter ?? (defaultSearchExclusions ? "exclude" : "none"));
+      setSoCancelledPresenceFilter(
+        search.soCancelledPresenceFilter ?? (defaultSearchExclusions ? "exclude" : "none"),
+      );
     }
   }, [search.soCancelledPresenceFilter, search.localFilters, defaultSearchExclusions]);
   useEffect(() => {
@@ -1870,6 +2007,20 @@ function SearchPage() {
   const [postTcecDateTo, setPostTcecDateTo] = useState("");
   const [postTcecMinutesFrom, setPostTcecMinutesFrom] = useState("");
   const [postTcecMinutesTo, setPostTcecMinutesTo] = useState("");
+  const [refloatGemUndertakingDateFrom, setRefloatGemUndertakingDateFrom] = useState("");
+  const [refloatGemUndertakingDateTo, setRefloatGemUndertakingDateTo] = useState("");
+  const [refloatRecommendationDateFrom, setRefloatRecommendationDateFrom] = useState("");
+  const [refloatRecommendationDateTo, setRefloatRecommendationDateTo] = useState("");
+  const [refloatPreBidMeetingDateFrom, setRefloatPreBidMeetingDateFrom] = useState("");
+  const [refloatPreBidMeetingDateTo, setRefloatPreBidMeetingDateTo] = useState("");
+  const [refloatBiddingDateFrom, setRefloatBiddingDateFrom] = useState("");
+  const [refloatBiddingDateTo, setRefloatBiddingDateTo] = useState("");
+  const [refloatBidOpeningDateFrom, setRefloatBidOpeningDateFrom] = useState("");
+  const [refloatBidOpeningDateTo, setRefloatBidOpeningDateTo] = useState("");
+  const [refloatPostTcecDateFrom, setRefloatPostTcecDateFrom] = useState("");
+  const [refloatPostTcecDateTo, setRefloatPostTcecDateTo] = useState("");
+  const [refloatPostTcecMinutesFrom, setRefloatPostTcecMinutesFrom] = useState("");
+  const [refloatPostTcecMinutesTo, setRefloatPostTcecMinutesTo] = useState("");
   const [cncDateFrom, setCncDateFrom] = useState("");
   const [cncDateTo, setCncDateTo] = useState("");
   const [preBidDateFrom, setPreBidDateFrom] = useState("");
@@ -1900,7 +2051,9 @@ function SearchPage() {
   const [bgReturnTo, setBgReturnTo] = useState("");
   const [fileClosureFrom, setFileClosureFrom] = useState("");
   const [fileClosureTo, setFileClosureTo] = useState("");
-  const [dateFilterModes, setDateFilterModes] = useState<Partial<Record<DateRangeFilterKey, DateFilterMode>>>({});
+  const [dateFilterModes, setDateFilterModes] = useState<
+    Partial<Record<DateRangeFilterKey, DateFilterMode>>
+  >({});
   const [fileClosedPresenceFilter, setFileClosedPresenceFilter] =
     useState<IncludeExcludeFilter>("none");
   const [rstFilter, setRstFilter] = useState(false);
@@ -1934,6 +2087,7 @@ function SearchPage() {
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [snapshotError, setSnapshotError] = useState<string | undefined>();
   const [expandedSearchFileIds, setExpandedSearchFileIds] = useState<Set<string>>(() => new Set());
+  const [searchExportMode, setSearchExportMode] = useState<"so" | "stage">("so");
   const [requiredFilledColumnKeys, setRequiredFilledColumnKeys] = useState<string[]>([]);
   const destinationFocus = useMemo(() => {
     const explicitFocus = getDestinationFocus(
@@ -2030,11 +2184,12 @@ function SearchPage() {
     if (!range) return [];
     const startYear = Number(range.start.slice(0, 4));
     return Array.from({ length: 12 }, (_, index) => {
-      const monthNumber = (index + 3) % 12 + 1;
+      const monthNumber = ((index + 3) % 12) + 1;
       const year = index < 9 ? startYear : startYear + 1;
       const value = `${year}-${String(monthNumber).padStart(2, "0")}`;
-      const monthName = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" })
-        .format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+      const monthName = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" }).format(
+        new Date(Date.UTC(year, monthNumber - 1, 1)),
+      );
       return { value, label: `${monthName} ${year}` };
     });
   }, [demandReceivedFy]);
@@ -2058,82 +2213,159 @@ function SearchPage() {
     const read = (key: string) => params.get(key) ?? "";
     const readList = (key: string) => parseSearchListParam(params.get(key) ?? undefined);
     const stringFilters: Array<[string, (value: string) => void]> = [
-      ["yearFilter", setYearFilter], ["indentor", setIndentor], ["divisionFilter", setDivisionFilter],
-      ["description", setDescription], ["firmContactNo", setFirmContactNo],
-      ["firmCity", setFirmCity], ["valueFrom", setValueFrom], ["valueTo", setValueTo],
-      ["soValueFrom", setSoValueFrom], ["soValueTo", setSoValueTo],
-      ["preTcecCommittee", setPreTcecCommittee], ["postTcecCommittee", setPostTcecCommittee],
-      ["dpFrom", setDpFrom], ["dpTo", setDpTo],
-      ["demandReceivedFy", setDemandReceivedFy], ["demandReceivedMonth", setDemandReceivedMonth],
-      ["demandReceiptFrom", setDemandReceiptFrom], ["demandReceiptTo", setDemandReceiptTo],
-      ["demandControlFrom", setDemandControlFrom], ["demandControlTo", setDemandControlTo],
-      ["highValueMinutesFrom", setHighValueMinutesFrom], ["highValueMinutesTo", setHighValueMinutesTo],
-      ["preTcecDateFrom", setPreTcecDateFrom], ["preTcecDateTo", setPreTcecDateTo],
-      ["preTcecMinutesFrom", setPreTcecMinutesFrom], ["preTcecMinutesTo", setPreTcecMinutesTo],
-      ["rqaApprovalFrom", setRqaApprovalFrom], ["rqaApprovalTo", setRqaApprovalTo],
-      ["ifaFinalFrom", setIfaFinalFrom], ["ifaFinalTo", setIfaFinalTo],
-      ["cfaApprovalFrom", setCfaApprovalFrom], ["cfaApprovalTo", setCfaApprovalTo],
-      ["postTcecDateFrom", setPostTcecDateFrom], ["postTcecDateTo", setPostTcecDateTo],
-      ["postTcecMinutesFrom", setPostTcecMinutesFrom], ["postTcecMinutesTo", setPostTcecMinutesTo],
-      ["cncDateFrom", setCncDateFrom], ["cncDateTo", setCncDateTo],
-      ["preBidDateFrom", setPreBidDateFrom], ["preBidDateTo", setPreBidDateTo],
-      ["biddingDateFrom", setBiddingDateFrom], ["biddingDateTo", setBiddingDateTo],
-      ["bidOpeningDateFrom", setBidOpeningDateFrom], ["bidOpeningDateTo", setBidOpeningDateTo],
-      ["billSubmittedFrom", setBillSubmittedFrom], ["billSubmittedTo", setBillSubmittedTo],
-      ["financialSanctionFrom", setFinancialSanctionFrom], ["financialSanctionTo", setFinancialSanctionTo],
-      ["soDateFrom", setSoDateFrom], ["soDateTo", setSoDateTo],
+      ["yearFilter", setYearFilter],
+      ["indentor", setIndentor],
+      ["divisionFilter", setDivisionFilter],
+      ["description", setDescription],
+      ["firmContactNo", setFirmContactNo],
+      ["firmCity", setFirmCity],
+      ["valueFrom", setValueFrom],
+      ["valueTo", setValueTo],
+      ["soValueFrom", setSoValueFrom],
+      ["soValueTo", setSoValueTo],
+      ["preTcecCommittee", setPreTcecCommittee],
+      ["postTcecCommittee", setPostTcecCommittee],
+      ["dpFrom", setDpFrom],
+      ["dpTo", setDpTo],
+      ["demandReceivedFy", setDemandReceivedFy],
+      ["demandReceivedMonth", setDemandReceivedMonth],
+      ["demandReceiptFrom", setDemandReceiptFrom],
+      ["demandReceiptTo", setDemandReceiptTo],
+      ["demandControlFrom", setDemandControlFrom],
+      ["demandControlTo", setDemandControlTo],
+      ["highValueMinutesFrom", setHighValueMinutesFrom],
+      ["highValueMinutesTo", setHighValueMinutesTo],
+      ["preTcecDateFrom", setPreTcecDateFrom],
+      ["preTcecDateTo", setPreTcecDateTo],
+      ["preTcecMinutesFrom", setPreTcecMinutesFrom],
+      ["preTcecMinutesTo", setPreTcecMinutesTo],
+      ["rqaApprovalFrom", setRqaApprovalFrom],
+      ["rqaApprovalTo", setRqaApprovalTo],
+      ["ifaFinalFrom", setIfaFinalFrom],
+      ["ifaFinalTo", setIfaFinalTo],
+      ["cfaApprovalFrom", setCfaApprovalFrom],
+      ["cfaApprovalTo", setCfaApprovalTo],
+      ["postTcecDateFrom", setPostTcecDateFrom],
+      ["postTcecDateTo", setPostTcecDateTo],
+      ["postTcecMinutesFrom", setPostTcecMinutesFrom],
+      ["postTcecMinutesTo", setPostTcecMinutesTo],
+      ["refloatGemUndertakingDateFrom", setRefloatGemUndertakingDateFrom],
+      ["refloatGemUndertakingDateTo", setRefloatGemUndertakingDateTo],
+      ["refloatRecommendationDateFrom", setRefloatRecommendationDateFrom],
+      ["refloatRecommendationDateTo", setRefloatRecommendationDateTo],
+      ["refloatPreBidMeetingDateFrom", setRefloatPreBidMeetingDateFrom],
+      ["refloatPreBidMeetingDateTo", setRefloatPreBidMeetingDateTo],
+      ["refloatBiddingDateFrom", setRefloatBiddingDateFrom],
+      ["refloatBiddingDateTo", setRefloatBiddingDateTo],
+      ["refloatBidOpeningDateFrom", setRefloatBidOpeningDateFrom],
+      ["refloatBidOpeningDateTo", setRefloatBidOpeningDateTo],
+      ["refloatPostTcecDateFrom", setRefloatPostTcecDateFrom],
+      ["refloatPostTcecDateTo", setRefloatPostTcecDateTo],
+      ["refloatPostTcecMinutesFrom", setRefloatPostTcecMinutesFrom],
+      ["refloatPostTcecMinutesTo", setRefloatPostTcecMinutesTo],
+      ["cncDateFrom", setCncDateFrom],
+      ["cncDateTo", setCncDateTo],
+      ["preBidDateFrom", setPreBidDateFrom],
+      ["preBidDateTo", setPreBidDateTo],
+      ["biddingDateFrom", setBiddingDateFrom],
+      ["biddingDateTo", setBiddingDateTo],
+      ["bidOpeningDateFrom", setBidOpeningDateFrom],
+      ["bidOpeningDateTo", setBidOpeningDateTo],
+      ["billSubmittedFrom", setBillSubmittedFrom],
+      ["billSubmittedTo", setBillSubmittedTo],
+      ["financialSanctionFrom", setFinancialSanctionFrom],
+      ["financialSanctionTo", setFinancialSanctionTo],
+      ["soDateFrom", setSoDateFrom],
+      ["soDateTo", setSoDateTo],
       ["advanceExpectedPaymentDateFrom", setAdvanceExpectedPaymentDateFrom],
       ["advanceExpectedPaymentDateTo", setAdvanceExpectedPaymentDateTo],
-      ["materialReceiptFrom", setMaterialReceiptFrom], ["materialReceiptTo", setMaterialReceiptTo],
+      ["materialReceiptFrom", setMaterialReceiptFrom],
+      ["materialReceiptTo", setMaterialReceiptTo],
       ["actualJobCompletionFrom", setActualJobCompletionFrom],
       ["actualJobCompletionTo", setActualJobCompletionTo],
-      ["paymentDateFrom", setPaymentDateFrom], ["paymentDateTo", setPaymentDateTo],
-      ["bgReceivedFrom", setBgReceivedFrom], ["bgReceivedTo", setBgReceivedTo],
-      ["bgValidityFrom", setBgValidityFrom], ["bgValidityTo", setBgValidityTo],
-      ["bgReturnFrom", setBgReturnFrom], ["bgReturnTo", setBgReturnTo],
-      ["fileClosureFrom", setFileClosureFrom], ["fileClosureTo", setFileClosureTo],
-      ["freeText", setFreeText], ["freeDate", setFreeDate],
+      ["paymentDateFrom", setPaymentDateFrom],
+      ["paymentDateTo", setPaymentDateTo],
+      ["bgReceivedFrom", setBgReceivedFrom],
+      ["bgReceivedTo", setBgReceivedTo],
+      ["bgValidityFrom", setBgValidityFrom],
+      ["bgValidityTo", setBgValidityTo],
+      ["bgReturnFrom", setBgReturnFrom],
+      ["bgReturnTo", setBgReturnTo],
+      ["fileClosureFrom", setFileClosureFrom],
+      ["fileClosureTo", setFileClosureTo],
+      ["freeText", setFreeText],
+      ["freeDate", setFreeDate],
     ];
     stringFilters.forEach(([key, setter]) => setter(read(key)));
     setValueThresholdFilter(read("valueThresholdFilter") || "all");
     setSoValueThresholdFilter(read("soValueThresholdFilter") || "all");
     const booleanFilters: Array<[string, (value: boolean) => void]> = [
-      ["soCapitalOnly", setSoCapitalOnly], ["soRevenueOnly", setSoRevenueOnly],
-      ["capitalOnly", setCapitalOnly], ["revenueOnly", setRevenueOnly],
-      ["advancePaymentFilter", setAdvancePaymentFilter], ["actualPaymentFilter", setActualPaymentFilter],
-      ["stageDeliveryFilter", setStageDeliveryFilter], ["stagePaymentFilter", setStagePaymentFilter],
-      ["dpExtensionFilter", setDpExtensionFilter], ["ldFilter", setLdFilter],
-      ["highValue", setHighValue], ["gte", setGte], ["ad", setAd], ["rqa", setRqa],
-      ["psbFilter", setPsbFilter], ["pwbFilter", setPwbFilter], ["psbPwbFilter", setPsbPwbFilter],
-      ["bgFilter", setBgFilter], ["rfpVettingFilter", setRfpVettingFilter], ["refloat", setRefloat],
-      ["tcec", setTcec], ["preBidMeetingFilter", setPreBidMeetingFilter], ["rstFilter", setRstFilter],
+      ["soCapitalOnly", setSoCapitalOnly],
+      ["soRevenueOnly", setSoRevenueOnly],
+      ["capitalOnly", setCapitalOnly],
+      ["revenueOnly", setRevenueOnly],
+      ["advancePaymentFilter", setAdvancePaymentFilter],
+      ["actualPaymentFilter", setActualPaymentFilter],
+      ["stageDeliveryFilter", setStageDeliveryFilter],
+      ["stagePaymentFilter", setStagePaymentFilter],
+      ["dpExtensionFilter", setDpExtensionFilter],
+      ["ldFilter", setLdFilter],
+      ["highValue", setHighValue],
+      ["gte", setGte],
+      ["ad", setAd],
+      ["rqa", setRqa],
+      ["psbFilter", setPsbFilter],
+      ["pwbFilter", setPwbFilter],
+      ["psbPwbFilter", setPsbPwbFilter],
+      ["bgFilter", setBgFilter],
+      ["rfpVettingFilter", setRfpVettingFilter],
+      ["refloat", setRefloat],
+      ["tcec", setTcec],
+      ["preBidMeetingFilter", setPreBidMeetingFilter],
+      ["rstFilter", setRstFilter],
       ["divisionWiseSort", setDivisionWiseSort],
     ];
     booleanFilters.forEach(([key, setter]) => setter(read(key) === "true"));
     setSelectedFirmTypes(readList("selectedFirmTypes"));
     setSelectedFileTypes(readList("selectedFileTypes"));
     setSpecialFileMarkers(readList("specialFileMarkers"));
-    setFirmSearchScopes(params.has("firmSearchScopes") ? readList("firmSearchScopes") : defaultFirmSearchScopes);
+    setFirmSearchScopes(
+      params.has("firmSearchScopes") ? readList("firmSearchScopes") : defaultFirmSearchScopes,
+    );
     setRequiredFilledColumnKeys(readList("requiredFilledFields"));
     const modeState: Record<string, IncludeExcludeFilter> = {};
-    readList("includeModes").forEach((mode) => { modeState[mode] = "include"; });
-    readList("excludeModes").forEach((mode) => { modeState[mode] = "exclude"; });
+    readList("includeModes").forEach((mode) => {
+      modeState[mode] = "include";
+    });
+    readList("excludeModes").forEach((mode) => {
+      modeState[mode] = "exclude";
+    });
     setModeFilters(modeState);
     const gemModeState: Record<string, IncludeExcludeFilter> = {};
-    readList("includeGemBiddingModes").forEach((mode) => { gemModeState[mode] = "include"; });
-    readList("excludeGemBiddingModes").forEach((mode) => { gemModeState[mode] = "exclude"; });
+    readList("includeGemBiddingModes").forEach((mode) => {
+      gemModeState[mode] = "include";
+    });
+    readList("excludeGemBiddingModes").forEach((mode) => {
+      gemModeState[mode] = "exclude";
+    });
     setGemModeFilters(gemModeState);
     const dateModes: Partial<Record<DateRangeFilterKey, DateFilterMode>> = {};
     readList("dateFilterModes").forEach((entry) => {
       const [key, mode] = entry.split(":");
-      if (key && (mode === "only" || mode === "exclude")) dateModes[key as DateRangeFilterKey] = mode;
+      if (key && (mode === "only" || mode === "exclude"))
+        dateModes[key as DateRangeFilterKey] = mode;
     });
     setDateFilterModes(dateModes);
     const workflowModes: Record<string, IncludeExcludeFilter> = {};
     const routeFilters = new Set(parseDashboardFilterListParam(search.extraDashboardFilters));
-    readList("extraDashboardFilters").filter((filter) => !routeFilters.has(filter))
-      .forEach((filter) => { workflowModes[filter] = "include"; });
-    readList("excludeDashboardFilters").forEach((filter) => { workflowModes[filter] = "exclude"; });
+    readList("extraDashboardFilters")
+      .filter((filter) => !routeFilters.has(filter))
+      .forEach((filter) => {
+        workflowModes[filter] = "include";
+      });
+    readList("excludeDashboardFilters").forEach((filter) => {
+      workflowModes[filter] = "exclude";
+    });
     setImportantWorkflowFilterModes(workflowModes);
     setSoPresenceFilter(parseIncludeExcludeFilter(read("soPresenceFilter")));
     setIfaPresenceFilter(parseIncludeExcludeFilter(read("ifaPresenceFilter")));
@@ -2141,8 +2373,16 @@ function SearchPage() {
     setFileClosedPresenceFilter(parseIncludeExcludeFilter(read("fileClosedPresenceFilter")));
     setSoCancelledPresenceFilter(parseIncludeExcludeFilter(read("soCancelledPresenceFilter")));
     setShortclosedSoPresenceFilter(parseIncludeExcludeFilter(read("shortclosedSoPresenceFilter")));
-    setMultipleSupplyOrdersPresenceFilter(parseIncludeExcludeFilter(read("multipleSupplyOrdersPresenceFilter")));
-    setAnomalyPresenceFilter(read("anomalyPresenceFilter") === "has" ? "has" : read("anomalyPresenceFilter") === "none" ? "none" : "all");
+    setMultipleSupplyOrdersPresenceFilter(
+      parseIncludeExcludeFilter(read("multipleSupplyOrdersPresenceFilter")),
+    );
+    setAnomalyPresenceFilter(
+      read("anomalyPresenceFilter") === "has"
+        ? "has"
+        : read("anomalyPresenceFilter") === "none"
+          ? "none"
+          : "all",
+    );
     setSortColumnKey(read("sortColumnKey") || "none");
     setSortDirection(read("sortDirection") === "desc" ? "desc" : "asc");
     const uniqueNo = read("firmIdentityUniqueNo");
@@ -2150,22 +2390,29 @@ function SearchPage() {
       void fetchMasterFirms({ q: uniqueNo, pageSize: 100 })
         .then((result) => {
           if (active) {
-            setSelectedFirmIdentity(result.firms.find((firm) => firm.firmUniqueNo?.trim() === uniqueNo) ?? null);
+            setSelectedFirmIdentity(
+              result.firms.find((firm) => firm.firmUniqueNo?.trim() === uniqueNo) ?? null,
+            );
           }
         })
         .catch((error) => console.error(error))
-        .finally(() => { if (active) setLocalFiltersRestored(true); });
+        .finally(() => {
+          if (active) setLocalFiltersRestored(true);
+        });
     } else {
       setSelectedFirmIdentity(null);
       setLocalFiltersRestored(true);
     }
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [search.localFilters]);
   const hasLoadedSearchResultsRef = useRef(false);
   useEffect(() => {
     const savedStatus = new URLSearchParams(search.localFilters ?? "").get("anomalyPresenceFilter");
     setAnomalyPresenceFilter(
-      search.anomalyPresenceFilter ?? (savedStatus === "has" || savedStatus === "none" ? savedStatus : "all"),
+      search.anomalyPresenceFilter ??
+        (savedStatus === "has" || savedStatus === "none" ? savedStatus : "all"),
     );
   }, [search.anomalyPresenceFilter, search.localFilters]);
   useEffect(() => {
@@ -2281,9 +2528,10 @@ function SearchPage() {
     const hasExplicitRouteFocus = Boolean(
       search.focusSection || search.focusMilestone || search.focusTarget,
     );
-    const focus = !hasExplicitRouteFocus && destinationFocus.section === "Timeline"
-      ? getLocalSearchDestinationFocus(activeFilterChips) ?? destinationFocus
-      : destinationFocus;
+    const focus =
+      !hasExplicitRouteFocus && destinationFocus.section === "Timeline"
+        ? (getLocalSearchDestinationFocus(activeFilterChips) ?? destinationFocus)
+        : destinationFocus;
     const fileFocusTarget = file.id ? destinationFocusTargets.get(file.id) : undefined;
     const dashboardFileFocusTarget = getDashboardFilterFileFocusTarget(
       file,
@@ -2394,16 +2642,17 @@ function SearchPage() {
     }
     return options;
   }, [firmPickerMatches]);
-  const selectedFirmIdentityLabel = selectedFirmIdentity && firmUniqueNo
-    ? `${selectedFirmIdentity.firmName?.trim() || "Unnamed firm"} (${firmUniqueNo})`
-    : "";
+  const selectedFirmIdentityLabel =
+    selectedFirmIdentity && firmUniqueNo
+      ? `${selectedFirmIdentity.firmName?.trim() || "Unnamed firm"} (${firmUniqueNo})`
+      : "";
   const firmIdentityOptionItems = useMemo(
     () =>
       Array.from(firmIdentityOptions.entries()).map(([label, item]) => ({
         value: label,
         label,
-        searchTerms: [item.firmName, item.firmUniqueNo].filter(
-          (term): term is string => Boolean(term?.trim()),
+        searchTerms: [item.firmName, item.firmUniqueNo].filter((term): term is string =>
+          Boolean(term?.trim()),
         ),
       })),
     [firmIdentityOptions],
@@ -2425,19 +2674,86 @@ function SearchPage() {
   }> = [
     { key: "demandReceipt", label: "Demand receipt", from: demandReceiptFrom, to: demandReceiptTo },
     { key: "demandControl", label: "Demand control", from: demandControlFrom, to: demandControlTo },
-    { key: "highValueMinutes", label: "High Value minutes", from: highValueMinutesFrom, to: highValueMinutesTo },
+    {
+      key: "highValueMinutes",
+      label: "High Value minutes",
+      from: highValueMinutesFrom,
+      to: highValueMinutesTo,
+    },
     { key: "preTcecDate", label: "Pre-TCEC date", from: preTcecDateFrom, to: preTcecDateTo },
-    { key: "preTcecMinutes", label: "Pre-TCEC minutes", from: preTcecMinutesFrom, to: preTcecMinutesTo },
+    {
+      key: "preTcecMinutes",
+      label: "Pre-TCEC minutes",
+      from: preTcecMinutesFrom,
+      to: preTcecMinutesTo,
+    },
     { key: "rqaApproval", label: "R&QA approval", from: rqaApprovalFrom, to: rqaApprovalTo },
     { key: "ifaFinal", label: "IFA final", from: ifaFinalFrom, to: ifaFinalTo },
     { key: "cfaApproval", label: "CFA approval", from: cfaApprovalFrom, to: cfaApprovalTo },
     { key: "postTcecDate", label: "Post-TCEC date", from: postTcecDateFrom, to: postTcecDateTo },
-    { key: "postTcecMinutes", label: "Post-TCEC minutes", from: postTcecMinutesFrom, to: postTcecMinutesTo },
+    {
+      key: "postTcecMinutes",
+      label: "Post-TCEC minutes",
+      from: postTcecMinutesFrom,
+      to: postTcecMinutesTo,
+    },
+    {
+      key: "refloatGemUndertakingDate",
+      label: "Refloat GeM undertaking",
+      from: refloatGemUndertakingDateFrom,
+      to: refloatGemUndertakingDateTo,
+    },
+    {
+      key: "refloatRecommendationDate",
+      label: "Refloat recommendation",
+      from: refloatRecommendationDateFrom,
+      to: refloatRecommendationDateTo,
+    },
+    {
+      key: "refloatPreBidMeetingDate",
+      label: "Refloat Pre-Bid date",
+      from: refloatPreBidMeetingDateFrom,
+      to: refloatPreBidMeetingDateTo,
+    },
+    {
+      key: "refloatBiddingDate",
+      label: "Refloat bidding date",
+      from: refloatBiddingDateFrom,
+      to: refloatBiddingDateTo,
+    },
+    {
+      key: "refloatBidOpeningDate",
+      label: "Refloat bid opening date",
+      from: refloatBidOpeningDateFrom,
+      to: refloatBidOpeningDateTo,
+    },
+    {
+      key: "refloatPostTcecDate",
+      label: "Refloat Post-TCEC date",
+      from: refloatPostTcecDateFrom,
+      to: refloatPostTcecDateTo,
+    },
+    {
+      key: "refloatPostTcecMinutes",
+      label: "Refloat Post-TCEC minutes",
+      from: refloatPostTcecMinutesFrom,
+      to: refloatPostTcecMinutesTo,
+    },
     { key: "cncDate", label: "CNC date", from: cncDateFrom, to: cncDateTo },
     { key: "preBidDate", label: "Pre-Bid date", from: preBidDateFrom, to: preBidDateTo },
     { key: "biddingDate", label: "Bidding date", from: biddingDateFrom, to: biddingDateTo },
-    { key: "bidOpeningDate", label: "Bid opening date", from: bidOpeningDateFrom, to: bidOpeningDateTo },
-    { key: "financialSanction", label: "Financial sanction", from: financialSanctionFrom, to: financialSanctionTo },
+    {
+      key: "bidOpeningDate",
+      label: "Bid opening date",
+      from: bidOpeningDateFrom,
+      to: bidOpeningDateTo,
+    },
+    {
+      key: "financialSanction",
+      label: "Financial sanction",
+      from: financialSanctionFrom,
+      to: financialSanctionTo,
+    },
     { key: "soDate", label: "S.O. date", from: soDateFrom, to: soDateTo },
     {
       key: "advanceExpectedPaymentDate",
@@ -2446,17 +2762,27 @@ function SearchPage() {
       to: advanceExpectedPaymentDateTo,
     },
     { key: "dpPeriod", label: "D.P. period", from: dpFrom, to: dpTo },
-    { key: "materialReceipt", label: "Material receipt", from: materialReceiptFrom, to: materialReceiptTo },
+    {
+      key: "materialReceipt",
+      label: "Material receipt",
+      from: materialReceiptFrom,
+      to: materialReceiptTo,
+    },
     {
       key: "actualJobCompletion",
-      label: "Actual Job Completion Date",
+      label: "Work Completion Date",
       from: actualJobCompletionFrom,
       to: actualJobCompletionTo,
     },
     { key: "bgReceived", label: "BG received", from: bgReceivedFrom, to: bgReceivedTo },
     { key: "bgValidity", label: "BG validity", from: bgValidityFrom, to: bgValidityTo },
     { key: "bgReturn", label: "BG return", from: bgReturnFrom, to: bgReturnTo },
-    { key: "billSubmitted", label: "Bill sent/submitted", from: billSubmittedFrom, to: billSubmittedTo },
+    {
+      key: "billSubmitted",
+      label: "Bill sent/submitted",
+      from: billSubmittedFrom,
+      to: billSubmittedTo,
+    },
     { key: "paymentDate", label: "Payment date", from: paymentDateFrom, to: paymentDateTo },
     { key: "fileClosure", label: "File closure", from: fileClosureFrom, to: fileClosureTo },
   ];
@@ -2487,9 +2813,12 @@ function SearchPage() {
     const entry = dateRangeEntries.find((range) => range.label === label);
     const mode = entry ? dateFilterModes[entry.key] : undefined;
     if (!from && !to && !mode) return;
-    const description = !from && !to
-      ? mode === "only" ? "Date recorded" : "Date blank"
-      : `${mode === "exclude" ? "Outside" : mode === "only" ? "Include" : "Dates"}: ${from || "Any"} to ${to || "Any"}`;
+    const description =
+      !from && !to
+        ? mode === "only"
+          ? "Date recorded"
+          : "Date blank"
+        : `${mode === "exclude" ? "Outside" : mode === "only" ? "Include" : "Dates"}: ${from || "Any"} to ${to || "Any"}`;
     addFilterChip(label, description, `dateRange:${entry?.key ?? label}`);
   };
   const addIncludeExcludeChip = (label: string, value: IncludeExcludeFilter) => {
@@ -2497,8 +2826,19 @@ function SearchPage() {
     addFilterChip(label, value === "include" ? "Include" : "Exclude");
   };
   addFilterChipIf(activeFilterChips, Boolean(yearFilter), "Year", yearFilter);
-  addFilterChipIf(activeFilterChips, includeArchivedYears, "Archived years", "Included", "includeArchivedYears");
-  addFilterChipIf(activeFilterChips, Boolean(demandReceivedFy), "Demand received FY", demandReceivedFy);
+  addFilterChipIf(
+    activeFilterChips,
+    search.includeArchivedYears === false,
+    "Archived-year active files",
+    "Excluded",
+    "includeArchivedYears",
+  );
+  addFilterChipIf(
+    activeFilterChips,
+    Boolean(demandReceivedFy),
+    "Demand received FY",
+    demandReceivedFy,
+  );
   addFilterChipIf(
     activeFilterChips,
     Boolean(demandReceivedMonth),
@@ -2568,7 +2908,7 @@ function SearchPage() {
   );
   [
     [advancePaymentFilter, "Advance payment"],
-    [actualPaymentFilter, "Actual payment"],
+    [actualPaymentFilter, "Recorded payment"],
     [stageDeliveryFilter, "Stage delivery"],
     [stagePaymentFilter, "Stage payment"],
     [dpExtensionFilter, "DP extension"],
@@ -2614,6 +2954,33 @@ function SearchPage() {
   addDateRangeChip("CFA approval", cfaApprovalFrom, cfaApprovalTo);
   addDateRangeChip("Post-TCEC date", postTcecDateFrom, postTcecDateTo);
   addDateRangeChip("Post-TCEC minutes", postTcecMinutesFrom, postTcecMinutesTo);
+  addDateRangeChip(
+    "Refloat GeM undertaking",
+    refloatGemUndertakingDateFrom,
+    refloatGemUndertakingDateTo,
+  );
+  addDateRangeChip(
+    "Refloat recommendation",
+    refloatRecommendationDateFrom,
+    refloatRecommendationDateTo,
+  );
+  addDateRangeChip(
+    "Refloat Pre-Bid date",
+    refloatPreBidMeetingDateFrom,
+    refloatPreBidMeetingDateTo,
+  );
+  addDateRangeChip("Refloat bidding date", refloatBiddingDateFrom, refloatBiddingDateTo);
+  addDateRangeChip(
+    "Refloat bid opening date",
+    refloatBidOpeningDateFrom,
+    refloatBidOpeningDateTo,
+  );
+  addDateRangeChip("Refloat Post-TCEC date", refloatPostTcecDateFrom, refloatPostTcecDateTo);
+  addDateRangeChip(
+    "Refloat Post-TCEC minutes",
+    refloatPostTcecMinutesFrom,
+    refloatPostTcecMinutesTo,
+  );
   addFilterChipIf(
     activeFilterChips,
     Boolean(postTcecCommittee),
@@ -2633,11 +3000,7 @@ function SearchPage() {
   );
   addDateRangeChip("D.P. period", dpFrom, dpTo);
   addDateRangeChip("Material receipt", materialReceiptFrom, materialReceiptTo);
-  addDateRangeChip(
-    "Actual Job Completion Date",
-    actualJobCompletionFrom,
-    actualJobCompletionTo,
-  );
+  addDateRangeChip("Work Completion Date", actualJobCompletionFrom, actualJobCompletionTo);
   addDateRangeChip("Bill sent/submitted", billSubmittedFrom, billSubmittedTo);
   addDateRangeChip("Payment date", paymentDateFrom, paymentDateTo);
   addDateRangeChip("BG received", bgReceivedFrom, bgReceivedTo);
@@ -2649,7 +3012,11 @@ function SearchPage() {
     addFilterChip("Filled", label, `filled:${key}`);
   });
   Object.entries(importantWorkflowFilterModes).forEach(([filter, mode]) => {
-    if (mode === "none" || (defaultDemandCancelledExclusion && filter === "miscDemandCancelled" && mode === "exclude")) return;
+    if (
+      mode === "none" ||
+      (defaultDemandCancelledExclusion && filter === "miscDemandCancelled" && mode === "exclude")
+    )
+      return;
     addFilterChip(
       "Workflow",
       `${getImportantWorkflowFilterLabel(filter)} (${mode === "include" ? "Include" : "Exclude"})`,
@@ -2657,15 +3024,21 @@ function SearchPage() {
     );
   });
   const activeFilterCount = activeFilterChips.length;
-  const visibleFilterChips = showAllFilterChips
-    ? activeFilterChips
-    : activeFilterChips.slice(0, 8);
+  const visibleFilterChips = showAllFilterChips ? activeFilterChips : activeFilterChips.slice(0, 8);
   const hiddenFilterChipCount = Math.max(0, activeFilterChips.length - visibleFilterChips.length);
   const searchExportReportContext = buildSearchExportReportContext(drillPath, activeFilterChips);
+  const searchExportLayout: FileSearchExportLayout =
+    expandedSearchFileIds.size > 0
+      ? searchExportMode === "so"
+        ? "sowise"
+        : "rowwise"
+      : "rowwise";
+  const searchExportModeLabel =
+    expandedSearchFileIds.size > 0 && searchExportMode === "so" ? "S.O." : "stage";
 
   const hasFilters =
     yearFilter ||
-    includeArchivedYears ||
+    search.includeArchivedYears === false ||
     indentor ||
     divisionFilter ||
     valueThresholdFilter !== "all" ||
@@ -2735,6 +3108,20 @@ function SearchPage() {
     postTcecDateTo ||
     postTcecMinutesFrom ||
     postTcecMinutesTo ||
+    refloatGemUndertakingDateFrom ||
+    refloatGemUndertakingDateTo ||
+    refloatRecommendationDateFrom ||
+    refloatRecommendationDateTo ||
+    refloatPreBidMeetingDateFrom ||
+    refloatPreBidMeetingDateTo ||
+    refloatBiddingDateFrom ||
+    refloatBiddingDateTo ||
+    refloatBidOpeningDateFrom ||
+    refloatBidOpeningDateTo ||
+    refloatPostTcecDateFrom ||
+    refloatPostTcecDateTo ||
+    refloatPostTcecMinutesFrom ||
+    refloatPostTcecMinutesTo ||
     cncDateFrom ||
     cncDateTo ||
     preBidDateFrom ||
@@ -2767,10 +3154,18 @@ function SearchPage() {
     fileClosureTo ||
     Object.keys(dateFilterModes).length > 0 ||
     fileClosedPresenceFilter !== "none" ||
-    Object.entries(importantWorkflowFilterModes).some(([filter, mode]) =>
-      mode !== "none" && !(defaultDemandCancelledExclusion && filter === "miscDemandCancelled" && mode === "exclude")) ||
+    Object.entries(importantWorkflowFilterModes).some(
+      ([filter, mode]) =>
+        mode !== "none" &&
+        !(
+          defaultDemandCancelledExclusion &&
+          filter === "miscDemandCancelled" &&
+          mode === "exclude"
+        ),
+    ) ||
     rstFilter ||
-    (soCancelledPresenceFilter !== "none" && !(defaultSearchExclusions && soCancelledPresenceFilter === "exclude")) ||
+    (soCancelledPresenceFilter !== "none" &&
+      !(defaultSearchExclusions && soCancelledPresenceFilter === "exclude")) ||
     shortclosedSoPresenceFilter !== "none" ||
     multipleSupplyOrdersPresenceFilter !== "none" ||
     freeText ||
@@ -2820,27 +3215,11 @@ function SearchPage() {
     appendSearchList(params, "selectedFirmTypes", selectedFirmTypes);
     appendSearchList(params, "selectedFileTypes", selectedFileTypes);
     appendSearchList(params, "specialFileMarkers", specialFileMarkers);
-    appendSearchBool(
-      params,
-      "advancePaymentFilter",
-      advancePaymentFilter,
-    );
+    appendSearchBool(params, "advancePaymentFilter", advancePaymentFilter);
     appendSearchBool(params, "actualPaymentFilter", actualPaymentFilter);
-    appendSearchBool(
-      params,
-      "stageDeliveryFilter",
-      stageDeliveryFilter,
-    );
-    appendSearchBool(
-      params,
-      "stagePaymentFilter",
-      stagePaymentFilter,
-    );
-    appendSearchBool(
-      params,
-      "dpExtensionFilter",
-      dpExtensionFilter,
-    );
+    appendSearchBool(params, "stageDeliveryFilter", stageDeliveryFilter);
+    appendSearchBool(params, "stagePaymentFilter", stagePaymentFilter);
+    appendSearchBool(params, "dpExtensionFilter", dpExtensionFilter);
     appendSearchBool(params, "ldFilter", ldFilter);
     appendSearchBool(params, "capitalOnly", capitalOnly);
     appendSearchBool(params, "revenueOnly", revenueOnly);
@@ -2857,11 +3236,7 @@ function SearchPage() {
     appendSearchBool(params, "refloat", refloat);
     appendIncludeExcludeParam(params, "cncPresenceFilter", cncPresenceFilter);
     appendSearchBool(params, "tcec", tcec);
-    appendSearchBool(
-      params,
-      "preBidMeetingFilter",
-      preBidMeetingFilter,
-    );
+    appendSearchBool(params, "preBidMeetingFilter", preBidMeetingFilter);
     appendSearchParam(params, "preTcecCommittee", preTcecCommittee);
     appendSearchParam(params, "postTcecCommittee", postTcecCommittee);
     appendSearchParam(params, "dpFrom", dpFrom);
@@ -2886,58 +3261,40 @@ function SearchPage() {
     appendSearchParam(params, "cfaApprovalTo", cfaApprovalTo);
     appendSearchParam(params, "postTcecDateFrom", postTcecDateFrom);
     appendSearchParam(params, "postTcecDateTo", postTcecDateTo);
-    appendSearchParam(
-      params,
-      "postTcecMinutesFrom",
-      postTcecMinutesFrom,
-    );
-    appendSearchParam(
-      params,
-      "postTcecMinutesTo",
-      postTcecMinutesTo,
-    );
+    appendSearchParam(params, "postTcecMinutesFrom", postTcecMinutesFrom);
+    appendSearchParam(params, "postTcecMinutesTo", postTcecMinutesTo);
+    appendSearchParam(params, "refloatGemUndertakingDateFrom", refloatGemUndertakingDateFrom);
+    appendSearchParam(params, "refloatGemUndertakingDateTo", refloatGemUndertakingDateTo);
+    appendSearchParam(params, "refloatRecommendationDateFrom", refloatRecommendationDateFrom);
+    appendSearchParam(params, "refloatRecommendationDateTo", refloatRecommendationDateTo);
+    appendSearchParam(params, "refloatPreBidMeetingDateFrom", refloatPreBidMeetingDateFrom);
+    appendSearchParam(params, "refloatPreBidMeetingDateTo", refloatPreBidMeetingDateTo);
+    appendSearchParam(params, "refloatBiddingDateFrom", refloatBiddingDateFrom);
+    appendSearchParam(params, "refloatBiddingDateTo", refloatBiddingDateTo);
+    appendSearchParam(params, "refloatBidOpeningDateFrom", refloatBidOpeningDateFrom);
+    appendSearchParam(params, "refloatBidOpeningDateTo", refloatBidOpeningDateTo);
+    appendSearchParam(params, "refloatPostTcecDateFrom", refloatPostTcecDateFrom);
+    appendSearchParam(params, "refloatPostTcecDateTo", refloatPostTcecDateTo);
+    appendSearchParam(params, "refloatPostTcecMinutesFrom", refloatPostTcecMinutesFrom);
+    appendSearchParam(params, "refloatPostTcecMinutesTo", refloatPostTcecMinutesTo);
     appendSearchParam(params, "cncDateFrom", cncDateFrom);
     appendSearchParam(params, "cncDateTo", cncDateTo);
     appendSearchParam(params, "preBidDateFrom", preBidDateFrom);
     appendSearchParam(params, "preBidDateTo", preBidDateTo);
     appendSearchParam(params, "biddingDateFrom", biddingDateFrom);
     appendSearchParam(params, "biddingDateTo", biddingDateTo);
-    appendSearchParam(
-      params,
-      "bidOpeningDateFrom",
-      bidOpeningDateFrom,
-    );
+    appendSearchParam(params, "bidOpeningDateFrom", bidOpeningDateFrom);
     appendSearchParam(params, "bidOpeningDateTo", bidOpeningDateTo);
-    appendSearchParam(
-      params,
-      "billSubmittedFrom",
-      billSubmittedFrom,
-    );
+    appendSearchParam(params, "billSubmittedFrom", billSubmittedFrom);
     appendSearchParam(params, "billSubmittedTo", billSubmittedTo);
-    appendSearchParam(
-      params,
-      "financialSanctionFrom",
-      financialSanctionFrom,
-    );
-    appendSearchParam(
-      params,
-      "financialSanctionTo",
-      financialSanctionTo,
-    );
+    appendSearchParam(params, "financialSanctionFrom", financialSanctionFrom);
+    appendSearchParam(params, "financialSanctionTo", financialSanctionTo);
     appendSearchParam(params, "soDateFrom", soDateFrom);
     appendSearchParam(params, "soDateTo", soDateTo);
     appendSearchParam(params, "advanceExpectedPaymentDateFrom", advanceExpectedPaymentDateFrom);
     appendSearchParam(params, "advanceExpectedPaymentDateTo", advanceExpectedPaymentDateTo);
-    appendSearchParam(
-      params,
-      "materialReceiptFrom",
-      materialReceiptFrom,
-    );
-    appendSearchParam(
-      params,
-      "materialReceiptTo",
-      materialReceiptTo,
-    );
+    appendSearchParam(params, "materialReceiptFrom", materialReceiptFrom);
+    appendSearchParam(params, "materialReceiptTo", materialReceiptTo);
     appendSearchParam(params, "actualJobCompletionFrom", actualJobCompletionFrom);
     appendSearchParam(params, "actualJobCompletionTo", actualJobCompletionTo);
     appendSearchParam(params, "paymentDateFrom", paymentDateFrom);
@@ -3082,6 +3439,20 @@ function SearchPage() {
     postTcecDateTo,
     postTcecMinutesFrom,
     postTcecMinutesTo,
+    refloatGemUndertakingDateFrom,
+    refloatGemUndertakingDateTo,
+    refloatRecommendationDateFrom,
+    refloatRecommendationDateTo,
+    refloatPreBidMeetingDateFrom,
+    refloatPreBidMeetingDateTo,
+    refloatBiddingDateFrom,
+    refloatBiddingDateTo,
+    refloatBidOpeningDateFrom,
+    refloatBidOpeningDateTo,
+    refloatPostTcecDateFrom,
+    refloatPostTcecDateTo,
+    refloatPostTcecMinutesFrom,
+    refloatPostTcecMinutesTo,
     cncDateFrom,
     cncDateTo,
     preBidDateFrom,
@@ -3227,15 +3598,25 @@ function SearchPage() {
         ? [...firmTypeOptions, ...firmSearchScopeOptions.map((scope) => scope.label)]
         : []),
     ]);
-  const otherFilterMatches = filterLocatorMatchesAny(filterLocatorTerm, [
-    "Other filters", "Description", "Value filters", "Value", "S.O. value",
-    "Capital", "Revenue", "Special File Marker",
-  ]) || importantWorkflowFilterGroups.some(workflowDrawerMatches);
+  const otherFilterMatches =
+    filterLocatorMatchesAny(filterLocatorTerm, [
+      "Other filters",
+      "Description",
+      "Value filters",
+      "Value",
+      "S.O. value",
+      "Capital",
+      "Revenue",
+      "Special File Marker",
+    ]) || importantWorkflowFilterGroups.some(workflowDrawerMatches);
   const dateFilterMatches = filterLocatorMatchesAny(filterLocatorTerm, [
-    "Date filters", "Free search date",
+    "Date filters",
+    "Free search date",
     ...Object.values(dateFilterLocatorLabels).flat(),
-    "Demand & Control Dates", "Approval & Committee Dates",
-    "Supply Order & Delivery Dates", "BG, Payment & Closure Dates",
+    "Demand & Control Dates",
+    "Approval & Committee Dates",
+    "Supply Order & Delivery Dates",
+    "BG, Payment & Closure Dates",
   ]);
   const hasFilterLocatorMatch = otherFilterMatches || dateFilterMatches;
   const setFilterDrawerOpen = (id: string, open: boolean) => {
@@ -3510,7 +3891,7 @@ function SearchPage() {
     if (
       search.dashboardFilter ||
       search.extraDashboardFilters ||
-      search.includeArchivedYears ||
+      search.includeArchivedYears !== undefined ||
       search.division ||
       search.analyticsType ||
       search.analyticsNames ||
@@ -3563,6 +3944,34 @@ function SearchPage() {
         cfaApproval: [() => setCfaApprovalFrom(""), () => setCfaApprovalTo("")],
         postTcecDate: [() => setPostTcecDateFrom(""), () => setPostTcecDateTo("")],
         postTcecMinutes: [() => setPostTcecMinutesFrom(""), () => setPostTcecMinutesTo("")],
+        refloatGemUndertakingDate: [
+          () => setRefloatGemUndertakingDateFrom(""),
+          () => setRefloatGemUndertakingDateTo(""),
+        ],
+        refloatRecommendationDate: [
+          () => setRefloatRecommendationDateFrom(""),
+          () => setRefloatRecommendationDateTo(""),
+        ],
+        refloatPreBidMeetingDate: [
+          () => setRefloatPreBidMeetingDateFrom(""),
+          () => setRefloatPreBidMeetingDateTo(""),
+        ],
+        refloatBiddingDate: [
+          () => setRefloatBiddingDateFrom(""),
+          () => setRefloatBiddingDateTo(""),
+        ],
+        refloatBidOpeningDate: [
+          () => setRefloatBidOpeningDateFrom(""),
+          () => setRefloatBidOpeningDateTo(""),
+        ],
+        refloatPostTcecDate: [
+          () => setRefloatPostTcecDateFrom(""),
+          () => setRefloatPostTcecDateTo(""),
+        ],
+        refloatPostTcecMinutes: [
+          () => setRefloatPostTcecMinutesFrom(""),
+          () => setRefloatPostTcecMinutesTo(""),
+        ],
         cncDate: [() => setCncDateFrom(""), () => setCncDateTo("")],
         preBidDate: [() => setPreBidDateFrom(""), () => setPreBidDateTo("")],
         biddingDate: [() => setBiddingDateFrom(""), () => setBiddingDateTo("")],
@@ -3614,83 +4023,212 @@ function SearchPage() {
     }
 
     switch (key) {
-      case "Year": setYearFilter(""); break;
-      case "includeArchivedYears":
-        void navigate({ to: "/search", search: (previous) => ({ ...previous, includeArchivedYears: undefined }) });
+      case "Year":
+        setYearFilter("");
         break;
-      case "Demand received FY": setDemandReceivedFy(""); setDemandReceivedMonth(""); break;
-      case "Demand received month": setDemandReceivedMonth(""); break;
-      case "Indentor": setIndentor(""); break;
-      case "Division": setDivisionFilter(""); break;
-      case "Description": setDescription(""); break;
-      case "Free search": setFreeText(""); break;
+      case "includeArchivedYears":
+        void navigate({
+          to: "/search",
+          search: (previous) => ({ ...previous, includeArchivedYears: undefined }),
+        });
+        break;
+      case "Demand received FY":
+        setDemandReceivedFy("");
+        setDemandReceivedMonth("");
+        break;
+      case "Demand received month":
+        setDemandReceivedMonth("");
+        break;
+      case "Indentor":
+        setIndentor("");
+        break;
+      case "Division":
+        setDivisionFilter("");
+        break;
+      case "Description":
+        setDescription("");
+        break;
+      case "Free search":
+        setFreeText("");
+        break;
       case "Anomaly status":
         setAnomalyPresenceFilter("all");
         clearSearchState({ anomalyPresenceFilter: undefined });
         break;
-      case "Free date": setFreeDate(""); break;
-      case "Value band": setValueThresholdFilter("all"); break;
-      case "Value": setValueFrom(""); setValueTo(""); break;
-      case "S.O. value": setSoValueFrom(""); setSoValueTo(""); break;
-      case "S.O. value band": setSoValueThresholdFilter("all"); break;
-      case "Capital demand": setCapitalOnly(false); break;
-      case "Revenue demand": setRevenueOnly(false); break;
-      case "Capital S.O.": setSoCapitalOnly(false); break;
-      case "Revenue S.O.": setSoRevenueOnly(false); break;
-      case "File type": setSelectedFileTypes([]); break;
-      case "S.O.": setSoPresenceFilter("none"); break;
+      case "Free date":
+        setFreeDate("");
+        break;
+      case "Value band":
+        setValueThresholdFilter("all");
+        break;
+      case "Value":
+        setValueFrom("");
+        setValueTo("");
+        break;
+      case "S.O. value":
+        setSoValueFrom("");
+        setSoValueTo("");
+        break;
+      case "S.O. value band":
+        setSoValueThresholdFilter("all");
+        break;
+      case "Capital demand":
+        setCapitalOnly(false);
+        break;
+      case "Revenue demand":
+        setRevenueOnly(false);
+        break;
+      case "Capital S.O.":
+        setSoCapitalOnly(false);
+        break;
+      case "Revenue S.O.":
+        setSoRevenueOnly(false);
+        break;
+      case "File type":
+        setSelectedFileTypes([]);
+        break;
+      case "S.O.":
+        setSoPresenceFilter("none");
+        break;
       case "Include Mode":
-        setModeFilters((current) => Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "include")));
+        setModeFilters((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "include")),
+        );
         break;
       case "Exclude Mode":
-        setModeFilters((current) => Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "exclude")));
+        setModeFilters((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "exclude")),
+        );
         break;
       case "Include GeM mode":
-        setGemModeFilters((current) => Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "include")));
+        setGemModeFilters((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "include")),
+        );
         break;
       case "Exclude GeM mode":
-        setGemModeFilters((current) => Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "exclude")));
+        setGemModeFilters((current) =>
+          Object.fromEntries(Object.entries(current).filter(([, mode]) => mode !== "exclude")),
+        );
         break;
-      case "Firm type": setSelectedFirmTypes([]); break;
-      case "Firm": setSelectedFirmIdentity(null); break;
-      case "Contact": setFirmContactNo(""); break;
-      case "City": setFirmCity(""); break;
-      case "Firm scope": setFirmSearchScopes(defaultFirmSearchScopes); break;
-      case "Marker": setSpecialFileMarkers([]); break;
-      case "Advance payment": setAdvancePaymentFilter(false); break;
-      case "Actual payment": setActualPaymentFilter(false); break;
-      case "Stage delivery": setStageDeliveryFilter(false); break;
-      case "Stage payment": setStagePaymentFilter(false); break;
-      case "DP extension": setDpExtensionFilter(false); break;
-      case "LD": setLdFilter(false); break;
-      case "High Value": setHighValue(false); break;
-      case "GTE": setGte(false); break;
-      case "AD": setAd(false); break;
-      case "R&QA": setRqa(false); break;
-      case "IFA": setIfaPresenceFilter("none"); break;
-      case "PSB": setPsbFilter(false); break;
-      case "PWB": setPwbFilter(false); break;
-      case "PSB+PWB": setPsbPwbFilter(false); break;
-      case "Warranty": setBgFilter(false); break;
-      case "RFP vetting": setRfpVettingFilter(false); break;
-      case "Refloat": setRefloat(false); break;
-      case "CNC": setCncPresenceFilter("none"); break;
-      case "TCEC": setTcec(false); break;
-      case "Pre-Bid": setPreBidMeetingFilter(false); break;
-      case "RST": setRstFilter(false); break;
-      case "Division wise sort": setDivisionWiseSort(false); break;
-      case "File Closed": setFileClosedPresenceFilter("none"); break;
-      case "Cancelled S.O.": setSoCancelledPresenceFilter("none"); break;
-      case "Shortclosed S.O.": setShortclosedSoPresenceFilter("none"); break;
-      case "Files with Multiple S.O.": setMultipleSupplyOrdersPresenceFilter("none"); break;
-      case "Pre-TCEC committee": setPreTcecCommittee(""); break;
-      case "Post-TCEC committee": setPostTcecCommittee(""); break;
-      case "Dashboard filter": clearSearchState({ dashboardFilter: undefined }); break;
-      case "Linked analytics filter": clearSearchState({ extraDashboardFilters: undefined }); break;
-      case "File year": clearSearchState({ fileYear: undefined }); break;
-      case "Category filter": clearSearchState({ fileCategories: undefined }); break;
-      case "Analytics selection": clearSearchState({ analyticsNames: undefined }); break;
-      default: break;
+      case "Firm type":
+        setSelectedFirmTypes([]);
+        break;
+      case "Firm":
+        setSelectedFirmIdentity(null);
+        break;
+      case "Contact":
+        setFirmContactNo("");
+        break;
+      case "City":
+        setFirmCity("");
+        break;
+      case "Firm scope":
+        setFirmSearchScopes(defaultFirmSearchScopes);
+        break;
+      case "Marker":
+        setSpecialFileMarkers([]);
+        break;
+      case "Advance payment":
+        setAdvancePaymentFilter(false);
+        break;
+      case "Recorded payment":
+        setActualPaymentFilter(false);
+        break;
+      case "Stage delivery":
+        setStageDeliveryFilter(false);
+        break;
+      case "Stage payment":
+        setStagePaymentFilter(false);
+        break;
+      case "DP extension":
+        setDpExtensionFilter(false);
+        break;
+      case "LD":
+        setLdFilter(false);
+        break;
+      case "High Value":
+        setHighValue(false);
+        break;
+      case "GTE":
+        setGte(false);
+        break;
+      case "AD":
+        setAd(false);
+        break;
+      case "R&QA":
+        setRqa(false);
+        break;
+      case "IFA":
+        setIfaPresenceFilter("none");
+        break;
+      case "PSB":
+        setPsbFilter(false);
+        break;
+      case "PWB":
+        setPwbFilter(false);
+        break;
+      case "PSB+PWB":
+        setPsbPwbFilter(false);
+        break;
+      case "Warranty":
+        setBgFilter(false);
+        break;
+      case "RFP vetting":
+        setRfpVettingFilter(false);
+        break;
+      case "Refloat":
+        setRefloat(false);
+        break;
+      case "CNC":
+        setCncPresenceFilter("none");
+        break;
+      case "TCEC":
+        setTcec(false);
+        break;
+      case "Pre-Bid":
+        setPreBidMeetingFilter(false);
+        break;
+      case "RST":
+        setRstFilter(false);
+        break;
+      case "Division wise sort":
+        setDivisionWiseSort(false);
+        break;
+      case "File Closed":
+        setFileClosedPresenceFilter("none");
+        break;
+      case "Cancelled S.O.":
+        setSoCancelledPresenceFilter("none");
+        break;
+      case "Shortclosed S.O.":
+        setShortclosedSoPresenceFilter("none");
+        break;
+      case "Files with Multiple S.O.":
+        setMultipleSupplyOrdersPresenceFilter("none");
+        break;
+      case "Pre-TCEC committee":
+        setPreTcecCommittee("");
+        break;
+      case "Post-TCEC committee":
+        setPostTcecCommittee("");
+        break;
+      case "Dashboard filter":
+        clearSearchState({ dashboardFilter: undefined });
+        break;
+      case "Linked analytics filter":
+        clearSearchState({ extraDashboardFilters: undefined });
+        break;
+      case "File year":
+        clearSearchState({ fileYear: undefined });
+        break;
+      case "Category filter":
+        clearSearchState({ fileCategories: undefined });
+        break;
+      case "Analytics selection":
+        clearSearchState({ analyticsNames: undefined });
+        break;
+      default:
+        break;
     }
   };
   const renderPaginationControls = () => (
@@ -3724,13 +4262,19 @@ function SearchPage() {
   );
   return (
     <div className="w-full min-w-0 space-y-4">
-      <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="relative z-10 flex flex-col overflow-visible rounded-xl border border-border/80 border-l-4 border-l-primary/45 bg-card shadow-[var(--shadow-card)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-secondary px-4 py-3">
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Search Files</h2>
             {drillPath.length ? (
               <DrillPathTrail
-                items={[...drillPath, { label: "Search Files", href: getSearchReturnHref(searchFilterQuery) ?? currentSearchHref }]}
+                items={[
+                  ...drillPath,
+                  {
+                    label: "Search Files",
+                    href: getSearchReturnHref(searchFilterQuery) ?? currentSearchHref,
+                  },
+                ]}
                 fallbackHref={getSearchReturnHref(searchFilterQuery) ?? currentSearchHref}
               />
             ) : null}
@@ -3738,13 +4282,28 @@ function SearchPage() {
               Find records, open timelines, print file sheets, or edit file details.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="rounded-md border border-border bg-secondary/50 px-3 py-2">
-              <span className="font-medium text-foreground">{searchTotal}</span> records
+          <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5"
+              title="Unique files returned by the current Search filters"
+            >
+              <span className="font-medium text-foreground">Files</span>
+              <Info className="size-3" aria-hidden="true" />
+              <span className="text-sm font-semibold tabular-nums text-foreground">{searchTotal}</span>
+            </span>
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5"
+              title="Supply-order count represented by the current Search filters"
+            >
+              <span className="font-medium text-foreground">S.O.</span>
+              <Info className="size-3" aria-hidden="true" />
+              <span className="text-sm font-semibold tabular-nums text-foreground">
+                {searchSummaryTotals.noOfSo ?? 0}
+              </span>
             </span>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-start justify-between gap-3 bg-card p-3 text-xs text-muted-foreground">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="inline-flex items-center gap-1.5">
               <Filter className="size-3.5" />
@@ -3836,14 +4395,14 @@ function SearchPage() {
                   selectedResultFiles.length ? selectedResultFiles : results,
                   selectedTableColumns,
                   selectedResultFiles.length ? undefined : searchFilterQuery,
-                  "rowwise",
+                  searchExportLayout,
                   searchExportReportContext,
                 )
               }
               title={
                 selectedResultFiles.length
-                  ? "Export selected files to Excel"
-                  : "Export all search results to Excel"
+                  ? `Export selected files as ${searchExportModeLabel} rows`
+                  : `Export all search results as ${searchExportModeLabel} rows`
               }
               aria-label={
                 selectedResultFiles.length
@@ -3854,6 +4413,22 @@ function SearchPage() {
             >
               <FileSpreadsheet className="size-3.5" /> Excel
             </button>
+            {expandedSearchFileIds.size > 0 ? (
+              <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground">
+                <span className="sr-only">Excel export rows</span>
+                <select
+                  value={searchExportMode}
+                  onChange={(event) =>
+                    setSearchExportMode(event.target.value === "stage" ? "stage" : "so")
+                  }
+                  className="bg-transparent text-xs font-medium outline-none"
+                  aria-label="Excel export rows"
+                >
+                  <option value="so">S.O. export</option>
+                  <option value="stage">Stage export</option>
+                </select>
+              </label>
+            ) : null}
             <button
               type="button"
               onClick={() => setShowTableOptions((current) => !current)}
@@ -3873,7 +4448,7 @@ function SearchPage() {
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-md p-2.5 shadow-[var(--shadow-card)] flex min-w-0 items-center gap-2">
+      <div className="section-accent-border flex min-w-0 items-center gap-2 rounded-xl border border-border bg-card p-2.5 shadow-[var(--shadow-card)]">
         <Search className="size-4 text-muted-foreground ml-2" />
         <input
           value={freeText}
@@ -3895,7 +4470,7 @@ function SearchPage() {
         <SearchHelper items={searchFilterHelpers.freeSearch} label="Free search help" />
       </div>
 
-      <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm shadow-[var(--shadow-card)]">
+      <label className="section-accent-border inline-flex min-h-10 items-center gap-2 rounded-xl border border-border bg-card px-3 text-sm shadow-[var(--shadow-card)]">
         <span className="font-medium">Anomaly status</span>
         <select
           value={anomalyPresenceFilter}
@@ -3938,7 +4513,7 @@ function SearchPage() {
 
       <div
         className={
-          "flex w-full min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 shadow-[var(--shadow-card)] " +
+          "section-accent-border flex w-full min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 shadow-[var(--shadow-card)] " +
           (activeFilterCount > 0
             ? "border-destructive/50 bg-destructive/5"
             : "border-border bg-card")
@@ -4030,254 +4605,289 @@ function SearchPage() {
       <div
         className={
           "grid min-w-0 grid-cols-1 gap-4 " +
-          (filtersOpen ? "xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]" : "")
+          (filtersOpen ? "xl:grid-cols-[minmax(240px,280px)_minmax(0,1fr)]" : "")
         }
       >
         {filtersOpen ? (
-          <aside className="bg-card border border-border rounded-md p-4 shadow-[var(--shadow-card)] h-fit min-w-0 space-y-4">
+          <aside className="section-accent-border h-fit min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 shadow-[var(--shadow-card)]">
             <FilterLocatorContext.Provider value={filterLocatorTerm}>
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="flex items-center gap-2 text-sm font-bold">
-                <SlidersHorizontal className="size-4 text-muted-foreground" /> Filters
+              <div className="flex items-center justify-between border-b border-border pb-3">
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  <SlidersHorizontal className="size-4 text-muted-foreground" /> Filters
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleKeepFilterDrawersOpen}
+                  className={
+                    "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:bg-accent " +
+                    (keepFilterDrawersOpen
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-border bg-background text-muted-foreground")
+                  }
+                  title={
+                    keepFilterDrawersOpen
+                      ? "Keep multiple filter drawers open"
+                      : "Open one filter drawer at a time"
+                  }
+                  aria-pressed={keepFilterDrawersOpen}
+                >
+                  {keepFilterDrawersOpen ? (
+                    <Lock className="size-3.5" />
+                  ) : (
+                    <Unlock className="size-3.5" />
+                  )}
+                  Keep open
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={toggleKeepFilterDrawersOpen}
-                className={
-                  "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium hover:bg-accent " +
-                  (keepFilterDrawersOpen
-                    ? "border-primary/50 bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground")
-                }
-                title={
-                  keepFilterDrawersOpen
-                    ? "Keep multiple filter drawers open"
-                    : "Open one filter drawer at a time"
-                }
-                aria-pressed={keepFilterDrawersOpen}
-              >
-                {keepFilterDrawersOpen ? (
-                  <Lock className="size-3.5" />
-                ) : (
-                  <Unlock className="size-3.5" />
-                )}
-	                Keep open
-	              </button>
-	            </div>
 
-            <div className="space-y-1.5">
-              <label htmlFor="find-search-filter" className="block text-xs font-semibold text-foreground">Find filter</label>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
-                <input
-                  id="find-search-filter"
-                  type="text"
-                  value={filterLocatorQuery}
-                  onChange={(event) => setFilterLocatorQuery(event.target.value)}
-                  placeholder="Type a filter name"
-                  className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                />
-                {filterLocatorQuery ? (
-                  <button
-                    type="button"
-                    onClick={() => setFilterLocatorQuery("")}
-                    className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                    aria-label="Clear filter search"
-                    title="Clear filter search"
-                  >
-                    <X className="size-4" aria-hidden="true" />
-                  </button>
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="find-search-filter"
+                  className="block text-xs font-semibold text-foreground"
+                >
+                  Find filter
+                </label>
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <input
+                    id="find-search-filter"
+                    type="text"
+                    value={filterLocatorQuery}
+                    onChange={(event) => setFilterLocatorQuery(event.target.value)}
+                    placeholder="Type a filter name"
+                    className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  {filterLocatorQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => setFilterLocatorQuery("")}
+                      className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                      aria-label="Clear filter search"
+                      title="Clear filter search"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+                {filterLocatorTerm && !hasFilterLocatorMatch ? (
+                  <p className="text-xs text-muted-foreground" role="status">
+                    No matching filters.
+                  </p>
                 ) : null}
               </div>
-              {filterLocatorTerm && !hasFilterLocatorMatch ? (
-                <p className="text-xs text-muted-foreground" role="status">No matching filters.</p>
-              ) : null}
-            </div>
 
-	            <section className={"rounded-md border bg-primary/5 p-3 space-y-3 " + (otherFilterMatches ? "border-destructive ring-2 ring-destructive/60" : "border-primary/15")}>
-	              <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
-	                Other filters
-	              </h3>
-	            <FilterGroup label="Description" helper={searchFilterHelpers.description}>
-	              <FilterInput
-	                value={description}
-	                onChange={setDescription}
-	                placeholder="Demand description"
-	              />
-	            </FilterGroup>
+              <section
+                className={
+                  "rounded-md border bg-primary/5 p-3 space-y-3 " +
+                  (otherFilterMatches
+                    ? "border-destructive ring-2 ring-destructive/60"
+                    : "border-primary/15")
+                }
+              >
+                <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
+                  Other filters
+                </h3>
+                <FilterGroup label="Description" helper={searchFilterHelpers.description}>
+                  <FilterInput
+                    value={description}
+                    onChange={setDescription}
+                    placeholder="Demand description"
+                  />
+                </FilterGroup>
 
-	            {importantWorkflowFilterGroups.map((group) => {
-              const drawerId = `stage:${group.title}`;
-              const activeInGroup = group.options.filter(
-                (option) => (importantWorkflowFilterModes[option.filter] ?? "none") !== "none",
-              ).length +
-                (group.title === "Demand / Initiation"
-                  ? ["attribute:gte:yes", "miscDemandCancelled"].filter(
-                      (filter) => (importantWorkflowFilterModes[filter] ?? "none") !== "none" &&
-                        !(defaultDemandCancelledExclusion && filter === "miscDemandCancelled" && importantWorkflowFilterModes[filter] === "exclude"),
-                    ).length
-                  : 0);
-              return (
-                <details
-                  key={group.title}
-                  open={isFilterDrawerOpen(drawerId)}
-                  onToggle={(event) => setFilterDrawerOpen(drawerId, event.currentTarget.open)}
-                  className={
-                    "rounded-md border bg-background/60 " +
-                    (workflowDrawerMatches(group)
-                      ? "border-destructive ring-2 ring-destructive/60"
-                      : activeInGroup ? "border-primary/50" : "border-border")
-                  }
-                >
-                  <summary
-                    className={
-                      "cursor-pointer select-none px-3 py-2 text-xs font-semibold outline-none hover:text-foreground " +
-                      (activeInGroup ? "text-primary" : "text-muted-foreground")
-                    }
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {group.title}
-                      {activeInGroup ? (
-                        <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">
-                          {activeInGroup}
+                {importantWorkflowFilterGroups.map((group) => {
+                  const drawerId = `stage:${group.title}`;
+                  const activeInGroup =
+                    group.options.filter(
+                      (option) =>
+                        (importantWorkflowFilterModes[option.filter] ?? "none") !== "none",
+                    ).length +
+                    (group.title === "Demand / Initiation"
+                      ? ["attribute:gte:yes", "miscDemandCancelled"].filter(
+                          (filter) =>
+                            (importantWorkflowFilterModes[filter] ?? "none") !== "none" &&
+                            !(
+                              defaultDemandCancelledExclusion &&
+                              filter === "miscDemandCancelled" &&
+                              importantWorkflowFilterModes[filter] === "exclude"
+                            ),
+                        ).length
+                      : 0);
+                  return (
+                    <details
+                      key={group.title}
+                      open={isFilterDrawerOpen(drawerId)}
+                      onToggle={(event) => setFilterDrawerOpen(drawerId, event.currentTarget.open)}
+                      className={
+                        "rounded-md border bg-background/60 " +
+                        (workflowDrawerMatches(group)
+                          ? "border-destructive ring-2 ring-destructive/60"
+                          : activeInGroup
+                            ? "border-primary/50"
+                            : "border-border")
+                      }
+                    >
+                      <summary
+                        className={
+                          "cursor-pointer select-none px-3 py-2 text-xs font-semibold outline-none hover:text-foreground " +
+                          (activeInGroup ? "text-primary" : "text-muted-foreground")
+                        }
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          {group.title}
+                          {activeInGroup ? (
+                            <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">
+                              {activeInGroup}
+                            </span>
+                          ) : null}
                         </span>
-                      ) : null}
-                    </span>
-                  </summary>
-                  <div className="space-y-3 border-t border-border p-3">
-                    <div className="grid grid-cols-1 gap-2">
-                      {group.options.map((option) => (
-                        <ThreeWayFilter
-                          key={option.filter}
-                          label={option.label}
-                          helper={option.helper}
-                          value={importantWorkflowFilterModes[option.filter] ?? "none"}
-                          onChange={(mode) => setImportantWorkflowFilterMode(option.filter, mode)}
-                        />
-                      ))}
-                    </div>
-
-                    {group.title === "Demand / Initiation" ? (
-                      <>
-                        <FilterGroup label="File type" helper={searchFilterHelpers.fileType}>
-                          <div className="grid grid-cols-2 gap-2">
-                            {getConfiguredFileTypeOptions(
-                              settings.fileTypes,
-                              selectedFileTypes,
-                            ).map((fileType) => (
-                              <CheckFilter
-                                key={fileType}
-                                label={fileType}
-                                checked={selectedFileTypes.includes(fileType)}
-                                onChange={(checked) => toggleFileTypeFilter(fileType, checked)}
-                              />
-                            ))}
-                          </div>
-                        </FilterGroup>
-                        <FilterGroup label="Year" helper={searchFilterHelpers.year}>
-                          <FilterInput
-                            value={yearFilter}
-                            onChange={setYearFilter}
-                            placeholder="All years"
-                            options={years}
-                            deferChangeUntilSelect
-                            allowCustomValue={false}
-                          />
-                          <div className="mt-2 space-y-1">
-                            <CheckFilter
-                              label="Include archived years"
-                              checked={includeArchivedYears}
-                              onChange={(checked) =>
-                                void navigate({
-                                  to: "/search",
-                                  search: (previous) => ({
-                                    ...previous,
-                                    includeArchivedYears: checked ? true : undefined,
-                                  }),
-                                })
+                      </summary>
+                      <div className="space-y-3 border-t border-border p-3">
+                        <div className="grid grid-cols-1 gap-2">
+                          {group.options.map((option) => (
+                            <ThreeWayFilter
+                              key={option.filter}
+                              label={option.label}
+                              helper={option.helper}
+                              value={importantWorkflowFilterModes[option.filter] ?? "none"}
+                              onChange={(mode) =>
+                                setImportantWorkflowFilterMode(option.filter, mode)
                               }
                             />
-                            <p className="text-[11px] leading-relaxed text-muted-foreground">
-                              Archived-origin files are excluded by default. Active carry-forward files remain searchable; turn this on to include archived inactive files.
-                            </p>
-                          </div>
-                        </FilterGroup>
-                        <FilterGroup label="Indentor" helper={searchFilterHelpers.indentor}>
-                          <SearchableDropdown
-                            value={indentor}
-                            onChange={setIndentor}
-                            onSearchChange={(query) => {
-                              setIndentorSearch(query);
-                              if (query.trim() && query.trim() !== indentor) setIndentor("");
-                            }}
-                            options={indentorOptions}
-                            placeholder="Indentor"
-                            deferChangeUntilSelect
-                            allowCustomValue={false}
-                            className={filterControlClass(
-                              Boolean(indentor),
-                              "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
-                            )}
-                          />
-                        </FilterGroup>
-                        <FilterGroup label="Division" helper={searchFilterHelpers.division}>
-                          <FilterInput
-                            value={divisionFilter}
-                            onChange={setDivisionFilter}
-                            placeholder="All divisions"
-                            options={divisionOptions}
-                            deferChangeUntilSelect
-                            allowCustomValue={false}
-                          />
-                        </FilterGroup>
-                        <ThreeWayFilter
-                          label="GTE"
-                          value={importantWorkflowFilterModes["attribute:gte:yes"] ?? "none"}
-                          onChange={(mode) =>
-                            setImportantWorkflowFilterMode("attribute:gte:yes", mode)
-                          }
-                        />
-                        <ThreeWayFilter
-                          label="Demand cancelled"
-                          value={importantWorkflowFilterModes.miscDemandCancelled ?? "none"}
-                          onChange={(mode) =>
-                            setImportantWorkflowFilterMode("miscDemandCancelled", mode)
-                          }
-                        />
-                      </>
-                    ) : null}
+                          ))}
+                        </div>
 
-                    {group.title === "Bidding / Pre-Bid" ? (
-                      <>
-                        <FilterGroup label="Bidding mode" helper={searchFilterHelpers.biddingMode}>
-                          <div className="grid grid-cols-2 gap-2">
-                            {modeFilterOptions.map((mode) => (
-                              <ThreeWayFilter
-                                key={mode}
-                                label={mode}
-                                value={modeFilters[mode] ?? "none"}
-                                onChange={(value) => setModeFilter(mode, value)}
+                        {group.title === "Demand / Initiation" ? (
+                          <>
+                            <FilterGroup label="File type" helper={searchFilterHelpers.fileType}>
+                              <div className="grid grid-cols-2 gap-2">
+                                {getConfiguredFileTypeOptions(
+                                  settings.fileTypes,
+                                  selectedFileTypes,
+                                ).map((fileType) => (
+                                  <CheckFilter
+                                    key={fileType}
+                                    label={fileType}
+                                    checked={selectedFileTypes.includes(fileType)}
+                                    onChange={(checked) => toggleFileTypeFilter(fileType, checked)}
+                                  />
+                                ))}
+                              </div>
+                            </FilterGroup>
+                            <FilterGroup label="Year" helper={searchFilterHelpers.year}>
+                              <FilterInput
+                                value={yearFilter}
+                                onChange={setYearFilter}
+                                placeholder="All years"
+                                options={years}
+                                deferChangeUntilSelect
+                                allowCustomValue={false}
                               />
-                            ))}
-                          </div>
-                        </FilterGroup>
-                        <FilterGroup
-                          label="GeM Bidding Mode"
-                          helper={searchFilterHelpers.gemBiddingMode}
-                        >
-                          <div className="grid grid-cols-2 gap-2">
-                            {gemBiddingModeOptions.map((mode) => (
-                              <ThreeWayFilter
-                                key={mode}
-                                label={mode}
-                                value={gemModeFilters[mode] ?? "none"}
-                                onChange={(value) => setGemModeFilter(mode, value)}
+                              <div className="mt-2 space-y-1">
+                                <CheckFilter
+                                  label="Include active files from archived years"
+                                  checked={includeArchivedYears}
+                                  onChange={(checked) =>
+                                    void navigate({
+                                      to: "/search",
+                                      search: (previous) => ({
+                                        ...previous,
+                                        includeArchivedYears: checked ? undefined : false,
+                                      }),
+                                    })
+                                  }
+                                />
+                                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                                  When checked, active carry-forward files whose initiation year is
+                                  archived remain searchable. When unchecked, those files are
+                                  excluded from normal search and summaries. Closed or fully
+                                  archived files remain excluded unless an explicit historical or
+                                  all-files scope is selected.
+                                </p>
+                              </div>
+                            </FilterGroup>
+                            <FilterGroup label="Indentor" helper={searchFilterHelpers.indentor}>
+                              <SearchableDropdown
+                                value={indentor}
+                                onChange={setIndentor}
+                                onSearchChange={(query) => {
+                                  setIndentorSearch(query);
+                                  if (query.trim() && query.trim() !== indentor) setIndentor("");
+                                }}
+                                options={indentorOptions}
+                                placeholder="Indentor"
+                                deferChangeUntilSelect
+                                allowCustomValue={false}
+                                className={filterControlClass(
+                                  Boolean(indentor),
+                                  "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm",
+                                )}
                               />
-                            ))}
-                          </div>
-                        </FilterGroup>
-                      </>
-                    ) : null}
+                            </FilterGroup>
+                            <FilterGroup label="Division" helper={searchFilterHelpers.division}>
+                              <FilterInput
+                                value={divisionFilter}
+                                onChange={setDivisionFilter}
+                                placeholder="All divisions"
+                                options={divisionOptions}
+                                deferChangeUntilSelect
+                                allowCustomValue={false}
+                              />
+                            </FilterGroup>
+                            <ThreeWayFilter
+                              label="GTE"
+                              value={importantWorkflowFilterModes["attribute:gte:yes"] ?? "none"}
+                              onChange={(mode) =>
+                                setImportantWorkflowFilterMode("attribute:gte:yes", mode)
+                              }
+                            />
+                            <ThreeWayFilter
+                              label="Demand cancelled"
+                              value={importantWorkflowFilterModes.miscDemandCancelled ?? "none"}
+                              onChange={(mode) =>
+                                setImportantWorkflowFilterMode("miscDemandCancelled", mode)
+                              }
+                            />
+                          </>
+                        ) : null}
+
+                        {group.title === "Bidding / Pre-Bid" ? (
+                          <>
+                            <FilterGroup
+                              label="Bidding mode"
+                              helper={searchFilterHelpers.biddingMode}
+                            >
+                              <div className="grid grid-cols-2 gap-2">
+                                {modeFilterOptions.map((mode) => (
+                                  <ThreeWayFilter
+                                    key={mode}
+                                    label={mode}
+                                    value={modeFilters[mode] ?? "none"}
+                                    onChange={(value) => setModeFilter(mode, value)}
+                                  />
+                                ))}
+                              </div>
+                            </FilterGroup>
+                            <FilterGroup
+                              label="GeM Bidding Mode"
+                              helper={searchFilterHelpers.gemBiddingMode}
+                            >
+                              <div className="grid grid-cols-2 gap-2">
+                                {gemBiddingModeOptions.map((mode) => (
+                                  <ThreeWayFilter
+                                    key={mode}
+                                    label={mode}
+                                    value={gemModeFilters[mode] ?? "none"}
+                                    onChange={(value) => setGemModeFilter(mode, value)}
+                                  />
+                                ))}
+                              </div>
+                            </FilterGroup>
+                          </>
+                        ) : null}
 
                         {group.title === "Supply Order / Firm" ? (
                           <>
@@ -4363,420 +4973,509 @@ function SearchPage() {
                             </div>
                           </>
                         ) : null}
-                  </div>
-                </details>
-              );
-            })}
+                      </div>
+                    </details>
+                  );
+                })}
 
-            <CollapsibleFilterGroup
-              label="Value filters"
-              locatorLabels={["Value", "S.O. value", "Capital", "Revenue"]}
-              open={isFilterDrawerOpen("value")}
-              onOpenChange={(open) => setFilterDrawerOpen("value", open)}
-            >
-            <FilterGroup
-              label="Value"
-              helper={searchFilterHelpers.value}
-              active={valueThresholdFilter !== "all" || Boolean(valueFrom || valueTo)}
-            >
-              <select
-                value={valueThresholdFilter}
-                onChange={(event) => setValueThresholdFilter(event.target.value)}
-                className={filterControlClass(
-                  valueThresholdFilter !== "all",
-                  "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
-                )}
-              >
-                <option value="all">All value bands</option>
-                {settings.valueThresholdLevels.map((level) => (
-                  <option
-                    key={level.id ?? level.levelNumber}
-                    value={getValueThresholdFilterValue(level)}
+                <CollapsibleFilterGroup
+                  label="Value filters"
+                  locatorLabels={["Value", "S.O. value", "Capital", "Revenue"]}
+                  open={isFilterDrawerOpen("value")}
+                  onOpenChange={(open) => setFilterDrawerOpen("value", open)}
+                >
+                  <FilterGroup
+                    label="Value"
+                    helper={searchFilterHelpers.value}
+                    active={valueThresholdFilter !== "all" || Boolean(valueFrom || valueTo)}
                   >
-                    {formatValueThresholdOption(level)}
-                  </option>
-                ))}
-              </select>
-              <div className="grid grid-cols-2 gap-2 mb-2">
-                <FilterInput
-                  value={valueFrom}
-                  onChange={setValueFrom}
-                  placeholder="From"
-                  decimalOnly
-                />
-                <FilterInput value={valueTo} onChange={setValueTo} placeholder="To" decimalOnly />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <CheckFilter label="Capital" checked={capitalOnly} onChange={setCapitalOnly} />
-                <CheckFilter label="Revenue" checked={revenueOnly} onChange={setRevenueOnly} />
-              </div>
-            </FilterGroup>
+                    <select
+                      value={valueThresholdFilter}
+                      onChange={(event) => setValueThresholdFilter(event.target.value)}
+                      className={filterControlClass(
+                        valueThresholdFilter !== "all",
+                        "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
+                      )}
+                    >
+                      <option value="all">All value bands</option>
+                      {settings.valueThresholdLevels.map((level) => (
+                        <option
+                          key={level.id ?? level.levelNumber}
+                          value={getValueThresholdFilterValue(level)}
+                        >
+                          {formatValueThresholdOption(level)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <FilterInput
+                        value={valueFrom}
+                        onChange={setValueFrom}
+                        placeholder="From"
+                        decimalOnly
+                      />
+                      <FilterInput
+                        value={valueTo}
+                        onChange={setValueTo}
+                        placeholder="To"
+                        decimalOnly
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <CheckFilter
+                        label="Capital"
+                        checked={capitalOnly}
+                        onChange={setCapitalOnly}
+                      />
+                      <CheckFilter
+                        label="Revenue"
+                        checked={revenueOnly}
+                        onChange={setRevenueOnly}
+                      />
+                    </div>
+                  </FilterGroup>
 
-            <FilterGroup
-              label="S.O. value"
-              helper={searchFilterHelpers.soValue}
-              active={soValueThresholdFilter !== "all" || Boolean(soValueFrom || soValueTo)}
-            >
-              <select
-                value={soValueThresholdFilter}
-                onChange={(event) => setSoValueThresholdFilter(event.target.value)}
-                className={filterControlClass(
-                  soValueThresholdFilter !== "all",
-                  "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
-                )}
-              >
-                <option value="all">All S.O. value bands</option>
-                {settings.valueThresholdLevels.map((level) => (
-                  <option
-                    key={level.id ?? level.levelNumber}
-                    value={getSoValueThresholdFilterValue(level)}
+                  <FilterGroup
+                    label="S.O. value"
+                    helper={searchFilterHelpers.soValue}
+                    active={soValueThresholdFilter !== "all" || Boolean(soValueFrom || soValueTo)}
                   >
-                    {formatValueThresholdOption(level)}
-                  </option>
-                ))}
-              </select>
-              <div className="mb-2 grid grid-cols-2 gap-2">
-                <FilterInput
-                  value={soValueFrom}
-                  onChange={setSoValueFrom}
-                  placeholder="From"
-                  decimalOnly
-                />
-                <FilterInput
-                  value={soValueTo}
-                  onChange={setSoValueTo}
-                  placeholder="To"
-                  decimalOnly
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <CheckFilter label="Capital" checked={soCapitalOnly} onChange={setSoCapitalOnly} />
-                <CheckFilter label="Revenue" checked={soRevenueOnly} onChange={setSoRevenueOnly} />
-              </div>
-            </FilterGroup>
-            </CollapsibleFilterGroup>
+                    <select
+                      value={soValueThresholdFilter}
+                      onChange={(event) => setSoValueThresholdFilter(event.target.value)}
+                      className={filterControlClass(
+                        soValueThresholdFilter !== "all",
+                        "mb-2 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm outline-none focus:ring-2 focus:ring-ring/40",
+                      )}
+                    >
+                      <option value="all">All S.O. value bands</option>
+                      {settings.valueThresholdLevels.map((level) => (
+                        <option
+                          key={level.id ?? level.levelNumber}
+                          value={getSoValueThresholdFilterValue(level)}
+                        >
+                          {formatValueThresholdOption(level)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mb-2 grid grid-cols-2 gap-2">
+                      <FilterInput
+                        value={soValueFrom}
+                        onChange={setSoValueFrom}
+                        placeholder="From"
+                        decimalOnly
+                      />
+                      <FilterInput
+                        value={soValueTo}
+                        onChange={setSoValueTo}
+                        placeholder="To"
+                        decimalOnly
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <CheckFilter
+                        label="Capital"
+                        checked={soCapitalOnly}
+                        onChange={setSoCapitalOnly}
+                      />
+                      <CheckFilter
+                        label="Revenue"
+                        checked={soRevenueOnly}
+                        onChange={setSoRevenueOnly}
+                      />
+                    </div>
+                  </FilterGroup>
+                </CollapsibleFilterGroup>
 
-	            <FilterGroup
-	              label="Special File Marker"
-	              helper={searchFilterHelpers.specialFileMarker}
-	              active={specialFileMarkers.length > 0}
-	            >
-	              <MultiSelectDropdown
-	                label="marker"
-	                options={(settings.specialFileMarkers ?? []).map((marker) => marker.code)}
-	                selectedValues={specialFileMarkers}
-	                onChange={setSpecialFileMarkers}
-	                allLabel="All markers"
-	              />
-	            </FilterGroup>
-	            </section>
-
-	            <section className={"rounded-md border bg-primary/5 p-3 space-y-3 " + (dateFilterMatches ? "border-destructive ring-2 ring-destructive/60" : "border-primary/15")}>
-	              <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
-	                Date filters
-	              </h3>
-	            <FilterGroup label="Free search date" helper={searchFilterHelpers.freeDate}>
-	              <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
-	            </FilterGroup>
-
-	            <CollapsibleFilterGroup
-              label="Demand & Control Dates"
-              locatorLabels={dateFilterLocatorLabels["dates:demand-control"]}
-              helper={searchFilterHelpers.demandControlDates}
-              open={isFilterDrawerOpen("dates:demand-control")}
-              onOpenChange={(open) => setFilterDrawerOpen("dates:demand-control", open)}
-            >
-              <div className="grid gap-3 sm:grid-cols-2">
-                <FilterGroup label="Demand received FY" active={Boolean(demandReceivedFy)}>
-                  <FilterSelect
-                    value={demandReceivedFy}
-                    onChange={(value) => {
-                      setDemandReceivedFy(value);
-                      setDemandReceivedMonth("");
-                    }}
-                    options={years}
-                    placeholder="All FYs"
+                <FilterGroup
+                  label="Special File Marker"
+                  helper={searchFilterHelpers.specialFileMarker}
+                  active={specialFileMarkers.length > 0}
+                >
+                  <MultiSelectDropdown
+                    label="marker"
+                    options={(settings.specialFileMarkers ?? []).map((marker) => marker.code)}
+                    selectedValues={specialFileMarkers}
+                    onChange={setSpecialFileMarkers}
+                    allLabel="All markers"
                   />
                 </FilterGroup>
-                <FilterGroup label="Demand received month" active={Boolean(demandReceivedMonth)}>
-                  <select
-                    value={demandReceivedMonth}
-                    onChange={(event) => setDemandReceivedMonth(event.target.value)}
-                    disabled={!demandReceivedFy}
-                    className={filterControlClass(
-                      Boolean(demandReceivedMonth),
-                      "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm disabled:cursor-not-allowed disabled:opacity-50",
-                    )}
-                  >
-                    <option value="">All months</option>
-                    {demandReceivedMonthOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+              </section>
+
+              <section
+                className={
+                  "rounded-md border bg-primary/5 p-3 space-y-3 " +
+                  (dateFilterMatches
+                    ? "border-destructive ring-2 ring-destructive/60"
+                    : "border-primary/15")
+                }
+              >
+                <h3 className="border-b border-border pb-2 text-sm font-semibold text-foreground">
+                  Date filters
+                </h3>
+                <FilterGroup label="Free search date" helper={searchFilterHelpers.freeDate}>
+                  <FilterInput type="date" value={freeDate} onChange={setFreeDate} />
                 </FilterGroup>
-              </div>
-              <DateRangeFilter
-                {...dateRangeModeProps("demandReceipt")}
-                label="Demand Receipt Date"
-                from={demandReceiptFrom}
-                to={demandReceiptTo}
-                onFromChange={setDemandReceiptFrom}
-                onToChange={setDemandReceiptTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("demandControl")}
-                label="Demand Control Date"
-                from={demandControlFrom}
-                to={demandControlTo}
-                onFromChange={setDemandControlFrom}
-                onToChange={setDemandControlTo}
-              />
-            </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup
-              label="Approval & Committee Dates"
-              locatorLabels={dateFilterLocatorLabels["dates:approval-committee"]}
-              helper={searchFilterHelpers.approvalDates}
-              open={isFilterDrawerOpen("dates:approval-committee")}
-              onOpenChange={(open) => setFilterDrawerOpen("dates:approval-committee", open)}
-            >
-              <DateRangeFilter
-                {...dateRangeModeProps("highValueMinutes")}
-                label="High Value Minutes Date"
-                from={highValueMinutesFrom}
-                to={highValueMinutesTo}
-                onFromChange={setHighValueMinutesFrom}
-                onToChange={setHighValueMinutesTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("preTcecDate")}
-                label="Pre-TCEC date"
-                from={preTcecDateFrom}
-                to={preTcecDateTo}
-                onFromChange={setPreTcecDateFrom}
-                onToChange={setPreTcecDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("preTcecMinutes")}
-                label="Pre-TCEC Minutes date"
-                from={preTcecMinutesFrom}
-                to={preTcecMinutesTo}
-                onFromChange={setPreTcecMinutesFrom}
-                onToChange={setPreTcecMinutesTo}
-              />
-              <FilterGroup
-                label="Pre-TCEC committee"
-                helper={searchFilterHelpers.tcecCommittee}
-                active={Boolean(preTcecCommittee)}
-              >
-                <FilterSelect
-                  value={preTcecCommittee}
-                  onChange={setPreTcecCommittee}
-                  options={preTcecCommitteeOptions}
-                  placeholder="All Pre-TCEC committees"
-                />
-              </FilterGroup>
-              <DateRangeFilter
-                {...dateRangeModeProps("rqaApproval")}
-                label="R&QA approval date"
-                from={rqaApprovalFrom}
-                to={rqaApprovalTo}
-                onFromChange={setRqaApprovalFrom}
-                onToChange={setRqaApprovalTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("ifaFinal")}
-                label="IFA Final date"
-                from={ifaFinalFrom}
-                to={ifaFinalTo}
-                onFromChange={setIfaFinalFrom}
-                onToChange={setIfaFinalTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("cfaApproval")}
-                label="CFA Approval Date"
-                from={cfaApprovalFrom}
-                to={cfaApprovalTo}
-                onFromChange={setCfaApprovalFrom}
-                onToChange={setCfaApprovalTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("postTcecDate")}
-                label="Post-TCEC date"
-                from={postTcecDateFrom}
-                to={postTcecDateTo}
-                onFromChange={setPostTcecDateFrom}
-                onToChange={setPostTcecDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("postTcecMinutes")}
-                label="Post-TCEC Minutes date"
-                from={postTcecMinutesFrom}
-                to={postTcecMinutesTo}
-                onFromChange={setPostTcecMinutesFrom}
-                onToChange={setPostTcecMinutesTo}
-              />
-              <FilterGroup
-                label="Post-TCEC committee"
-                helper={searchFilterHelpers.tcecCommittee}
-                active={Boolean(postTcecCommittee)}
-              >
-                <FilterSelect
-                  value={postTcecCommittee}
-                  onChange={setPostTcecCommittee}
-                  options={postTcecCommitteeOptions}
-                  placeholder="All Post-TCEC committees"
-                />
-              </FilterGroup>
-              <DateRangeFilter
-                {...dateRangeModeProps("cncDate")}
-                label="CNC Date"
-                from={cncDateFrom}
-                to={cncDateTo}
-                onFromChange={setCncDateFrom}
-                onToChange={setCncDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("preBidDate")}
-                label="Pre-Bid date"
-                from={preBidDateFrom}
-                to={preBidDateTo}
-                onFromChange={setPreBidDateFrom}
-                onToChange={setPreBidDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("biddingDate")}
-                label="Bidding date"
-                from={biddingDateFrom}
-                to={biddingDateTo}
-                onFromChange={setBiddingDateFrom}
-                onToChange={setBiddingDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("bidOpeningDate")}
-                label="Bid opening date"
-                from={bidOpeningDateFrom}
-                to={bidOpeningDateTo}
-                onFromChange={setBidOpeningDateFrom}
-                onToChange={setBidOpeningDateTo}
-              />
-            </CollapsibleFilterGroup>
+                <CollapsibleFilterGroup
+                  label="Demand & Control Dates"
+                  locatorLabels={dateFilterLocatorLabels["dates:demand-control"]}
+                  helper={searchFilterHelpers.demandControlDates}
+                  open={isFilterDrawerOpen("dates:demand-control")}
+                  onOpenChange={(open) => setFilterDrawerOpen("dates:demand-control", open)}
+                >
+                  <div className="grid gap-3">
+                    <FilterGroup label="Demand received FY" active={Boolean(demandReceivedFy)}>
+                      <FilterSelect
+                        value={demandReceivedFy}
+                        onChange={(value) => {
+                          setDemandReceivedFy(value);
+                          setDemandReceivedMonth("");
+                        }}
+                        options={years}
+                        placeholder="All FYs"
+                      />
+                    </FilterGroup>
+                    <FilterGroup
+                      label="Demand received month"
+                      active={Boolean(demandReceivedMonth)}
+                    >
+                      <select
+                        value={demandReceivedMonth}
+                        onChange={(event) => setDemandReceivedMonth(event.target.value)}
+                        disabled={!demandReceivedFy}
+                        className={filterControlClass(
+                          Boolean(demandReceivedMonth),
+                          "w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm disabled:cursor-not-allowed disabled:opacity-50",
+                        )}
+                      >
+                        <option value="">All months</option>
+                        {demandReceivedMonthOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </FilterGroup>
+                  </div>
+                  <DateRangeFilter
+                    {...dateRangeModeProps("demandReceipt")}
+                    label="Demand Receipt Date"
+                    from={demandReceiptFrom}
+                    to={demandReceiptTo}
+                    onFromChange={setDemandReceiptFrom}
+                    onToChange={setDemandReceiptTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("demandControl")}
+                    label="Demand Control Date"
+                    from={demandControlFrom}
+                    to={demandControlTo}
+                    onFromChange={setDemandControlFrom}
+                    onToChange={setDemandControlTo}
+                  />
+                </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup
-              label="Supply Order & Delivery Dates"
-              locatorLabels={dateFilterLocatorLabels["dates:supply-delivery"]}
-              helper={searchFilterHelpers.supplyDeliveryDates}
-              open={isFilterDrawerOpen("dates:supply-delivery")}
-              onOpenChange={(open) => setFilterDrawerOpen("dates:supply-delivery", open)}
-            >
-              <DateRangeFilter
-                {...dateRangeModeProps("financialSanction")}
-                label="Financial Sanction date"
-                from={financialSanctionFrom}
-                to={financialSanctionTo}
-                onFromChange={setFinancialSanctionFrom}
-                onToChange={setFinancialSanctionTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("soDate")}
-                label="S.O. date"
-                from={soDateFrom}
-                to={soDateTo}
-                onFromChange={setSoDateFrom}
-                onToChange={setSoDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("advanceExpectedPaymentDate")}
-                label="Expected Advance Payment Date"
-                from={advanceExpectedPaymentDateFrom}
-                to={advanceExpectedPaymentDateTo}
-                onFromChange={setAdvanceExpectedPaymentDateFrom}
-                onToChange={setAdvanceExpectedPaymentDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("dpPeriod")}
-                label="D.P. period"
-                helper={searchFilterHelpers.dpPeriod}
-                from={dpFrom}
-                to={dpTo}
-                onFromChange={setDpFrom}
-                onToChange={setDpTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("materialReceipt")}
-                label="Material receipt date"
-                from={materialReceiptFrom}
-                to={materialReceiptTo}
-                onFromChange={setMaterialReceiptFrom}
-                onToChange={setMaterialReceiptTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("actualJobCompletion")}
-                label="Actual Job Completion Date"
-                from={actualJobCompletionFrom}
-                to={actualJobCompletionTo}
-                onFromChange={setActualJobCompletionFrom}
-                onToChange={setActualJobCompletionTo}
-              />
-            </CollapsibleFilterGroup>
+                <CollapsibleFilterGroup
+                  label="Approval & Committee Dates"
+                  locatorLabels={dateFilterLocatorLabels["dates:approval-committee"]}
+                  helper={searchFilterHelpers.approvalDates}
+                  open={isFilterDrawerOpen("dates:approval-committee")}
+                  onOpenChange={(open) => setFilterDrawerOpen("dates:approval-committee", open)}
+                >
+                  <DateRangeFilter
+                    {...dateRangeModeProps("highValueMinutes")}
+                    label="High Value Minutes Date"
+                    from={highValueMinutesFrom}
+                    to={highValueMinutesTo}
+                    onFromChange={setHighValueMinutesFrom}
+                    onToChange={setHighValueMinutesTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("preTcecDate")}
+                    label="Pre-TCEC date"
+                    from={preTcecDateFrom}
+                    to={preTcecDateTo}
+                    onFromChange={setPreTcecDateFrom}
+                    onToChange={setPreTcecDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("preTcecMinutes")}
+                    label="Pre-TCEC Minutes date"
+                    from={preTcecMinutesFrom}
+                    to={preTcecMinutesTo}
+                    onFromChange={setPreTcecMinutesFrom}
+                    onToChange={setPreTcecMinutesTo}
+                  />
+                  <FilterGroup
+                    label="Pre-TCEC committee"
+                    helper={searchFilterHelpers.tcecCommittee}
+                    active={Boolean(preTcecCommittee)}
+                  >
+                    <FilterSelect
+                      value={preTcecCommittee}
+                      onChange={setPreTcecCommittee}
+                      options={preTcecCommitteeOptions}
+                      placeholder="All Pre-TCEC committees"
+                    />
+                  </FilterGroup>
+                  <DateRangeFilter
+                    {...dateRangeModeProps("rqaApproval")}
+                    label="R&QA approval date"
+                    from={rqaApprovalFrom}
+                    to={rqaApprovalTo}
+                    onFromChange={setRqaApprovalFrom}
+                    onToChange={setRqaApprovalTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("ifaFinal")}
+                    label="IFA Final date"
+                    from={ifaFinalFrom}
+                    to={ifaFinalTo}
+                    onFromChange={setIfaFinalFrom}
+                    onToChange={setIfaFinalTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("cfaApproval")}
+                    label="CFA Approval Date"
+                    from={cfaApprovalFrom}
+                    to={cfaApprovalTo}
+                    onFromChange={setCfaApprovalFrom}
+                    onToChange={setCfaApprovalTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("postTcecDate")}
+                    label="Post-TCEC date"
+                    from={postTcecDateFrom}
+                    to={postTcecDateTo}
+                    onFromChange={setPostTcecDateFrom}
+                    onToChange={setPostTcecDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("postTcecMinutes")}
+                    label="Post-TCEC Minutes date"
+                    from={postTcecMinutesFrom}
+                    to={postTcecMinutesTo}
+                    onFromChange={setPostTcecMinutesFrom}
+                    onToChange={setPostTcecMinutesTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatPostTcecDate")}
+                    label="Refloat Post-TCEC date"
+                    from={refloatPostTcecDateFrom}
+                    to={refloatPostTcecDateTo}
+                    onFromChange={setRefloatPostTcecDateFrom}
+                    onToChange={setRefloatPostTcecDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatPostTcecMinutes")}
+                    label="Refloat Post-TCEC Minutes date"
+                    from={refloatPostTcecMinutesFrom}
+                    to={refloatPostTcecMinutesTo}
+                    onFromChange={setRefloatPostTcecMinutesFrom}
+                    onToChange={setRefloatPostTcecMinutesTo}
+                  />
+                  <FilterGroup
+                    label="Post-TCEC committee"
+                    helper={searchFilterHelpers.tcecCommittee}
+                    active={Boolean(postTcecCommittee)}
+                  >
+                    <FilterSelect
+                      value={postTcecCommittee}
+                      onChange={setPostTcecCommittee}
+                      options={postTcecCommitteeOptions}
+                      placeholder="All Post-TCEC committees"
+                    />
+                  </FilterGroup>
+                  <DateRangeFilter
+                    {...dateRangeModeProps("cncDate")}
+                    label="CNC Date"
+                    from={cncDateFrom}
+                    to={cncDateTo}
+                    onFromChange={setCncDateFrom}
+                    onToChange={setCncDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("preBidDate")}
+                    label="Pre-Bid date"
+                    from={preBidDateFrom}
+                    to={preBidDateTo}
+                    onFromChange={setPreBidDateFrom}
+                    onToChange={setPreBidDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("biddingDate")}
+                    label="Bidding date"
+                    from={biddingDateFrom}
+                    to={biddingDateTo}
+                    onFromChange={setBiddingDateFrom}
+                    onToChange={setBiddingDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("bidOpeningDate")}
+                    label="Bid opening date"
+                    from={bidOpeningDateFrom}
+                    to={bidOpeningDateTo}
+                    onFromChange={setBidOpeningDateFrom}
+                    onToChange={setBidOpeningDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatGemUndertakingDate")}
+                    label="Refloat GeM undertaking"
+                    from={refloatGemUndertakingDateFrom}
+                    to={refloatGemUndertakingDateTo}
+                    onFromChange={setRefloatGemUndertakingDateFrom}
+                    onToChange={setRefloatGemUndertakingDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatRecommendationDate")}
+                    label="Refloat recommendation"
+                    from={refloatRecommendationDateFrom}
+                    to={refloatRecommendationDateTo}
+                    onFromChange={setRefloatRecommendationDateFrom}
+                    onToChange={setRefloatRecommendationDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatPreBidMeetingDate")}
+                    label="Refloat Pre-Bid date"
+                    from={refloatPreBidMeetingDateFrom}
+                    to={refloatPreBidMeetingDateTo}
+                    onFromChange={setRefloatPreBidMeetingDateFrom}
+                    onToChange={setRefloatPreBidMeetingDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatBiddingDate")}
+                    label="Refloat bidding date"
+                    from={refloatBiddingDateFrom}
+                    to={refloatBiddingDateTo}
+                    onFromChange={setRefloatBiddingDateFrom}
+                    onToChange={setRefloatBiddingDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("refloatBidOpeningDate")}
+                    label="Refloat bid opening date"
+                    from={refloatBidOpeningDateFrom}
+                    to={refloatBidOpeningDateTo}
+                    onFromChange={setRefloatBidOpeningDateFrom}
+                    onToChange={setRefloatBidOpeningDateTo}
+                  />
+                </CollapsibleFilterGroup>
 
-            <CollapsibleFilterGroup
-              label="BG, Payment & Closure Dates"
-              locatorLabels={dateFilterLocatorLabels["dates:bg-payment-closure"]}
-              helper={searchFilterHelpers.bgPaymentClosureDates}
-              open={isFilterDrawerOpen("dates:bg-payment-closure")}
-              onOpenChange={(open) => setFilterDrawerOpen("dates:bg-payment-closure", open)}
-            >
-              <DateRangeFilter
-                {...dateRangeModeProps("bgReceived")}
-                label="BG received date"
-                from={bgReceivedFrom}
-                to={bgReceivedTo}
-                onFromChange={setBgReceivedFrom}
-                onToChange={setBgReceivedTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("bgValidity")}
-                label="BG validity date"
-                from={bgValidityFrom}
-                to={bgValidityTo}
-                onFromChange={setBgValidityFrom}
-                onToChange={setBgValidityTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("bgReturn")}
-                label="BG return date"
-                from={bgReturnFrom}
-                to={bgReturnTo}
-                onFromChange={setBgReturnFrom}
-                onToChange={setBgReturnTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("billSubmitted")}
-                label="Bill sent/submitted date"
-                from={billSubmittedFrom}
-                to={billSubmittedTo}
-                onFromChange={setBillSubmittedFrom}
-                onToChange={setBillSubmittedTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("paymentDate")}
-                label="Payment date"
-                from={paymentDateFrom}
-                to={paymentDateTo}
-                onFromChange={setPaymentDateFrom}
-                onToChange={setPaymentDateTo}
-              />
-              <DateRangeFilter
-                {...dateRangeModeProps("fileClosure")}
-                label="File Closure Date"
-                from={fileClosureFrom}
-                to={fileClosureTo}
-                onFromChange={setFileClosureFrom}
-                onToChange={setFileClosureTo}
-              />
-            </CollapsibleFilterGroup>
-	            </section>
+                <CollapsibleFilterGroup
+                  label="Supply Order & Delivery Dates"
+                  locatorLabels={dateFilterLocatorLabels["dates:supply-delivery"]}
+                  helper={searchFilterHelpers.supplyDeliveryDates}
+                  open={isFilterDrawerOpen("dates:supply-delivery")}
+                  onOpenChange={(open) => setFilterDrawerOpen("dates:supply-delivery", open)}
+                >
+                  <DateRangeFilter
+                    {...dateRangeModeProps("financialSanction")}
+                    label="Financial Sanction date"
+                    from={financialSanctionFrom}
+                    to={financialSanctionTo}
+                    onFromChange={setFinancialSanctionFrom}
+                    onToChange={setFinancialSanctionTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("soDate")}
+                    label="S.O. date"
+                    from={soDateFrom}
+                    to={soDateTo}
+                    onFromChange={setSoDateFrom}
+                    onToChange={setSoDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("advanceExpectedPaymentDate")}
+                    label="Expected Advance Payment Date"
+                    from={advanceExpectedPaymentDateFrom}
+                    to={advanceExpectedPaymentDateTo}
+                    onFromChange={setAdvanceExpectedPaymentDateFrom}
+                    onToChange={setAdvanceExpectedPaymentDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("dpPeriod")}
+                    label="D.P. period"
+                    helper={searchFilterHelpers.dpPeriod}
+                    from={dpFrom}
+                    to={dpTo}
+                    onFromChange={setDpFrom}
+                    onToChange={setDpTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("materialReceipt")}
+                    label="Material receipt date"
+                    from={materialReceiptFrom}
+                    to={materialReceiptTo}
+                    onFromChange={setMaterialReceiptFrom}
+                    onToChange={setMaterialReceiptTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("actualJobCompletion")}
+                    label="Work Completion Date"
+                    from={actualJobCompletionFrom}
+                    to={actualJobCompletionTo}
+                    onFromChange={setActualJobCompletionFrom}
+                    onToChange={setActualJobCompletionTo}
+                  />
+                </CollapsibleFilterGroup>
+
+                <CollapsibleFilterGroup
+                  label="BG, Payment & Closure Dates"
+                  locatorLabels={dateFilterLocatorLabels["dates:bg-payment-closure"]}
+                  helper={searchFilterHelpers.bgPaymentClosureDates}
+                  open={isFilterDrawerOpen("dates:bg-payment-closure")}
+                  onOpenChange={(open) => setFilterDrawerOpen("dates:bg-payment-closure", open)}
+                >
+                  <DateRangeFilter
+                    {...dateRangeModeProps("bgReceived")}
+                    label="BG received date"
+                    from={bgReceivedFrom}
+                    to={bgReceivedTo}
+                    onFromChange={setBgReceivedFrom}
+                    onToChange={setBgReceivedTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("bgValidity")}
+                    label="BG validity date"
+                    from={bgValidityFrom}
+                    to={bgValidityTo}
+                    onFromChange={setBgValidityFrom}
+                    onToChange={setBgValidityTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("bgReturn")}
+                    label="BG return date"
+                    from={bgReturnFrom}
+                    to={bgReturnTo}
+                    onFromChange={setBgReturnFrom}
+                    onToChange={setBgReturnTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("billSubmitted")}
+                    label="Bill sent/submitted date"
+                    from={billSubmittedFrom}
+                    to={billSubmittedTo}
+                    onFromChange={setBillSubmittedFrom}
+                    onToChange={setBillSubmittedTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("paymentDate")}
+                    label="Payment date"
+                    from={paymentDateFrom}
+                    to={paymentDateTo}
+                    onFromChange={setPaymentDateFrom}
+                    onToChange={setPaymentDateTo}
+                  />
+                  <DateRangeFilter
+                    {...dateRangeModeProps("fileClosure")}
+                    label="File Closure Date"
+                    from={fileClosureFrom}
+                    to={fileClosureTo}
+                    onFromChange={setFileClosureFrom}
+                    onToChange={setFileClosureTo}
+                  />
+                </CollapsibleFilterGroup>
+              </section>
             </FilterLocatorContext.Provider>
           </aside>
         ) : null}
@@ -4876,7 +5575,7 @@ function SearchPage() {
           )}
 
           <div
-            className="min-w-0 overflow-hidden rounded-md border border-border bg-card shadow-[var(--shadow-card)]"
+            className="section-accent-border min-w-0 overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-card)]"
             data-testid="search-results"
           >
             <div className="overflow-x-auto">
@@ -5086,10 +5785,10 @@ function SearchPage() {
                           ? "border-l-4 border-l-destructive bg-destructive/10 hover:bg-destructive/20"
                           : "hover:bg-accent/60 " +
                             (row.isDetailRow
-                          ? "bg-secondary/20"
-                          : index % 2 === 0
-                            ? "bg-card"
-                            : "bg-secondary/40"))
+                              ? "bg-secondary/20"
+                              : index % 2 === 0
+                                ? "bg-card"
+                                : "bg-secondary/40"))
                       }
                       title={
                         anomalousFileIds.has(row.file.id)
@@ -5147,7 +5846,11 @@ function SearchPage() {
                               className="leading-5"
                             />
                           ) : (
-                            <div className="max-h-24 overflow-y-auto whitespace-pre-line pr-1 leading-5">
+                            <div
+                              className={`max-h-24 overflow-y-auto pr-1 leading-5 ${
+                                cell.isDate ? "whitespace-pre" : "whitespace-pre-line"
+                              }`}
+                            >
                               {cell.value}
                             </div>
                           )}
@@ -5463,6 +6166,7 @@ const snapshotBiddingKeys = [
   "refloatPreBidMeetingDate",
   "refloatBiddingDate",
   "refloatBidOpeningDate",
+  "refloatBiddingStageOver",
   "refloatPostTcecCommitteeNo",
   "refloatPostTcecDate",
   "refloatPostTcecMinutesDate",
@@ -5796,6 +6500,7 @@ type SearchDisplayColumn = {
   label: string;
   sourceColumn?: PrintColumn;
   valueIndex: number;
+  isDate: boolean;
 };
 
 type SearchDisplayRow = {
@@ -5805,19 +6510,36 @@ type SearchDisplayRow = {
   expanded: boolean;
   isFirstFileRow: boolean;
   isDetailRow: boolean;
-  cells: Array<{ key: string; value: string }>;
+  cells: Array<{ key: string; value: string; isDate: boolean }>;
 };
+
+function isSearchDateColumn(key: string) {
+  const baseKey = key.split(":")[0];
+  return (
+    supplyOrderDateKeys.has(baseKey as SupplyOrderKey) ||
+    editableFields.some((field) => field.key === baseKey && field.type === "date")
+  );
+}
 
 function buildSearchDisplayColumns(columns: PrintColumn[]): SearchDisplayColumn[] {
   return columns.flatMap((column) => {
     if (!isSupplyOrderKey(column.key)) {
-      return [{ key: column.key, label: column.label, sourceColumn: column, valueIndex: 0 }];
+      return [
+        {
+          key: column.key,
+          label: column.label,
+          sourceColumn: column,
+          valueIndex: 0,
+          isDate: isSearchDateColumn(column.key),
+        },
+      ];
     }
     return getRowwiseSupplyOrderExportHeaders(column).map((label, valueIndex) => ({
       key: valueIndex === 0 ? column.key : `${column.key}:${valueIndex}`,
       label,
       sourceColumn: column,
       valueIndex,
+      isDate: isSearchDateColumn(column.key),
     }));
   });
 }
@@ -5844,6 +6566,7 @@ function buildSearchDisplayRows(
           cells: displayColumns.map((displayColumn) => ({
             key: displayColumn.key,
             value: getCompactSearchDisplayValue(file, displayColumn),
+            isDate: displayColumn.isDate,
           })),
         },
       ];
@@ -5859,6 +6582,7 @@ function buildSearchDisplayRows(
       cells: displayColumns.map((displayColumn) => ({
         key: displayColumn.key,
         value: getDetailedSearchDisplayValue(file, displayColumn, entry, entryIndex),
+        isDate: displayColumn.isDate,
       })),
     }));
   });
@@ -5880,7 +6604,7 @@ function getDetailedSearchDisplayValue(
   const column = displayColumn.sourceColumn;
   if (!column) return "";
   if (!isSupplyOrderKey(column.key)) return entryIndex === 0 ? column.getValue(file) || "" : "";
-  const values = getRowwiseSupplyOrderExportValues(file, column.key, entry);
+  const values = getRowwiseSupplyOrderExportValues(file, column.key, entry, false);
   return String(values[displayColumn.valueIndex] ?? "");
 }
 
@@ -6034,7 +6758,13 @@ function FilterGroup({
 }) {
   const locatorQuery = useContext(FilterLocatorContext);
   return (
-    <div className={filterLocatorMatches(locatorQuery, label) ? "rounded-md bg-destructive/5 p-2 ring-2 ring-destructive/60" : undefined}>
+    <div
+      className={
+        filterLocatorMatches(locatorQuery, label)
+          ? "rounded-md bg-destructive/5 p-2 ring-2 ring-destructive/60"
+          : undefined
+      }
+    >
       <HelperLabel label={label} helper={helper} active={active} />
       {children}
     </div>
@@ -6105,19 +6835,27 @@ function DateRangeFilter({
   const active = Boolean(from || to);
   return (
     <FilterGroup label={label} helper={helper} active={active || Boolean(mode)}>
-      <div data-date-filter-key={filterKey} className="grid grid-cols-2 gap-2">
-        <FilterInput type="date" value={from} onChange={onFromChange} />
-        <FilterInput type="date" value={to} onChange={onToChange} />
+      <div data-date-filter-key={filterKey} className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="w-8 shrink-0 text-xs text-muted-foreground">From</span>
+          <FilterInput type="date" value={from} onChange={onFromChange} />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-8 shrink-0 text-xs text-muted-foreground">To</span>
+          <FilterInput type="date" value={to} onChange={onToChange} />
+        </div>
       </div>
       <div
-        className="mt-2 grid grid-cols-2 overflow-hidden rounded-md border border-border"
+        className="mt-2 ml-10 grid w-[160px] grid-cols-2 overflow-hidden rounded-md border border-border"
         role="group"
         aria-label={`${label} range matching`}
       >
-        {([
-          { mode: "only", label: "Include" },
-          { mode: "exclude", label: "Exclude" },
-        ] as const).map((option, index) => (
+        {(
+          [
+            { mode: "only", label: "Include" },
+            { mode: "exclude", label: "Exclude" },
+          ] as const
+        ).map((option, index) => (
           <button
             key={option.label}
             type="button"
@@ -6184,7 +6922,9 @@ function SearchHelper({ items, label }: { items: string[]; label: string }) {
           align="start"
           className="w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
         >
-          <HelperContent lines={[...bullets, ...(examples ? splitHelperText(examples.items) : [])]} />
+          <HelperContent
+            lines={[...bullets, ...(examples ? splitHelperText(examples.items) : [])]}
+          />
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -6306,40 +7046,16 @@ function ClearableDateFilterInput({
   onChange: (value: string) => void;
   placeholder?: string;
 }) {
-  const [hasText, setHasText] = useState(Boolean(value));
-
-  useEffect(() => {
-    setHasText(Boolean(value));
-  }, [value]);
-
   return (
-    <div className="relative">
-      <DateInput
-        value={value}
-        onChange={onChange}
-        onInput={(event) => setHasText(Boolean(event.currentTarget.value))}
-        placeholder={placeholder}
-        className={filterControlClass(
-          Boolean(value),
-          "w-full h-9 px-2.5 pr-9 rounded-md border border-input bg-background text-sm",
-        )}
-      />
-      {hasText ? (
-        <button
-          type="button"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => {
-            onChange("");
-            setHasText(false);
-          }}
-          className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={`Clear ${placeholder || "date filter"}`}
-          title={`Clear ${placeholder || "date filter"}`}
-        >
-          <X className="size-4" aria-hidden="true" />
-        </button>
-      ) : null}
-    </div>
+    <DateInput
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      className={filterControlClass(
+        Boolean(value),
+        "w-[160px] min-w-[160px] h-9 px-2.5 rounded-md border border-input bg-background text-sm text-foreground",
+      )}
+    />
   );
 }
 
@@ -6489,10 +7205,12 @@ function CheckFilter({
   const locatorQuery = useContext(FilterLocatorContext);
   return (
     <label
-      className={filterControlClass(
-        active,
-        "flex items-center gap-2 text-sm cursor-pointer rounded-md border border-border bg-background px-2.5 py-2",
-      ) + (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")}
+      className={
+        filterControlClass(
+          active,
+          "flex items-center gap-2 text-sm cursor-pointer rounded-md border border-border bg-background px-2.5 py-2",
+        ) + (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")
+      }
     >
       <input
         type="checkbox"
@@ -6524,12 +7242,17 @@ function ThreeWayFilter({
   ];
   return (
     <div
-      className={filterControlClass(
-        active,
-        "rounded-md border border-border bg-background p-2 text-sm",
-      ) + (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")}
+      className={
+        filterControlClass(active, "rounded-md border border-border bg-background p-2 text-sm") +
+        (filterLocatorMatches(locatorQuery, label) ? " ring-2 ring-destructive/70" : "")
+      }
     >
-      <div className={filterLabelClass(active, "mb-1.5 inline-flex items-center gap-1 text-xs font-medium")}>
+      <div
+        className={filterLabelClass(
+          active,
+          "mb-1.5 inline-flex items-center gap-1 text-xs font-medium",
+        )}
+      >
         {label}
         {helper ? <SearchHelper items={helper} label={`${label} help`} /> : null}
       </div>
@@ -6742,7 +7465,7 @@ function EditModal({
 
   return (
     <ModalShell title="File details" onClose={onClose}>
-      <p className="mb-4 text-xs text-black">Click Save to save, else data will be lost.</p>
+      <p className="mb-4 text-xs text-foreground">Click Save to save, else data will be lost.</p>
       <div className="space-y-6">
         {editFieldSections
           .filter(
@@ -6788,7 +7511,8 @@ function EditModal({
                         field.key === "year" ||
                         field.key === "tenderLive" ||
                         (tcecIsNo && tcecDisabledKeys.includes(field.key)) ||
-                        (!isNo(formWithLockedYear.tcec) && nonTcecDisabledKeys.includes(field.key)) ||
+                        (!isNo(formWithLockedYear.tcec) &&
+                          nonTcecDisabledKeys.includes(field.key)) ||
                         (gemIsNo && gemDisabledKeys.includes(field.key)) ||
                         (highValueIsNo && highValueDisabledKeys.includes(field.key)) ||
                         (rqaIsNo && rqaDisabledKeys.includes(field.key)) ||
@@ -6918,7 +7642,11 @@ function EditField({
           className={editInputCls + disabledCls(disabled)}
         >
           {field.key === "gemBiddingMode" ? (
-            !value ? <option value="" disabled>Not set</option> : null
+            !value ? (
+              <option value="" disabled>
+                Not set
+              </option>
+            ) : null
           ) : (
             <option value="">—</option>
           )}
@@ -7422,9 +8150,10 @@ function getSupplyOrderValue(order: SupplyOrderDetail, key: SupplyOrderKey) {
     return order.stageDeliveryLabel ? getSupplyOrderAmountFieldValue(order, "soValueRevenue") : "";
   }
   const advanceValue = getAdvancePaymentDetailValue(order, key);
-  const value = advanceValue !== undefined ? advanceValue : String(
-    key in order ? order[key as keyof SupplyOrderDetail] ?? "" : "",
-  );
+  const value =
+    advanceValue !== undefined
+      ? advanceValue
+      : String(key in order ? (order[key as keyof SupplyOrderDetail] ?? "") : "");
   return isSupplyOrderDateField(key) ? formatIsoDateForDisplay(value) : value;
 }
 
@@ -7536,8 +8265,8 @@ function formatSupplementaryBills(bills: SupplementaryBillDetail[]) {
         formatBillReturnCycles(bill.billReturnCycles),
         bill.paymentDate ? `Paid: ${formatIsoDateForDisplay(bill.paymentDate)}` : "",
         bill.paymentMode ? `Mode: ${bill.paymentMode}` : "",
-        bill.actualPaymentCapital ? `Actual capital: ${bill.actualPaymentCapital}` : "",
-        bill.actualPaymentRevenue ? `Actual revenue: ${bill.actualPaymentRevenue}` : "",
+        bill.actualPaymentCapital ? `Recorded capital: ${bill.actualPaymentCapital}` : "",
+        bill.actualPaymentRevenue ? `Recorded revenue: ${bill.actualPaymentRevenue}` : "",
         bill.remarks ? `Remarks: ${bill.remarks}` : "",
       ].filter(Boolean);
       if (!parts.length) return "";
@@ -7573,10 +8302,10 @@ function getAdvancePaymentDetailValue(order: SupplyOrderDetail, key: SupplyOrder
     order.stageDeliveryLabel === "Advance Payment" ? order : order.advancePaymentDetail;
   if (!detail) return undefined;
   if (key === "advanceStageAmountCapital") {
-    return String("stageAmountCapital" in detail ? detail.stageAmountCapital ?? "" : "");
+    return String("stageAmountCapital" in detail ? (detail.stageAmountCapital ?? "") : "");
   }
   if (key === "advanceStageAmountRevenue") {
-    return String("stageAmountRevenue" in detail ? detail.stageAmountRevenue ?? "" : "");
+    return String("stageAmountRevenue" in detail ? (detail.stageAmountRevenue ?? "") : "");
   }
   if (key === "advanceExpectedPaymentDate") {
     return String(order.advancePaymentDetail?.expectedPaymentDate ?? "");
@@ -8058,9 +8787,13 @@ function isPreBidMeetingStatus(
     : isYes(file.preBidMeeting);
   const date = refloat ? file.refloatPreBidMeetingDate : file.preBidMeetingDate;
   if (!applies || typeof date !== "string" || !hasFilledString(date)) return false;
-  if (monthKey && (/^\d{4}-\d{2}-\d{2}$/.test(monthKey)
-    ? date.slice(0, 10) !== monthKey
-    : date.slice(0, 7) !== monthKey)) return false;
+  if (
+    monthKey &&
+    (/^\d{4}-\d{2}-\d{2}$/.test(monthKey)
+      ? date.slice(0, 10) !== monthKey
+      : date.slice(0, 7) !== monthKey)
+  )
+    return false;
   if (fiscalYear && fiscalYear !== "all" && getFinancialYearForDate(date) !== fiscalYear) {
     return false;
   }
@@ -8295,11 +9028,17 @@ function isDeliveryOverdue(file: FileRecord) {
 }
 
 function isDeliveryDueToday(file: FileRecord) {
-  return isDeliveryActive(file) && fileSupplyOrders(file).some((order) => isDueTodayDeliveryOrder(file, order));
+  return (
+    isDeliveryActive(file) &&
+    fileSupplyOrders(file).some((order) => isDueTodayDeliveryOrder(file, order))
+  );
 }
 
 function isDeliveryUpcoming(file: FileRecord) {
-  return isDeliveryActive(file) && fileSupplyOrders(file).some((order) => isUpcomingDeliveryOrder(file, order));
+  return (
+    isDeliveryActive(file) &&
+    fileSupplyOrders(file).some((order) => isUpcomingDeliveryOrder(file, order))
+  );
 }
 
 function isDeliveryDeliveredLate(file: FileRecord) {
@@ -8926,7 +9665,8 @@ function getSupplementaryReturnedBillCashOutgoEventDate(
     return latest && !hasFilledString(latest.resubmittedDate) ? latest.returnedDate : undefined;
   }
   if (mode === "supplementaryReturnedBillsResubmitted") {
-    if (hasFilledString(bill.paymentDate) || !latest || !hasFilledString(latest.resubmittedDate)) return undefined;
+    if (hasFilledString(bill.paymentDate) || !latest || !hasFilledString(latest.resubmittedDate))
+      return undefined;
     return latest.resubmittedDate;
   }
   if (mode === "supplementaryReturnedBillsPaid") {
@@ -9100,12 +9840,13 @@ function getBiddingDelayStatus(file: FileRecord) {
     return { key: "tenderLivePending", stageStartDate: file.refloatRecommendationDate };
   }
   if (refloat && !isYes(file.tcec)) return undefined;
-  if ((!refloat && !hasFilledString(file.cfaDate)) || (refloat && isYes(file.biddingStageOver))) return undefined;
+  if ((!refloat && !hasFilledString(file.cfaDate)) || (refloat && isYes(file.biddingStageOver)))
+    return undefined;
   const bidDate = refloat ? file.refloatBiddingDate : file.bidDate;
   const bidOpeningDate = refloat ? file.refloatBidOpeningDate : file.bidOpeningDate;
   if (!refloat && hasFilledString(bidDate)) return undefined;
   const prerequisiteDoneDate = refloat
-    ? getRefloatBiddingStartDate(file) ?? file.refloatBiddingDate
+    ? (getRefloatBiddingStartDate(file) ?? file.refloatBiddingDate)
     : file.cfaDate;
   if (refloat && !hasFilledString(bidDate) && !prerequisiteDoneDate) return undefined;
   if (!refloat && isYes(file.gem) && !hasFilledString(file.gemUndertakingDate)) {
@@ -9423,13 +10164,15 @@ function getMilestoneStageStartDate(
     });
     milestoneDefinitions.slice(0, milestoneIndex).forEach((candidate) => {
       if (!isMilestoneApplicable(file, candidate) || !isMilestoneComplete(file, candidate)) return;
-      const date = candidate.key === "bidding"
-        ? file.bidOpeningDate
-        : candidate.key === "refloatBidding"
-          ? file.refloatBidOpeningDate
-          : getFieldDateValue(file, candidate.current);
+      const date =
+        candidate.key === "bidding"
+          ? file.bidOpeningDate
+          : candidate.key === "refloatBidding"
+            ? file.refloatBidOpeningDate
+            : getFieldDateValue(file, candidate.current);
       const time = parseLocalDateTime(date ?? "");
-      if (date && time !== undefined && (cutoff === undefined || time <= cutoff)) candidates.push(date);
+      if (date && time !== undefined && (cutoff === undefined || time <= cutoff))
+        candidates.push(date);
     });
     return latestDateValue(candidates);
   }
@@ -9465,7 +10208,7 @@ function getFieldDateValue(file: FileRecord, key: FileKey | SupplyOrderKey) {
 
 function getEarliestSupplyOrderDate(file: FileRecord, key: SupplyOrderKey) {
   return fileSupplyOrders(file)
-    .map((order) => String(key in order ? order[key as keyof SupplyOrderDetail] ?? "" : ""))
+    .map((order) => String(key in order ? (order[key as keyof SupplyOrderDetail] ?? "") : ""))
     .filter(hasDate)
     .sort((a, b) => a.localeCompare(b))[0];
 }
@@ -9860,11 +10603,8 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
       parsed.mode === "returnedBillsPaid"
     ) {
       if (isSupplyOrderCancelled(file, order)) return false;
-      if (
-        noFurtherAction &&
-        parsed.mode !== "returnedBills" &&
-        parsed.mode !== "returnedBillsPaid"
-      ) return false;
+      if (noFurtherAction && parsed.mode !== "returnedBills" && parsed.mode !== "returnedBillsPaid")
+        return false;
       const eventDate = getReturnedBillCashOutgoEventDate(order, parsed.mode);
       return rangeMatches(eventDate);
     }
@@ -9879,7 +10619,8 @@ function isCashOutgoFilterMatch(file: FileRecord, filter: string) {
         noFurtherAction &&
         parsed.mode !== "supplementaryReturnedBills" &&
         parsed.mode !== "supplementaryReturnedBillsPaid"
-      ) return false;
+      )
+        return false;
       return getSupplementaryBills(order).some((bill) =>
         rangeMatches(getSupplementaryReturnedBillCashOutgoEventDate(bill, parsed.mode)),
       );
@@ -9990,6 +10731,24 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     return false;
   }
   if (!shouldAllowInactiveDashboardFilter(filter) && isCancelledFile(file)) return false;
+  // Stable generic aliases for Milestone Clearing measures. The ranking's
+  // exact fileIds remain the authoritative UI drilldown, while these aliases
+  // make criteria-based Search and audit verification use the same predicates.
+  if (filter === "analyticsMilestoneClearing:financialSanction") {
+    return matchesDashboardFilter(file, "milestoneCleared:financialSanction");
+  }
+  if (filter === "analyticsMilestoneClearing:jobCompletion") {
+    return matchesDashboardFilter(file, "manualMilestoneCompleted:Job Completion");
+  }
+  if (filter === "analyticsMilestoneClearing:paymentPcdaCycle") {
+    return matchesDashboardFilter(file, "analyticsMilestoneClearing:payment");
+  }
+  if (filter === "analyticsMilestoneClearing:paymentAslCycle") {
+    return matchesDashboardFilter(file, "analyticsMilestoneClearing:paymentPreSubmission");
+  }
+  if (filter === "analyticsMilestoneClearing:paymentAslPcda") {
+    return matchesDashboardFilter(file, "analyticsMilestoneClearing:paymentCumulative");
+  }
   if (filter.startsWith("delayFile:")) {
     return file.id === filter.slice("delayFile:".length);
   }
@@ -10014,9 +10773,15 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const identity = decodeStatusFilterPart(rawIdentity).trim().toLocaleLowerCase();
     return rawSupplyOrders(file).some((order) => {
       const placed = Boolean(order.soDate?.trim() || order.soNo?.trim() || order.gemSoNo?.trim());
-      const orderIndentor = String(file.indentor ?? "").trim().toLocaleLowerCase();
-      const firmNo = String(order.firmUniqueNo || file.firmUniqueNo || "").trim().toLocaleLowerCase();
-      const firmName = String(order.firm || file.firm || "").trim().toLocaleLowerCase();
+      const orderIndentor = String(file.indentor ?? "")
+        .trim()
+        .toLocaleLowerCase();
+      const firmNo = String(order.firmUniqueNo || file.firmUniqueNo || "")
+        .trim()
+        .toLocaleLowerCase();
+      const firmName = String(order.firm || file.firm || "")
+        .trim()
+        .toLocaleLowerCase();
       const orderIdentity = firmNo ? `no:${firmNo}` : `name:${firmName}`;
       return placed && orderIndentor === indentor && orderIdentity === identity;
     });
@@ -10026,12 +10791,23 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const main = decodeStatusFilterPart(rawMain).trim().toLocaleLowerCase();
     const partner = decodeStatusFilterPart(rawPartner).trim().toLocaleLowerCase();
     const bidders = file.bidderFirms ?? [];
-    const hasMain = bidders.some((firm) => String(firm.firmName ?? "").trim().toLocaleLowerCase() === main);
+    const hasMain = bidders.some(
+      (firm) =>
+        String(firm.firmName ?? "")
+          .trim()
+          .toLocaleLowerCase() === main,
+    );
     const hasPartner = bidders.some((firm) => {
-      const uniqueNo = String(firm.firmUniqueNo ?? "").trim().toLocaleLowerCase();
+      const uniqueNo = String(firm.firmUniqueNo ?? "")
+        .trim()
+        .toLocaleLowerCase();
       const identity = uniqueNo
         ? `no:${uniqueNo}`
-        : `name:${String(firm.firmName ?? "").trim().toLocaleLowerCase()}|city:${String(firm.city ?? "").trim().toLocaleLowerCase()}`;
+        : `name:${String(firm.firmName ?? "")
+            .trim()
+            .toLocaleLowerCase()}|city:${String(firm.city ?? "")
+            .trim()
+            .toLocaleLowerCase()}`;
       return identity === partner;
     });
     return hasMain && hasPartner;
@@ -10186,8 +10962,11 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
       "refloatPostTcecCommitteeNo",
     ]);
     if (fieldList.split(",").some((key) => !allowedFields.has(key))) return false;
-    return fieldList.split(",").some((key) =>
-      String(file[key as keyof FileRecord] ?? "").trim().toLowerCase() === expected,
+    return fieldList.split(",").some(
+      (key) =>
+        String(file[key as keyof FileRecord] ?? "")
+          .trim()
+          .toLowerCase() === expected,
     );
   }
   if (filter.startsWith("statusSummary:")) {
@@ -10394,6 +11173,8 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "miscLiveFiles") return !isFileClosed(file) && !isCancelledFile(file);
   if (filter === "miscFileClosed") return isFileClosed(file);
   if (filter === "miscLd") return fileSupplyOrders(file).some((order) => isYes(order.ld));
+  if (filter === "miscNoFurtherAction")
+    return fileSupplyOrders(file).some((order) => isYes(order.noFurtherAction));
   if (filter === "miscDemandCancelled") {
     return isYes(file.demandCancelled);
   }
@@ -10578,8 +11359,8 @@ function matchesStatus4Metric(file: FileRecord, milestone: string, metric: Statu
     if (metric === "cleared") return isStatus4SupplyOrderCleared(file);
     return isStatus4SupplyOrderCurrent(file);
   }
-  const definition = milestoneDefinitions.find(
-    (item) => getMilestoneLabelAliases(item.key).some(
+  const definition = milestoneDefinitions.find((item) =>
+    getMilestoneLabelAliases(item.key).some(
       (label) => normalizeMilestoneName(label) === normalized,
     ),
   );
@@ -11268,9 +12049,14 @@ function getDestinationFocus(
     };
     const dateFieldFocus = dateFieldFocusByMilestone[milestoneKey];
     if (dateFieldFocus) {
-      return { section: dateFieldFocus.section, milestone: undefined, focusTarget: dateFieldFocus.focusTarget };
+      return {
+        section: dateFieldFocus.section,
+        milestone: undefined,
+        focusTarget: dateFieldFocus.focusTarget,
+      };
     }
-    const milestone = delayStatusMilestoneLabels[milestoneKey] ??
+    const milestone =
+      delayStatusMilestoneLabels[milestoneKey] ??
       milestoneDefinitions.find((item) => item.key === milestoneKey)?.key;
     if (milestone && isSupplyOrderDrivenMilestoneName(milestone)) {
       return {
@@ -11802,38 +12588,44 @@ function getSearchCheckboxDestinationFocus(filters: {
 }
 
 function getLocalSearchDestinationFocus(chips: ActiveSearchFilterChip[]) {
-  const fieldFocus: Record<string, { section: string; focusTarget?: string; milestone?: string }> = {
-    Description: { section: "File details", focusTarget: "demandDescription" },
-    Division: { section: "File details", focusTarget: "division" },
-    Indentor: { section: "File details", focusTarget: "indentor" },
-    "File type": { section: "File details", focusTarget: "fileType" },
-    "Include Mode": { section: "File details", focusTarget: "mode" },
-    "Exclude Mode": { section: "File details", focusTarget: "mode" },
-    "Include GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
-    "Exclude GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
-    "Value band": { section: "File details", focusTarget: "valueCapital" },
-    Value: { section: "File details", focusTarget: "valueCapital" },
-    "Capital demand": { section: "File details", focusTarget: "valueCapital" },
-    "Revenue demand": { section: "File details", focusTarget: "valueRevenue" },
-    "S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    "S.O. value": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    "S.O. value band": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    "Capital S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    "Revenue S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    "Firm type": { section: "Supply order and payment", focusTarget: "firmtype:any" },
-    Firm: { section: "Supply order and payment", focusTarget: "firmtype:any" },
-    Contact: { section: "Supply order and payment", focusTarget: "firmtype:any" },
-    City: { section: "Supply order and payment", focusTarget: "firmtype:any" },
-    "Firm scope": { section: "Supply order and payment", focusTarget: "firmtype:any" },
-    Marker: { section: "File Markers" },
-    "Pre-TCEC committee": { section: "TCEC block", focusTarget: "preTcecCommitteeNo" },
-    "Post-TCEC committee": { section: "TCEC block", focusTarget: "postTcecCommitteeNumber" },
-    "File Closed": { section: "Milestones", milestone: "File Closed" },
-    "Cancelled S.O.": { section: "Supply order and payment", focusTarget: "socancelled:yes" },
-    "Shortclosed S.O.": { section: "Supply order and payment", focusTarget: "shortclosure:yes" },
-    "Files with Multiple S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-  };
-  const dateFocus: Partial<Record<DateRangeFilterKey, { section: string; focusTarget?: string; milestone?: string }>> = {
+  const fieldFocus: Record<string, { section: string; focusTarget?: string; milestone?: string }> =
+    {
+      Description: { section: "File details", focusTarget: "demandDescription" },
+      Division: { section: "File details", focusTarget: "division" },
+      Indentor: { section: "File details", focusTarget: "indentor" },
+      "File type": { section: "File details", focusTarget: "fileType" },
+      "Include Mode": { section: "File details", focusTarget: "mode" },
+      "Exclude Mode": { section: "File details", focusTarget: "mode" },
+      "Include GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
+      "Exclude GeM mode": { section: "Bidding details", focusTarget: "gemBiddingMode" },
+      "Value band": { section: "File details", focusTarget: "valueCapital" },
+      Value: { section: "File details", focusTarget: "valueCapital" },
+      "Capital demand": { section: "File details", focusTarget: "valueCapital" },
+      "Revenue demand": { section: "File details", focusTarget: "valueRevenue" },
+      "S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+      "S.O. value": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+      "S.O. value band": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+      "Capital S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+      "Revenue S.O.": { section: "Supply order and payment", focusTarget: "supplyorder:any" },
+      "Firm type": { section: "Supply order and payment", focusTarget: "firmtype:any" },
+      Firm: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+      Contact: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+      City: { section: "Supply order and payment", focusTarget: "firmtype:any" },
+      "Firm scope": { section: "Supply order and payment", focusTarget: "firmtype:any" },
+      Marker: { section: "File Markers" },
+      "Pre-TCEC committee": { section: "TCEC block", focusTarget: "preTcecCommitteeNo" },
+      "Post-TCEC committee": { section: "TCEC block", focusTarget: "postTcecCommitteeNumber" },
+      "File Closed": { section: "Milestones", milestone: "File Closed" },
+      "Cancelled S.O.": { section: "Supply order and payment", focusTarget: "socancelled:yes" },
+      "Shortclosed S.O.": { section: "Supply order and payment", focusTarget: "shortclosure:yes" },
+      "Files with Multiple S.O.": {
+        section: "Supply order and payment",
+        focusTarget: "supplyorder:any",
+      },
+    };
+  const dateFocus: Partial<
+    Record<DateRangeFilterKey, { section: string; focusTarget?: string; milestone?: string }>
+  > = {
     demandReceipt: { section: "File details", focusTarget: "receivedDate" },
     demandControl: { section: "Scrutiny and control", focusTarget: "immsDate" },
     highValueMinutes: { section: "Approval block", focusTarget: "highValueMinutesDate" },
@@ -11844,13 +12636,38 @@ function getLocalSearchDestinationFocus(chips: ActiveSearchFilterChip[]) {
     cfaApproval: { section: "Approval block", focusTarget: "cfaDate" },
     postTcecDate: { section: "TCEC block", focusTarget: "postTcecDate" },
     postTcecMinutes: { section: "TCEC block", focusTarget: "postTcecMinutesDate" },
+    refloatGemUndertakingDate: {
+      section: "Bidding details",
+      focusTarget: "refloatGemUndertakingDate",
+    },
+    refloatRecommendationDate: {
+      section: "Bidding details",
+      focusTarget: "refloatRecommendationDate",
+    },
+    refloatPreBidMeetingDate: {
+      section: "Bidding details",
+      focusTarget: "refloatPreBidMeetingDate",
+    },
+    refloatBiddingDate: { section: "Bidding details", focusTarget: "refloatBiddingDate" },
+    refloatBidOpeningDate: { section: "Bidding details", focusTarget: "refloatBidOpeningDate" },
+    refloatPostTcecDate: { section: "TCEC block", focusTarget: "refloatPostTcecDate" },
+    refloatPostTcecMinutes: {
+      section: "TCEC block",
+      focusTarget: "refloatPostTcecMinutesDate",
+    },
     cncDate: { section: "Approval block", focusTarget: "cncDate" },
     preBidDate: { section: "Bidding details", focusTarget: "preBidMeetingDate" },
     biddingDate: { section: "Bidding details", focusTarget: "bidDate" },
     bidOpeningDate: { section: "Bidding details", focusTarget: "bidOpeningDate" },
-    financialSanction: { section: "Supply order and payment", focusTarget: "financialsanction:any" },
+    financialSanction: {
+      section: "Supply order and payment",
+      focusTarget: "financialsanction:any",
+    },
     soDate: { section: "Supply order and payment", focusTarget: "supplyorder:any" },
-    advanceExpectedPaymentDate: { section: "Supply order and payment", focusTarget: "advancepayment:yes" },
+    advanceExpectedPaymentDate: {
+      section: "Supply order and payment",
+      focusTarget: "advancepayment:yes",
+    },
     dpPeriod: { section: "Supply order and payment", focusTarget: "deliveryperiod:any" },
     materialReceipt: { section: "Supply order and payment", focusTarget: "delivery:any" },
     actualJobCompletion: { section: "Supply order and payment", focusTarget: "delivery:any" },
@@ -11869,7 +12686,12 @@ function getLocalSearchDestinationFocus(chips: ActiveSearchFilterChip[]) {
       if (dateFocus[key]) return dateFocus[key];
     }
     if (chip.key.startsWith("workflow:")) {
-      return getDestinationFocus(chip.key.slice("workflow:".length), undefined, undefined, undefined);
+      return getDestinationFocus(
+        chip.key.slice("workflow:".length),
+        undefined,
+        undefined,
+        undefined,
+      );
     }
   }
   return undefined;
@@ -12640,6 +13462,7 @@ function buildSearchExportTable(
   layout: FileSearchExportLayout,
 ): SearchExportTable {
   if (layout === "rowwise") return buildRowwiseSearchExportTable(files, columns);
+  if (layout === "sowise") return buildSoWiseSearchExportTable(files, columns);
   const exportColumns = buildSearchExportColumns(files, columns);
   return {
     headers: ["S.No.", ...exportColumns.map((column) => column.label)],
@@ -12648,6 +13471,118 @@ function buildSearchExportTable(
       ...exportColumns.map((column) => column.getValue(file) || ""),
     ]),
   };
+}
+
+function buildSoWiseSearchExportTable(
+  files: FileRecord[],
+  columns: PrintColumn[],
+): SearchExportTable {
+  const exportColumns = columns;
+  const fileColumns = exportColumns.filter((column) => !isSupplyOrderKey(column.key));
+  const supplyOrderColumns = exportColumns.filter((column) => isSupplyOrderKey(column.key));
+  const headers = [
+    "S.No.",
+    ...fileColumns.map((column) => column.label),
+    "S.O. S.No.",
+    ...supplyOrderColumns.map((column) => column.label),
+  ];
+  const rows: Array<Array<string | number>> = [];
+  files.forEach((file, fileIndex) => {
+    const orders = rawSupplyOrders(file);
+    const rowOrders = orders.length ? orders : [undefined];
+    rowOrders.forEach((order, orderIndex) => {
+      rows.push([
+        fileIndex + 1,
+        ...fileColumns.map((column) => getSearchExportFileValue(file, column) || ""),
+        order ? orderIndex + 1 : "",
+        ...supplyOrderColumns.map((column) =>
+          order ? getSoWiseSupplyOrderValue(order, column.key) : "",
+        ),
+      ]);
+    });
+  });
+  return { headers, rows };
+}
+
+function soExportNumber(value: unknown) {
+  const parsed = Number(String(value ?? "").replace(/[,\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getSoWiseSupplyOrderValue(order: SupplyOrderDetail, key: string) {
+  if (key.startsWith("supplementary")) {
+    const bills = order.supplementaryBills ?? [];
+    const latestBill = [...bills]
+      .sort((a, b) => supplementaryBillSortKey(a).localeCompare(supplementaryBillSortKey(b)))
+      .at(-1);
+    if (key === "supplementaryBillNo") return latestBill?.billNo ?? "";
+    if (key === "supplementaryBillAmountCapital") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.billAmountCapital), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillAmountRevenue") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.billAmountRevenue), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillSentForPaymentDate") {
+      return latestBill?.billSentForPaymentDate
+        ? formatIsoDateForDisplay(latestBill.billSentForPaymentDate)
+        : "";
+    }
+    if (key === "supplementaryBillPaymentDate") {
+      return latestBill?.paymentDate ? formatIsoDateForDisplay(latestBill.paymentDate) : "";
+    }
+    if (key === "supplementaryBillPaymentMode") return latestBill?.paymentMode ?? "";
+    if (key === "supplementaryBillRemarks") return latestBill?.remarks ?? "";
+    if (key === "supplementaryBillActualPaymentCapital") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.actualPaymentCapital), 0);
+      return total ? String(total) : "";
+    }
+    if (key === "supplementaryBillActualPaymentRevenue") {
+      const total = bills.reduce((sum, bill) => sum + soExportNumber(bill.actualPaymentRevenue), 0);
+      return total ? String(total) : "";
+    }
+  }
+  if (!stageSpecificSupplyOrderExportKeys.has(key)) {
+    return getSupplyOrderValue(order, key as SupplyOrderKey) || "";
+  }
+  const stages = order.stageDeliveries ?? [];
+  if (!stages.length) return getSupplyOrderValue(order, key as SupplyOrderKey) || "";
+  if (key === "dpDate") {
+    return order.dpDate ? formatIsoDateForDisplay(order.dpDate) : "";
+  }
+  if (key === "revisedDp") {
+    const finalStage = stages.at(-1);
+    return finalStage?.revisedDp ? formatIsoDateForDisplay(finalStage.revisedDp) : "";
+  }
+  if (key === "stageDeliveryCount") return String(stages.length);
+  const stageCapital = stages.reduce((sum, stage) => sum + soExportNumber(stage.stageAmountCapital), 0);
+  const stageRevenue = stages.reduce((sum, stage) => sum + soExportNumber(stage.stageAmountRevenue), 0);
+  const paidCapital = stages.reduce((sum, stage) => sum + soExportNumber(stage.actualPaymentCapital), 0);
+  const paidRevenue = stages.reduce((sum, stage) => sum + soExportNumber(stage.actualPaymentRevenue), 0);
+  if (key === "stageAmountCapital") return stageCapital ? String(stageCapital) : "";
+  if (key === "stageAmountRevenue") return stageRevenue ? String(stageRevenue) : "";
+  if (key === "actualPaymentCapital") return paidCapital ? String(paidCapital) : "";
+  if (key === "actualPaymentRevenue") return paidRevenue ? String(paidRevenue) : "";
+  if (latestSoStageDateKeys.has(key)) {
+    const latest = stages
+      .map((stage) => String((stage as Record<string, unknown>)[key] ?? "").trim())
+      .filter(Boolean)
+      .sort()
+      .at(-1);
+    return latest ? formatIsoDateForDisplay(latest) : "";
+  }
+  // Non-additive stage-by-stage details are intentionally omitted from the
+  // one-row-per-S.O. export. Use Stage export when those details are needed.
+  return "";
+}
+
+function supplementaryBillSortKey(bill: SupplementaryBillDetail) {
+  return [bill.paymentDate, bill.billSentForPaymentDate]
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? "";
 }
 
 function buildRowwiseSearchExportTable(
@@ -12659,6 +13594,7 @@ function buildRowwiseSearchExportTable(
   const headers = [
     "S.No.",
     ...fileColumns.map((column) => column.label),
+    "S.O. S.No.",
     ...supplyOrderColumns.flatMap((column) => getRowwiseSupplyOrderExportHeaders(column)),
   ];
   const rows: Array<Array<string | number>> = [];
@@ -12669,9 +13605,8 @@ function buildRowwiseSearchExportTable(
     rowEntries.forEach((entry, entryIndex) => {
       rows.push([
         fileIndex + 1,
-        ...fileColumns.map((column) =>
-          entryIndex === 0 ? getSearchExportFileValue(file, column) || "" : "",
-        ),
+        ...fileColumns.map((column) => getSearchExportFileValue(file, column) || ""),
+        entry.orderIndex >= 0 ? entry.orderIndex + 1 : "",
         ...supplyOrderColumns.flatMap((column) =>
           getRowwiseSupplyOrderExportValues(file, column.key as SupplyOrderKey, entry),
         ),
@@ -12705,8 +13640,7 @@ function getRowwiseSearchExportEntries(
   }
   const needsSupplementaryBillRows = supplyOrderColumns.some(
     (column) =>
-      supplementaryBillTableKeys.has(column.key) &&
-      column.key !== "supplementaryBillReturnCycles",
+      supplementaryBillTableKeys.has(column.key) && column.key !== "supplementaryBillReturnCycles",
   );
   const needsBillReturnRows = supplyOrderColumns.some(
     (column) => column.key === "billReturnCycles",
@@ -12716,8 +13650,9 @@ function getRowwiseSearchExportEntries(
   );
   return orders.flatMap((order, orderIndex) => {
     const entries: RowwiseSearchExportEntry[] = [];
-    const needsStageRows = supplyOrderColumns.some((column) =>
-      isSupplyOrderKey(column.key) && shouldUseStageValueForRowwiseExport(order, column.key),
+    const needsStageRows = supplyOrderColumns.some(
+      (column) =>
+        isSupplyOrderKey(column.key) && shouldUseStageValueForRowwiseExport(order, column.key),
     );
     if (needsStageRows && isYes(order.stageDelivery) && order.stageDeliveries?.length) {
       entries.push(
@@ -12817,8 +13752,8 @@ function getRowwiseSupplyOrderExportHeaders(column: PrintColumn) {
       "Supplementary bill sent for payment",
       "Supplementary payment date",
       "Supplementary payment mode",
-      "Supplementary actual payment amount (Capital)",
-      "Supplementary actual payment amount (Revenue)",
+      "Supplementary recorded payment amount (Capital)",
+      "Supplementary recorded payment amount (Revenue)",
       "Supplementary bill remarks",
     ];
   }
@@ -12829,13 +13764,24 @@ function getRowwiseSupplyOrderExportValues(
   file: FileRecord,
   key: SupplyOrderKey,
   entry: RowwiseSearchExportEntry,
+  repeatParentFields = true,
 ) {
   if (!entry.order) return getEmptyRowwiseSupplyOrderExportValues(key);
-  if (key === "billReturnCycles") return getBillReturnCycleExportValues(entry.billReturnCycle);
+  const isStageRow = Boolean(entry.stage);
+  const isSupplementaryRow = Boolean(entry.supplementaryBill);
+  const isReturnRow = Boolean(entry.billReturnCycle);
+  const isSupplementaryReturnRow = isSupplementaryRow && isReturnRow;
+
+  // Keep detail rows independent while repeating shared S.O. identity fields.
+  if (key === "billReturnCycles") {
+    return !isSupplementaryReturnRow && isReturnRow
+      ? getBillReturnCycleExportValues(entry.billReturnCycle)
+      : getEmptyRowwiseSupplyOrderExportValues(key);
+  }
   if (key === "supplementaryBillReturnCycles") {
-    return getBillReturnCycleExportValues(
-      entry.supplementaryBill ? entry.billReturnCycle : undefined,
-    );
+    return isSupplementaryReturnRow
+      ? getBillReturnCycleExportValues(entry.billReturnCycle)
+      : getEmptyRowwiseSupplyOrderExportValues(key);
   }
   if (key === "supplementaryBills") {
     return getSupplementaryBillExportValues(entry.supplementaryBill);
@@ -12845,10 +13791,13 @@ function getRowwiseSupplyOrderExportValues(
       entry.supplementaryBill ? getSupplementaryBillSingleValue(entry.supplementaryBill, key) : "",
     ];
   }
+  if ((isSupplementaryRow || isReturnRow) && stageSpecificSupplyOrderExportKeys.has(key)) {
+    return [""];
+  }
   if (entry.stage && shouldUseStageValueForRowwiseExport(entry.order, key)) {
     return [getStageSupplyOrderExportValueFromStage(entry.stage, key, entry.stageIndex)];
   }
-  if (!entry.isPrimaryOrderRow) return [""];
+  if (!repeatParentFields && !entry.isPrimaryOrderRow) return [""];
   return [getSupplyOrderValue(entry.order, key)];
 }
 
@@ -12942,7 +13891,7 @@ function buildSearchExportColumns(files: FileRecord[], columns: PrintColumn[]) {
 
 function getSearchExportFileValue(file: FileRecord, column: PrintColumn) {
   return column.key === "demandDescription"
-    ? file.demandDescription ?? ""
+    ? (file.demandDescription ?? "")
     : column.getValue(file);
 }
 
@@ -12970,7 +13919,7 @@ function getStageSupplyOrderExportValueFromStage(
 ) {
   if (key === "stageAmountCapital") return String(stage.stageAmountCapital ?? "");
   if (key === "stageAmountRevenue") return String(stage.stageAmountRevenue ?? "");
-  if (key === "stageDeliveryLabel") return `Delivery-${stageIndex + 1}`;
+  if (key === "stageDeliveryLabel") return String(stageIndex + 1);
   const value = String(stage[key as keyof typeof stage] ?? "");
   return isSupplyOrderDateField(key) ? formatIsoDateForDisplay(value) : value;
 }
@@ -13000,7 +13949,8 @@ async function downloadFilteredSearchList(
 }
 
 function formatSearchExportLayout(layout: FileSearchExportLayout) {
-  return layout === "rowwise" ? "Rowwise" : "Columnwise";
+  if (layout === "sowise") return "S.O. export";
+  return layout === "rowwise" ? "Stage export" : "Columnwise";
 }
 
 function escapeHtml(value: string) {

@@ -33,6 +33,7 @@ import {
   isBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
+import { hasCapability } from "@/lib/permissions";
 
 export const Route = createFileRoute("/quick-entry")({
   component: QuickEntryPage,
@@ -93,7 +94,7 @@ function QuickEntryPage() {
   const activeUser = useActiveUser();
   if (!activeUser) {
     return (
-      <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="section-accent-border max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">Quick Entry unavailable</h1>
         <p className="mt-2 text-sm text-muted-foreground">Login is required.</p>
       </div>
@@ -106,10 +107,7 @@ function QuickEntryPage() {
 function QuickEntryEditor() {
   const navigate = useNavigate();
   const activeUser = useActiveUser();
-  const canEditFiles =
-    activeUser?.role === "admin" ||
-    activeUser?.role === "sub_admin" ||
-    activeUser?.role === "editor";
+  const canEditFiles = hasCapability(activeUser, "canEditFiles");
   const isReadOnlyQuickEntry =
     activeUser?.role === "universal_viewer" ||
     activeUser?.role === "viewer" ||
@@ -388,29 +386,19 @@ function QuickEntryEditor() {
   };
 
   return (
-    <div className="space-y-4">
-      <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="-mx-5 -mt-5 mb-4 flex items-start gap-3 rounded-t-md border-b border-border bg-primary/10 px-5 py-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
-            <ScanLine className="size-5 text-primary" />
+    <div className="space-y-8">
+      <section className="relative z-30 flex flex-col overflow-visible rounded-xl border border-border/80 border-l-4 border-l-primary/45 bg-card shadow-[var(--shadow-card)]">
+        <div className="flex items-center gap-2.5 border-b border-border bg-secondary px-4 py-2 text-foreground">
+          <div className="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-card text-primary">
+            <ScanLine className="size-4" />
           </div>
           <div>
-            <h2 className="text-base font-semibold">Quick Entry</h2>
-            <p className="text-xs text-muted-foreground">
-              Scan or enter a file identifier to open the file's current stage.
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Viewers open it read-only. Quick Entry opens exact files only; it does not change
-              Global Filter or Subfilter.
-            </p>
+            <h2 className="text-sm font-semibold tracking-tight">Quick Entry</h2>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+        <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
           <label className="block">
-            <div className="mb-1.5 text-xs font-medium">
-              Unique Code / Control No. / File No. / S.O. No.
-            </div>
             <SearchableDropdown
               value={selectedEntrySuggestion?.id ?? entryIdentifier}
               onChange={(value) => {
@@ -424,13 +412,14 @@ function QuickEntryEditor() {
               options={[]}
               optionItems={entrySuggestionOptions}
               typeAheadOnly
+              containerClassName="max-w-lg"
               onEnter={() => {
                 if (canOpenCurrentStage) void continueToCurrentStage();
               }}
               disabled={!canOpenCurrentStage}
               autoFocus
-              placeholder="Scan barcode or type an identifier"
-              className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              placeholder="Scan barcode or enter Unique Code / Control No. / File No. / S.O. No."
+              className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-500 placeholder:text-zinc-500 outline-none transition-shadow focus:border-zinc-950 focus:ring-2 focus:ring-zinc-950/20 dark:border-border dark:bg-input dark:text-foreground dark:placeholder:text-muted-foreground dark:focus:border-ring dark:focus:ring-ring/30"
             />
           </label>
           <button
@@ -438,7 +427,7 @@ function QuickEntryEditor() {
             onClick={() => void continueToCurrentStage()}
             disabled={loading || !canOpenCurrentStage}
             title="Open current stage"
-            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading ? "Finding..." : "Open current stage"} <ArrowRight className="size-4" />
           </button>
@@ -447,7 +436,7 @@ function QuickEntryEditor() {
         {message ? (
           <div
             className={
-              "mt-4 rounded-md border px-3 py-2 text-sm " +
+              "mt-3 rounded-md border px-3 py-2 text-sm " +
               "border-destructive/40 bg-destructive/10 text-destructive"
             }
           >
@@ -476,28 +465,20 @@ function QuickEntryEditor() {
         ) : null}
       </section>
 
-      <section className="relative z-20 flex min-h-[220px] flex-col rounded-md border border-border border-l-4 bg-card p-5 shadow-[var(--shadow-card)]">
-        <div className="-mx-5 -mt-5 mb-4 flex items-start gap-3 rounded-t-md border-b border-border bg-primary/10 px-5 py-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
-            <FileText className="size-5 text-primary" />
+      <section className="relative z-20 flex flex-col overflow-visible rounded-xl border border-zinc-300 border-l-4 border-l-primary/45 bg-white shadow-[var(--shadow-card)] dark:border-border dark:bg-card">
+        <div className="flex items-center gap-2.5 border-b border-border bg-secondary px-4 py-2 text-foreground">
+          <div className="grid size-8 shrink-0 place-items-center rounded-md border border-zinc-300 bg-zinc-100 text-black dark:border-border dark:bg-muted dark:text-foreground">
+            <FileText className="size-4" />
           </div>
           <div>
-            <h2 className="text-base font-semibold">
+            <h2 className="text-sm font-semibold tracking-tight">
               {isReadOnlyQuickEntry ? "Quick Viewer" : "File Status"}
             </h2>
-            <p className="text-xs text-muted-foreground">
-              {isReadOnlyQuickEntry
-                ? "Find a file to view file status, milestone history, and status notes."
-                : "Find a file, view its timeline, then add an independent status note."}
-            </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
           <label>
-            <div className="mb-1.5 text-xs font-medium">
-              Unique Code / Control No. / File No. / S.O. No.
-            </div>
             <SearchableDropdown
               value={selectedStatusSuggestion?.id ?? fileIdentifier}
               onChange={(value) => {
@@ -530,16 +511,17 @@ function QuickEntryEditor() {
               options={[]}
               optionItems={statusSuggestionOptions}
               typeAheadOnly
+              containerClassName="max-w-lg"
               onEnter={() => void lookupFile()}
-              placeholder="Type an identifier or demand description"
-              className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
+              placeholder="Unique Code / Control No. / File No. / S.O. No."
+              className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-500 placeholder:text-zinc-500 outline-none transition-shadow focus:border-zinc-950 focus:ring-2 focus:ring-zinc-950/20 dark:border-border dark:bg-input dark:text-foreground dark:placeholder:text-muted-foreground dark:focus:border-ring dark:focus:ring-ring/30"
             />
           </label>
           <button
             type="button"
             onClick={() => void lookupFile()}
             disabled={lookupLoading}
-            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-60"
           >
             <Search className="size-4" />
             {lookupLoading ? "Finding..." : "Find"}
@@ -549,14 +531,11 @@ function QuickEntryEditor() {
             onClick={resetLookup}
             disabled={
               lookupLoading ||
-              (!fileIdentifier &&
-                !lookupMessage &&
-                matches.length === 0 &&
-                !context)
+              (!fileIdentifier && !lookupMessage && matches.length === 0 && !context)
             }
             title="Reset file search"
             aria-label="Reset file search"
-            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center gap-1.5 self-end rounded-lg border border-zinc-300 bg-white px-3 text-sm font-medium text-black transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-border dark:bg-card dark:text-foreground dark:hover:bg-muted"
           >
             <RotateCcw className="size-4" />
             Reset
@@ -564,9 +543,7 @@ function QuickEntryEditor() {
         </div>
 
         {lookupMessage && lookupMessage.tone !== "success" ? (
-          <div
-            className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
+          <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {lookupMessage.text}
           </div>
         ) : null}
@@ -778,7 +755,7 @@ function StatusComposer({
           type="button"
           onClick={onSave}
           disabled={disabled || !value.trim() || words > 50}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary/80 px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Save className="size-4" />
           Save File Status
@@ -1179,7 +1156,7 @@ function StatusHistoryPanel({
                           type="button"
                           onClick={() => onSave(status.id)}
                           disabled={!editingStatusText.trim() || words > 50}
-                          className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                          className="inline-flex h-8 items-center gap-1 rounded-md bg-primary/80 px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                         >
                           <Check className="size-3.5" />
                           Save

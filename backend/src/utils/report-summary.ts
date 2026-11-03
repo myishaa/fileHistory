@@ -360,7 +360,29 @@ const supplyOrderMilestoneNames = [
   "Payment",
 ];
 
-export type ReportsSummarySection = "status" | "delay" | "cashOutgo" | "monthly" | "bg";
+export type ReportsSummarySection =
+  | "none"
+  | "status"
+  | "delay"
+  | "cashOutgo"
+  | "cashOutgoExpectedDp"
+  | "cashOutgoExpectedReceipt"
+  | "cashOutgoReceiptPending"
+  | "cashOutgoBillPreparation"
+  | "cashOutgoBillSent"
+  | "cashOutgoActual"
+  | "cashOutgoSupplementaryBillSent"
+  | "cashOutgoSupplementaryActual"
+  | "cashOutgoPendingReturned"
+  | "cashOutgoReturnedResubmitted"
+  | "cashOutgoReturnedPaid"
+  | "cashOutgoSupplementaryPendingReturned"
+  | "cashOutgoSupplementaryReturnedResubmitted"
+  | "cashOutgoSupplementaryReturnedPaid"
+  | "monthly"
+  | "deliverySchedule"
+  | "bgExpiry"
+  | "bg";
 
 function isSupplyOrderDrivenMilestoneName(name: string) {
   return supplyOrderMilestoneNames.some(
@@ -424,6 +446,11 @@ export function buildReportsSummary({
   const requestedSections = sections ? new Set(sections) : undefined;
   const wantsSection = (section: ReportsSummarySection) =>
     !requestedSections || requestedSections.has(section);
+  const wantsCashOutgoRow = (section: ReportsSummarySection) =>
+    !requestedSections || requestedSections.has("cashOutgo") || requestedSections.has(section);
+  const wantsDeliverySchedule =
+    wantsSection("monthly") || wantsSection("deliverySchedule");
+  const wantsBgExpiry = wantsSection("monthly") || wantsSection("bgExpiry");
   const divisionFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
   const reportFiles = divisionFiles.filter((file) => !isCancelledFile(file));
@@ -455,57 +482,60 @@ export function buildReportsSummary({
           nonDemandCancelledReportFiles,
         )
       : [],
-    expectedCashOutgoDpRows: wantsSection("cashOutgo")
+    bgReturnDueCounts: wantsSection("bgExpiry")
+      ? getBgReturnDueCounts(nonDemandCancelledReportFiles, bgReturnOffsetDays)
+      : { psb: 0, pwb: 0, psbPwb: 0 },
+    expectedCashOutgoDpRows: wantsCashOutgoRow("cashOutgoExpectedDp")
       ? getExpectedCashOutgoByDpRows(reportFiles, expectedCashOutgoDays, cashOutgoAsOfDate)
       : [],
-    expectedCashOutgoReceiptRows: wantsSection("cashOutgo")
+    expectedCashOutgoReceiptRows: wantsCashOutgoRow("cashOutgoExpectedReceipt")
       ? getExpectedCashOutgoByReceiptRows(reportFiles, expectedCashOutgoDays, cashOutgoAsOfDate)
       : [],
-    expectedCashOutgoReceiptPendingBillRows: wantsSection("cashOutgo")
+    expectedCashOutgoReceiptPendingBillRows: wantsCashOutgoRow("cashOutgoReceiptPending")
       ? getExpectedCashOutgoByReceiptPendingBillRows(
           pendingBillingReportFiles,
           expectedCashOutgoDays,
           historicalRange,
         )
       : [],
-    expectedCashOutgoBillPreparationRows: wantsSection("cashOutgo")
+    expectedCashOutgoBillPreparationRows: wantsCashOutgoRow("cashOutgoBillPreparation")
       ? getExpectedCashOutgoByBillPreparationRows(
           pendingBillingReportFiles,
           historicalRange,
           cashOutgoAsOfDate,
         )
       : [],
-    billSentForPaymentRows: wantsSection("cashOutgo")
+    billSentForPaymentRows: wantsCashOutgoRow("cashOutgoBillSent")
       ? getBillSentForPaymentRows(pendingBillingReportFiles, historicalRange, cashOutgoAsOfDate)
       : [],
-    actualCashOutgoRows: wantsSection("cashOutgo")
+    actualCashOutgoRows: wantsCashOutgoRow("cashOutgoActual")
       ? getActualCashOutgoRows(reportFiles, historicalRange, cashOutgoPaymentCutoffDate)
       : [],
-    supplementaryBillSentForPaymentRows: wantsSection("cashOutgo")
+    supplementaryBillSentForPaymentRows: wantsCashOutgoRow("cashOutgoSupplementaryBillSent")
       ? getSupplementaryBillSentForPaymentRows(
           pendingBillingReportFiles,
           historicalRange,
           cashOutgoAsOfDate,
         )
       : [],
-    supplementaryActualCashOutgoRows: wantsSection("cashOutgo")
+    supplementaryActualCashOutgoRows: wantsCashOutgoRow("cashOutgoSupplementaryActual")
       ? getSupplementaryActualCashOutgoRows(
           reportFiles,
           historicalRange,
           cashOutgoPaymentCutoffDate,
         )
       : [],
-    pendingReturnedBillRows: wantsSection("cashOutgo")
+    pendingReturnedBillRows: wantsCashOutgoRow("cashOutgoPendingReturned")
       ? getReturnedBillCashOutgoRows(pendingBillingReportFiles, "pendingReturnedBills", historicalRange)
       : [],
-    returnedBillResubmittedRows: wantsSection("cashOutgo")
+    returnedBillResubmittedRows: wantsCashOutgoRow("cashOutgoReturnedResubmitted")
       ? getReturnedBillCashOutgoRows(
           pendingBillingReportFiles,
           "returnedBillsResubmitted",
           historicalRange,
         )
       : [],
-    returnedBillPaidRows: wantsSection("cashOutgo")
+    returnedBillPaidRows: wantsCashOutgoRow("cashOutgoReturnedPaid")
       ? getReturnedBillCashOutgoRows(
           reportFiles,
           "returnedBillsPaid",
@@ -513,21 +543,23 @@ export function buildReportsSummary({
           cashOutgoPaymentCutoffDate,
         )
       : [],
-    supplementaryPendingReturnedBillRows: wantsSection("cashOutgo")
+    supplementaryPendingReturnedBillRows: wantsCashOutgoRow("cashOutgoSupplementaryPendingReturned")
       ? getSupplementaryReturnedBillCashOutgoRows(
           pendingBillingReportFiles,
           "supplementaryPendingReturnedBills",
           historicalRange,
         )
       : [],
-    supplementaryReturnedBillResubmittedRows: wantsSection("cashOutgo")
+    supplementaryReturnedBillResubmittedRows: wantsCashOutgoRow(
+      "cashOutgoSupplementaryReturnedResubmitted",
+    )
       ? getSupplementaryReturnedBillCashOutgoRows(
           pendingBillingReportFiles,
           "supplementaryReturnedBillsResubmitted",
           historicalRange,
         )
       : [],
-    supplementaryReturnedBillPaidRows: wantsSection("cashOutgo")
+    supplementaryReturnedBillPaidRows: wantsCashOutgoRow("cashOutgoSupplementaryReturnedPaid")
       ? getSupplementaryReturnedBillCashOutgoRows(
           reportFiles,
           "supplementaryReturnedBillsPaid",
@@ -547,10 +579,10 @@ export function buildReportsSummary({
     dailySupplyOrder: wantsSection("monthly")
       ? getDailySupplyOrder(nonDemandCancelledReportFiles, selectedYear)
       : [],
-    dailyDeliverySchedule: wantsSection("monthly")
+    dailyDeliverySchedule: wantsDeliverySchedule
       ? getDailyDeliverySchedule(nonDemandCancelledReportFiles, selectedYear)
       : [],
-    dailyBgExpiry: wantsSection("monthly")
+    dailyBgExpiry: wantsBgExpiry
       ? getDailyBgExpiry(nonDemandCancelledReportFiles, selectedYear)
       : [],
     dailyPaymentDue: wantsSection("monthly")
@@ -562,13 +594,13 @@ export function buildReportsSummary({
     dailyCompletedDeliveries: wantsSection("monthly")
       ? getDailyCompletedDeliveries(nonDemandCancelledReportFiles, selectedYear)
       : [],
-    monthWiseDeliverySchedule: wantsSection("monthly")
+    monthWiseDeliverySchedule: wantsDeliverySchedule
       ? getMonthWiseDeliverySchedule(nonDemandCancelledReportFiles, selectedYear)
       : [],
     monthWiseCompletedDeliveries: wantsSection("monthly")
       ? getMonthWiseCompletedDeliveries(nonDemandCancelledReportFiles, selectedYear)
       : [],
-    monthWiseBgExpiry: wantsSection("monthly")
+    monthWiseBgExpiry: wantsBgExpiry
       ? getMonthWiseBgExpiry(divisionFiles, selectedYear)
       : [],
     preBidMeetingRows: wantsSection("monthly")
@@ -576,6 +608,12 @@ export function buildReportsSummary({
       : [],
     preBidMeetingDailyRows: wantsSection("monthly")
       ? getPreBidMeetingDailyRows(divisionFiles, selectedYear)
+      : [],
+    bidOpeningRows: wantsSection("monthly")
+      ? getBidOpeningScheduleRows(divisionFiles, selectedYear)
+      : [],
+    bidOpeningDailyRows: wantsSection("monthly")
+      ? getBidOpeningScheduleDailyRows(divisionFiles, selectedYear)
       : [],
     bgReceiptDelayRows: wantsSection("bg")
       ? getBgReceiptDelayRows(nonDemandCancelledReportFiles, bgReceiptDelayDays)
@@ -682,6 +720,85 @@ function getPreBidMeetingDailyRows(files: FileRecord[], selectedYear?: string) {
         isDateBeforeToday(file.refloatPreBidMeetingDate)
           ? "refloatPreBidCompleted"
           : "refloatPreBidDue",
+      );
+    }
+  });
+  return Array.from(rows.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, counts]) => ({ date, monthKey: date.slice(0, 7), ...counts }));
+}
+
+type BidOpeningScheduleCounts = {
+  bidOpeningDue: number;
+  bidOpeningOpened: number;
+  bidOpeningOverdue: number;
+  count: number;
+};
+
+function getBidOpeningScheduleRows(files: FileRecord[], selectedYear?: string) {
+  const rows = new Map<string, BidOpeningScheduleCounts>();
+  const activityRange = getActivityYearDateRange(selectedYear);
+  const add = (date: string | undefined, opened: boolean) => {
+    if (activityRange && !isDateInRange(date, activityRange)) return;
+    const month = getMonthKey(date);
+    if (!month) return;
+    const current = rows.get(month) ?? {
+      bidOpeningDue: 0,
+      bidOpeningOpened: 0,
+      bidOpeningOverdue: 0,
+      count: 0,
+    };
+    current.count += 1;
+    if (opened) current.bidOpeningOpened += 1;
+    else if (isDateBeforeToday(date)) current.bidOpeningOverdue += 1;
+    else current.bidOpeningDue += 1;
+    rows.set(month, current);
+  };
+  files.forEach((file) => {
+    if (isDemandCancelled(file) || !isBiddingApplicableForFile(file)) return;
+    if (hasFilledString(file.bidOpeningDate)) {
+      add(file.bidOpeningDate, isYes(file.bidOpened) || isYes(file.biddingStageOver));
+    }
+    if (isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)) {
+      // Refloat has no separate opened flag; its cycle-completion flag is the
+      // authoritative existing indicator that the refloat bid has opened.
+      add(
+        file.refloatBidOpeningDate,
+        isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver),
+      );
+    }
+  });
+  return Array.from(rows.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, counts]) => ({ name, monthKey: name, ...counts }));
+}
+
+function getBidOpeningScheduleDailyRows(files: FileRecord[], selectedYear?: string) {
+  const rows = new Map<string, BidOpeningScheduleCounts>();
+  const activityRange = getActivityYearDateRange(selectedYear);
+  const add = (date: string | undefined, opened: boolean) => {
+    if (!hasDate(date) || (activityRange && !isDateInRange(date, activityRange))) return;
+    const current = rows.get(date!) ?? {
+      bidOpeningDue: 0,
+      bidOpeningOpened: 0,
+      bidOpeningOverdue: 0,
+      count: 0,
+    };
+    current.count += 1;
+    if (opened) current.bidOpeningOpened += 1;
+    else if (isDateBeforeToday(date)) current.bidOpeningOverdue += 1;
+    else current.bidOpeningDue += 1;
+    rows.set(date!, current);
+  };
+  files.forEach((file) => {
+    if (isDemandCancelled(file) || !isBiddingApplicableForFile(file)) return;
+    if (hasFilledString(file.bidOpeningDate)) {
+      add(file.bidOpeningDate, isYes(file.bidOpened) || isYes(file.biddingStageOver));
+    }
+    if (isYes(file.refloat) && hasFilledString(file.refloatBidOpeningDate)) {
+      add(
+        file.refloatBidOpeningDate,
+        isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver),
       );
     }
   });
@@ -4596,6 +4713,14 @@ function countBgToBeReturnedOrders(files: FileRecord[], category: string, offset
   return rawSupplyOrderEntries(files).filter(({ file, order }) =>
     isBgReturnDueOrder(file, order, category, offsetDays),
   ).length;
+}
+
+function getBgReturnDueCounts(files: FileRecord[], offsetDays = 60) {
+  return {
+    psb: countBgToBeReturnedOrders(files, "psb", offsetDays),
+    pwb: countBgToBeReturnedOrders(files, "pwb", offsetDays),
+    psbPwb: countBgToBeReturnedOrders(files, "psbpwb", offsetDays),
+  };
 }
 
 function countBgReturnedOrders(files: FileRecord[], category: string) {

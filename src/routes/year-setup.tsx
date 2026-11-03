@@ -42,9 +42,18 @@ function YearSetupPage() {
   return <YearSetupPanel />;
 }
 
-export function YearSetupPanel() {
+type YearSetupPanelProps = {
+  settingsOverride?: ReturnType<typeof useSettings>;
+  onSetupYearChange?: (year: string) => void;
+};
+
+export function YearSetupPanel({
+  settingsOverride,
+  onSetupYearChange,
+}: YearSetupPanelProps = {}) {
   const activeUser = useActiveUser();
-  const settings = useSettings();
+  const loadedSettings = useSettings();
+  const settings = settingsOverride ?? loadedSettings;
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [currentDivisions, setCurrentDivisions] = useState<Division[]>([]);
   const [currentDivisionsYear, setCurrentDivisionsYear] = useState("");
@@ -237,7 +246,7 @@ export function YearSetupPanel() {
 
   if (activeUser?.role !== "admin") {
     return (
-      <div className="max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
+      <div className="section-accent-border max-w-xl rounded-md border border-border bg-card p-5 shadow-[var(--shadow-card)]">
         <h1 className="text-sm font-semibold">Year setup</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This yearly allocation setup is available only to administrators.
@@ -414,11 +423,11 @@ export function YearSetupPanel() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 px-5 py-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Year setup</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="text-sm font-semibold tracking-tight">Year setup</h1>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
             Select a financial year and decide which divisions are active for that year. Enter that
             year's capital and revenue funds here; each new year starts with its own allocation and
             committee setup.
@@ -432,9 +441,11 @@ export function YearSetupPanel() {
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">Setup year</div>
           <SearchableDropdown
             value={setupYear}
-            onChange={(year) =>
-              store.updateSettings({ setupYear: year || settings.financialYear })
-            }
+            onChange={(year) => {
+              const nextYear = year || settings.financialYear;
+              if (onSetupYearChange) onSetupYearChange(nextYear);
+              else store.updateSettings({ setupYear: nextYear });
+            }}
             options={[]}
             optionItems={yearOptions.map((year) => ({
               value: year,
@@ -450,7 +461,7 @@ export function YearSetupPanel() {
 
       {activeSubview === "setup" ? (
         <>
-          <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+          <div className="section-accent-border rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold">Add a division for {setupYearLabel}</h2>
@@ -599,7 +610,7 @@ export function YearSetupPanel() {
           </div>
         </>
       ) : activeSubview === "merge" ? (
-        <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+        <div className="section-accent-border rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-semibold">Merge divisions for {setupYearLabel}</h2>
@@ -723,7 +734,7 @@ export function YearSetupPanel() {
           </div>
         </div>
       ) : (
-        <div className="rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+        <div className="section-accent-border rounded-md border border-border bg-card p-4 shadow-[var(--shadow-card)]">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-semibold">

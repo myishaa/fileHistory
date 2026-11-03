@@ -189,6 +189,9 @@ export type FileMessageReply = {
 export type FileMessage = {
   id: string;
   fileId: string;
+  createdByUserId?: string;
+  recipientUserId?: string;
+  recipientUserName?: string;
   divisionId?: string;
   divisionName: string;
   fileUniqueCode?: string;
@@ -530,6 +533,17 @@ export type AppUserRole =
   | "editor"
   | "viewer"
   | "universal_viewer";
+export type PermissionCapability =
+  | "canManageUsers"
+  | "canViewUsers"
+  | "canEditFiles"
+  | "canResolveMessages"
+  | "canArchiveFiles"
+  | "canSendUrgentMessages"
+  | "canSendFileMessages"
+  | "canUseAllDivisions"
+  | "canAcceptUniversalAnomalies";
+export type UserCapabilities = Readonly<Partial<Record<PermissionCapability, boolean>>>;
 export type UniversalViewerCashOutgoEditScope = "none" | "personal" | "global";
 export type AppUser = {
   id: string;
@@ -540,6 +554,7 @@ export type AppUser = {
   allowedFileCategories?: string[] | null;
   cashOutgoEditScope?: UniversalViewerCashOutgoEditScope;
   emergencyIpBypass?: boolean;
+  capabilities?: UserCapabilities;
   archivedAt?: string;
 };
 export type IpAccessMode = "off" | "notify" | "restrict";
@@ -577,6 +592,27 @@ export type IpAccessConfig = {
 };
 export type AppTheme = "light" | "dark";
 export type AppThemeTint = "plain" | "yellow" | "green" | "blue" | "pink" | "lavender";
+export type TopRibbonColor =
+  | "navy"
+  | "teal"
+  | "charcoal"
+  | "maroon"
+  | "indigo"
+  | "gold"
+  | "warmGold"
+  | "black";
+export type TopRibbonTextColor = "white" | "softWhite" | "gold" | "black" | "brickRed";
+export type AppearancePreset =
+  | "ocean"
+  | "forest"
+  | "graphite"
+  | "plum"
+  | "arcticGlass"
+  | "sageModern"
+  | "sunsetEditorial"
+  | "roseQuartz"
+  | "midnightIndigo";
+export type AppFontFamily = "inter" | "manrope" | "sourceSans" | "nunito";
 export type ValueThresholdAppliesTo = "capital" | "revenue" | "both";
 export type ValueThresholdLevel = {
   id?: string;
@@ -623,11 +659,16 @@ export type AppSettings = {
   yearSelectionLocked: boolean;
   theme: AppTheme;
   themeTint: AppThemeTint;
+  appearancePreset?: AppearancePreset | null;
+  fontFamily?: AppFontFamily | null;
+  topRibbonColor?: TopRibbonColor | null;
+  topRibbonTextColor?: TopRibbonTextColor | null;
   chartBarColor?: string;
   chartColorOrder?: string[];
   globalChartColorOrder?: string[];
   globalChartColorsEnforced?: boolean;
   deletionPassword: string;
+  deletionPasswordConfigured?: boolean;
   tcecCommittees: string[];
   firmTypes: string[];
   fileTypes: string[];
@@ -677,11 +718,16 @@ const defaultSettings: AppSettings = {
   yearSelectionLocked: false,
   theme: "light",
   themeTint: "plain",
+  appearancePreset: null,
+  fontFamily: null,
+  topRibbonColor: null,
+  topRibbonTextColor: null,
   chartBarColor: "#0f766e",
   chartColorOrder: defaultChartColorOrder,
   globalChartColorOrder: defaultChartColorOrder,
   globalChartColorsEnforced: false,
   deletionPassword: "",
+  deletionPasswordConfigured: false,
   tcecCommittees: [],
   firmTypes: ["MSE", "MSE (Women)", "Non-MSE"],
   fileTypes: ["Goods & Services", "AMC", "MPC", "CARS", "O&M"],
@@ -781,6 +827,69 @@ let state: StoreState = {
   loading: false,
   loaded: false,
 };
+
+const COMMON_DATA_CACHE_TTL_MS = 30_000;
+
+type CachedResource<T> = {
+  value?: T;
+  fetchedAt: number;
+  pending?: Promise<T>;
+};
+
+const authCache: CachedResource<{ user: AppUser | null }> = { fetchedAt: 0 };
+const settingsCache: CachedResource<{ settings: AppSettings }> = { fetchedAt: 0 };
+const messagesCache: CachedResource<{ messages: FileMessage[] }> = { fetchedAt: 0 };
+const fileProcessingCache: CachedResource<{
+  notifications: FileProcessingNotification[];
+}> = { fetchedAt: 0 };
+
+function cachedResource<T>(resource: CachedResource<T>, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  if (resource.value !== undefined && now - resource.fetchedAt < COMMON_DATA_CACHE_TTL_MS) {
+    return Promise.resolve(resource.value);
+  }
+  if (resource.pending) return resource.pending;
+
+  const pending = loader().then((value) => {
+    resource.value = value;
+    resource.fetchedAt = Date.now();
+    return value;
+  });
+  resource.pending = pending;
+  pending.then(
+    () => {
+      if (resource.pending === pending) resource.pending = undefined;
+    },
+    () => {
+      if (resource.pending === pending) resource.pending = undefined;
+    },
+  );
+  return pending;
+}
+
+function invalidateCachedResource<T>(resource: CachedResource<T>) {
+  resource.value = undefined;
+  resource.fetchedAt = 0;
+  resource.pending = undefined;
+}
+
+function setCachedResource<T>(resource: CachedResource<T>, value: T) {
+  resource.value = value;
+  resource.fetchedAt = Date.now();
+  resource.pending = undefined;
+}
+
+function invalidateCommonDataCache() {
+  invalidateCachedResource(authCache);
+  invalidateCachedResource(settingsCache);
+  invalidateCachedResource(messagesCache);
+  invalidateCachedResource(fileProcessingCache);
+}
+
+function invalidateMessagesCache() {
+  invalidateCachedResource(messagesCache);
+  invalidateCachedResource(fileProcessingCache);
+}
 
 let loadPromise: Promise<void> | undefined;
 let loadAgain = false;
@@ -915,7 +1024,10 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
     new Map(
       (settings.financialYearStatuses ?? [])
         .filter((status) => status && knownYears.has(status.label))
-        .map((status) => [status.label, { label: status.label, archived: status.archived === true }]),
+        .map((status) => [
+          status.label,
+          { label: status.label, archived: status.archived === true },
+        ]),
     ).values(),
   );
   for (const label of financialYears) {
@@ -935,6 +1047,7 @@ function normalizeSettingsYears(settings: AppSettings): AppSettings {
 
 function loadAll(force = false): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
+  if (force) invalidateCommonDataCache();
   if (loadPromise) {
     if (force) loadAgain = true;
     return loadPromise;
@@ -955,17 +1068,18 @@ function loadAll(force = false): Promise<void> {
 async function loadAllOnce() {
   setState({ loading: true, error: undefined });
   try {
-    const auth = await request<{ user: AppUser | null }>("/api/auth/me");
+    const auth = await cachedResource(authCache, () =>
+      request<{ user: AppUser | null }>("/api/auth/me"),
+    );
     setState({ authChecked: true });
     if (!auth.user) {
-      const settings = await request<{ settings: AppSettings }>("/api/settings");
+      // Settings are account-scoped and require authentication. Do not call
+      // the protected settings endpoint before login; use safe local defaults
+      // so an expected unauthenticated session renders the login screen.
       const effectiveSettings = applySessionSelectedYear(
         normalizeSettingsYears({
           ...defaultSettings,
-          ...settings.settings,
-          tableFieldPresets: settings.settings.tableFieldPresets?.length
-            ? settings.settings.tableFieldPresets
-            : defaultTableFieldPresets,
+          tableFieldPresets: defaultTableFieldPresets,
         }),
       );
       const divisions = await request<{ divisions: Division[] }>(
@@ -986,7 +1100,9 @@ async function loadAllOnce() {
       return;
     }
 
-    const settings = await request<{ settings: AppSettings }>("/api/settings");
+    const settings = await cachedResource(settingsCache, () =>
+      request<{ settings: AppSettings }>("/api/settings"),
+    );
     const effectiveSettings = applySessionSelectedYear(
       normalizeSettingsYears({
         ...defaultSettings,
@@ -1002,12 +1118,14 @@ async function loadAllOnce() {
       request<{ divisions: Division[] }>(
         divisionsPath(effectiveSettings.selectedYear, false, effectiveSettings.financialYear),
       ),
-      request<{ messages: FileMessage[] }>("/api/messages"),
-      request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
+      cachedResource(messagesCache, () => request<{ messages: FileMessage[] }>("/api/messages")),
+      cachedResource(fileProcessingCache, () =>
+        request<{ notifications: FileProcessingNotification[] }>("/api/messages/file-processing"),
+      ),
     ] as const;
     const [divisions, messages, fileProcessingNotifications] = await Promise.all(baseRequests);
     const users =
-      auth.user.role === "admin" || auth.user.role === "universal_viewer"
+      auth.user.role === "admin" || auth.user.role === "sub_admin"
         ? await request<{ users: AppUser[] }>("/api/users")
         : { users: [auth.user] };
 
@@ -1087,6 +1205,23 @@ export const store = {
       body: JSON.stringify({ deletionPassword }),
     });
   },
+  async saveDeletionPassword(
+    deletionPassword: string,
+    deletionPasswordConfirmation: string,
+  ) {
+    const payload = await request<{ configured: boolean }>("/api/settings/deletion-password", {
+      method: "PUT",
+      body: JSON.stringify({ deletionPassword, deletionPasswordConfirmation }),
+    });
+    const settings = {
+      ...store.getSettings(),
+      deletionPassword: "",
+      deletionPasswordConfigured: payload.configured,
+    };
+    setCachedResource(settingsCache, { settings });
+    setState({ settings });
+    return payload;
+  },
   getUsers(): AppUser[] {
     ensureLoaded();
     return state.users;
@@ -1105,6 +1240,7 @@ export const store = {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
+    setCachedResource(settingsCache, payload);
     setState({ settings: payload.settings });
     return payload.settings;
   },
@@ -1115,6 +1251,7 @@ export const store = {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
+    setCachedResource(settingsCache, payload);
     setState({ settings: payload.settings });
     return payload.settings;
   },
@@ -1125,6 +1262,7 @@ export const store = {
         method: "POST",
       },
     );
+    setCachedResource(settingsCache, payload);
     setState({ settings: payload.settings });
     return payload.settings;
   },
@@ -1144,7 +1282,10 @@ export const store = {
     const settings = store.getSettings();
     writeSessionSelectedYear(year, state.authUser?.id);
     setState({ settings: normalizeSettingsYears({ ...settings, selectedYear: year }) });
-    void loadAll(true);
+    // The selected year changes the division scope, but not authentication,
+    // settings, or noticeboard data. Reuse those cached resources while the
+    // division list is refreshed for the new year.
+    void loadAll();
   },
   addFinancialYear(label: string, select = true) {
     runMutation(() =>
@@ -1283,11 +1424,11 @@ export const store = {
     }>(`/api/dashboard/suspected-anomalies?${params.toString()}`, { cache: "no-store" });
   },
   async countSuspectedAnomalies(query: string) {
-    const payload = await request<{ rows: Array<{ signature: string }> }>(
-      `/api/dashboard/suspected-anomalies?${query}`,
+    const payload = await request<{ count: number }>(
+      `/api/dashboard/suspected-anomalies/count?${query}`,
       { cache: "no-store" },
     );
-    return payload.rows.length;
+    return payload.count;
   },
   acceptSuspectedAnomaly(signature: string, reason: string) {
     return (async () => {
@@ -1377,14 +1518,25 @@ export const store = {
       return result.file;
     })();
   },
-  createMessage(fileId: string, section: string, text: string) {
+  createMessage(fileId: string, section: string, text: string, recipientUserId?: string) {
     return (async () => {
       const result = await request<{ message: FileMessage }>("/api/messages", {
         method: "POST",
-        body: JSON.stringify({ fileId, section, text }),
+        body: JSON.stringify({
+          fileId,
+          section,
+          text,
+          ...(recipientUserId ? { recipientUserId } : {}),
+        }),
       });
       setState({ messages: upsertMessage(state.messages, result.message) });
+      invalidateMessagesCache();
     })();
+  },
+  listMessageRecipients(divisionId: string) {
+    return request<{ users: AppUser[] }>(
+      `/api/messages/recipients?divisionId=${encodeURIComponent(divisionId)}`,
+    ).then(({ users }) => users);
   },
   replyToMessage(id: string, text: string) {
     return (async () => {
@@ -1393,6 +1545,7 @@ export const store = {
         body: JSON.stringify({ text }),
       });
       setState({ messages: upsertMessage(state.messages, result.message) });
+      invalidateMessagesCache();
     })();
   },
   resolveMessage(id: string) {
@@ -1401,6 +1554,7 @@ export const store = {
         method: "POST",
       });
       setState({ messages: upsertMessage(state.messages, result.message) });
+      invalidateMessagesCache();
     })();
   },
   markMessageViewed(id: string) {
@@ -1409,6 +1563,7 @@ export const store = {
         method: "POST",
       });
       setState({ messages: upsertMessage(state.messages, result.message) });
+      invalidateMessagesCache();
     })();
   },
   acknowledgeFileProcessingNotification(id: string) {
@@ -1425,6 +1580,7 @@ export const store = {
           result.notification,
         ),
       });
+      invalidateMessagesCache();
     })();
   },
   deleteMessage(id: string) {
@@ -1433,6 +1589,7 @@ export const store = {
         method: "DELETE",
       });
       setState({ messages: state.messages.filter((message) => message.id !== id) });
+      invalidateMessagesCache();
     })();
   },
   deleteFile(id: string, deletionPassword: string) {
@@ -1448,6 +1605,9 @@ export const store = {
   },
   listArchivedFiles() {
     return request<{ files: FileRecord[] }>("/api/files/archive/list");
+  },
+  listCancelledDemandFiles() {
+    return request<{ files: FileRecord[] }>("/api/files/archive/cancelled-demands");
   },
   restoreArchivedFile(id: string) {
     return (async () => {
@@ -1740,18 +1900,20 @@ export function fetchMasterFirms({
   prefix,
   page = 1,
   pageSize = 50,
+  signal,
 }: {
   q?: string;
   prefix?: boolean;
   page?: number;
   pageSize?: number;
+  signal?: AbortSignal;
 }) {
   const params = new URLSearchParams();
   if (q?.trim()) params.set("q", q.trim());
   if (prefix) params.set("prefix", "true");
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
-  return request<MasterFirmSearchResult>(`/api/firms?${params.toString()}`);
+  return request<MasterFirmSearchResult>(`/api/firms?${params.toString()}`, { signal });
 }
 
 export function createMasterFirm(payload: Partial<MasterFirm>) {
@@ -1819,9 +1981,11 @@ export type MerCashOutgoRow = {
   updatedAt?: string;
 };
 
-export function fetchMerCashOutgo(financialYear: string) {
+export function fetchMerCashOutgo(financialYear: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ financialYear });
-  return request<{ rows: MerCashOutgoRow[] }>(`/api/reports/mer-data?${params.toString()}`);
+  return request<{ rows: MerCashOutgoRow[] }>(`/api/reports/mer-data?${params.toString()}`, {
+    signal,
+  });
 }
 
 export function saveMerCashOutgo(
@@ -1854,8 +2018,10 @@ export type PreSoCashOutgoPlanPayload = {
   filePlans: Record<string, PreSoCashOutgoFilePlanPayload>;
 };
 
-export function fetchPreSoCashOutgoPlan() {
-  return request<{ plan: PreSoCashOutgoPlanPayload }>("/api/reports/pre-so-cash-outgo-plan");
+export function fetchPreSoCashOutgoPlan(signal?: AbortSignal) {
+  return request<{ plan: PreSoCashOutgoPlanPayload }>("/api/reports/pre-so-cash-outgo-plan", {
+    signal,
+  });
 }
 
 export function savePreSoCashOutgoPlan(payload: {
@@ -1900,13 +2066,36 @@ export function fetchFileIdentifierSuggestions(query: string, includeDemandDescr
   );
 }
 
-export function fetchFilesForYear(year: string, includeArchivedYears = false) {
+export function fetchFilesForYear(
+  year: string,
+  includeArchivedYears = true,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams();
   if (year) params.set("year", year);
-  if (includeArchivedYears) params.set("includeArchivedYears", "true");
+  params.set("includeArchivedYears", includeArchivedYears ? "true" : "false");
   return request<{ files: FileRecord[] }>(
     `/api/files${params.toString() ? `?${params.toString()}` : ""}`,
+    { signal },
   );
+}
+
+export async function fetchCompactReportFiles(
+  query: string,
+  mode: "preSoExpectedCashOutgo" | "paymentCompletedMatrix",
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams(query);
+  params.set("mode", mode);
+  const response = await fetch(`${API_BASE_URL}/api/reports/compact-files?${params}`, {
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+    throw new Error(body?.error ?? `Compact report files request failed: ${response.status}`);
+  }
+  return (await response.json()) as { files: FileRecord[] };
 }
 
 export function fetchNextUniqueCode({
@@ -2072,7 +2261,6 @@ export function useAccessibleDivisions() {
   if (
     !activeUser ||
     activeUser.role === "admin" ||
-    activeUser.role === "sub_admin" ||
     activeUser.role === "universal_viewer"
   )
     return divisions;
@@ -2092,7 +2280,6 @@ export function useAccessibleFiles() {
   if (
     !activeUser ||
     activeUser.role === "admin" ||
-    activeUser.role === "sub_admin" ||
     activeUser.role === "universal_viewer"
   ) {
     return yearFilteredFiles;

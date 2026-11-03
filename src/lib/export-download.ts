@@ -4,7 +4,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:300
 );
 
 type ExportFormat = "excel" | "pdf";
-export type FileSearchExportLayout = "columnwise" | "rowwise";
+export type FileSearchExportLayout = "columnwise" | "rowwise" | "sowise";
 
 export type ExportTable = {
   title?: string;
@@ -150,6 +150,7 @@ export async function downloadQuickEntryExcelExport(payload: {
   viewMode?: "collapsed" | "expanded";
   scopeMode: "fy" | "so";
   financialYear: string;
+  fullDatabase?: boolean;
 }) {
   try {
     const response = await fetch(`${API_BASE_URL}/api/files/quick-entry/export`, {
