@@ -981,6 +981,7 @@ function ProtectedBackupSettings() {
   const draft = useContext(SettingsDraftContext);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [restoreAuthorizationCurrentPassword, setRestoreAuthorizationCurrentPassword] = useState("");
   const [restoreAuthorizationPassword, setRestoreAuthorizationPassword] = useState("");
   const [restoreAuthorizationConfirmation, setRestoreAuthorizationConfirmation] = useState("");
   const [backupFilePassword, setBackupFilePassword] = useState("");
@@ -1017,7 +1018,9 @@ function ProtectedBackupSettings() {
     restoreAuthorizationPassword !== restoreAuthorizationConfirmation;
   const backupPasswordReady = password.length >= 8 && backupPasswordsMatch;
   const restoreAuthorizationReady =
-    restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch;
+    restoreAuthorizationPassword.length >= 8 &&
+    restoreAuthorizationPasswordsMatch &&
+    (!backupStatus?.restoreAuthorizationConfigured || restoreAuthorizationCurrentPassword.length >= 8);
 
   const passwordFieldClass = (invalid: boolean, valid: boolean) =>
     `h-9 w-full rounded-md border bg-background px-3 text-sm ${
@@ -1061,6 +1064,13 @@ function ProtectedBackupSettings() {
   }, [loadBackupStatus]);
 
   const saveRestoreAuthorization = async () => {
+    if (
+      backupStatus?.restoreAuthorizationConfigured &&
+      restoreAuthorizationCurrentPassword.length < 8
+    ) {
+      setMessage("Enter the current restore authorization password before changing it.");
+      return;
+    }
     if (restoreAuthorizationPassword.length < 8) {
       setMessage("Use a restore authorization password with at least 8 characters.");
       return;
@@ -1078,6 +1088,9 @@ function ProtectedBackupSettings() {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          currentPassword: backupStatus?.restoreAuthorizationConfigured
+            ? restoreAuthorizationCurrentPassword
+            : undefined,
           password: restoreAuthorizationPassword,
           confirmation: restoreAuthorizationConfirmation,
         }),
@@ -1085,6 +1098,7 @@ function ProtectedBackupSettings() {
       if (!response.ok) {
         throw new Error(await readError(response, "Restore authorization password could not be saved."));
       }
+      setRestoreAuthorizationCurrentPassword("");
       setRestoreAuthorizationPassword("");
       setRestoreAuthorizationConfirmation("");
       setMessage("Restore authorization password saved securely.");
@@ -1476,9 +1490,21 @@ function ProtectedBackupSettings() {
         <div className="col-span-full border-t border-border pt-4">
           <h4 className="text-sm font-semibold">Restore authorization</h4>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Set this Administrator password once. It remains fixed until an Administrator explicitly saves a replacement and is required before a backup can be restored.
+            Set this Administrator password once. It remains fixed until an Administrator enters the current password and explicitly saves a replacement. It is required before a backup can be restored.
           </p>
         </div>
+        {backupStatus?.restoreAuthorizationConfigured ? (
+          <label className="block min-w-0">
+            <span className="mb-1 block text-xs font-medium">Current restore authorization password</span>
+            <input
+              type="password"
+              value={restoreAuthorizationCurrentPassword}
+              onChange={(event) => setRestoreAuthorizationCurrentPassword(event.target.value)}
+              placeholder="Enter the saved password"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            />
+          </label>
+        ) : null}
         <label className="block min-w-0">
           <span className="mb-1 block text-xs font-medium">Restore authorization password (set by Administrator)</span>
           <input
@@ -1522,7 +1548,11 @@ function ProtectedBackupSettings() {
           className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           <Save className="size-4" />
-          {busy === "restoreAuthorization" ? "Saving..." : "Save restore authorization"}
+          {busy === "restoreAuthorization"
+            ? "Saving..."
+            : backupStatus?.restoreAuthorizationConfigured
+              ? "Change restore authorization"
+              : "Save restore authorization"}
         </button>
         <span className="flex min-h-10 items-center text-xs text-muted-foreground">
           Authorization: {backupStatus?.restoreAuthorizationConfigured ? "Configured" : "Not configured"}

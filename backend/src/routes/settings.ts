@@ -374,7 +374,11 @@ function readRestoreAuthorizationPassword(value: unknown, fieldName: string) {
   return value;
 }
 
-async function saveRestoreAuthorizationPassword(passwordValue: unknown, confirmationValue: unknown) {
+async function saveRestoreAuthorizationPassword(
+  currentPasswordValue: unknown,
+  passwordValue: unknown,
+  confirmationValue: unknown,
+) {
   const password = readRestoreAuthorizationPassword(passwordValue, "Restore authorization password");
   const confirmation = readRestoreAuthorizationPassword(
     confirmationValue,
@@ -384,6 +388,25 @@ async function saveRestoreAuthorizationPassword(passwordValue: unknown, confirma
     throw new HttpError(400, "Restore authorization passwords do not match.");
   }
   await ensureProtectedBackupAuthorizationSchema();
+  const existing = await pool.query<{ password_hash: string }>(
+    `select restore_authorization_password_hash as password_hash
+     from protected_backup_settings
+     where id = true`,
+  );
+  const currentHash = existing.rows[0]?.password_hash ?? "";
+  if (currentHash) {
+    const currentPassword = readRestoreAuthorizationPassword(
+      currentPasswordValue,
+      "Current restore authorization password",
+    );
+    const verification = await pool.query<{ valid: boolean }>(
+      `select $1 = crypt($2, $1) as valid`,
+      [currentHash, currentPassword],
+    );
+    if (!verification.rows[0]?.valid) {
+      throw new HttpError(403, "Current restore authorization password is incorrect.");
+    }
+  }
   await pool.query(
     `update protected_backup_settings
      set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
@@ -2762,7 +2785,7 @@ settingsRouter.put(
     const user = requireAuth(request as AuthRequest);
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
-    await saveRestoreAuthorizationPassword(body.password, body.confirmation);
+    await saveRestoreAuthorizationPassword(body.currentPassword, body.password, body.confirmation);
     response.json({ configured: true });
   }),
 );
